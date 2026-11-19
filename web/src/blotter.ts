@@ -181,11 +181,18 @@ export function sizeOf(deal: Record<string, unknown>, object: string, schema: Sc
   if (UNIT_FIELDS.includes(amount.key)) {
     return { side, amount, of: { key: amount.key, value: amount.key.toLowerCase() } };
   }
+  return { side, amount, of: currencyFor(deal, amount.key, fields) };
+}
+
+/** The currency the amount at `key` is in: the first the deal states among the one a `settles`
+ * declaration pays it in, `<Word>_Currency` for a word of its name, and its own `Currency`. */
+export function currencyFor(deal: Record<string, unknown>, key: string,
+                            fields?: Record<string, Descriptor>): Picked | undefined {
   const paid = Object.values(fields ?? {}).flatMap((field) => (
-    Array.isArray(field.settles) ? field.settles : [])).find((cash) => cash.amount === amount.key);
-  const key = [paid?.currency, ...amount.key.split('_').map((part) => `${part}_Currency`),
-    'Currency'].find((name) => name && deal[name]);
-  return { side, amount, of: key ? { key, value: deal[key] } : undefined };
+    Array.isArray(field.settles) ? field.settles : [])).find((cash) => cash.amount === key);
+  const named = [paid?.currency, ...key.split('_').map((part) => `${part}_Currency`), 'Currency']
+    .find((name) => name && deal[name]);
+  return named ? { key: named, value: deal[named] } : undefined;
 }
 
 /** The value behind a scalar cell: a number - a Percent's or a Basis's its own - a date, a word,

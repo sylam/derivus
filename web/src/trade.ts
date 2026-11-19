@@ -3,14 +3,16 @@
 // on the record, and what an unwind of it files and leaves.
 
 import {
-  SET, cellText, dateOf, fieldsOf, quoted, sizeOf, type BlotterRow, type Picked, type Size,
+  SET, cellText, currencyFor, dateOf, fieldsOf, quoted, sizeOf, type BlotterRow, type Picked,
+  type Size,
 } from './blotter';
 import { plural } from './desk';
 import type { Agreement, Position } from './positions';
 import { salesNames } from './quote';
-import { COLLATERAL, formatNumber, uncollateralised } from './tokens';
+import { COLLATERAL, currencyOf, formatNumber, uncollateralised } from './tokens';
 import type {
-  ActivityPage, ActivityRow, DealMark, DealNode, Market, QuoteGiven, Schema, WorkRow,
+  ActivityPage, ActivityRow, DealMark, DealNode, Descriptor, Market, Moved, QuoteGiven, Schema,
+  WorkRow,
 } from './types';
 
 /** The trade a deal path names: the outermost node on the path that is no netting set - a leg
@@ -58,6 +60,23 @@ export async function wholeRecord(read: (since: number) => Promise<ActivityPage>
 /** What happened to the trade at `path`, newest first: every row of the record that opens it. */
 export const historyOf = (rows: ActivityRow[], path: string): ActivityRow[] =>
   rows.filter((row) => row.deal_path === path).sort((a, b) => b.lsn - a.lsn);
+
+/** A restrike's moved fields as the deal's terms read them: each in its declared words - its name
+ * where the description is a paragraph, as the terms panel labels it - beside its declaration, and
+ * the currency it is in: an amount's by the size's rule, else the one its description names. */
+export function movedTerms(changed: Moved[], deal: Record<string, unknown>,
+                           schema: Schema | null):
+  (Moved & { words: string; declared?: Descriptor; unit?: string })[] {
+  const fields = fieldsOf(schema, String(deal.Object ?? '')) ?? {};
+  return changed.map((moved) => {
+    const declared = fields[moved.field];
+    const description = declared?.description ?? moved.field;
+    const unit = declared?.sized ? currencyFor(deal, moved.field, fields)?.value
+      : currencyOf(description, Object.keys(fields), (key) => deal[key]);
+    return { ...moved, declared, unit: unit === undefined ? undefined : String(unit),
+             words: description.length > 64 ? moved.field.replace(/_/g, ' ') : description };
+  });
+}
 
 /** Who booked the trade and when: its first fill on the record. A restrike signs the position's
  * ticket again, so the ticket names the last seat to touch it and never the first. */

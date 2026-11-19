@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { NO_SEAT, failure, fillDeal, getBookActivity } from '../api';
 import {
   baseDateOf, cellText, nameOf, quoted, rowsByPath, sizeOf, toRows, type BlotterRow,
 } from '../blotter';
 import { EmptyState } from '../components/EmptyState';
+import { FieldView } from '../components/FieldView';
 import { currencyOf, lagsBook, stampText } from '../desk';
 import {
   NO_PAPER, byPath, clientName, closed, netOf, nodeAt, type Position, type Ticket,
@@ -14,8 +15,8 @@ import { pinnedAt } from '../spine';
 import { clockOf, marketOf, useApp, written } from '../state';
 import { formatNumber, ungrouped } from '../tokens';
 import {
-  bookedBy, datesOf, historyOf, legsOf, markOf, tradeAt, tradeName, tradeSize, unwindFill,
-  unwindWords, wholeRecord, type Price,
+  bookedBy, datesOf, historyOf, legsOf, markOf, movedTerms, tradeAt, tradeName, tradeSize,
+  unwindFill, unwindWords, wholeRecord, type Price,
 } from '../trade';
 import type { ActivityRow, QuoteGiven } from '../types';
 import { Side, Value } from './BlotterView';
@@ -91,7 +92,7 @@ export function TradeView() {
                quote={quote ?? undefined} />
         <Origin recording={recording} held={held} history={history} quote={quote} />
         <Worth path={trade.path} legs={row.children.length} shut={closed(units)} />
-        <History recording={recording} history={history} />
+        <History recording={recording} history={history} deal={row.deal} />
         <Actions key={`act ${trade.path}`} row={row} held={held} recording={recording} />
       </div>
     </div>
@@ -330,9 +331,10 @@ function Worth({ path, legs, shut }: { path: string; legs: number; shut: boolean
 }
 
 /** What happened to the trade, newest first, as the record tells it: who did what and when. */
-function History({ recording, history }: {
-  recording: boolean; history: ActivityRow[] | string | null;
+function History({ recording, history, deal }: {
+  recording: boolean; history: ActivityRow[] | string | null; deal: Record<string, unknown>;
 }) {
+  const { schema } = useApp().state;
   return (
     <section className="card">
       <h3>What happened to it</h3>
@@ -342,29 +344,36 @@ function History({ recording, history }: {
             this trade.</div>
         ) : typeof history === 'string' ? <div className="error-box">{history}</div>
           : history === null ? <div className="hint">reading the record…</div> : (
-          <>
-            <div className="tablewrap">
-              <table className="data desk">
-                <tbody>
-                  {history.map((row) => (
-                    <tr key={row.lsn}>
-                      <td className="n mono">{row.lsn}</td>
-                      <td>{stampText(row.record_time)}</td>
-                      <td>{row.by}</td>
-                      <td className="prose">{row.summary}</td>
-                    </tr>
-                  ))}
-                  {!history.length && (
-                    <tr><td className="hint">nothing on the record opens this trade.</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-            {history.some((row) => row.event_type === 'amendment') && (
-              <div className="hint">A restrike's row names the trade and not the fields it
-                moved: the record's activity carries no before and after.</div>
-            )}
-          </>
+          <div className="tablewrap">
+            <table className="data desk">
+              <tbody>
+                {history.map((row) => (
+                  <tr key={row.lsn}>
+                    <td className="n mono">{row.lsn}</td>
+                    <td>{stampText(row.record_time)}</td>
+                    <td>{row.by}</td>
+                    <td className="prose">{row.summary}
+                      {row.changed && (
+                        <dl className="signfacts moved">
+                          {movedTerms(row.changed, deal, schema).map((moved) => (
+                            <Fragment key={moved.field}>
+                              <dt title={moved.field}>{moved.words}</dt>
+                              <dd><FieldView value={moved.was} descriptor={moved.declared} />
+                                {' → '}<FieldView value={moved.became} descriptor={moved.declared} />
+                                {moved.unit && <span className="hint"> {moved.unit}</span>}</dd>
+                            </Fragment>
+                          ))}
+                        </dl>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {!history.length && (
+                  <tr><td className="hint">nothing on the record opens this trade.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </section>

@@ -121,6 +121,25 @@ check('who booked it is its first fill on the record, never a later clip or the 
       'the newest fill taken, naming the seat that unwound it as the one that booked it',
       trade.bookedBy(history)?.lsn, 24);
 
+// --- what a restrike moved
+const TERMS = { Instrument: { types: { FXForwardDeal: ['Fwd'] }, sections: { Fwd: {
+  Buy_Amount: { description: 'Buy Amount', sized: true }, Buy_Currency: { description: 'Buy Currency' },
+  Settlement_Date: { description: 'Settlement Date' },
+  Strike_Price: { description: 'Strike price on the ENGINE axis: the reporting currency per unit of '
+    + 'Underlying_Currency, so a level of 17.50 on a USD book is authored as 1/17.50' },
+  Fee: { description: 'A fee, in Fee_Currency' }, Fee_Currency: { description: 'Fee Currency' } } } } };
+const MOVED = trade.movedTerms(['Buy_Amount', 'Settlement_Date', 'Strike_Price', 'Fee', 'Note']
+  .map((field) => ({ field, was: 1, became: 2 })),
+{ Object: 'FXForwardDeal', Buy_Currency: 'ZAR', Fee_Currency: 'EUR' }, TERMS);
+check('a moved field reads in its declared words - its name where they are a paragraph - in the '
+        + 'currency an amount is in by the size\'s rule, else the one its description names',
+      'the paragraph shown as the field\'s name; an amount left without its currency because its '
+        + 'description names none; or a field the type does not declare dropped',
+      MOVED.map(({ field, words, unit, declared }) => [field, words, unit ?? null, !!declared]),
+      [['Buy_Amount', 'Buy Amount', 'ZAR', true], ['Settlement_Date', 'Settlement Date', null, true],
+       ['Strike_Price', 'Strike Price', null, true], ['Fee', 'A fee, in Fee_Currency', 'EUR', true],
+       ['Note', 'Note', null, false]]);
+
 // --- size and dates
 const rows = blotter.rowsByPath(blotter.toRows(BOOK, ['NettingCollateralSet', 'StructuredDeal'],
                                                '2026-11-16'));

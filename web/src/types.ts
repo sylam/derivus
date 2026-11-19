@@ -351,7 +351,7 @@ export type BookStatus = { etag: string; spine: SpineBlock | null };
 /** One line of the strip: the envelope - `record_time` the writer's clock, `effective_time` when
  * the fact is TRUE, null where it carries no truth-time of its own - and what the service tells of
  * it: `summary` naming what it is about, `by` who did it, and the deal, agreement and entity it
- * opens, each null where it names none. */
+ * opens, each null where it names none; a restrike's `changed`, each field it moved. */
 export type ActivityRow = {
   lsn: number;
   record_time: string;
@@ -364,7 +364,11 @@ export type ActivityRow = {
   deal_path: string | null;
   agreement: string | null;
   entity: string | null;
+  changed?: Moved[] | null;
 };
+
+/** One field a restrike moved, from what to what, in wire form. */
+export type Moved = { field: string; was: unknown; became: unknown };
 
 /** `GET /book/activity`: the rows newest last, and the head the fold reached - the `since` a
  * client polls with next. */
