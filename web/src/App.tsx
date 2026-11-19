@@ -100,7 +100,7 @@ export function App() {
   // The risk verb RUNS the book on a miss, so it is priced while a desk is LOOKING at it and only
   // then: taking the tab prices it, every move of the clock under that gaze re-prices it, and a tab
   // left behind or a window gone hidden costs nothing until it is looked at again.
-  const riskWanted = state.tab === 'risk' && visible;
+  const riskWanted = ['risk', 'trade'].includes(state.tab) && visible;
   useEffect(() => {
     if (clock === null || !riskWanted) return;
     let live = true;
@@ -145,7 +145,8 @@ export function App() {
   // The positions and the paper they sit under, for the screens that group the book by them and
   // the Risk, XVA and credit-curve screens naming the clients: read while one is looked at on a desk
   // that records, and again whenever the file or the record moves under it.
-  const paperWanted = ['portfolio', 'blotter', 'quote', 'risk', 'xva', 'curves'].includes(state.tab)
+  const paperWanted = ['portfolio', 'blotter', 'quote', 'trade', 'risk', 'xva', 'curves']
+    .includes(state.tab)
     && visible
     && recording;
   useEffect(() => {

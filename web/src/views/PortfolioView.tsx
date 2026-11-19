@@ -51,28 +51,6 @@ export function PortfolioView() {
   const selected = dealPath !== undefined ? nodeAt(children, dealPath) : undefined;
   const deal = selected?.Instrument['.Deal'];
 
-  // the deal as the market quotes it, by the blotter's rule: what its level boxes say beside them
-  const read = selected && quoted(toRows([selected], schema.Instrument.containers, undefined)[0],
-                                  marketOf(state));
-  const beside = (key: string) => {
-    const level = [read?.strike, read?.barrier].find((picked) => picked?.key === key);
-    if (level?.title) return <span className="readas">the market quotes {level.title}</span>;
-    if (key === 'Barrier_Type' && read?.terms) {
-      return <span className="readas">the market reads {read.terms.parts.join(' · ')}</span>;
-    }
-    return key === 'Option_Type' && read?.on && read.sense && (
-      <span className="readas">
-        a {read.sense} on {String(read.on.value)} as the market quotes it</span>);
-  };
-
-  // editing exists only over the LIVE BOOK - a local file has nothing server-side to amend.
-  // A successful amendment refreshes the book at once rather than waiting a poll tick.
-  const onAmend: AmendField | undefined =
-    state.source?.kind === 'book' && dealPath !== undefined
-      ? async (key, wireValue) =>
-          written(dispatch, await amendDeal(dealPath, { [key]: wireValue }))
-      : undefined;
-
   return (
     <div className="main">
       <div className="sidebar">
@@ -109,10 +87,7 @@ export function PortfolioView() {
             this agreement - the banner above names where the two disagree.
           </div>
         )}
-        {deal && (
-          <DealPanels deal={deal} schema={schema} onAmend={onAmend} beside={beside}
-                      ask={recording ? RESTRIKE : undefined} />
-        )}
+        {selected && <DealEditor path={dealPath!} node={selected} />}
       </div>
     </div>
   );
@@ -121,6 +96,34 @@ export function PortfolioView() {
 /** What filing an edit does under a record, where an amendment of a booked trade is a restrike. */
 const RESTRIKE = 'Filing this restrikes the trade: its new terms are filed under a new instrument '
   + 'and go through approval again.';
+
+/** The deal at `path` in its panels, each level box saying how the market quotes it by the
+ * blotter's rule, and every scalar amendable over the LIVE BOOK - a local file has nothing
+ * server-side to amend - a restrike under a record asked first. A filed amendment re-reads the
+ * book at once rather than waiting a poll tick. */
+export function DealEditor({ path, node }: { path: string; node: DealNode }) {
+  const { state, dispatch } = useApp();
+  const recording = state.source?.kind === 'book' && state.record.spine !== null;
+  const read = quoted(toRows([node], state.schema?.Instrument.containers ?? [], undefined)[0],
+                      marketOf(state));
+  const beside = (key: string) => {
+    const level = [read.strike, read.barrier].find((picked) => picked?.key === key);
+    if (level?.title) return <span className="readas">the market quotes {level.title}</span>;
+    if (key === 'Barrier_Type' && read.terms) {
+      return <span className="readas">the market reads {read.terms.parts.join(' · ')}</span>;
+    }
+    return key === 'Option_Type' && read.on && read.sense && (
+      <span className="readas">
+        a {read.sense} on {String(read.on.value)} as the market quotes it</span>);
+  };
+  const onAmend: AmendField | undefined = state.source?.kind === 'book'
+    ? async (key, wireValue) => written(dispatch, await amendDeal(path, { [key]: wireValue }))
+    : undefined;
+  return (
+    <DealPanels deal={node.Instrument['.Deal']} schema={state.schema} onAmend={onAmend}
+                beside={beside} ask={recording ? RESTRIKE : undefined} />
+  );
+}
 
 const said = (widget: string, description: string): Descriptor =>
   ({ widget, description, value: null });

@@ -67,6 +67,8 @@ export type AppState = {
   source: Source | null;
   docError: string | null;
   tab: string;
+  /** The tab the reader was on before this one - where a page opened from it goes back to. */
+  back: string | null;
   /** The seat this browser acts as where no token names one - what the record's reads wait on. */
   seat: string;
   /** The deal the portfolio shows, and the page each navigated screen shows, by screen. */
@@ -106,7 +108,7 @@ export const NO_RECORD: RecordState = {
 
 export const INITIAL: AppState = {
   schema: null, schemaError: null, doc: null, source: null, docError: null,
-  tab: 'portfolio', seat: stored(SEAT), selection: { deal: null, picks: {} },
+  tab: 'portfolio', back: null, seat: stored(SEAT), selection: { deal: null, picks: {} },
   describe: null, validate: null, run: IDLE_RUN, risk: IDLE_RISK, xva: IDLE_XVA,
   market: IDLE_MARKET, paths: IDLE_PATHS, record: NO_RECORD, paper: IDLE_PAPER, grouping: 'book',
 };
@@ -172,7 +174,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'DOC_FAILED':
       return { ...state, docError: action.error };
     case 'TAB':
-      return { ...state, tab: action.tab };
+      return action.tab === state.tab ? state : { ...state, tab: action.tab, back: state.tab };
     case 'SEAT':
       return { ...state, seat: action.seat };
     case 'SELECT_DEAL':
@@ -293,6 +295,12 @@ export function opened(dispatch: Dispatch<Action>, deal: string | null | undefin
     dispatch({ type: 'PICK', screen: 'paper', id: paper });
     dispatch({ type: 'TAB', tab: 'paper' });
   }
+}
+
+/** Open the page of the trade a deal path names - a leg's opening its structure's. */
+export function openTrade(dispatch: Dispatch<Action>, path: string) {
+  dispatch({ type: 'PICK', screen: 'trade', id: path });
+  dispatch({ type: 'TAB', tab: 'trade' });
 }
 
 /** A `GET /book` answer as the document it loads - `refresh` where it is the one on screen moved,

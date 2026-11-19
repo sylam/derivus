@@ -336,7 +336,7 @@ function Ticket({ id, pending, from, requotes, onMade, onRead }: {
 /** The card: who it is for and what it is, its legs on the market's axis, the solved number set
  * apart, the net, the market it was struck on, the spread, the notes, who quoted it and when, and
  * how long the desk holds it firm. */
-function TicketCard({ pending }: { pending: PendingQuote }) {
+export function TicketCard({ pending }: { pending: PendingQuote }) {
   const { state } = useApp();
   const { schema } = state;
   const paper = state.paper.data ?? NO_PAPER;

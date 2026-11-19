@@ -17,6 +17,7 @@ import { QuoteView } from './views/QuoteView';
 import { RiskView } from './views/RiskView';
 import { SecuritiesView } from './views/SecuritiesView';
 import { SettingsView } from './views/SettingsView';
+import { TradeView } from './views/TradeView';
 import { XvaView } from './views/XvaView';
 
 export type Workspace = { id: string; label: string; view: ComponentType };
@@ -26,6 +27,9 @@ export const WORKSPACES: Workspace[] = [
   { id: 'blotter', label: 'Blotter', view: BlotterView },
   // the sales desk's ticket: a structure quoted, read to the client and accepted onto the book
   { id: 'quote', label: 'Quote', view: QuoteView },
+  // one trade whole: its terms as the market says them, where it came from, what it is worth,
+  // what happened to it, and the amendment and the unwind
+  { id: 'trade', label: 'Trade', view: TradeView },
   // the desk's data views, beside the blotter they belong to: what the book is worth and what it
   // moves with, what it costs per counterparty, and what it made between two marked closes
   { id: 'risk', label: 'Risk', view: RiskView },

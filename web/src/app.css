@@ -687,3 +687,23 @@ table.blotter tr.schedule table.data { width: auto; min-width: 360px; }
 /* a credit curve's card: its lines inset as a field panel's, its tables as wide as their rows */
 .card.credit > :not(h3) { margin: 10px 14px; }
 .card.credit table.data { width: auto; min-width: 360px; }
+
+/* ---- a trade's own page ---- */
+
+/* a trade's name in a row: the way onto its page */
+button.tradelink {
+  background: none; border: none; padding: 0; font: inherit; color: inherit; cursor: pointer;
+  text-decoration: underline dotted var(--text-muted); text-underline-offset: 3px;
+}
+button.tradelink:hover { color: var(--accent); text-decoration-color: var(--accent); }
+.unwind input {
+  font: 12.5px var(--mono); font-variant-numeric: tabular-nums; color: var(--text);
+  background: var(--surface); border: 1px solid var(--border); border-radius: 5px; padding: 3px 8px;
+}
+.unwind input.amount { width: 110px; }
+.unwind input.ccy { width: 64px; }
+.unwind .banner button { margin-left: 6px; }
+.tradetitle { margin: 6px 0 12px; font-size: 19px; font-weight: 650; }
+.tradetitle .hint { margin-left: 12px; font-size: 12.5px; font-weight: 400; color: var(--text-muted); }
+.tradepage .hint { color: var(--text-muted); font-size: 12.5px; }
+.tradepage div.hint { margin: 8px 0; }

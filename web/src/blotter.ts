@@ -25,7 +25,7 @@ const OTHER: Record<string, string> = {
 };
 
 /** Amounts counting the underlying in its own units: no currency is ever beside them. */
-const UNIT_FIELDS = ['Units', 'Volume'];
+export const UNIT_FIELDS = ['Units', 'Volume'];
 
 const AMOUNT_FIELDS = [
   'Principal', 'Underlying_Amount', 'Amount', 'Buy_Amount', 'Near_Buy_Amount', 'Sell_Amount',
@@ -557,10 +557,12 @@ export function filterRows(rows: BlotterRow[], horizon: number | null): BlotterR
   });
 }
 
+/** The type that holds a client's trades rather than being one. */
+export const SET = 'NettingCollateralSet';
+
 /** Whether a row holds trades rather than being one: a netting set, or a folder of the record's
  * grouping, which picks nothing. */
-const holdsTrades = (row: BlotterRow): boolean =>
-  row.target === null || row.object === 'NettingCollateralSet';
+export const holdsTrades = (row: BlotterRow): boolean => row.target === null || row.object === SET;
 
 const rollsWithin = (row: BlotterRow, horizon: number | null): boolean =>
   rollsOwn(row, horizon) || row.children.some((child) => rollsWithin(child, horizon));

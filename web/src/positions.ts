@@ -29,6 +29,14 @@ export type Position = {
    * awaiting a second seat. Workflow, not economics: a pending trade prices all the same. */
   status: string;
   pending: number;
+  tickets: Ticket[];
+};
+
+/** One ticket a position is booked by: a fill's, or a restrike's in place of the clip it restruck
+ * - `fill` the LSN of the fill, `lsn` the ticket's own, `actor` and `at` the ticket's. */
+export type Ticket = {
+  ticket: string; lsn: number; fill: number; actor: string; at: string;
+  execution_reference: string; quantity: number; status: string;
 };
 
 export type Entity = { entity: string; name: string; parent: string | null };

@@ -98,9 +98,12 @@ export const getBook = () => call<BookResponse>('GET', '/book');
 // an undefined key stays off the wire, so that body is `{}`
 export const openBook = (name?: string, document?: JobDoc) =>
   call<{ path: string; etag: string }>('POST', '/book/open', { name, document });
+// one endpoint and a deal's vocabularies, each signed: fields merged into the deal at a path, and
+// a fill of the position the node at a path is held in
+const postDeal = <T>(body: Record<string, unknown>) =>
+  call<T>('POST', '/book/deals', signed(body));
 export const amendDeal = (dealPath: string, fields: Record<string, unknown>) =>
-  call<BookDealOutcome>('POST', '/book/deals',
-    signed({ action: 'amend', deal_path: dealPath, fields }));
+  postDeal<BookDealOutcome>({ action: 'amend', deal_path: dealPath, fields });
 // the market the book prices on: the file it names with its explicit block merged over it, named
 // by a stamp - asked with the one held, it answers no market while that one is current
 export const getBookMarket = (stamp = '') =>
@@ -208,6 +211,11 @@ export const QUOTE_SHEET = (id: string) => `/book/quote/${encodeURIComponent(id)
 export const getQuoteSheet = async (id: string) => (await send('GET', QUOTE_SHEET(id))).blob();
 export const acceptQuote = (id: string) =>
   call<Acceptance>('POST', '/book/quote', signed({ quote_id: id }));
+// ---- a trade's own page ----
+// a signed change of the position the file's node at `dealPath` is held in, at a price - an unwind
+// is a fill toward nothing - answered with the booking fields an acceptance answers
+export const fillDeal = (dealPath: string, fill: Record<string, unknown>) =>
+  postDeal<Acceptance>({ action: 'fill', deal_path: dealPath, ...fill });
 export const postDescribe = (doc: JobDoc) => call<DescribeResult>('POST', '/describe', doc);
 export const postValidate = (doc: JobDoc) => call<ValidateResult>('POST', '/validate', doc);
 export const postExecute = (doc: JobDoc) =>

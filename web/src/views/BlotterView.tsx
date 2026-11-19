@@ -276,7 +276,7 @@ function Held({ held, entities }: { held: Position[]; entities: Paper['entities'
 
 /** Buy or sell as a chip, whatever the family calls it - Buy_Sell, Payer_Receiver, a lender - and
  * always the desk's. */
-function Side({ side }: { side?: Picked }) {
+export function Side({ side }: { side?: Picked }) {
   const text = side ? cellText(side.value) : undefined;
   if (!text) return null;
   const short = ['Sell', 'Pay', 'Payer', 'Lender'].includes(text) ? 'sell' : 'buy';
@@ -287,7 +287,7 @@ function Side({ side }: { side?: Picked }) {
 
 /** One picked column. A shape a cell cannot state says so and points at the expander, which
  * renders it whole - the viewer never hides a value it cannot format. */
-function Value({ picked, object, schema, kind }: {
+export function Value({ picked, object, schema, kind }: {
   picked?: Picked; object: string; schema: Schema | null; kind?: Kind;
 }) {
   if (!picked) return <td className="n" />;
