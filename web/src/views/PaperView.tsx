@@ -3,6 +3,7 @@ import {
   declareAgreement, declareEntity, failure, getBookAgreements, getBookEntities,
 } from '../api';
 import { DealPanels } from '../components/FieldView';
+import { entityText } from '../desk';
 import { EmptyState } from '../components/EmptyState';
 import type { Agreement, Entity } from '../positions';
 import { worklistAt } from '../spine';
@@ -15,12 +16,6 @@ const TERMS = 'NettingCollateralSet';
 
 /** What a declaration answered: where it landed, or the service's refusal in its own words. */
 type Said = { refused: boolean; text: string } | null;
-
-/** An entity as a reader tells it from another: its name with its id beside it. */
-const entityText = (entities: Entity[], id: string) => {
-  const name = entities.find((row) => row.entity === id)?.name;
-  return name ? `${name} (${id})` : id;
-};
 
 /** The paper the book trades under: every legal entity and agreement the record declares, each
  * agreement with where it stands on the desk and its terms rendered off the netting set's
