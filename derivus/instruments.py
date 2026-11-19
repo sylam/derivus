@@ -3409,6 +3409,8 @@ class CapDeal(Deal):
     accepts_children = True
     vernacular = 'interest rate cap, cap, caplets'
     observes = Observes('Forecast_Rate', 'InterestRate')
+    # its caplets, read off the schedule its compile binds; over legs, the legs'
+    exposure = Exposure('Principal', 'Currency')
     fields = [ADMIN, PRICING, FLOATING_INDEX, COUPON_SCHEDULE, CAP_FLOOR, own('CapDeal', [
         F('Cap_Rate', 'Float', default=0.0)
     ])]
@@ -3418,7 +3420,9 @@ class CapDeal(Deal):
 
     documentation = (
         'Interest Rates', ['A series of caplets as described [here](#capletsfloorlets), on the',
-                           '[coupon schedule](#coupon-schedules) its terms spell'])
+                           '[coupon schedule](#coupon-schedules) its terms spell. Booked over `Children`,',
+                           'its legs are the trade: their sum, each on its own **Buy_Sell**, and none of',
+                           'its own terms is read, its **Buy_Sell** among them.'])
 
     def reset(self, calendars):
         super(CapDeal, self).reset()
@@ -3481,6 +3485,7 @@ class FloorDeal(CapDeal):
     vernacular = 'interest rate floor, floor, floorlets'
     # the schema reads each type's own declarations, never a parent's
     observes = Observes('Forecast_Rate', 'InterestRate')
+    exposure = Exposure('Principal', 'Currency')
     fields = [ADMIN, PRICING, FLOATING_INDEX, COUPON_SCHEDULE, CAP_FLOOR, own('FloorDeal', [
         F('Floor_Rate', 'Float', default=0.0)
     ])]
@@ -3489,7 +3494,9 @@ class FloorDeal(CapDeal):
 
     documentation = (
         'Interest Rates', ['A series of floorlets as described [here](#capletsfloorlets), on the',
-                           '[coupon schedule](#coupon-schedules) its terms spell'])
+                           '[coupon schedule](#coupon-schedules) its terms spell. Booked over `Children`,',
+                           'its legs are the trade: their sum, each on its own **Buy_Sell**, and none of',
+                           'its own terms is read, its **Buy_Sell** among them.'])
 
 
 class SwaptionDeal(Deal):

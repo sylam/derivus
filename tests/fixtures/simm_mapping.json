@@ -4,6 +4,7 @@
    "SwapInterestDeal": "IR",
    "SwaptionDeal": "IR",
    "CapDeal": "IR",
+   "FloorDeal": "IR",
    "FRADeal": "IR",
    "YieldInflationCashflowListDeal": "IR",
    "CFFloatingInterestListDeal": "IR",

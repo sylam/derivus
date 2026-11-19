@@ -5385,13 +5385,18 @@ class SACCR(NettingSetCalculation):
     and one paid on another index, one basis trade, long the index it receives in the hedging set of
     the pair at half Table 2's factor (52.46, 52.72-52.73); legs paying two currencies are one FX
     trade (52.35, footnote 11 to 52.46), in that class alone (52.28: a convention), M a resetting
-    swap's next reset (52.37(5)), and three refuse by name; a leg paying a cap, a floor or a
-    digital refuses by name, its caplets (52.43) not built. A credit entity's rating is the
-    mapping's `SACCR.Rating` under its survival curve, AAA to CCC a single name and IG or SG an
-    index; an equity is an index where its price's SIMM bucket is 11 or 12, Risk_Equity's index
-    buckets; a commodity's type is its price's SIMM bucket, whose `commodity_sets` row in the
-    `Parameters` names its hedging set and subclass. A reference price is mapped under its forward
-    curve and a composed price under its primary, a unit of it priced with its bases' periods.
+    swap's next reset (52.37(5)), and three refuse by name. A leg its compile prices as caplets or
+    floorlets, and a cap or a floor booked by its terms, reads a row per optionlet whose rate is
+    still to be known (52.43), named by its deal and its period's end, a caplet a call and a
+    floorlet a put on that rate, long where its value is, a cap over legs on the legs' own sides as
+    its pricer reads it; S and E its period's, T the day its rate is known, its last fixing, M the
+    trade's last day; one fixed reads none, its value V's alone, and a digital one refuses by name.
+    A credit entity's rating is the mapping's `SACCR.Rating` under its survival curve, AAA to CCC a
+    single name and IG or SG an index; an equity is an index where its price's SIMM bucket is 11 or
+    12, Risk_Equity's index buckets; a commodity's type is its price's SIMM bucket, whose
+    `commodity_sets` row in the `Parameters` names its hedging set and subclass. A reference price
+    is mapped under its forward curve and a composed price under its primary, a unit of it priced
+    with its bases' periods.
 
     The netting set's terms, symbol by symbol:
 
@@ -5431,10 +5436,10 @@ class SACCR(NettingSetCalculation):
     margined set 1.5 sqrt(MPOR / 250) (52.48, 52.52).
 
     Not built: CDO tranches (52.41); a digital's collar (52.42(3)), an option declaring it pays one
-    refused by name; volatility hedging sets (52.47), a volatility trade sitting in its ordinary
-    set; the non-daily, cleared, illiquid and disputed MPOR floors
-    (52.50(2)-(3), 52.51(2)-(3)), which a netting set declares nothing to read off; several margin
-    agreements to a set or sets to an agreement (52.74-52.76).
+    and a leg paying digital optionlets refused by name; volatility hedging sets (52.47), a
+    volatility trade sitting in its ordinary set; the non-daily, cleared, illiquid and disputed
+    MPOR floors (52.50(2)-(3), 52.51(2)-(3)), which a netting set declares nothing to read off;
+    several margin agreements to a set or sets to an agreement (52.74-52.76).
     """
     documentation = ('Calculations', [
         'The exposure at default of each netting set under the standardised approach to counterparty',
@@ -5459,8 +5464,16 @@ class SACCR(NettingSetCalculation):
         'currency it receives, $M$ its last pay day or, where its compile resets a leg\'s notional on',
         'the pair, as a mark-to-market swap\'s, its next reset (CRE52.37(5)), that leg\'s notional the',
         'other currency\'s as its compile states it; legs of three currencies refuse the run by name. A',
-        'leg paying a cap, a floor or a digital on its rate refuses',
-        'the run by name, its caplets (CRE52.43) not built. The inputs are:',
+        'cap or a floor is its caplets or floorlets (CRE52.43): a leg its compile prices as optionlets,',
+        'and a cap or floor booked by its terms, reads a row per period whose rate is still to be known,',
+        'its `Component` its deal and its period\'s end, its $d$ the period\'s notional times $SD(S,E)$,',
+        '$S$ and $E$ the period\'s start and end, its bucket by $E$, $T$ the day its rate is known, its',
+        'last fixing, $\\delta$ CRE52.40\'s for a call on a caplet and a put on a floorlet at $P$, the rate',
+        'its resets fold to off the forecast curve, averaged or compounded as its pricer folds them, and',
+        '$K$ its strike, long where its value is: a cap or floor over legs is valued as its legs, each',
+        'on its own side, its own side unread, and is read so; $M$ the trade\'s last day. A period whose',
+        'rate is fixed reads none, its value in $V$ alone. A leg paying digital optionlets refuses the',
+        'run by name. The inputs are:',
         '',
         '- **Currency** the exposures are in, and **Base Date** they are read at.',
         '- **Mapping**: per instrument type its asset class (`SACCR.Asset_Class`), per credit factor its',
@@ -5522,8 +5535,8 @@ class SACCR(NettingSetCalculation):
         'with $F$ 5% (CRE52.23); RC is $\\max(V-C,0)$ unmargined and $\\max(V-C,\\,TH+MTA-NICA,\\,0)$',
         'margined (CRE52.10, CRE52.18), a margined set\'s EAD capped at its unmargined one (CRE52.2).',
         '',
-        'Not built: CDO tranches (CRE52.41); a digital\'s collar (CRE52.42(3)), an option paying one',
-        'refusing the run by name; volatility hedging sets (CRE52.47); a trade\'s',
+        'Not built: CDO tranches (CRE52.41); a digital\'s collar (CRE52.42(3)), an option or a leg',
+        'paying one refusing the run by name; volatility hedging sets (CRE52.47); a trade\'s',
         'allocation to several classes (CRE52.28); the non-daily, cleared, illiquid and disputed MPOR',
         'floors (CRE52.50-52.51); several margin agreements to a set, or sets to one (CRE52.74-52.76). A',
         'type declaring no exposure refuses the run by name.'])
@@ -5725,13 +5738,12 @@ class SACCR(NettingSetCalculation):
 
     def schedule(self, deal):
         """The cash flow schedule `deal`'s compile bound, found by the walk the diary reads it by
-        (`walk_schedules`); one its compile prices as caplets or floorlets is refused by name."""
-        compiled = self.held[deal]
-        if compiled.get('Model') in (pricing.pricer_cap, pricing.pricer_floor):
-            raise ValueError('SACCR: trade {} is a {} paying a cap, a floor or a digital on its rate, '
-                             'whose caplets of CRE52.43 are not built'.format(
-                                 deal.field.get('Reference'), deal.field['Object']))
-        return next(found for _, found in walk_schedules(compiled) if isinstance(found, TensorCashFlows))
+        (`walk_schedules`)."""
+        return next(found for _, found in walk_schedules(self.held[deal]) if isinstance(found, TensorCashFlows))
+
+    def optionlets(self, deal):
+        """Whether `deal`'s compile prices it as caplets or floorlets (52.43)."""
+        return (self.held[deal] or {}).get('Model') in (pricing.pricer_cap, pricing.pricer_floor)
 
     def mean(self, asset, deal, terms):
         """P of an option on an average (52.42(1)), its current value: each sample fixed at its level
@@ -5759,19 +5771,21 @@ class SACCR(NettingSetCalculation):
 
     def read(self, node, mpor):
         """The rows `node` reads: its type's declaration's, none where that states its amounts fixed
-        today; a package's, a type with children declaring none that neither settles in their
-        place nor is a netting set, its children's (`package`)."""
+        today, its optionlets' where its compile prices caplets or floorlets (`caplets`); a
+        package's, a type with children declaring none or pricing optionlets that neither settles
+        in their place nor is a netting set, its children's (`package`)."""
         deal = node['Instrument']
         kind = deal.field['Object']
-        terms = schema.EXPOSURES.get(kind)
-        if terms is None and node.get('Children') and not deal.settles_children and (
+        terms, optionlets = schema.EXPOSURES.get(kind), self.optionlets(deal)
+        if (terms is None or optionlets) and node.get('Children') and not deal.settles_children and (
                 kind != 'NettingCollateralSet'):
             return self.package(node, mpor)
         if terms is None:
             raise ValueError('SACCR: trade {} is a {}, which declares no exposure CRE52 reads'.format(
                 deal.field.get('Reference'), kind))
         if isinstance(terms, schema.Exposure):
-            return [] if terms.amount is None else [self.row(deal, terms, mpor)]
+            return [] if terms.amount is None else self.caplets(deal, terms, mpor) if optionlets else [
+                self.row(deal, terms, mpor)]
         # a type of several components: a row each, named by its last day, one settled before today none
         return [dict(self.row(deal, part, mpor), Component=part.end) for part in terms
                 if deal.field[part.end] >= self.valuation['Base_Date']]
@@ -5806,13 +5820,14 @@ class SACCR(NettingSetCalculation):
                 **{key: flip * row[key] for key in ('Delta', 'EffectiveNotional', 'Unmargined')})]
         return [row for found in rows for row in found]
 
-    @staticmethod
-    def legs(children):
-        """`[(position, deal, terms)]` of the legs among `children`: each declaring the currency it
-        pays and its size a table's its compile binds, or none, its amounts fixed today."""
+    def legs(self, children):
+        """`[(position, deal, terms)]` of the linear legs among `children`: each declaring the
+        currency it pays and its size a table's its compile binds, or none, its amounts fixed today,
+        and priced as no optionlets."""
         return [(position, child['Instrument'], terms) for position, child in enumerate(children) if isinstance(
             terms := schema.EXPOSURES.get(child['Instrument'].field['Object']), schema.Exposure) and terms.currency
-            and (terms.amount is None or isinstance(child['Instrument'].field[terms.amount], dict))]
+            and (terms.amount is None or isinstance(child['Instrument'].field[terms.amount], dict))
+            and not self.optionlets(child['Instrument'])]
 
     def crossed(self, legs, mpor):
         """The one FX row of `legs` paying two currencies, a cross-currency swap (52.35; footnote 11
@@ -5848,13 +5863,73 @@ class SACCR(NettingSetCalculation):
                 'AdjustedNotional': notional, 'Delta': delta, 'MaturityFactor': factor,
                 'EffectiveNotional': notional * delta * factor, 'Unmargined': notional * delta * unmargined}
 
+    def asset(self, deal):
+        """The asset class the mapping's `SACCR.Asset_Class` states for `deal`'s type, refused by
+        name where it states none."""
+        found = self.mapping['SACCR']['Asset_Class'].get(deal.field['Object'])
+        if found is None:
+            raise ValueError('SACCR: trade {} is a {}, and the mapping classes it under no '
+                             'SACCR.Asset_Class'.format(deal.field.get('Reference'), deal.field['Object']))
+        return found
+
+    def bucket(self, end):
+        """The maturity bucket of an IR row ending `end` years out (52.57(3))."""
+        return str(1 + (end >= self.buckets[0]) + (end > self.buckets[1]))
+
+    @staticmethod
+    def black(side, moneyness, spread, call):
+        """52.40's delta, long where `side` is one, at log moneyness `moneyness` over the vol to
+        expiry `spread`, sigma sqrt(T); at T nothing the formula's limit, one in the money, none out."""
+        d1 = (moneyness + 0.5 * spread * spread) / spread if spread else math.copysign(
+            math.inf, moneyness) if moneyness else 0.0
+        return side * (scipy.stats.norm.cdf(d1) if call else -scipy.stats.norm.cdf(-d1))
+
+    def caplets(self, deal, terms, mpor):
+        """A row per optionlet of `deal`'s schedule whose rate is still to be known (52.43), its
+        `Component` the deal and its period's end: a call on that rate for a caplet and a put for a
+        floorlet, P its resets off the forecast curve as the pricer folds them, averaged under
+        `None` and else compounded, a fixed one at its value, K its strike, long where its notional
+        is received (52.40); S and E its period's start and end, T the day its rate is known, its
+        last reset's; d its notional crossed times SD (52.34) in its currency's bucket by E (52.57),
+        M the trade's last day. One whose rate is fixed reads none, its value V's alone (52.10)."""
+        compiled, cash, reference = self.held[deal], self.schedule(deal), deal.field.get('Reference')
+        if compiled.get('Digital_Payoff_Rate') is not None:
+            raise ValueError('SACCR: trade {} is a {} paying a digital on its rate, whose collar of CRE52.42(3) is '
+                             'not built'.format(reference, deal.field['Object']))
+        base, resets = self.valuation['Base_Date'], cash.Resets.schedule
+        curves = [self.compiled.all_factors[code[utils.FACTOR_INDEX_Offset]] for code in compiled['Forward']]
+        # each reset's log growth over its window, the curve's components summed as the pricer sums them
+        growth = sum(sign * curve.current_value(t := curve.get_day_count_accrual(base, resets[:, column])) * t
+                     for curve in curves for column, sign in (
+                         (utils.RESET_INDEX_End_Day, 1.0), (utils.RESET_INDEX_Start_Day, -1.0)))
+        accruals, known = resets[:, utils.RESET_INDEX_Accrual], resets[:, utils.RESET_INDEX_Scenario] < 0
+        rates = np.where(known, resets[:, RESET_INDEX_Value], np.expm1(growth) / accruals)
+        currency, asset = deal.field[terms.currency], self.asset(deal)
+        hedging = utils.check_rate_name(currency)[0]
+        vol, shift = self.supervisory[asset, '']['option_volatility'], self.shifts.get(hedging, 0.0)
+        counts, last = cash.offsets[:, 0].astype(np.int64), self.years(max(self.trade_of[deal].get_reval_dates()))
+        rows = []
+        for flow, end, count in zip(cash.schedule, counts.cumsum(), counts):
+            fixing, nominal = slice(end - count, end), flow[CASHFLOW_INDEX_Nominal]
+            if not count or known[end - 1]:
+                continue
+            rate = (resets[fixing, utils.RESET_INDEX_Weight] * rates[fixing]).sum() if compiled[
+                'CompoundingMethod'] == 'None' else np.expm1(np.log1p(rates[fixing] * accruals[fixing]).sum()) / (
+                    accruals[fixing].sum())
+            start, stop = (self.years(flow[column]) for column in (
+                utils.CASHFLOW_INDEX_Start_Day, utils.CASHFLOW_INDEX_End_Day))
+            delta = self.black(math.copysign(1.0, nominal), math.log((100.0 * rate + shift) / (
+                100.0 * flow[utils.CASHFLOW_INDEX_Strike] + shift)), vol * math.sqrt(self.years(
+                    resets[end - 1, RESET_INDEX_Reset_Day])), compiled['Model'] is pricing.pricer_cap)
+            rows.append(dict(self.entry(asset, hedging, '', self.bucket(stop), abs(nominal) * self.fx(
+                currency) * self.duration(start, stop), delta, last, mpor), Component='{} {:%Y-%m-%d}'.format(
+                    reference, base + pd.Timedelta(days=int(flow[utils.CASHFLOW_INDEX_End_Day])))))
+        return rows
+
     def row(self, deal, terms, mpor):
         """A row off `deal`'s declaration `terms` (`entry`)."""
         fields, kind, reference = deal.field, deal.field['Object'], deal.field.get('Reference')
-        asset = self.mapping['SACCR']['Asset_Class'].get(kind)
-        if asset is None:
-            raise ValueError('SACCR: trade {} is a {}, and the mapping classes it under no '
-                             'SACCR.Asset_Class'.format(reference, kind))
+        asset = self.asset(deal)
         if terms.digital and fields[terms.digital[0]] == terms.digital[1]:
             raise ValueError('SACCR: trade {} is a {} paying a digital, whose collar of CRE52.42(3) is not '
                              'built'.format(reference, kind))
@@ -5878,8 +5953,7 @@ class SACCR(NettingSetCalculation):
         name = terms.underlying and utils.check_tuple_name(self.unit(deal, terms.underlying))
         bucket = ''
         if asset == 'IR':
-            hedging, subclass = utils.check_rate_name(fields[terms.currency])[0], ''
-            bucket = str(1 + (end >= self.buckets[0]) + (end > self.buckets[1]))
+            hedging, subclass, bucket = utils.check_rate_name(fields[terms.currency])[0], '', self.bucket(end)
         elif asset == 'FX':
             own = utils.check_rate_name(fields[terms.currency])[0]
             pair = sorted((own, utils.check_rate_name(fields[terms.underlying])[0]))
@@ -5923,10 +5997,7 @@ class SACCR(NettingSetCalculation):
                     fields[terms.underlying])[0]:
                 # priced in what its vol surface quotes first: on the pair as quoted (52.59 FAQ1)
                 moneyness, call, side = -moneyness, not call, -side
-            # T nothing at or past the exercise date: the formula's limit, one in the money, none out
-            d1 = (moneyness + 0.5 * spread * spread) / spread if spread else math.copysign(
-                math.inf, moneyness) if moneyness else 0.0
-            delta = side * (scipy.stats.norm.cdf(d1) if call else -scipy.stats.norm.cdf(-d1))
+            delta = self.black(side, moneyness, spread, call)
         # M the last day, or the start a trade settles its cash at (Table 1, 52.32 FAQ2)
         return self.entry(asset, hedging, subclass, bucket, notional, delta, last if terms.runs is None or (
             fields[terms.runs[0]] == terms.runs[1]) else start, mpor)
@@ -6026,10 +6097,13 @@ class SACCR(NettingSetCalculation):
 
     def report(self, base):
         """The run's results off the book's `base`: a row per netting set and per component of a
-        trade it values, in book order, each deal read off its compile (`held`)."""
+        trade it values, in book order, each deal read off its compile (`held`) and known by the
+        trade it is part of (`trade_of`)."""
         compiled = self.compiled.netting_sets
         self.held = {deal.Instrument.resolved_from or deal.Instrument: deal.Factor_dep for deal in itertools.chain(
             compiled.deals(), (structure.obj for structure in compiled.structures()))}
+        self.trade_of = {part['Instrument']: node['Instrument'] for _, node in self.trades
+                         for _, part in schema.walk([node])}
         sets, trades = [], []
         for agreement in self.config.deals['Deals']['Children']:
             row, rows = self.netting_set(agreement, [

@@ -252,6 +252,14 @@ Grouped by where a validator meets them.
   have knocked in is the vanilla it became; one they knocked out is the rebate it pays on the
   crossing day, read as the vanilla on that day alone and after it not valued, its set's `Skipped`
   naming it.
+- **A cap booked over legs is its legs** (2026-11-19). A cap or floor holding legs is valued as
+  their sum, each leg on its own `Buy_Sell`, and its own terms are not read: a document stating
+  `Sell` on the cap and `Buy` on every leg beneath it, as a legacy export writes a sold cap, is
+  valued as bought, and its legs are what to correct. SA-CCR reads it as its value does, a cap or
+  floor being its caplets or floorlets (CRE52.43), each long where its value is. A caplet's T is
+  the day its rate is known, its last fixing, where its pricer's Black time runs to its first; a
+  period capped fixing by fixing (`Pre_Aggregation`) is read as one caplet on the period's rate. A
+  leg paying digital optionlets refuses the run by name, CRE52.42(3)'s collar not built.
 - **The replay tuple pins neither build nor device** (2026-10-11). `engine_version` is a hand-set
   string, no commit, torch, CUDA or device is recorded, and `Deterministic_Kernels` defaults to
   `No`, so bit-for-bit replay holds only on one build, stack and device, and for a GPU gradient only

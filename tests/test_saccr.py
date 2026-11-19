@@ -10,8 +10,8 @@ pound at 1.5 and a dollar at 150 yen, so a notional in any is crossed; three sur
 CRE99.41 rates the entities; three commodities whose forward curves price a unit at 80, 100 and 25
 dollars, silver with an LBMA basis of -0.5 and WTI sampled daily; an index at 4,000 and a share at
 50, each yielding 2%; the FX, equity and commodity vol surfaces flat at 10%, which no exposure
-reads; a USD-OIS curve flat at 3.9%, a basis's second index; and a USD cap surface flat at 20%, on
-which a capped leg compiles to be refused. The swaps' rates and the default swaps' coupons are
+reads; a USD-OIS curve flat at 3.9%, a basis's second index; and a USD cap surface flat at 20%,
+which the caps and floors price on and no exposure reads. The swaps' rates and the default swaps' coupons are
 solved for the market values the examples state and the receiver's vol for its 50 thousand. A
 commodity forward is worth its funded price, ten million and more, which no term moves, so silver
 is lent at the rate that makes the three forwards worth the 20 thousand CRE99.59 states together:
@@ -525,6 +525,52 @@ def resetting(reference, side):
         node(euro), node(cashflows(FIXED, 'USD', 'Buy' if side == 'Pay' else 'Sell', dates, 1.25e6))]}
 
 
+def optioned(kind, reference, side, dates, digital=None):
+    """A floating leg on a million over `dates`, received where `side` is Buy, paying a `kind`, Cap
+    or Floor, at 4.5% on its rate, each optionlet a digital paying `digital` where one is stated."""
+    leg = cashflows(FLOATING, reference, side, dates, 1e6, Forecast_Rate_Cap_Volatility='USD')
+    leg['Cashflows']['Properties'] = [{'Digital_Payoff_Rate': digital, 'Cap_Strike': utils.Percent(4.5),
+                                       'Floor_Strike': utils.Percent(4.5), 'Cap_Multiplier': float(kind == 'Cap'),
+                                       'Floor_Multiplier': float(kind == 'Floor')}]
+    return leg
+
+
+def overnight(leg):
+    """`leg` compounding a fixing a day over each of its periods, each period paid at its end."""
+    day = pd.DateOffset(days=1)
+    leg['Cashflows'] = dict(leg['Cashflows'], Compounding_Method='OIS', Items=[dict(
+        item, Accrual_Start_Date=start, Accrual_End_Date=start + day, Accrual_Year_Fraction=1 / 365,
+        Resets=[[start, start, start + day, 1 / 365] + item['Resets'][0][4:]])
+        for item in leg['Cashflows']['Items']
+        for start in pd.date_range(item['Accrual_Start_Date'], item['Accrual_End_Date'] - day)])
+    return leg
+
+
+def by_terms(kind, reference, side='Buy'):
+    """A `kind`, CapDeal or FloorDeal, at 4.5% on a million from a year out to two, a period of a
+    year, stated by its terms."""
+    year = pd.DateOffset(months=12)
+    return {'Object': kind, 'Reference': reference, 'Currency': 'USD', 'Discount_Rate': 'USD',
+            'Forecast_Rate': 'USD', 'Forecast_Rate_Volatility': 'USD', 'Buy_Sell': side, 'Principal': 1e6,
+            'Effective_Date': years(1), 'Maturity_Date': years(2), 'Payment_Interval': year,
+            'Reset_Frequency': year, 'Index_Tenor': year, 'Cap_Rate' if kind == 'CapDeal' else 'Floor_Rate': 4.5}
+
+
+def cap(reference, side, legs):
+    """A cap stating `side` over the capped `legs`."""
+    return {'Instrument': {'.Deal': by_terms('CapDeal', reference, side)}, 'Children': [node(leg) for leg in legs]}
+
+
+#: A period of a year from a year out, and three such periods.
+ONE_YEAR, THREE_YEARS = [years(1), years(2)], every(12, 3, years(1))
+#: A cap of four half-years from three months ago, the first fixed at 5%.
+STRIP = optioned('Cap', 'LEG', 'Buy', every(6, 4, BASE - pd.DateOffset(months=3)))
+STRIP['Cashflows']['Items'][0]['Resets'][0][-1] = utils.Percent(5.0)
+#: Caps on three legs: a year from a year out, a year from two years out and three months from three.
+CAP_LEGS = [optioned('Cap', 'FIRST', 'Buy', ONE_YEAR), optioned('Cap', 'SECOND', 'Buy', THREE_YEARS[1:3]),
+            optioned('Cap', 'SHORT', 'Buy', every(3, 1, BASE + pd.DateOffset(months=3)))]
+
+
 def document(sets, calculation, vol=0.2):
     """The job of `sets`, `{reference: (agreement terms, [trade node])}`, each trade's reference
     prefixed with its set's, running `calculation` on the world, the receiver's surface at `vol`."""
@@ -644,7 +690,18 @@ def world(tmp_path_factory):
             'FX_SWAP_SEASONED': ({}, [node(fx_swap('SWAP', BASE - pd.DateOffset(months=1)))]),
             'FX_SWAP_TODAY': ({}, [node(fx_swap('SWAP', BASE))]),
             'ENERGY_SWAP': ({}, [node(energy_leg('FLOATING', 'Receiver')), node(dict(KNOWN[2], Payer_Receiver='Payer'))]),
-            'ENERGY_PAYER': ({}, [node(energy_leg('FLOATING', 'Payer'))])}
+            'ENERGY_PAYER': ({}, [node(energy_leg('FLOATING', 'Payer'))]),
+            'CAPLET': ({}, [node(optioned('Cap', 'LEG', 'Buy', ONE_YEAR))]),
+            'CAPLET_SOLD': ({}, [node(optioned('Cap', 'LEG', 'Sell', ONE_YEAR))]),
+            'CAPLET_SELL_CAP': ({}, [cap('CAP', 'Sell', [optioned('Cap', 'LEG', 'Buy', ONE_YEAR)])]),
+            'FLOORLET': ({}, [node(optioned('Floor', 'LEG', 'Buy', ONE_YEAR))]),
+            'OVERNIGHT': ({}, [node(overnight(optioned('Cap', 'LEG', 'Buy', every(3, 1, SIX_MONTHS))))]),
+            'STRIP': ({}, [node(STRIP)]),
+            'BY_TERMS': ({}, [node(by_terms('CapDeal', 'CAP')), node(by_terms('FloorDeal', 'FLOOR'))]),
+            'CAP_LEGS': ({}, [cap('CAP', 'Buy', CAP_LEGS)]),
+            'COLLAR': ({}, [node(optioned('Cap', 'CAP', 'Buy', THREE_YEARS)),
+                            node(optioned('Floor', 'FLOOR', 'Sell', THREE_YEARS))]),
+            'COLLAR_LEG': ({}, [node(cashflows(FLOATING, 'LEG', 'Buy', THREE_YEARS, 1e6))])}
     return mapping, run(document(sets, saccr(mapping), receiver_vol()))
 
 
@@ -1464,19 +1521,159 @@ def test_a_floating_energy_leg_reads_the_units_it_has_still_to_pay(world):
                                                           rel=1e-12), found.loc['ENERGY_SWAP']
 
 
-def capped(kind):
-    """A floating leg received on a million three years out paying a `kind`, Cap or Floor, at 4.5%."""
-    leg = cashflows(FLOATING, 'CAPPED', 'Buy', every(12, 3), 1e6, Forecast_Rate_Cap_Volatility='USD')
-    leg['Cashflows']['Properties'] = [{'Digital_Payoff_Rate': None, 'Cap_Strike': utils.Percent(4.5),
-                                       'Floor_Strike': utils.Percent(4.5), 'Cap_Multiplier': float(kind == 'Cap'),
-                                       'Floor_Multiplier': float(kind == 'Floor')}]
-    return leg
+def test_a_caplet_is_a_call_on_its_periods_rate_and_a_floorlet_a_put(world):
+    """CRE52.34, CRE52.40 AND CRE52.43: A CAP IS ITS CAPLETS. A floating leg on a million paying a
+    cap at 4.5% on its rate over one period from a year out to two, fixed at its start, is one
+    caplet: S = T = 1 and E = 2, its d 1,000,000 SD(1, 2) = 1,000,000 (e^(-0.05) - e^(-0.1)) / 0.05 =
+    927,840.13 in bucket 2 of USD; P the period's rate on the flat 4% curve, e^0.04 - 1 =
+    4.0810774%, K 4.5%, so d1 = (ln(4.0810774 / 4.5) + 0.5 x 0.5^2 x 1) / (0.5 x 1) = 0.054567 and
+    the bought call's delta N(d1) = 0.521758; M two years, its maturity factor one; the add-on 0.5%
+    of 484,108.37, 2,420.54. The leg sold is the caplet sold, -0.521758, at the same add-on. A
+    floorlet on the same terms is the put, -N(-d1) = -0.478242, its add-on 0.5% of 443,731.76,
+    2,218.66. A cap stating Sell over the bought leg is valued as that leg, its pricer summing its
+    legs each on its own side (`Deal.sum_children`), and is read so: the bought caplet, V the leg's.
+
+    Killing mutations: T read as the period's end - the caplet's delta 0.585257; the sold leg signed
+    as bought - its delta +0.521758.
+    """
+    _, output = world
+    found, adjusted = netting_sets(output), 1e6 * supervisory_duration(1.0, 2.0)
+    caplet, floorlet = (black_delta(math.expm1(0.04), 0.045, 0.5, 1.0, call) for call in (True, False))
+    for name, delta in (('CAPLET', caplet), ('CAPLET_SOLD', -caplet), ('CAPLET_SELL_CAP', caplet),
+                        ('FLOORLET', floorlet)):
+        rows = trades(output, name)
+        assert list(zip(rows['Component'], rows['HedgingSet'], rows['Bucket'], rows['MaturityFactor'])) == [
+            (name + '_LEG 2027-01-15', 'USD', '2', 1.0)], rows
+        assert rows['AdjustedNotional'].tolist() == pytest.approx([adjusted], rel=1e-14), rows
+        assert rows['Delta'].tolist() == pytest.approx([delta], rel=1e-12), rows
+        assert found.loc[name, 'AddOn_IR'] == pytest.approx(0.005 * adjusted * abs(delta), rel=1e-12), found
+    assert found.loc['CAPLET_SELL_CAP', 'V'] == found.loc['CAPLET', 'V'] > 0.0, found
+
+
+def test_a_caplet_compounded_overnight_is_known_on_its_last_fixing(world):
+    """CRE52.31, CRE52.40 AND CRE52.43. A cap at 4.5% on a million on a rate compounded overnight from
+    six months out to nine, a fixing a day, which its pricer compounds into the period's rate, is
+    one caplet: P that rate on the flat 4% curve, (e^(0.04 x 92/365) - 1) / (92/365) = 4.0202323%;
+    T the day it is known, its last fixing's, 14 October 2025, 269/360 years of 30/360, so d1 =
+    (ln(4.0202323 / 4.5) + 0.5 x 0.5^2 x 269/360) / (0.5 (269/360)^0.5) = -0.044735 and its delta
+    0.482159; S 0.5 and E 0.75, its d 1,000,000 SD(0.5, 0.75) = 242,309.89 in bucket 1; M its last
+    pay day, 0.75, its maturity factor 0.75^0.5; the add-on 0.5% of 101,179.44, 505.8972.
+
+    Killing mutations: T read as the period's end, 270/360 - the delta 0.482512; T read as its first
+    fixing, its pricer's Black time - 0.443503.
+    """
+    _, output = world
+    found, row = netting_sets(output).loc['OVERNIGHT'], trades(output, 'OVERNIGHT').loc['LEG']
+    accrual, adjusted = 92 / 365, 1e6 * supervisory_duration(0.5, 0.75)
+    delta = black_delta(math.expm1(0.04 * accrual) / accrual, 0.045, 0.5, 269 / 360, True)
+    assert (row['Component'], row['Bucket']) == ('OVERNIGHT_LEG 2025-10-15', '1'), row
+    assert row['Delta'] == pytest.approx(delta, rel=1e-12) and row['AdjustedNotional'] == pytest.approx(
+        adjusted, rel=1e-14), row
+    assert row['MaturityFactor'] == pytest.approx(math.sqrt(0.75), rel=1e-15), row
+    assert found['AddOn_IR'] == pytest.approx(0.005 * adjusted * delta * math.sqrt(0.75), rel=1e-12), found
+
+
+def test_a_cap_reads_a_caplet_per_period_still_to_fix_each_in_its_own_bucket(world):
+    """CRE52.10, CRE52.43 AND CRE52.57. A cap at 4.5% on a million over four half-years from three
+    months ago, each fixed at its start, the first at 5%: that period is known cash, no row; the
+    other three a caplet each, S = T 0.25, 0.75 and 1.25 and E 0.75, 1.25 and 1.75, P over 183, 182
+    and 183 days 4.0403791%, 4.0401570% and 4.0403791%, the deltas 0.379819, 0.487063 and 0.534577
+    on d 487,667.66, 475,627.10 and 463,883.82; M the cap's last day, 1.75, its maturity factor one.
+    Bucket 1 holds the first, D1 = 185,225.57, and bucket 2 the others, D2 = 479,641.97: the add-on
+    0.5% (D1^2 + D2^2 + 1.4 D1 D2)^0.5 = 3,117.4656. V is the cap's base valuation, the fixed period
+    in it at its payoff, 1,000,000 x 182/365 x 0.5% e^(-0.04 x 90/365) = 2,468.68, the cap's value
+    less that of the same cap without that period.
+
+    Killing mutations: the fixed period read as an option - four rows; the bucket taken from the
+    cap's end - all three in bucket 2, the add-on 3,324.3377.
+    """
+    _, output = world
+    found, rows = netting_sets(output).loc['STRIP'], trades(output, 'STRIP')
+    periods = ((183, 0.25, 0.75), (182, 0.75, 1.25), (183, 1.25, 1.75))
+    deltas = [black_delta(math.expm1(0.04 * days / 365) / (days / 365), 0.045, 0.5, start, True)
+              for days, start, _ in periods]
+    adjusted = [1e6 * supervisory_duration(start, end) for _, start, end in periods]
+    assert list(zip(rows['Component'], rows['Bucket'], rows['MaturityFactor'])) == [
+        ('STRIP_LEG 2025-10-15', '1', 1.0), ('STRIP_LEG 2026-04-15', '2', 1.0), ('STRIP_LEG 2026-10-15', '2', 1.0)]
+    assert rows['Delta'].tolist() == pytest.approx(deltas, rel=1e-12), rows
+    assert rows['AdjustedNotional'].tolist() == pytest.approx(adjusted, rel=1e-14), rows
+    first, second = adjusted[0] * deltas[0], adjusted[1] * deltas[1] + adjusted[2] * deltas[2]
+    assert found['AddOn_IR'] == pytest.approx(0.005 * math.sqrt(
+        first * first + second * second + 1.4 * first * second), rel=1e-12), found
+    worth = valued([node(STRIP), node(optioned('Cap', 'LIVE', 'Buy', every(6, 3, BASE + pd.DateOffset(months=3))))])
+    assert found['V'] == pytest.approx(worth['BOOK_LEG'], rel=1e-12), found
+    assert worth['BOOK_LEG'] - worth['BOOK_LIVE'] == pytest.approx(
+        1e6 * 182 / 365 * 0.005 * math.exp(-0.04 * 90 / 365), rel=1e-12), worth
+
+
+def test_a_bought_cap_and_a_sold_floor_at_one_strike_read_as_the_floating_leg_they_make(world):
+    """CRE52.40 AND CRE52.43: PUT-CALL PARITY. A cap bought and a floor sold at 4.5% on a million over
+    three years from a year out, a period a year, receive the rate less 4.5%, the floating leg on
+    those periods and amounts fixed today. Row by row the bought caplet's delta N(d1) and the sold
+    floorlet's N(-d1) sum to one, so each period's effective notionals sum to its d, 1,000,000
+    SD(k, k + 1), all in bucket 2, and over the periods to 1,000,000 SD(1, 4) = 2,649,973.43, the
+    floating leg's read whole off those periods, its notional over them times SD(1, 4). The add-ons
+    agree to one ulp, 2.2e-16: N(d1) + N(-d1) is one to the bit on each row, and the three d sum to
+    2,649,973.428454643 against the leg's 2,649,973.4284546426, the rounding of the telescoped SD.
+
+    Killing mutation: a floorlet read as a call - each sold one's delta -N(d1), the pair's effective
+    notional nothing.
+    """
+    _, output = world
+    found, rows, leg = netting_sets(output), trades(output, 'COLLAR'), trades(output, 'COLLAR_LEG').loc['LEG']
+    caps, floors = rows.loc['CAP'], rows.loc['FLOOR']
+    assert list(caps['Bucket']) == list(floors['Bucket']) == ['2', '2', '2'], rows
+    assert (caps['Delta'].to_numpy() + floors['Delta'].to_numpy()).tolist() == pytest.approx([1.0] * 3, rel=3e-16)
+    assert leg['EffectiveNotional'] == pytest.approx(1e6 * supervisory_duration(1.0, 4.0), rel=1e-15), leg
+    assert rows['EffectiveNotional'].sum() == pytest.approx(leg['EffectiveNotional'], rel=3e-16), rows
+    assert found.loc['COLLAR', 'AddOn_IR'] == pytest.approx(found.loc['COLLAR_LEG', 'AddOn_IR'], rel=3e-16)
+
+
+def test_a_cap_over_its_legs_enters_v_once_and_matures_on_its_last_day(world):
+    """CRE52.10, CRE52.43 AND CRE52.48. A cap booked over three capped legs - a year from a year out,
+    a year from two years out and three months from three months out - reads a caplet per leg, each
+    named by its leg and its period's end, the cap's value on its first row alone and V the cap's
+    base valuation. M is the cap's, its last day three years out, so every row's maturity factor is
+    one, the short leg's too though that leg alone ends half a year out; its d 1,000,000 SD(0.25,
+    0.5) = 245,357.77 in bucket 1.
+
+    Killing mutations: V summed over the rows, each carrying the cap's value - V three times it; M
+    read per leg - the short leg's maturity factor 0.5^0.5.
+    """
+    _, output = world
+    found, rows = netting_sets(output).loc['CAP_LEGS'], trades(output, 'CAP_LEGS')
+    assert list(zip(rows['Component'], rows['Bucket'], rows['MaturityFactor'])) == [
+        ('CAP_LEGS_FIRST 2027-01-15', '2', 1.0), ('CAP_LEGS_SECOND 2028-01-15', '2', 1.0),
+        ('CAP_LEGS_SHORT 2025-07-15', '1', 1.0)], rows
+    assert rows['AdjustedNotional'].iloc[2] == pytest.approx(1e6 * supervisory_duration(0.25, 0.5), rel=1e-14)
+    assert found['V'] == pytest.approx(valued([cap('CAP', 'Buy', CAP_LEGS)])['BOOK_CAP'], rel=1e-12), found
+    assert rows['Value'].iloc[0] == found['V'] and rows['Value'].iloc[1:].isna().all(), rows
+
+
+def test_a_cap_or_a_floor_stated_by_its_terms_reads_the_optionlet_it_compiles(world):
+    """CRE52.43. A cap and a floor at 4.5% on a million from a year out to two, a period of a year,
+    stated by their terms over no legs, compile the one optionlet the capped leg holds, and each
+    reads that leg's row, the caplet's delta 0.521758 and the floorlet's -0.478242 on d 927,840.13,
+    at the leg's value.
+
+    Killing mutation: the cap's type declaring no exposure - the run refused by name.
+    """
+    _, output = world
+    columns = ['AssetClass', 'HedgingSet', 'Bucket', 'AdjustedNotional', 'Delta', 'MaturityFactor',
+               'EffectiveNotional']
+    rows = trades(output, 'BY_TERMS')
+    for reference, twin in (('CAP', 'CAPLET'), ('FLOOR', 'FLOORLET')):
+        leg = trades(output, twin).loc['LEG']
+        assert list(rows.loc[reference, columns]) == list(leg[columns]), rows
+        assert rows.loc[reference, 'Value'] == pytest.approx(leg['Value'], rel=1e-12), rows
 
 
 @pytest.mark.parametrize('held_node, said', [
-    (package('PACKAGE', [SWAP_LEGS[0], capped('Cap')]), 'SET_CAPPED is a CFFloatingInterestListDeal paying '
-                                                        'a cap, a floor or a digital on its rate'),
-    (node(capped('Floor')), 'SET_CAPPED is a CFFloatingInterestListDeal paying a cap, a floor or a digital'),
+    (package('PACKAGE', [SWAP_LEGS[0], optioned('Cap', 'CAPPED', 'Buy', every(12, 3), utils.Percent(1.0))]),
+     'SET_CAPPED is a CFFloatingInterestListDeal paying a digital on its rate, whose collar of '
+     'CRE52.42\\(3\\) is not built'),
+    (node(optioned('Floor', 'CAPPED', 'Buy', every(12, 3), utils.Percent(1.0))),
+     'SET_CAPPED is a CFFloatingInterestListDeal paying a digital on its rate'),
     (dict(package('INNER', [SWAP_LEGS[1]]), Instrument={'.Deal': {
         'Object': 'NettingCollateralSet', 'Reference': 'INNER', 'Netted': 'True', 'Collateralized': 'False'}}),
      'SET_INNER is a NettingCollateralSet, which declares no exposure CRE52 reads'),
@@ -1489,15 +1686,15 @@ def capped(kind):
                        cashflows(FIXED, 'GBP', 'Sell', every(12, 3), 9e5, currency='GBP')]),
      'SET_THREE is a package whose legs pay in EUR, GBP, USD, no one pair CRE52.35 reads')])
 def test_a_container_or_leg_the_reader_cannot_read_is_refused_by_name(tmp_path, held_node, said):
-    """CRE52.35, CRE52.43 AND CRE52.74-52.76. A floating leg paying a cap or a floor on its rate,
-    alone or in a package, is caplets or floorlets, not built; a netting set inside a netting set
-    is several sets to one agreement, not built; a price swap settles in its children's place, a
-    trade on their value that its children's own rows do not read; and a package whose legs pay in
-    three currencies is no one pair: each refuses the run by name.
+    """CRE52.35, CRE52.42(3) AND CRE52.74-52.76. A floating leg paying digital caplets or
+    floorlets, alone or in a package, is a strip of digitals, whose collars are not built; a netting
+    set inside a netting set is several sets to one agreement, not built; a price swap settles in
+    its children's place, a trade on their value that its children's own rows do not read; and a
+    package whose legs pay in three currencies is no one pair: each refuses the run by name.
 
-    Killing mutations: the leg's optionlets unread - the capped package valued as a swap and its
-    EAD written; a container read through its children whatever it is - the price swap's bond
-    read as amounts fixed today, its add-on nothing; legs of three currencies left unrefused - the
+    Killing mutations: a digital optionlet read as the plain one its strike states - the capped
+    package valued and its EAD written; a container read through its children whatever it is - the
+    price swap's bond read as amounts fixed today, its add-on nothing; legs of three currencies left unrefused - the
     package read as its rate legs and the run valued.
     """
     with pytest.raises(ValueError, match='SACCR: trade ' + said):
