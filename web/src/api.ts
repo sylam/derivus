@@ -5,7 +5,8 @@ import type { SpreadRequest } from './desk';
 import type { MarkedDays, Pnl } from './pnl';
 import type { Agreement, Entity, Position } from './positions';
 import type {
-  Acceptance, ActivityPage, BookMarket, BookMarkets, BookResponse, BookRisk, BookStatus, BookXva,
+  Acceptance, ActivityPage, BookCollateral, BookMarket, BookMarkets, BookResponse, BookRisk,
+  BookStatus, BookXva,
   CalculationOutcome, PendingQuote,
   CalculationsAnswer, CloseVerdict, CurveOutcome, CurvesAnswer, Decided, DescribeResult, JobDoc,
   PathMaps,
@@ -164,6 +165,8 @@ export const getWorklist = () => call<Worklist>('GET', '/book/worklist');
 // itself - which the service declares only behind that same verdict
 export const postTransition = (fact: Record<string, unknown>) =>
   call<Recorded>('POST', '/book/transition', signed(fact));
+// the collateral each agreement calls on the book's own day, read on the close marked for it
+export const getBookCollateral = () => call<BookCollateral>('GET', '/book/collateral');
 export const getCloseCheck = (date: string) =>
   call<CloseVerdict>('GET', `/book/close/check?date=${date}`);
 export const postClose = (date: string) => call<Recorded>('POST', '/book/close', signed({ date }));

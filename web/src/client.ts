@@ -11,7 +11,10 @@ import { standing, type Action } from './state';
 import {
   COLLATERAL, currencyOf, formatNumber, label, sharedSections, token, uncollateralised,
 } from './tokens';
-import type { ActivityRow, Descriptor, JobDoc, Reconcile, Schema, XvaSet } from './types';
+import { markOf } from './trade';
+import type {
+  ActivityRow, CollateralCall, DealMark, Descriptor, JobDoc, Market, Reconcile, Schema, XvaSet,
+} from './types';
 
 /** The screen a client's page is, and the store's pick of which client it shows. */
 export const CLIENT = 'client';
@@ -198,4 +201,146 @@ export function since(set: XvaSet, rows: ActivityRow[]): ActivityRow[] {
   const ran = instantMs(set.as_of);
   return ran === undefined ? [] : rows.filter((row) => row.agreement === set.reference
     && (instantMs(row.record_time) ?? -Infinity) > ran);
+}
+
+// ---- every client as a credit officer reads it ------------------------------------------------
+
+/** One netting set a client trades under: where the book holds it, the paper it is under - its
+ * agreement's kind, null where none is in force - and whether its terms collateralise, its last run, its trades and those
+ * waiting on a second seat, its value to the desk now in the risk's currency, its call on the
+ * marked close, and the record's rows under it since its run - null where no record tells. */
+export type CreditLine = {
+  reference: string; path: string | null; paper: string | null; collateralised: boolean;
+  run: XvaSet | null; trades: number; pending: number; value: number | null;
+  call: CollateralCall | null; moved: number | null;
+};
+
+/** What the lines are read off: the projection's sets, the client's agreements (`agreementsOf`),
+ * the file's rows, and - each null where it is not read - the record's positions and rows, the
+ * risk's marks and the calls on the marked close. */
+export type CreditReads = {
+  sets: XvaSet[]; agreements: Agreement[]; rows: Map<string, BlotterRow>;
+  positions: Position[] | null; record: ActivityRow[] | null; marks: DealMark[] | null;
+  calls: CollateralCall[] | null;
+};
+
+/** A client's lines: a set the book holds or held naming it, under its own agreement where one is
+ * in force - its trades the file's at the units the record holds, or as the file writes them where
+ * no agreement covers them - then every agreement nothing is booked under yet, worth nothing. */
+export function creditLines(id: string, reads: CreditReads, schema: Schema): CreditLine[] {
+  const runs = reads.sets.filter((set) => set.counterparty === id);
+  const line = (reference: string, run: XvaSet | null): CreditLine => {
+    const signed = reads.agreements.find((row) => row.agreement === reference);
+    const held = signed && reads.positions
+      && reads.positions.filter((position) => position.agreement === reference);
+    const path = run?.deal_path ?? null;
+    return {
+      reference, path, run, paper: signed ? signed.kind || 'its own terms' : null,
+      collateralised: signed ? termsReading(signed.terms, schema).collateralised : !!run?.collateralized,
+      trades: heldUnder(path, reads.rows, held || null).filter((trade) => !trade.closed).length,
+      pending: (held || []).filter((position) => position.pending !== 0).length,
+      value: path === null ? (run ? null : 0)
+        : reads.marks && (markOf(reads.marks, path).own?.value ?? null),
+      call: reads.calls?.find((call) => call.agreement === reference) ?? null,
+      moved: run && reads.record && since(run, reads.record).length,
+    };
+  };
+  return [...runs.map((run) => line(run.reference, run)),
+          ...reads.agreements.filter((row) => !runs.some((run) => run.reference === row.agreement))
+            .map((row) => line(row.agreement, null))];
+}
+
+/** What a set's own terms say the bank holds, on a desk keeping no record: its opening balance -
+ * at its declared convention where it states none - in its balance currency, else its agreement's,
+ * else the market's base, with the market's spots in that currency; no call is worked without a
+ * marked close. */
+export function statedHolding(terms: Record<string, unknown>, fields: Record<string, Descriptor>,
+                              market: Market | null): CollateralCall {
+  const factors = market?.['Price Factors'] ?? {};
+  const base = label(token(market?.['System Parameters'], 'Base_Currency'));
+  const currency = label([terms.Balance_Currency, terms.Agreement_Currency].find(Boolean)) || base;
+  const spot = (of: string) => Number(token(factors[`FxRate.${of}`], 'Spot') ?? NaN);
+  const balance = Number(terms.Opening_Balance ?? fields.Opening_Balance?.value ?? 0);
+  return {
+    agreement: String(terms.Reference), entity: '', currency, exposure: null, balance,
+    fx: Object.fromEntries(Object.keys(factors).filter((name) => name.startsWith('FxRate.'))
+      .map((name) => [name.slice(7), spot(name.slice(7)) / spot(currency)])),
+    held: balance ? { [currency]: balance } : {}, margin: {}, required: null, call: null,
+    direction: null, minimum_transfer: null, unknown: [],
+  };
+}
+
+/** What the desk stands to lose on a line today, in the value's `currency`: its value to the desk
+ * less the collateral held under it at the close's spots - what the bank posted adding to it - and
+ * nothing where the client is owed; null where the value, or a collateralised set's call, is unread. */
+export function exposureAfter(line: CreditLine, currency: string | null): number | null {
+  if (line.value === null) return null;
+  if (!line.collateralised) return Math.max(0, line.value);
+  const rate = currency ? line.call?.fx[currency] : undefined;
+  return line.call?.balance === null || line.call?.balance === undefined || !rate ? null
+    : Math.max(0, line.value - line.call.balance / rate);
+}
+
+/** A sum over a client's lines where every one reads, and null where one does not: a client is
+ * never said to owe less for a set nobody read. */
+export const summed = (values: (number | null)[]): number | null =>
+  (values.includes(null) ? null : values.reduce<number>((total, value) => total + value!, 0));
+
+/** A client's adjustment over the book's own sets, in the one currency their runs reported in:
+ * null where none ran, where one has none to add, or where two currencies would be added. */
+export function runSum(lines: CreditLine[], key: 'cva' | 'fva'):
+  { value: number | null; currency: string | null } {
+  const runs = lines.flatMap((line) => (line.run && !line.run.note ? [line.run] : []));
+  const currencies = new Set(runs.map((run) => run.currency));
+  return { currency: currencies.size === 1 ? [...currencies][0] : null,
+           value: currencies.size === 1 ? summed(runs.map((run) => run[key])) : null };
+}
+
+/** What a row says to act on, worst first. */
+export const WRONG = {
+  failed: 'run failed', unpapered: 'trading with no agreement in force',
+  stale: 'run older than the book', pending: 'waiting on a second seat', unrun: 'never run',
+} as const;
+
+/** One thing to act on under a set, in business words, and who puts it right. */
+export type Wrong = { kind: keyof typeof WRONG; reference: string; text: string; who: string };
+
+const RECALC = 'a recalc through the MCP verb recalc_xva';
+
+/** Who puts a failed run right, off the factor the engine could not find: a credit curve whoever
+ * marks states, any other factor the market's owner adds. */
+export function ownerOf(error: string | null): string {
+  const factor = /Cannot find (\S+)/.exec(error ?? '')?.[1];
+  return !factor ? "the engine's sentence names no factor: read it, then " + RECALC
+    : factor.startsWith(`${SURVIVAL}.`) ? `no credit curve: whoever marks states ${factor}`
+      : `a market factor is missing: the market's owner adds ${factor}`;
+}
+
+/** What is wrong under a client's lines, worst first - a set that has left the book reads its last
+ * run and asks for nothing. */
+export function wrongWith(lines: CreditLine[]): Wrong[] {
+  const order = Object.keys(WRONG);
+  return lines.filter((line) => !line.run?.note).flatMap(({
+    reference, paper, run, trades, pending, moved }) => [
+    run?.status === 'failed' && { kind: 'failed' as const, reference,
+      text: run.error ?? 'its last run failed', who: ownerOf(run.error) },
+    trades > 0 && paper === null && { kind: 'unpapered' as const, reference,
+      who: 'legal declares the agreement on Paper',
+      text: `${plural(trades, 'trade')} under ${reference}, which no agreement in force covers` },
+    !!moved && run?.status === 'done' && { kind: 'stale' as const, reference, who: RECALC,
+      text: `${plural(moved, 'event')} booked, amended or signed under it since its run` },
+    pending > 0 && { kind: 'pending' as const, reference, who: 'another seat signs on the Back Office',
+      text: `${plural(pending, 'trade')} under it waiting on a second seat` },
+    trades > 0 && (!run || run.status === 'never run') && {
+      kind: 'unrun' as const, reference, text: 'no XVA run yet', who: RECALC },
+  ].filter((wrong): wrong is Wrong => !!wrong))
+    .sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
+}
+
+/** Clients in the order a credit officer works them: those with something to act on, then the
+ * largest exposure after collateral, an unread one last, then by name. */
+export function actionFirst<T extends { name: string; wrong: Wrong[]; after: number | null }>(
+  rows: T[]): T[] {
+  return [...rows].sort((a, b) => Number(!a.wrong.length) - Number(!b.wrong.length)
+    || (b.after ?? -1) - (a.after ?? -1) || a.name.localeCompare(b.name));
 }

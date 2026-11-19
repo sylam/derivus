@@ -15,7 +15,7 @@ import {
   ungrouped,
 } from './tokens';
 import type {
-  BookRisk, BookXva, DealMark, DealNode, GreekRow, JobDoc, Market, Schema, XvaSet,
+  BookRisk, BookXva, DealMark, DealNode, GreekRow, JobDoc, Market, Schema, TablePage, XvaSet,
 } from './types';
 import { axisNames } from './vols';
 
@@ -413,12 +413,35 @@ export function creditCounterparties(entities: Entity[] | null, doc: JobDoc | nu
 
 // ---- what a table of a run's results is in ------------------------------------------------------
 
+/** A potential future exposure column, the percentile of the mark it is at in its name. */
+const PFE = /^PFE_(\d+(?:\.\d+)?)$/;
+
 /** The columns the engine's exposure summary names, in words. */
 const EXPOSURE: [RegExp, (found: RegExpExecArray) => string][] = [
   [/^EE$/, () => 'expected exposure, the mean of the mark where it is positive'],
   [/^ENE$/, () => 'expected negative exposure, the mean of the mark where it is negative'],
-  [/^PFE_(\d+(?:\.\d+)?)$/, (found) => `the ${found[1]}th percentile of the mark`],
+  [PFE, (found) => `the ${found[1]}th percentile of the mark`],
 ];
+
+/** The largest number of a profile's column and the day it falls on. */
+export type Peak = { value: number; day: string };
+
+/** How large a run's exposure gets, off its `exposure_profile`: the peak of its expected exposure
+ * and of its first PFE column, each with its day, and the percentile that column names. */
+export function peaks(page: TablePage): { ee?: Peak; pfe?: Peak & { quantile: number } } {
+  const peak = (column: number): Peak | undefined => page.data.reduce<Peak | undefined>(
+    (best, row, at) => {
+      const value = (row as number[])[column];
+      return best && best.value >= value ? best : { value, day: label(page.index[at]) };
+    }, undefined);
+  const names = page.columns.map(String);
+  const pfe = names.findIndex((name) => PFE.test(name));
+  const ee = names.indexOf('EE');
+  return {
+    ...(ee < 0 ? {} : { ee: peak(ee) }),
+    ...(pfe < 0 ? {} : { pfe: { ...peak(pfe)!, quantile: Number(PFE.exec(names[pfe])![1]) } }),
+  };
+}
 
 /** The sets under `nodes` whose declaration reads collateral on: what their exposure is net of. */
 function collateralised(nodes: DealNode[], schema: Schema | null): string[] {

@@ -435,6 +435,22 @@ export type CloseVerdict = {
                  reason: string | null }[];
 };
 
+/** One agreement's call on a marked close, `GET /book/collateral`, every amount in its `currency`:
+ * the exposure its CSA reads, what is held per asset and what that is worth (`balance`, what the
+ * bank posted negative), the support required and the call - received positive - with whether the
+ * bank calls or posts; `fx` the close's spots in that currency, and the worked fields null over
+ * anything `unknown`. */
+export type CollateralCall = {
+  agreement: string; entity: string; currency: string; exposure: number | null;
+  fx: Record<string, number>; held: Record<string, number>; margin: Record<string, number>;
+  required: number | null; balance: number | null; call: number | null;
+  direction: 'call' | 'post' | null; minimum_transfer: number | null;
+  unknown: { instrument: string | null; what: string }[];
+};
+
+/** `GET /book/collateral` - the calls on the close marked for `date`, the record read at `lsn`. */
+export type BookCollateral = { date: string; marks: number; lsn: number; calls: CollateralCall[] };
+
 /** What a write to the record answers: the position it landed at, beside its own fields. */
 export type Recorded = { recorded: { lsn: number } };
 

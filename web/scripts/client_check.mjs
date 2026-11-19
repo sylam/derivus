@@ -201,7 +201,127 @@ check("a set moved since its XVA run by the record's rows naming it written afte
       client.since({ reference: 'ISDA-KES', as_of: '2026-11-19T22:27:28.743+02:00' }, RECORD)
         .map((entry) => entry.lsn), [31]);
 
-console.log(`\n${ran} checks over 8 functions, ${missed.length} missed`);
+// ---- every client as a credit officer reads it -------------------------------------------------
+
+const CSA_KES = { Object: SET, Reference: 'CSA-KES', Collateralized: 'True',
+                  Credit_Support_Amounts: { Counterparty: 'KES' } };
+const CREDIT_DOC = { Calc: { Deals: { Deals: { Children: [
+  node(KES_SET, [fwd('F1'), fwd('F2'), fwd('F3')]),
+  node({ Object: 'StructuredDeal', Reference: 'DESK' }, [node(CSA_KES, [fwd('C1')])]),
+  node({ Object: SET, Reference: 'KES-OLD', Credit_Support_Amounts: { Counterparty: 'KES' } }, [fwd('F9')]),
+] } } } };
+const CREDIT_ROWS = blotter.rowsByPath(blotter.toRows(CREDIT_DOC.Calc.Deals.Deals.Children, [], undefined));
+const run = (reference, deal_path, extra = {}) => ({
+  reference, deal_path, counterparty: 'KES', collateralized: false, note: null, status: 'done',
+  cva: 10, fva: 1, currency: 'USD', as_of: '2026-11-19T22:27:28.743+02:00', result_id: reference,
+  error: null, recalc: null, ...extra });
+const RUNS = [run('ISDA-KES', '0'), run('CSA-KES', '1/0', { status: 'never run', as_of: null }),
+              run('KES-OLD', '2', { status: 'failed', cva: null, fva: null,
+                                     error: 'Cannot find SurvivalProb.KES' }),
+              run('KES-GONE', null, { note: 'left the book', status: 'failed', cva: null, error: 'boom' }), run('OFF-1', '3', { counterparty: 'OFF' })];
+const KES_PAPER = [PAPER[0], { agreement: 'CSA-KES', entity: 'KES', kind: 'ISDA 2002 with CSA', terms: CSA_KES },
+                   { agreement: 'ISDA-NEW-KES', entity: 'KES', kind: 'ISDA 2002', terms: { Object: SET } }];
+const CREDIT = {
+  sets: RUNS, rows: CREDIT_ROWS, agreements: KES_PAPER,
+  positions: [position('0/0', 1), position('0/2', 2, { pending: 2, status: 'pending' }),
+              position('1/0/0', 1, { agreement: 'CSA-KES' })],
+  record: [...RECORD, row(40, '2026-11-19T21:00:00Z', 'KES-OLD')],
+  marks: [{ reference: 'ISDA-KES', deal_path: '0', value: 1000 },
+                          { reference: 'DESK', deal_path: '1', value: 1500 },
+                          { reference: 'KES-OLD', deal_path: '2', value: -200 }],
+  calls: [{ agreement: 'CSA-KES', currency: 'EUR', balance: 400, fx: { EUR: 1, USD: 0.8 } }],
+};
+const lined = (lines) => lines.map((line) => [line.reference, line.paper, line.collateralised,
+  line.trades, line.pending, line.value, line.call?.agreement ?? null, line.moved]);
+const PLAIN = { ...CREDIT, agreements: client.agreementsOf('KES', null, CREDIT_DOC), positions: null,
+                record: null, calls: null };
+check("a client's lines are every set naming it, under its own agreement where one is in force, then "
+      + 'each agreement nothing is booked under, worth nothing; on a desk keeping no record each set '
+      + 'its own agreement, its trades as the file writes them',
+      'a trade the record holds nothing of counted, or a ticket that is not pending; a set the risk '
+      + "marks only inside its top-level node given that node's value; a set no agreement covers "
+      + 'read through the record, which counts its trades as none; an agreement nothing is booked '
+      + "under read as unvalued, which blanks the client's total; or another client's set taken",
+      [lined(client.creditLines('KES', CREDIT, SCHEMA)), lined(client.creditLines('KES', PLAIN, SCHEMA))],
+      [[['ISDA-KES', 'ISDA 2002', false, 2, 1, 1000, null, 1],
+        ['CSA-KES', 'ISDA 2002 with CSA', true, 1, 0, null, 'CSA-KES', 0],
+        ['KES-OLD', null, false, 1, 0, -200, null, 1],
+        ['KES-GONE', null, false, 0, 0, null, null, 0],
+        ['ISDA-NEW-KES', 'ISDA 2002', false, 0, 0, 0, null, null]],
+       [['ISDA-KES', 'its own terms', false, 3, 0, 1000, null, null],
+        ['CSA-KES', 'its own terms', true, 1, 0, null, null, null],
+        ['KES-OLD', 'its own terms', false, 1, 0, -200, null, null],
+        ['KES-GONE', null, false, 0, 0, null, null, null]]]);
+
+const after = (value, collateralised, balance) => client.exposureAfter({
+  value, collateralised, call: balance === undefined ? null
+    : { balance, fx: { EUR: 1, USD: 0.8 } } }, 'USD');
+check('the exposure after collateral is the value to the desk less the collateral held, crossed at '
+      + "the close's spots, what the bank posted adding to it, nothing where the client is owed, and "
+      + "unread where a collateralised set's call is",
+      'the balance taken in its own currency, or crossed the wrong way; the floor dropped, which '
+      + 'reads a client owed money as a negative exposure; posted collateral subtracted; or a '
+      + 'collateralised set with no close marked read as if it held nothing',
+      [after(1000, false), after(-200, false), after(1500, true, 400), after(1500, true, -400),
+       after(300, true, 400), after(1500, true), after(1500, true, null), after(null, false)],
+      [1000, 0, 1000, 2000, 0, null, null, null]);
+
+const SPOTS = { 'System Parameters': { Base_Currency: 'USD' }, 'Price Factors': {
+  'FxRate.USD': { Spot: 1 }, 'FxRate.EUR': { Spot: 1.25 }, 'FxRate.ZAR': { Spot: 0.05 } } };
+const stated = (terms) => {
+  const held = client.statedHolding({ Reference: 'S', ...terms }, { Opening_Balance: { value: 0 } }, SPOTS);
+  return [held.currency, held.balance, held.fx.USD, held.call,
+          client.exposureAfter({ value: 1000, collateralised: true, call: held }, 'USD')];
+};
+check("on a desk keeping no record a set holds what its terms state - its opening balance, at its "
+      + 'convention where unstated - in its balance currency, else its agreement\'s, else the base, '
+      + "crossed at the market's spots; no call is worked",
+      "the agreement currency read for the balance's; the spots inverted; or an unstated balance "
+      + 'read as unread rather than at its convention',
+      [stated({ Agreement_Currency: 'EUR', Opening_Balance: 400 }),
+       stated({ Balance_Currency: 'ZAR', Agreement_Currency: 'EUR', Opening_Balance: 10000 }), stated({})],
+      [['EUR', 400, 0.8, null, 500], ['ZAR', 10000, 20, null, 500], ['USD', 0, 1, null, 1000]]);
+
+const KES_LINES = client.creditLines('KES', CREDIT, SCHEMA);
+check("a client's sums are over every one of its book's sets or none - an unread set blanks it, and "
+      + 'adjustments in two currencies, or a set that left the book, are never added',
+      "an unread set's value skipped, which says a client owes less than it does; two currencies "
+      + "added; or a set that left the book counted in its client's CVA",
+      [client.summed([1, null, 2]), client.summed([1, 2]),
+       client.runSum([KES_LINES[0], KES_LINES[3]], 'cva'), client.runSum(KES_LINES, 'cva'),
+       client.runSum([KES_LINES[0], { run: { ...RUNS[0], currency: 'EUR' } }], 'fva')],
+      [null, 3, { currency: 'USD', value: 10 }, { currency: 'USD', value: null },
+       { currency: null, value: null }]);
+
+check('a failed run names who puts it right off the factor the engine could not find: a credit curve '
+      + "whoever marks, any other factor the market's owner",
+      "every failure sent to the market's owner, which leaves a missing credit curve with nobody "
+      + 'who marks one; or a sentence naming no factor given an owner it does not name',
+      ['Cannot find SurvivalProb.KES', 'Cannot find InterestRate.ZAR-OIS', 'skipped a deal']
+        .map((error) => client.ownerOf(error).split(':')[0]),
+      ['no credit curve', 'a market factor is missing', "the engine's sentence names no factor"]);
+
+check("what is wrong under a client's sets, worst first: a failed run, trades no agreement covers, a "
+      + 'run older than the book, trades waiting on a second seat, trades never run - nothing of a '
+      + 'set that left the book or of a desk keeping no record that it cannot tell',
+      "the flags in the sets' order rather than the kinds'; a set that left the book flagged; a run "
+      + 'older than the book said of a failed run; a never-run set with nothing on flagged; or a set on '
+      + 'a desk keeping no record called unpapered',
+      [client.wrongWith(KES_LINES).map((wrong) => [wrong.kind, wrong.reference]),
+       client.wrongWith(client.creditLines('KES', PLAIN, SCHEMA)).map((wrong) => [wrong.kind, wrong.reference])],
+      [[['failed', 'KES-OLD'], ['unpapered', 'KES-OLD'], ['stale', 'ISDA-KES'], ['pending', 'ISDA-KES'],
+        ['unrun', 'CSA-KES']],
+       [['failed', 'KES-OLD'], ['unrun', 'CSA-KES']]]);
+
+check('clients with something to act on come first, then the largest exposure after collateral, an '
+      + 'unread one last, then by name',
+      'the clients to act on sorted last; or an unread exposure read as the largest',
+      client.actionFirst([{ name: 'B', wrong: [], after: 10 }, { name: 'A', wrong: [], after: null },
+                          { name: 'C', wrong: [{}], after: 0 }, { name: 'D', wrong: [], after: 50 },
+                          { name: 'E', wrong: [], after: 10 }]).map((row) => row.name),
+      ['C', 'D', 'B', 'E', 'A']);
+
+console.log(`\n${ran} checks over 16 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

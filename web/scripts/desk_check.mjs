@@ -426,7 +426,20 @@ check('amounts in two currencies are never added: one sum per currency the rows 
       desk.xvaTotals(VIEW).sums.map((sum) => [sum.currency, sum.cva, sum.counted, sum.countedFva]),
       [['USD', 6114.49, 1, 1], ['ZAR', 1295.26, 1, 1], [null, 10, 1, 0]]);
 
-console.log(`\n${ran} checks over 33 functions, ${missed.length} missed`);
+// --- XVA: how large a run's exposure gets
+const day = (date) => ({ '.Timestamp': date });
+const PROFILE = { name: 'exposure_profile', rows: 3, offset: 0, columns: ['ENE', 'PFE_97.5', 'EE'],
+                  index: [day('2026-11-16'), day('2026-12-16'), day('2027-02-16')],
+                  data: [[0, 2, 1], [-1, 4, 5], [-90, 9, 3]] };
+check("a profile's peaks are each column's largest number on the day it falls, the PFE at the "
+      + 'percentile its own column names',
+      "the last day read as the peak's; the PFE taken at 95 whatever the run asked; or the first "
+      + 'column - here the negative exposure - read as the expected exposure',
+      [desk.peaks(PROFILE), desk.peaks({ ...PROFILE, columns: ['ENE', 'X', 'EE'] })],
+      [{ ee: { value: 5, day: '2026-12-16' }, pfe: { value: 9, day: '2027-02-16', quantile: 97.5 } },
+       { ee: { value: 5, day: '2026-12-16' } }]);
+
+console.log(`\n${ran} checks over 34 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);
