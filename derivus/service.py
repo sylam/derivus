@@ -6756,16 +6756,17 @@ def mirrored_plan(document, deal, parent_reference=None, models=None, reading=Co
     return load(booked, reading()).plan_hash()
 
 
-def check_pins(pending, document, quote_id):
+def check_pins(pending, document, quote_id, held):
     """What the RECORD asks before a quote is booked: the verdict, or None where there is nothing
     to ask.
 
     Two answers refuse and one reports. The PLAN is an equality - the marginal charge was solved
     against a portfolio that has since moved, so the residual this trade would leave is not the one
-    that was priced. The PILLAR is a window the desk declared, read against the age of the board the
-    quote was STRUCK on. The MARKET is a reading: the board moves between a quote and the client's
-    word, and what the booking owes a reader is which market it was struck on and which one it lands
-    in - never a refusal, `Quote Policy.firm_seconds` being the desk's own promise that bounds it.
+    that was priced - unless the desk `held` the quote inside its `Quote Policy.firm_seconds`, where
+    a moved book is read as a moved market. The PILLAR is a window the desk declared, read against
+    the age of the board the quote was STRUCK on. The MARKET is a reading: the board moves between a
+    quote and the client's word, and what the booking owes a reader is which market it was struck
+    on and which one it lands in - never a refusal, the firm window bounding it.
     """
     pinned = pending.get('pinned')
     if not spine.configured() or not pinned:
@@ -6773,7 +6774,7 @@ def check_pins(pending, document, quote_id):
     context = load(document)
     return spine.check_firmness(
         pinned, {'plan_hash': context.plan_hash(), 'values_hash': context.values_hash()},
-        pinned.get('pillar_age'), quote_id=quote_id)
+        pinned.get('pillar_age'), quote_id=quote_id, held=held)
 
 
 def solved_coordinates(legs):
@@ -7147,12 +7148,16 @@ def book_quote(request: dict):
     `{written: false, booked}` naming where the trade landed rather than booking it again.
 
     UNDER A SPINE HOME, THREE MORE CHECKS AND ONE READING, in order and all of them before anything
-    appends: the PLAN the charge was solved against, refused where the book has moved under it; the
-    PILLAR age of the board the quote was struck on, refused where a declared `pillar_seconds` says
-    it was already too old; the PLAN THE ACCEPTANCE LEAVES THE BOOK AT, reached by booking the
-    mirror and refused where it is not the one the quote pinned; and the MARKET, which is
-    REPORTED as `{pinned, current, moved}` and never refused - the board moves between a quote and
-    the client's word, and the desk's own window is the promise that bounds it. ALL FOUR ARE READ
+    appends: the PLAN the charge was solved against, refused where the book has moved under it and
+    the book declares no firm window; the PILLAR age of the board the quote was struck on, refused
+    where a declared `pillar_seconds` says it was already too old; the PLAN THE ACCEPTANCE LEAVES
+    THE BOOK AT, reached by booking the mirror and refused, where the book has not moved, if it is
+    not the one the quote pinned; and the MARKET, which is REPORTED as `{pinned, current, moved}`
+    and never refused - the board moves between a quote and the client's word, and the desk's own
+    window is the promise that bounds it. A BOOK MOVE IS A MARKET MOVE inside that window: the quote
+    books as priced and `firmness.plan` says the plan it was priced on and the one it lands in, as
+    `quote_filed`'s `plan_hash` and ticket do. The price of this promise grows with the book and
+    with how fast the market moves, and the firm window is where the desk bounds it. ALL FOUR ARE READ
     INSIDE THE EDIT CLOSURE, against the document the trade lands in: the closure reads under the
     book lock and the read above it does not, so a check taken up there would be a statement about a
     book nobody booked into.
@@ -7226,7 +7231,8 @@ def book_quote(request: dict):
         # above: this runs under the book lock and that read did not
         baseline = live_book().baseline(book, etag)
         materialised(book, parent)
-        verdict = check_pins(pending, book, quote_id)
+        # a declared window not refused above holds the quote firm
+        verdict = check_pins(pending, book, quote_id, policy is not None)
         # no _validated: pin_models edits the book after the verdict, so the verdict is not its
         written, outcome = deal_edit(book, structures.mirror(pending['deal']), parent, baseline)
         if not written:
@@ -7243,7 +7249,8 @@ def book_quote(request: dict):
             return True, dict(outcome, **filled)
         context = load(book)
         plan = context.plan_hash()
-        if plan != pending['pinned'].get('plan'):
+        # a book moved inside the window lands the quote on another plan by construction
+        if not verdict['plan']['moved'] and plan != pending['pinned'].get('plan'):
             raise HTTPException(
                 422, 'quote {} pinned the plan {} and booking it here leaves the book at {} - the '
                      'file no longer says what was quoted, so nothing is booked from it: '

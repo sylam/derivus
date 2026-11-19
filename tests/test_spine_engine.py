@@ -2129,6 +2129,61 @@ def test_a_booking_between_the_quote_and_the_acceptance_refuses_with_nothing_app
     assert head(recorded) == before, 'a refused acceptance appended'
 
 
+def test_a_booking_elsewhere_inside_the_firm_window_is_read_as_a_market_move(recorded, quoting):
+    """A BOOK MOVE IS A MARKET MOVE INSIDE THE DESK'S FIRM WINDOW. Between one seat's quote and its
+    acceptance a second seat books a cashflow on another client's netting set. With a `Quote
+    Policy` declared the quote books as priced: `firmness.plan` reads the plan it was priced on, the
+    one it lands in and that they differ, `quote_filed` keeps the first and the fill's ticket is
+    over the plan the book lands at. Past the window the desk's own refusal stands, and with no
+    window declared the moved book refuses as before - neither appending.
+
+    Killing mutations: `held` unread in `firmness.assess`, which refuses inside the window; `held`
+    true with no window declared, which books there; the pinned-plan equality read on a moved book,
+    which refuses inside the window as an edited file.
+    """
+    document = json.loads(quoting.read_text())
+    document['Calc']['Deals']['Deals']['Children'].append(
+        json.loads(dump(netting_set('CLIENT_B', 'CPTY_B'))))
+    quoting.write_text(json.dumps(document, indent=2), newline='\n')
+
+    def raced(window, seat_two):
+        """Seat one quotes under `window`, seat two books on CLIENT_B, and seat one accepts:
+        `(the plan priced on, the plan standing at the acceptance, the head then, the answer)`."""
+        document = json.loads(quoting.read_text())
+        document['Calc'].pop(structures.Structure.POLICY.name, None)
+        document['Calc'].update({structures.Structure.POLICY.name: window} if window else {})
+        quoting.write_text(json.dumps(document, indent=2), newline='\n')
+        service.BOOK = service.Book(str(quoting))
+        quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET, actor=ACTOR)
+        other = CLIENT.post('/book/deals', content=dump({
+            'action': 'add', 'deal': dict(CASHFLOW, Reference=seat_two, Amount=5_000.0),
+            'parent_reference': 'CLIENT_B', 'quantity': 1.0, 'execution_reference': seat_two,
+            'actor': DESK_TWO}), headers=JSON).json()
+        assert other['written'] is True, other
+        return (pending_of(quoting.parent, quote)['pinned'],
+                service.load(service.BOOK.read()[0]).plan_hash(), head(recorded),
+                accept(quote, actor=ACTOR))
+
+    priced, standing, _, answer = raced({'firm_seconds': 600}, 'SEAT-TWO-IN')
+    booked = answer.json()
+    assert booked.get('written') is True, booked
+    assert booked['firmness']['plan'] == {'pinned': priced['plan_hash'], 'current': standing,
+                                          'moved': True}
+    (_, _, filed), = facts(recorded, 'quote_filed')
+    _, _, fill = facts(recorded, 'fill')[-1]
+    signed = {field: value for field, value in fill.items() if field != 'ticket'}
+    assert filed['plan_hash'] == priced['plan_hash'], 'the record lost the plan it was priced on'
+    lands = service.load(json.loads(quoting.read_text())).plan_hash()
+    assert fill['ticket'] == filed['ticket'] == spine.ticket(lands, signed) != spine.ticket(
+        priced['plan'], signed), 'the ticket is not over the plan the quote lands in'
+
+    for window, said in (({'firm_seconds': 0}, 'holds a quote firm for 0s'),
+                         (None, 'the book moved under it')):
+        _, _, before, answer = raced(window, 'SEAT-TWO-' + said.split()[-1].upper())
+        assert answer.status_code == 422 and said in answer.json()['detail'], answer.json()
+        assert head(recorded) == before, 'a refused acceptance appended'
+
+
 def test_a_declared_pillar_window_refuses_a_quote_struck_on_an_old_board(recorded, quoting):
     """A board already stale when the price was given is a price a client may not hold the desk to,
     and the desk declares how stale is too stale. Aged by DECLARATION - a firmness policy with a

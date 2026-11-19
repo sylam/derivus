@@ -215,8 +215,8 @@ takes. It prices on the live spot where this terminal answers, else the book's, 
 `book_quote` is the acceptance, on the client's word: it books the mirror (the quote is client
 paper, the book the bank's side) under the quote's netting set through `book_deal`'s seam and keeps
 the pending file as the audit trail. Past a declared `Quote Policy.firm_seconds` it refuses. Under a
-record a moved market is reported, never refused, and a tier wanting a second seat books the trade
-pending until `approve_quote`. **Held by**
+record a moved market is reported, never refused, as a moved book is inside that window, and a
+tier wanting a second seat books the trade pending until `approve_quote`. **Held by**
 `test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar`,
 `test_a_recorded_desk_books_and_accepts_through_the_binding`,
 `test_structures.py::test_a_quote_is_an_act_not_a_lookup`,

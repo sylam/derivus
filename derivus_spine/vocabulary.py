@@ -255,10 +255,10 @@ PROVENANCE_TYPES = {
         ('tolerance_policy', HASH)), optional=(('files', DIGESTS),)),
     # The quoting act, filed when the client ACCEPTS the price. It pins two hashes: the values
     # vector it was struck on, which the booking reports, and the book plan its marginal charge was
-    # solved against, which refuses where the book moved. `request` is the relayed client utterance,
-    # optional and erased by shredding the class key; `ticket` is the plan the book has once this
-    # acceptance lands - the mirror spliced in AND the quote's model pin merged - which is what an
-    # approval signs; `portfolio` is where it books.
+    # solved against, which refuses where the book moved outside a firm window. `request` is the
+    # relayed client utterance, optional and erased by shredding the class key; `ticket` is the plan
+    # the book has once this acceptance lands - the mirror spliced in AND the quote's model pin
+    # merged - which is what an approval signs; `portfolio` is where it books.
     'quote_filed': _validator('quote_filed', (
         ('quote_id', TEXT), ('structure', TEXT), ('plan_hash', HASH), ('values_hash', HASH),
         ('solved', COORDINATES), ('edge', NUMBER)),

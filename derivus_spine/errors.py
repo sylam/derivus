@@ -104,9 +104,10 @@ class TierRefused(SpineRefusal):
 
 
 class QuoteNotFirm(SpineRefusal):
-    """A quote that may not be booked: the BOOK moved under it, or the BOARD it was struck on was
-    already older than the window a desk declared. The message names each - the two have different
-    remedies - and never the market having moved since, which is reported rather than refused."""
+    """A quote that may not be booked: the BOOK moved under it with no firm window holding it, or
+    the BOARD it was struck on was already older than the window a desk declared. The message names
+    each - the two have different remedies - and never the market having moved since, which is
+    reported rather than refused."""
 
 
 class HubUnreachable(SpineRefusal):

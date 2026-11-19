@@ -15,7 +15,8 @@
 
 The PLAN dimension asks about the book: the marginal charge was solved against a portfolio that has
 since moved, so the residual this trade would leave is not the one that was priced. That is an
-EQUALITY and it refuses.
+EQUALITY and it refuses - unless the desk HOLDS the quote firm, inside its own declared window,
+where a moved book is read as a moved market is: reported, never refused.
 
 The PILLAR dimension asks how old the board was WHEN THE QUOTE WAS STRUCK: the age of the oldest
 stamped quote row the book carried, against the window a desk declared. A home declaring none has
@@ -55,13 +56,14 @@ UNKNOWN = ('the board it was struck on carries no stamped pillar, so its age can
            'from, or declare no window')
 
 
-def assess(pinned, current, pillar_age, policy):
+def assess(pinned, current, pillar_age, policy, held=False):
     """The verdict on one quote: `{plan, pillar, market, firm, refusals}`.
 
     `pinned` and `current` are `{'plan_hash', 'values_hash'}` - what the quote pinned, and what the
     book and its market are right now. `pillar_age` is how old the board's oldest stamped pillar
     was when the quote was struck, in seconds, or None where no row was stamped. `policy` is what
-    `policy.firmness_in_force` answers.
+    `policy.firmness_in_force` answers. `held` is the desk holding the quote inside its firm window,
+    which reports a moved plan rather than refusing it.
 
     Each answer reports everything it read - the two hashes, the age and the window - so a caller
     shows why a booking refused, or which market it moved through, without re-deriving anything.
@@ -80,21 +82,21 @@ def assess(pinned, current, pillar_age, policy):
     stale = None if window is None else (
         UNKNOWN.format(window=window) if age is None
         else AGED.format(age=age, window=window) if age > window else None)
-    refusals = [said for said in (MOVED.format(pinned=was, current=now) if was != now else None,
-                                  stale) if said]
+    refusals = [said for said in (MOVED.format(pinned=was, current=now) if was != now and not held
+                                  else None, stale) if said]
     return {PLAN: {'pinned': was, 'current': now, 'moved': was != now},
             PILLAR: {'age': age, 'window': window, 'firm': stale is None},
             MARKET: {'pinned': struck, 'current': board, 'moved': struck != board},
             'firm': not refusals, 'refusals': refusals}
 
 
-def check(pinned, current, pillar_age, policy, quote_id=None):
+def check(pinned, current, pillar_age, policy, quote_id=None, held=False):
     """`assess`, raised: the verdict when the quote may be booked, `QuoteNotFirm` when it may not.
 
     The refusal names every answer that failed, not the first - a moved book and a stale board have
     two remedies, and reporting one sends the caller back into the other.
     """
-    verdict = assess(pinned, current, pillar_age, policy)
+    verdict = assess(pinned, current, pillar_age, policy, held)
     if not verdict['firm']:
         raise QuoteNotFirm('quote {} cannot be booked. {}'.format(
             quote_id if quote_id is not None else '(unnamed)', ' AND '.join(verdict['refusals'])))

@@ -1316,8 +1316,10 @@ def book_quote(quote_id: str, actor: str | None = None) -> dict:
 
     WHERE THE DESK KEEPS A RECORD the answer says more. THE MARKET MOVING IS NEWS, NOT A REFUSAL:
     `market` reports the values the quote was struck on, the ones standing now and whether they
-    moved. What does refuse is the book having moved under the solve and a board that was already
-    stale when the price was given. And where a `tiers` policy is in force the ticket is routed:
+    moved. Inside the firm window a booking elsewhere is news too: `firmness.plan` reports the plan
+    the quote was priced on and the one it lands in. What does refuse is a board that was already
+    stale when the price was given, and the book having moved under the solve where the book
+    declares no `Quote Policy`. And where a `tiers` policy is in force the ticket is routed:
     the answer carries `accepted` - the acceptance is filed either way - and `tier`, and under a
     tier wanting a second seat the trade books PENDING with `waits_on` saying why: have that seat
     call `approve_quote(quote_id, actor)` - never accept again. `refused` beside `accepted` is a

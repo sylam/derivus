@@ -22,7 +22,7 @@ features kept ahead of their build, not rows to close.
 - The retired family keys (`config.RETIRED_FAMILY_KEYS`: `InterestRateCurveParameters` and
   `FXVolSurfaceParameters` read as `InterestRate` and `FXVol`) are carried through this release and
   go the release after. A book keyed by them hashes to a new plan once its keys move, so a quote
-  pinned before the move asks for a re-quote.
+  pinned before the move asks for a re-quote outside a firm window.
 - `derivus_jupyter.py` (tracked, not in the wheel) stays until the web UI exports a named
   calculation as a job; it then retires. It raises on three field names outside its write
   allowlist and on multi-column Tables outside a four-name allowlist, and fourteen output-shaped

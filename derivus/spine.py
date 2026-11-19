@@ -1734,17 +1734,18 @@ def firmness_policy():
     return folded(package().policy.firmness_in_force)
 
 
-def check_firmness(pinned, current, pillar_age, quote_id=None, policy=None):
+def check_firmness(pinned, current, pillar_age, quote_id=None, policy=None, held=False):
     """Whether this quote may be booked: the verdict, or a refusal naming what failed and its
     remedy.
 
     A pure call into `derivus_spine.firmness` over plain data. `policy` is read out of the record
     when the caller hands none in, which is the ordinary case - the window is policy data, so it
-    lives in the log rather than in a constant here.
+    lives in the log rather than in a constant here. `held` is the desk holding the quote firm.
     """
     window = firmness_policy() if policy is None else policy
     with translating():
-        return package().firmness.check(pinned, current, pillar_age, window, quote_id=quote_id)
+        return package().firmness.check(pinned, current, pillar_age, window, quote_id=quote_id,
+                                        held=held)
 
 
 def _key(instrument, leg, kind, date):
