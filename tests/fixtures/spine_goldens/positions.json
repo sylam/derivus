@@ -32,7 +32,8 @@
         "instrument": "b7245a845889af994291f9c309de8a606fcd2d7b4de0afd2aae3918a83399acc",
         "lsn": 7,
         "quantity": 1000000.0,
-        "ticket": null
+        "ticket": null,
+        "tier": null
       },
       {
         "actor": "subject-desk-one",
@@ -42,7 +43,8 @@
         "instrument": "b7245a845889af994291f9c309de8a606fcd2d7b4de0afd2aae3918a83399acc",
         "lsn": 7,
         "quantity": 1000000.0,
-        "ticket": null
+        "ticket": null,
+        "tier": null
       }
     ]
   }
