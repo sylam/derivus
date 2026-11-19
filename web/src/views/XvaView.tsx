@@ -145,6 +145,9 @@ export function XvaView() {
             {recording && <>; collateral on the {marked ?? 'close: unread'}</>}</>}
           currency={currency} lagging={lagsBook(xva.clock, clock)} loading={xva.loading}
         />
+        {[risk.error && `The value to the desk is not read: ${risk.error}`,
+          !marked && collateral.error && `The collateral is not read: ${collateral.error}`]
+          .map((refused) => refused && <div key={refused} className="error-box">{refused}</div>)}
         <div className={`blotterbar wrongs${acting.length ? ' act' : ''}`}>
           {acting.length ? (
             <span className="hint">
