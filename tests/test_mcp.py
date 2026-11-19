@@ -1313,8 +1313,8 @@ def test_the_store_names_what_must_be_stated(book):
     model reading the store books an empty block that prices at whatever the panel would show.
     """
     swap = mcp_server.describe_instrument_type('SwapInterestDeal')
-    assert sorted(swap['required']) == ['Currency', 'Discount_Rate', 'Effective_Date', 'Maturity_Date',
-                                        'Object', 'Pay_Rate_Type', 'Principal', 'Swap_Rate']
+    assert sorted(swap['required']) == ['Currency', 'Discount_Rate', 'Effective_Date', 'Interest_Rate',
+                                        'Maturity_Date', 'Object', 'Pay_Rate_Type', 'Principal', 'Swap_Rate']
     assert swap['fields']['Pay_Timing']['convention'] is True
     assert 'convention' not in swap['fields']['Swap_Rate']
     assert 'required' not in swap['fields']['Pay_Timing']

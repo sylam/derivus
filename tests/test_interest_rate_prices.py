@@ -1100,6 +1100,7 @@ def test_a_resetting_cross_currency_swap_exchanges_principal_as_its_setting_says
         return {'Object': 'MtMCrossCurrencySwapDeal', 'Reference': side + setting, 'MtM_Side': side,
                 side + '_Currency': resetting, other + '_Currency': fixed,
                 side + '_Discount_Rate': resetting, other + '_Discount_Rate': fixed,
+                side + '_Interest_Rate': resetting, other + '_Interest_Rate': fixed,
                 'Principal_Exchange': setting, 'Effective_Date': dates[0], 'Maturity_Date': dates[-1],
                 'Children': [
                     trial_rates.float_list(side + setting + '_M', sell, [dict(

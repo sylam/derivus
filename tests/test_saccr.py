@@ -518,7 +518,8 @@ def resetting(reference, side):
     return {'Instrument': {'.Deal': {
         'Object': 'MtMCrossCurrencySwapDeal', 'Reference': reference, 'MtM_Side': side,
         'Pay_Currency': paid, 'Receive_Currency': received, 'Pay_Discount_Rate': paid,
-        'Receive_Discount_Rate': received, 'Principal_Exchange': 'Start_Maturity',
+        'Receive_Discount_Rate': received, 'Pay_Interest_Rate': paid, 'Receive_Interest_Rate': received,
+        'Principal_Exchange': 'Start_Maturity',
         'Effective_Date': dates[0], 'Maturity_Date': dates[-1]}}, 'Children': [
         node(euro), node(cashflows(FIXED, 'USD', 'Buy' if side == 'Pay' else 'Sell', dates, 1.25e6))]}
 

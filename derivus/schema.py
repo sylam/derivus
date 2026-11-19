@@ -1163,7 +1163,7 @@ QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', 'Autocall term
 ])
 
 QEDI_CUSTOMSWAP = Group('QEDI_CustomSwap.Fields', 'Swap leg', [
-    F('Forecast_Rate', 'Text', default='', factors=['InterestRate']),
+    F('Forecast_Rate', 'Text', default=REQUIRED, factors=['InterestRate']),
     F('Floating_Margin', 'Basis', default=0.0, convention=True),
     F('Reset_Frequency', 'Period', default='3M', convention=True),
     F('Autocall_Floating', 'DateValueList', default='null', convention=True,
@@ -1236,7 +1236,7 @@ COUPON_SCHEDULE = Group('CouponSchedule', 'Coupon schedule', [
 #: What a cap and a floor both are - every term but the strike, which each names (`optionlet`).
 CAP_FLOOR = Group('CapFloor', 'Cap/floor terms', [
     F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-    F('Forecast_Rate', 'Text', default='', convention=True, factors=['InterestRate']),
+    F('Forecast_Rate', 'Text', default=REQUIRED, factors=['InterestRate']),
     F('Known_Rates', 'DateList', default='null', convention=True,
       row=Row([F('Date', 'Date'), F('Amount', 'Float')])),
     F('Maturity_Date', 'Date', default=''),

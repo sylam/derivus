@@ -92,6 +92,7 @@ DEALS = [
     # the euro leg's nominal resets off the pair each quarter; its legs are priced by the swap
     {'Object': 'MtMCrossCurrencySwapDeal', 'Reference': 'XCCY_MTM', 'MtM_Side': 'Pay',
      'Pay_Currency': 'EUR', 'Receive_Currency': 'USD', 'Pay_Discount_Rate': 'EUR', 'Receive_Discount_Rate': 'USD',
+     'Pay_Interest_Rate': 'EUR', 'Receive_Interest_Rate': 'USD',
      'Principal_Exchange': 'Start_Maturity',
      'Effective_Date': E, 'Maturity_Date': E + pd.DateOffset(years=3), 'Children': [
          float_list('XCCY_MTM_EUR', 'Sell', [dict(row, FX_Reset_Date=row['Accrual_Start_Date'])

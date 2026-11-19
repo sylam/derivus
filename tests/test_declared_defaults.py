@@ -1087,9 +1087,10 @@ def test_a_document_stating_only_its_terms_prices_the_full_one_to_the_bit():
 
 
 #: Every term an author states that a blank once read off another field
-STATED = ('Discount_Rate', 'Pay_Discount_Rate', 'Receive_Discount_Rate')
+STATED = ('Discount_Rate', 'Pay_Discount_Rate', 'Receive_Discount_Rate', 'Forecast_Rate', 'Interest_Rate',
+          'Pay_Interest_Rate', 'Receive_Interest_Rate')
 #: A deal of `BOOK` reading one of them, by the term
-UNSTATED = {'Discount_Rate': 'FXO'}
+UNSTATED = {'Discount_Rate': 'FXO', 'Forecast_Rate': 'CAP', 'Interest_Rate': 'SWAP'}
 
 
 @pytest.mark.parametrize('key', STATED)
@@ -1114,12 +1115,13 @@ def test_validate_names_a_blank_term_on_every_type_declaring_it(key):
 
 @pytest.mark.parametrize('key', sorted(UNSTATED))
 def test_a_deal_leaving_a_term_out_prices_nothing(key, caplog):
-    """A base valuation prices no deal leaving `key` out - an FX option its discount curve: its
-    compile reads the term by name and the deal is skipped on that `KeyError`, logged by name, the
-    deposit beside it priced.
+    """A base valuation prices no deal leaving `key` out - an FX option its discount curve, a cap its
+    forecast curve, a swap its interest curve: its compile reads the term by name and the deal is
+    skipped on that `KeyError`, logged by name, the deposit beside it priced.
 
-    Killing mutation: the FX option's blank discount curve its currency's own again (`fx_pair`),
-    the option priced.
+    Killing mutations, each a fallback put back at one site: the FX option's blank discount curve
+    its currency's own (`fx_pair`), the cap's blank forecast curve its discount curve - the blank
+    priced.
     """
     deal = next(deal for deal in BOOK if deal['Reference'] == UNSTATED[key])
     caplog.set_level(logging.ERROR)
@@ -1722,7 +1724,7 @@ def test_the_store_publishes_the_flag_and_the_must_state_list():
     for section in store['types']['SwapInterestDeal']:
         swap.update(store['sections'][section])
     assert sorted(key for key, meta in swap.items() if meta.get('required')) == [
-        'Currency', 'Discount_Rate', 'Effective_Date', 'Maturity_Date', 'Object', 'Pay_Rate_Type',
-        'Principal', 'Swap_Rate']
+        'Currency', 'Discount_Rate', 'Effective_Date', 'Interest_Rate', 'Maturity_Date', 'Object',
+        'Pay_Rate_Type', 'Principal', 'Swap_Rate']
     assert swap['Swap_Rate']['value'] == 0.0 and swap['Object']['value'] == ''
     assert swap['Pay_Timing']['convention'] is True and swap['Pay_Timing']['value'] == 'End'

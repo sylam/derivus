@@ -613,7 +613,7 @@ def test_a_payment_on_a_marked_day_is_that_day_s_cash_and_out_of_its_marks(recor
 #: A three-month rand deposit placed on the second marked day at the curve's own rate - 2% over
 #: 92 days ACT/365, simply - so that it is worth nothing as it is placed.
 PLACED = {'Object': 'DepositDeal', 'Reference': 'DEP-T', 'Currency': 'ZAR',
-          'Discount_Rate': 'ZAR', 'Amount': 1_000_000.0, 'Effective_Date': END,
+          'Discount_Rate': 'ZAR', 'Interest_Rate': 'ZAR', 'Amount': 1_000_000.0, 'Effective_Date': END,
           'Maturity_Date': pd.Timestamp('2024-10-01'), 'Payment_Frequency': pd.DateOffset(months=3),
           'Interest_Rate_Schedule': utils.DateList(
               {END: 100.0 * (math.exp(0.02 * 92 / 365) - 1.0) / (92 / 365)})}
