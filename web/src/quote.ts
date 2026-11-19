@@ -4,7 +4,7 @@
 // own rule; and what an acceptance says.
 
 import {
-  STRIP_FIELDS, dealRow, fieldsOf, pick, quoted, rowsByPath, sizeOf, toRows, type BlotterRow,
+  SET, STRIP_FIELDS, dealRow, fieldsOf, pick, quoted, rowsByPath, sizeOf, toRows, type BlotterRow,
   type Quoted, type Size,
 } from './blotter';
 import { entityText, stampMs } from './desk';
@@ -133,8 +133,8 @@ export function solving(declared: StructureType): string[] {
  * paper declares, which the acceptance splices in where the book holds none yet. */
 export function clients(doc: JobDoc | null, agreements: Agreement[]): string[] {
   const held = [...rowsByPath(toRows(doc?.Calc.Deals?.Deals?.Children ?? [], [], undefined))
-    .values()].filter((row) => row.object === 'NettingCollateralSet').map((row) => row.reference);
-  const declared = agreements.filter((row) => row.terms.Object === 'NettingCollateralSet')
+    .values()].filter((row) => row.object === SET).map((row) => row.reference);
+  const declared = agreements.filter((row) => row.terms.Object === SET)
     .map((row) => row.agreement);
   return [...new Set([...held, ...declared])].sort();
 }

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   declareAgreement, declareEntity, failure, getBookAgreements, getBookEntities,
 } from '../api';
+import { SET } from '../blotter';
 import { DealPanels } from '../components/FieldView';
 import { entityText } from '../desk';
 import { EmptyState } from '../components/EmptyState';
@@ -10,9 +11,6 @@ import { worklistAt } from '../spine';
 import { opened, standing, useApp } from '../state';
 import { COLLATERAL, statedOnly, termsMoved, uncollateralised } from '../tokens';
 import type { Schema } from '../types';
-
-/** The declaration an agreement's terms are: the netting set's own, as `/schema` publishes it. */
-const TERMS = 'NettingCollateralSet';
 
 /** What a declaration answered: where it landed, or the service's refusal in its own words. */
 type Said = { refused: boolean; text: string } | null;
@@ -125,7 +123,7 @@ function Terms({ schema, terms, onChange }: {
   schema: Schema; terms: Record<string, unknown>;
   onChange?: (terms: Record<string, unknown>) => void;
 }) {
-  const bare = !onChange && (schema.Instrument.types[TERMS] ?? []).some((section) =>
+  const bare = !onChange && (schema.Instrument.types[SET] ?? []).some((section) =>
     uncollateralised(schema.Instrument.sections[section], terms));
   return (
     <DealPanels deal={terms} schema={schema} own tables={!!onChange}
@@ -182,7 +180,7 @@ function AgreementForm({ schema, entities, agreements, from }: {
 }) {
   const [named, setNamed] = useState({
     agreement: from?.agreement ?? '', entity: from?.entity ?? '', kind: from?.kind ?? '' });
-  const [terms, setTerms] = useState<Record<string, unknown>>(from?.terms ?? { Object: TERMS });
+  const [terms, setTerms] = useState<Record<string, unknown>>(from?.terms ?? { Object: SET });
   const [said, setSaid] = useState<Said>(null);
   const card = useRef<HTMLElement>(null);
   useEffect(() => { if (from) card.current?.scrollIntoView({ block: 'start' }); }, [from]);
