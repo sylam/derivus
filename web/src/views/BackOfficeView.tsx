@@ -1,14 +1,20 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   approveTicket, failure, getCloseCheck, postClose, postTransition, rejectTicket,
 } from '../api';
-import { cellText, sizeOf } from '../blotter';
+import { baseDateOf, rowsByPath, toRows, type BlotterRow } from '../blotter';
 import { EmptyState } from '../components/EmptyState';
 import { stampText } from '../desk';
-import { nodeAt } from '../positions';
-import { opened, useApp } from '../state';
-import { ungrouped } from '../tokens';
-import type { CloseVerdict, Decided, WorkRow } from '../types';
+import { NO_PAPER } from '../positions';
+import { clientText, spreadText } from '../quote';
+import { marketOf, opened, useApp } from '../state';
+import { formatNumber, ungrouped } from '../tokens';
+import {
+  holdsFor, paperText, ticketWords, tradeAt, tradeName, waitedText, waitingElsewhere,
+} from '../trade';
+import type { CloseVerdict, Decided, PendingQuote, WorkRow, Worklist } from '../types';
+import { TicketCard } from './QuoteView';
+import { useQuotes } from './TradeView';
 
 /** The three lists this seat clears, each by its own verb. */
 type List = 'payments' | 'unconfirmed' | 'calls';
@@ -43,8 +49,8 @@ export function BackOfficeView() {
   if (spine === null) {
     return (
       <EmptyState
-        title="The back office works the live book's record."
-        hint="Start the service with --book and a spine home: the tickets to sign, the payments due, the trades to confirm and the collateral called appear here, each with the fact that clears it."
+        title="This desk keeps no record, so nothing waits on a second seat."
+        hint="A booking here writes the book file and stands as written: no ticket waits to be signed, and no payment, confirmation or collateral call is tracked. A desk started with --book and a spine home keeps them, and lists them here."
       />
     );
   }
@@ -60,7 +66,7 @@ export function BackOfficeView() {
       <div className="panel">
         {error && <div className="error-box">{error}</div>}
         {check && <CloseCheck check={check} />}
-        <Tickets rows={worklist.pending} count={worklist.counts.pending} />
+        <Tickets key={worklist.seat ?? ''} worklist={worklist} />
         {LISTS.map(({ list, title, verb }) => (
           <section className="card" key={list}>
             <h3>{title} ({worklist.counts[list]}) <span className="hint">{verb}</span></h3>
@@ -83,61 +89,107 @@ export function BackOfficeView() {
   );
 }
 
-/** The tickets waiting for this seat's signature, each a trade as the desk reads it - the client,
- * the deal, how much, what it was booked at, who booked it, since when and why it waits, in the
- * tier's own words - beside the two verdicts that clear it. What each verdict answered stays
- * here after its row leaves, which it does when the record's head moves past it. */
-function Tickets({ rows, count }: { rows: WorkRow[]; count: number }) {
-  const [said, setSaid] = useState<string | null>(null);
+/** What a verdict answered, kept on the card once its ticket has left the list. */
+type Said = { status: string | null; text: string };
+
+/** The tickets waiting for a second seat: those this seat's worklist lists, each with its two
+ * verdicts or what holds for this seat, then those it does not sign, which it reads and never
+ * clears. What a verdict answered stays after its row leaves, which it does when the record's head
+ * moves past it. */
+function Tickets({ worklist }: { worklist: Worklist }) {
+  const { state } = useApp();
+  const { doc, schema } = state;
+  const market = marketOf(state);
+  const children = doc?.Calc.Deals?.Deals?.Children ?? [];
+  const rows = useMemo(() => rowsByPath(toRows(children, schema?.Instrument.containers ?? [],
+                                               doc ? baseDateOf(doc, market) : undefined)),
+                       [children, schema, doc, market]);
+  const [said, setSaid] = useState<Said | null>(null);
+  // how long each has waited is read against this browser's clock, again every half minute
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+  const positions = state.paper.data?.positions ?? [];
+  const elsewhere = waitingElsewhere(positions, worklist.pending);
+  const executions = new Map(positions.flatMap((position) => position.tickets)
+    .map((ticket) => [ticket.ticket, ticket.execution_reference]));
+  const quotes = useQuotes([...new Set([...worklist.pending, ...elsewhere]
+    .flatMap((row) => executions.get(row.key) ?? []))]);
+  const own = worklist.pending.filter((row) => row.booker === worklist.seat).length;
+  const signing = (row: WorkRow, listed: boolean) => {
+    const at = row.deal_path ? tradeAt(children, row.deal_path) : undefined;
+    const execution = executions.get(row.key);
+    return (
+      <Signing key={row.key} row={row} trade={at && rows.get(at.path)} now={now}
+               hold={holdsFor(row, worklist.seat, listed)} execution={execution}
+               quote={quotes && execution !== undefined ? quotes[execution] : undefined}
+               onSaid={setSaid} />
+    );
+  };
   return (
-    <section className="card">
-      <h3>Tickets to sign ({count}) <span className="hint">approve</span></h3>
-      {said && <div className="hint">{said}</div>}
-      {rows.length ? (
-        <div className="tablewrap">
-          <table className="data">
-            <thead>
-              <tr>
-                <th>Trade</th><th>Client</th><th>Deal</th><th className="n">Amount</th>
-                <th>Ccy</th><th className="n">Booked at</th><th>Booker</th><th>Waiting since</th>
-                <th>Why it waits</th><th />
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => <Ticket key={row.key} row={row} onSaid={setSaid} />)}
-            </tbody>
-          </table>
+    <>
+      <section className="card">
+        <h3>Tickets to sign ({worklist.counts.pending}) <span className="hint">{own
+          ? `${own} booked by this seat, which another seat signs`
+          : 'approve, or refuse with a reason'}</span></h3>
+        <div className="nested">
+          {said && (
+            <div className="statusrow">
+              <span className={`chip ${said.status === 'approved' ? 'done' : 'error'}`}>
+                {said.status ?? 'filed'}</span>
+              <span>{said.text}</span>
+            </div>
+          )}
+          {worklist.pending.map((row) => signing(row, true))}
+          {!worklist.pending.length && (
+            <div className="hint signing">nothing waits on this seat to sign</div>
+          )}
+          {worklist.pending.length > 0 && (
+            <div className="hint signing">
+              Which check sent a ticket past the tiers above its own - its size, its tenor, where it
+              books - is not on the record's reads: a ticket names only the tier it fell in.
+            </div>
+          )}
         </div>
-      ) : <div className="hint">nothing waits on this seat</div>}
-      {rows.length > 0 && (
-        <div className="hint">
-          Not on the record yet, so not shown: the margin, the spread charged and the limit used.
-        </div>
+      </section>
+      {elsewhere.length > 0 && (
+        <section className="card">
+          <h3>Waiting on another seat ({elsewhere.length}) <span className="hint">read only</span>
+          </h3>
+          <div className="nested">{elsewhere.map((row) => signing(row, false))}</div>
+        </section>
       )}
-    </section>
+    </>
   );
 }
 
-/** One ticket and its two verdicts: signed, or refused with a reason the row keeps. The refusal of
- * either is the service's sentence, verbatim. */
-function Ticket({ row, onSaid }: { row: WorkRow; onSaid: (said: string) => void }) {
+/** One pending ticket as its signer reads it: the client and the trade in one line, its reference
+ * opening its page; who booked it, when and how long it has waited; why it waits, in the tier's own
+ * words; what it was quoted at, its ticket a click away; the paper it books under - then its two
+ * verdicts, or what holds for this seat. Either refusal is the service's sentence, verbatim. */
+function Signing({ row, trade, now, hold, execution, quote, onSaid }: {
+  row: WorkRow; trade?: BlotterRow; now: number; hold: string | null; execution?: string;
+  quote?: PendingQuote | null; onSaid: (said: Said) => void;
+}) {
   const { state, dispatch } = useApp();
+  const { schema } = state;
+  const paper = state.paper.data ?? NO_PAPER;
   const [reason, setReason] = useState('');
   const [refused, setRefused] = useState<string | null>(null);
   const [filing, setFiling] = useState(false);
-  const deal = row.deal_path && state.doc ? nodeAt(state.doc.Calc.Deals.Deals.Children,
-                                                   row.deal_path)?.Instrument['.Deal'] : undefined;
-  const object = String(deal?.Object ?? '');
-  const size = deal ? sizeOf(deal, object, state.schema) : {};
-  const trade = row.reference ?? row.key.slice(0, 12);
+  const [showing, setShowing] = useState(false);
+  const reference = row.reference ?? row.key.slice(0, 12);
+  const client = clientText(row.agreement ?? null, paper.entities, paper.agreements);
 
-  async function decide(verdict: () => Promise<Decided>) {
+  async function decide(verdict: () => Promise<Decided>, why?: string) {
     setFiling(true);
     try {
       const answer = await verdict();
       setRefused(null);
-      onSaid(`${trade} for ${row.client}: ${answer.status}, recorded at LSN ${
-        answer.recorded.lsn}`);
+      onSaid({ status: answer.status, text: `${reference} for ${client}: ${answer.status}${
+        why ? `, "${why}"` : ''}, on the record at position ${answer.recorded.lsn}.` });
     } catch (error) {
       setRefused(failure(error).error);
     } finally {
@@ -145,37 +197,67 @@ function Ticket({ row, onSaid }: { row: WorkRow; onSaid: (said: string) => void 
     }
   }
 
-  return (
-    <tr>
-      <td>
-        <button className="ghost" onClick={() => opened(dispatch, state.doc, row.deal_path)}>
-          {trade}
+  const quoted = () => {
+    if (execution === undefined) {
+      return state.paper.error ? `the positions did not answer: ${state.paper.error}`
+        : 'reading the positions…';
+    }
+    if (quote === undefined) return 'reading…';
+    if (quote === null) return <>booked without a quote: its execution reference is{' '}
+      <span className="mono">{execution}</span></>;
+    const { net, currency, margin } = quote.quote;
+    return (
+      <>
+        net <b>{formatNumber(net, 'money')} {currency}</b>
+        {margin && <>, sales margin <b>{formatNumber(margin.amount, 'money')} {margin.currency}</b></>}
+        , quoted by <b>{quote.quoted_by ?? 'no seat named'}</b> at {stampText(quote.quoted_at)}{' '}
+        <button className="ghost" onClick={() => setShowing(!showing)}>
+          {showing ? 'hide its ticket' : 'show its ticket'}
         </button>
-      </td>
-      <td>{row.client ?? ''}<div className="hint">{row.agreement ?? ''}</div></td>
-      <td>{object}{size.side ? <div className="hint">{String(size.side.value)}</div> : null}</td>
-      <td className="n">{size.amount ? cellText(size.amount.value) : ''}</td>
-      <td>{size.of ? String(size.of.value) : ''}</td>
-      <td className="n">
-        {row.price === null || row.price === undefined ? '' : `${cellText(row.price)} ${
-          row.currency ?? ''}`}
-      </td>
-      <td>{row.booker ?? ''}</td>
-      <td>{stampText(row.since)}</td>
-      <td className="prose">{row.waits_on ?? ''}</td>
-      <td>
-        <span className="editcell">
-          <button className="ghost" disabled={filing}
-                  onClick={() => decide(() => approveTicket(row.key))}>approve</button>
-          <input placeholder="reason" title="why it is refused - the record keeps it on the row"
-                 value={reason}
-                 onChange={(event) => setReason(event.target.value)} />
-          <button className="ghost" disabled={filing || !reason.trim()}
-                  onClick={() => decide(() => rejectTicket(row.key, reason.trim()))}>refuse</button>
-          {refused && <span className="refusal">{refused}</span>}
-        </span>
-      </td>
-    </tr>
+        <div className="hint">{spreadText(quote.quote)}</div>
+      </>
+    );
+  };
+
+  return (
+    <div className="signing">
+      <div className="ticketline">
+        <b>{client}</b>
+        <span>{trade ? ticketWords(trade, tradeName(trade, quote ?? undefined, schema),
+                                   marketOf(state), schema)
+          : `the book file holds no trade at ${row.deal_path ?? 'any path'}`}</span>
+        <button className="tradelink ref" title="open the trade's page"
+                onClick={() => opened(dispatch, state.doc, row.deal_path)}>{reference} ›</button>
+      </div>
+      <dl className="signfacts">
+        <dt>booked</dt>
+        <dd>by <b>{row.booker}</b> at {stampText(row.since)}
+          {typeof row.price === 'number' && `, done at ${formatNumber(row.price, 'money')} ${
+            row.currency ?? ''}`} · <b>waiting {waitedText(row.since, now)}</b></dd>
+        <dt>waits</dt>
+        <dd>{row.tier ? <>tier <b>{row.tier}</b>: {row.waits_on}</> : 'on a second seat'}</dd>
+        <dt>quoted</dt>
+        <dd>{quoted()}</dd>
+        <dt>paper</dt>
+        <dd>{row.agreement ? paperText(row.agreement, paper.agreements, schema) : ''}</dd>
+      </dl>
+      {showing && quote && <TicketCard pending={quote} />}
+      {hold ? <div className="note">{hold}</div> : (
+        <div className="statusrow">
+          <span className="editcell">
+            <button className="ghost" disabled={filing}
+                    onClick={() => decide(() => approveTicket(row.key))}>approve</button>
+            <input type="text" className="reason" placeholder="reason"
+                   title="why it is refused - the record keeps it on the row" value={reason}
+                   onChange={(event) => setReason(event.target.value)} />
+            <button className="ghost" disabled={filing || !reason.trim()}
+                    onClick={() => decide(() => rejectTicket(row.key, reason.trim()),
+                                          reason.trim())}>refuse</button>
+            {refused && <span className="refusal">{refused}</span>}
+          </span>
+        </div>
+      )}
+    </div>
   );
 }
 

@@ -731,3 +731,26 @@ button.tradelink:hover { color: var(--accent); text-decoration-color: var(--acce
 .tradetitle .hint { margin-left: 12px; font-size: 12.5px; font-weight: 400; color: var(--text-muted); }
 .tradepage .hint { color: var(--text-muted); font-size: 12.5px; }
 .tradepage div.hint { margin: 8px 0; }
+
+/* ---- a ticket to sign ---- */
+
+/* one ticket: the trade in a line, its facts under it as labelled lines, then its verdicts */
+.signing { border-top: 1px solid var(--border); padding: 10px 0 2px; }
+.signing:first-child { border-top: none; padding-top: 0; }
+div.hint.signing { padding: 10px 0 12px; font-size: 12.5px; color: var(--text-muted); }
+.signing .ticketline { margin: 0 0 6px; font-size: 13.5px; gap: 14px; }
+.signing button.ref { margin-left: auto; font: 11.5px var(--mono); color: var(--text-muted); }
+.signfacts {
+  display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0 0 4px;
+  font-size: 12.5px; line-height: 1.5;
+}
+.signfacts dt {
+  color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+  padding-top: 2px;
+}
+.signfacts dd { margin: 0; }
+.signfacts dd .hint { color: var(--text-muted); }
+.signfacts dd button { margin-left: 6px; padding: 1px 8px; }
+.signing .editcell input.reason { width: 300px; padding: 3px 8px; }
+.signing > .note { margin: 6px 0 10px; }
+.signing > .card { margin: 8px 0 10px; }
