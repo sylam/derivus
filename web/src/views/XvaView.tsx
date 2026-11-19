@@ -1,11 +1,10 @@
 import { useState } from 'react';
 import {
-  ageOf, bookClock, currencyOf, isOrphan, lagsBook, lastRunChip, replayRows, stampText,
+  ageOf, currencyOf, isOrphan, lagsBook, lastRunChip, replayRows, stampText,
   statusChip, xvaTotals, type XvaSum,
 } from '../desk';
 import { EmptyState } from '../components/EmptyState';
-import { pinnedAt } from '../spine';
-import { useApp } from '../state';
+import { clockOf, useApp } from '../state';
 import { formatNumber } from '../tokens';
 import type { XvaSet } from '../types';
 import { OnStrip } from './RiskView';
@@ -78,7 +77,7 @@ export function XvaView() {
   const view = xva.data;
   const totals = xvaTotals(view);
   const currency = currencyOf(doc);
-  const lagging = lagsBook(xva.clock, bookClock(source.etag, pinnedAt(state.record.spine)));
+  const lagging = lagsBook(xva.clock, clockOf(state));
 
   return (
     <div className="main">

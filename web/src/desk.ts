@@ -9,11 +9,16 @@
 // module has no vocabulary for one on purpose.
 
 import type { Position } from './positions';
-import { axisText, formatNumber, isObject, label, tenorLabel, token } from './tokens';
+import {
+  COLLATERAL, axisText, formatNumber, isObject, label, tenorLabel, token, uncollateralised,
+} from './tokens';
 import type {
-  BookRisk, BookXva, DealMark, GreekRow, JobDoc, Market, Schema, XvaSet,
+  BookRisk, BookXva, DealMark, DealNode, GreekRow, JobDoc, Market, Schema, XvaSet,
 } from './types';
 import { axisNames } from './vols';
+
+/** A file as a reader names it: its name, never the folders it sits in on the server. */
+export const fileName = (path: string): string => path.split(/[\\/]/).pop()!;
 
 // ---- stamps -------------------------------------------------------------------------------------
 // The service stamps every answer on its own clock to milliseconds, with the offset it runs at. Two
@@ -247,6 +252,49 @@ export function pendingUnder(marks: DealMark[], positions: Position[]): Map<stri
   return under;
 }
 
+// ---- what a table of a run's results is in ------------------------------------------------------
+
+/** The columns the engine's exposure summary names, in words. */
+const EXPOSURE: [RegExp, (found: RegExpExecArray) => string][] = [
+  [/^EE$/, () => 'expected exposure, the mean of the mark where it is positive'],
+  [/^ENE$/, () => 'expected negative exposure, the mean of the mark where it is negative'],
+  [/^PFE_(\d+(?:\.\d+)?)$/, (found) => `the ${found[1]}th percentile of the mark`],
+];
+
+/** The sets under `nodes` whose declaration reads collateral on: what their exposure is net of. */
+function collateralised(nodes: DealNode[], schema: Schema | null): string[] {
+  return nodes.flatMap((node) => {
+    const deal = node.Instrument['.Deal'];
+    const fields = Object.assign({}, ...(schema?.Instrument.types[String(deal.Object)] ?? [])
+      .map((section) => schema!.Instrument.sections[section]));
+    const held = COLLATERAL in fields && !uncollateralised(fields, deal) ? [String(deal.Reference)]
+      : [];
+    return [...held, ...collateralised(node.Children ?? [], schema)];
+  });
+}
+
+export type TableReading = { currency: string; collateral: string[]; columns: [string, string][] };
+
+/** What a run's table is in: one filed under a currency the market holds a spot for -
+ * `cashflows/ZAR` - in that currency, any other in the run's report currency; one over dates of a
+ * run holding collateralised sets is net of what they hold, which a set over-collateralised reads
+ * below nought; its exposure columns in words, and numbered columns over dates a path each. */
+export function tableReading(name: string, columns: unknown[], dated: boolean, doc: JobDoc,
+                             schema: Schema | null, market: Market | null): TableReading {
+  const filed = name.includes('/') ? fileName(name) : '';
+  const own = !!filed && `FxRate.${filed}` in (market?.['Price Factors'] ?? {});
+  const paths = dated && columns.length > 0 && columns.every((column, at) => column === at);
+  return {
+    currency: own ? filed : currencyOf(doc),
+    collateral: dated && !own ? collateralised(doc.Calc.Deals.Deals.Children, schema) : [],
+    columns: paths ? [[`0–${columns.length - 1}`, 'one simulated path each']]
+      : columns.map(String).flatMap((column) => EXPOSURE.flatMap(([rule, words]) => {
+        const found = rule.exec(column);
+        return found ? [[column, words(found)] as [string, string]] : [];
+      })),
+  };
+}
+
 /** The family a factor name opens with - `FxRate`, `InterestRate`, `FXVol`. What a desk groups by
  * when it reads a gradient, and it is the name's own first segment, not a list kept here. */
 export function factorFamily(factor: string): string {
@@ -307,7 +355,7 @@ export function marketSource(doc: JobDoc | null, market: Market | null) {
   ].map((stamp) => (isObject(stamp) ? String(stamp['.Timestamp']) : ''))
     .filter((stamp) => stampMs(stamp) !== undefined)
     .sort((a, b) => stampMs(a)! - stampMs(b)!);
-  return { file: named ? named.split(/[\\/]/).pop()! : null, seen: seen.pop() ?? null };
+  return { file: named ? fileName(named) : null, seen: seen.pop() ?? null };
 }
 
 // ---- a named calculation ------------------------------------------------------------------------

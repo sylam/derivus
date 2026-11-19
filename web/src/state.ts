@@ -4,8 +4,9 @@
 
 import { createContext, useContext, type Dispatch } from 'react';
 import { SEAT, getBook, stored, type BookDealOutcome } from './api';
+import { bookClock } from './desk';
 import type { Grouping, Paper } from './positions';
-import { readRecord, reconciledRecord, type RecordHeld } from './spine';
+import { pinnedAt, readRecord, reconciledRecord, type RecordHeld } from './spine';
 import { isObject } from './tokens';
 import type {
   ActivityPage, BookMarket, BookResponse, BookRisk, BookXva, DealNode, DescribeResult, JobDoc,
@@ -29,6 +30,11 @@ export type RunState = {
   page: TablePage | null;
   scalars: Record<string, unknown>;
   startedAt: number | null;
+  /** The book's clock (`clockOf`) when the run was asked for, and the document it ran over - its
+   * calculation the one the run states - so its numbers say what they are on and whether the book
+   * has moved since, as the risk's do. */
+  clock: string | null;
+  doc: JobDoc | null;
 };
 
 /** One fetched desk view: the answer, the failure that stands in its place, and whether a fetch
@@ -83,7 +89,7 @@ export type AppState = {
 
 export const IDLE_RUN: RunState = {
   status: 'idle', resultId: null, origin: null, summary: null, error: null,
-  table: null, page: null, scalars: {}, startedAt: null,
+  table: null, page: null, scalars: {}, startedAt: null, clock: null, doc: null,
 };
 
 const NOTHING_FETCHED = { data: null, error: null, status: null, loading: false };
@@ -117,7 +123,7 @@ export type Action =
   | { type: 'PICK'; screen: string; id: string }
   | { type: 'DESCRIBED'; describe: DescribeResult }
   | { type: 'VALIDATED'; validate: ValidateResult }
-  | { type: 'RUN_SUBMITTED'; resultId: string; origin: string }
+  | { type: 'RUN_SUBMITTED'; resultId: string; origin: string; clock: string | null; doc: JobDoc }
   | { type: 'RUN_POLLED'; summary: ResultSummary }
   | { type: 'RUN_FAILED'; error: string }
   | { type: 'TABLE_SELECTED'; table: string }
@@ -182,7 +188,7 @@ export function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         run: { ...IDLE_RUN, status: 'queued', resultId: action.resultId, origin: action.origin,
-               startedAt: Date.now() },
+               startedAt: Date.now(), clock: action.clock, doc: action.doc },
       };
     case 'RUN_POLLED': {
       const status = action.summary.status as RunState['status'];
@@ -305,6 +311,13 @@ export async function written(dispatch: Dispatch<Action>, outcome: BookDealOutco
   if (!outcome.written) return outcome.refused ?? ['refused'];
   dispatch(bookLoaded(await getBook(), true));
   return null;
+}
+
+/** The clock every answer read off the live book is held against (`desk.bookClock`): the book's
+ * etag and where the record stands; null for a document opened from a file, which never moves. */
+export function clockOf(state: AppState): string | null {
+  return state.source?.kind === 'book'
+    ? bookClock(state.source.etag, pinnedAt(state.record.spine)) : null;
 }
 
 /** The market a screen shows: for the live book what `GET /book/market` answered, the file it

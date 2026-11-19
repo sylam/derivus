@@ -1,16 +1,15 @@
 import { Fragment, useMemo, useState, type ReactNode } from 'react';
 import { NO_SEAT } from '../api';
 import {
-  bookClock, factorAxes, factorFamily, lagsBook, marketSource, marksTotal, pendingUnder,
-  perOf, perUnitText, plural, quoteText, quoteView, reconciles, riskOf, riskReading, sharedPer,
+  factorAxes, factorFamily, lagsBook, marketSource, marksTotal, pendingUnder, perOf,
+  perUnitText, plural, quoteText, quoteView, reconciles, riskOf, riskReading, sharedPer,
   sortGreeks, stampText, tenorText, valuationDay, type GreekKey, type Ladder,
 } from '../desk';
 import { EmptyState } from '../components/EmptyState';
 import type { Position } from '../positions';
-import { pinnedAt } from '../spine';
-import { marketOf, useApp } from '../state';
+import { clockOf, marketOf, useApp } from '../state';
 import { axisText, formatNumber } from '../tokens';
-import type { BookRisk, GreekRow } from '../types';
+import type { BookRisk, GreekRow, JobDoc } from '../types';
 
 /** The consolidated risk: the book's own mark and its whole-book gradient, counterparty-blind.
  *
@@ -83,7 +82,7 @@ export function RiskView() {
   }
 
   const data = risk.data;
-  const lagging = lagsBook(risk.clock, bookClock(source.etag, pinnedAt(state.record.spine)));
+  const lagging = lagsBook(risk.clock, clockOf(state));
   const left = data.quotes.filter((row) => row.value === 0).length;
   const currency = data.currency ?? '';
 
@@ -183,15 +182,19 @@ export function RiskView() {
 
 /** What the numbers on a desk screen are ON: the day the book values on, when they were computed,
  * the currency they report in and where the market came from as far as the book says - and, where
- * the answer was read at an older clock than the book on screen, that in words. */
-export function OnStrip({ computed, title, currency, lagging, loading }: {
+ * the answer was read at an older clock than the book on screen, that in words. `doc` is the
+ * document they were computed over where that is not the one on screen, and `again` what brings
+ * fresh ones where nothing reads them again on its own. */
+export function OnStrip({ computed, title, currency, lagging, loading, doc, again }: {
   computed: ReactNode; title?: string; currency: ReactNode; lagging: boolean; loading: boolean;
+  doc?: JobDoc; again?: string;
 }) {
   const { state } = useApp();
-  const market = marketSource(state.doc, marketOf(state));
+  const on = doc ?? state.doc;
+  const market = marketSource(on, marketOf(state));
   return (
     <div className={`onstrip${lagging ? ' behind' : ''}`}>
-      <span><span className="k">valued on</span><b>{valuationDay(state.doc) || '—'}</b></span>
+      <span><span className="k">valued on</span><b>{valuationDay(on) || '—'}</b></span>
       <span title={title}><span className="k">computed</span>{computed}</span>
       <span><span className="k">reported in</span><b>{currency || '—'}</b></span>
       <span>
@@ -203,7 +206,8 @@ export function OnStrip({ computed, title, currency, lagging, loading }: {
       {lagging && (
         <span className="lag">
           These numbers are of an earlier book: it or its record has moved since they were read.
-          {loading ? ' A fresh read is on its way.' : ' They are read again on the next poll.'}
+          {again ?? (loading ? ' A fresh read is on its way.'
+            : ' They are read again on the next poll.')}
         </span>
       )}
     </div>

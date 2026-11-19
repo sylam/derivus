@@ -17,6 +17,13 @@ const bundled = await build({
 });
 const desk = await import('data:text/javascript;base64,' +
   Buffer.from(bundled.outputFiles[0].text).toString('base64'));
+// the store, for what a run says about the book it ran on
+const stored = await build({
+  entryPoints: [fileURLToPath(new URL('../src/state.ts', import.meta.url))],
+  bundle: true, format: 'esm', write: false, logLevel: 'silent',
+});
+const state = await import('data:text/javascript;base64,' +
+  Buffer.from(stored.outputFiles[0].text).toString('base64'));
 
 const RISK = {
   as_of: '2026-09-24T12:00:00.000', etag: 'e', currency: 'USD', mtm: 1.0, per_deal: [],
@@ -222,6 +229,50 @@ check('a marked row holds the trades pending beneath it or on itself, and only t
       [...held].map(([path, rows]) => [path, rows.map((row) => row.reference)]),
       [['0', ['GBPZAR-NDF']], ['1', ['NDF-TOP']], ['10', ['X']]]);
 
+// --- what a run's table is in
+const SETS = { Instrument: { types: { NettingCollateralSet: ['Fields'], FXOptionDeal: ['Option'] },
+  sections: { Fields: { Collateralized: { widget: 'Dropdown', value: 'False' } }, Option: {} } } };
+const set = (reference, collateralized, children = []) => ({ Instrument: { '.Deal': {
+  Object: 'NettingCollateralSet', Reference: reference,
+  ...(collateralized === undefined ? {} : { Collateralized: collateralized }) } },
+  Children: children });
+const RATES = { 'Price Factors': { 'FxRate.ZAR': { Spot: 0.0576369 } } };
+const RAN = { Calc: { Calculation: { Currency: 'USD' }, Deals: { Deals: { Children: [
+  set('ISDA-KESTREL', undefined, [{ Instrument: { '.Deal': { Object: 'FXOptionDeal' } } }]),
+  set('ISDA-CSA-ALDERBY', 'True')] } } } };
+check('a table states its currency, what its exposure is net of, and its columns in words',
+      'every table read in the report currency, cashflows in rand among them; a set at its '
+      + 'convention read as holding collateral; the collateral note on a table over no dates, or '
+      + "on cashflows; a percentile column left as its code; or a simulation's numbered columns "
+      + 'left unsaid, or read as paths on a table over no dates',
+      [desk.tableReading('exposure_profile', ['EE', 'ENE', 'PFE_97.5'], true, RAN, SETS, RATES),
+       desk.tableReading('cashflows/ZAR', [0, 1, 2], true, RAN, SETS, RATES),
+       desk.tableReading('mtm', [0, 1], false, RAN, SETS, RATES)],
+      [{ currency: 'USD', collateral: ['ISDA-CSA-ALDERBY'], columns: [
+         ['EE', 'expected exposure, the mean of the mark where it is positive'],
+         ['ENE', 'expected negative exposure, the mean of the mark where it is negative'],
+         ['PFE_97.5', 'the 97.5th percentile of the mark']] },
+       { currency: 'ZAR', collateral: [], columns: [['0–2', 'one simulated path each']] },
+       { currency: 'USD', collateral: [], columns: [] }]);
+
+// --- a run says whether the book on screen is the one it ran on
+const book = (etag) => ({ type: 'DOC_LOADED', doc: { Calc: { Calculation: {} } },
+                         source: { kind: 'book', etag, path: 'book.json' } });
+const asked = (at) => state.reducer(at, { type: 'RUN_SUBMITTED', resultId: 'r1', origin: 'book',
+                                          clock: state.clockOf(at), doc: at.doc });
+const first = asked(state.reducer(state.INITIAL, book('e1')));
+const moved = state.reducer(first, { ...book('e2'), refresh: true });
+const reopened = state.reducer(first, book('e1'));
+check('a run read after the book moved under it says it is of an earlier book; a book opened '
+      + 'afresh drops it',
+      "the run filed without the clock it was asked at, which reads a number of the first book as "
+      + 'the second\'s; or the run dropped on a refresh, which takes a number off the screen that '
+      + 'was true of the book it ran on',
+      [desk.lagsBook(first.run.clock, state.clockOf(first)),
+       desk.lagsBook(moved.run.clock, state.clockOf(moved)), moved.run.resultId,
+       reopened.run.resultId],
+      [false, true, 'r1', null]);
+
 // --- XVA: a row's own currency
 const xset = (reference, currency, cva, fva) => ({ reference, currency, cva, fva, status: 'done',
   note: null, recalc: null });
@@ -233,7 +284,7 @@ check('amounts in two currencies are never added: one sum per currency the rows 
       desk.xvaTotals(VIEW).sums.map((sum) => [sum.currency, sum.cva, sum.counted, sum.countedFva]),
       [['USD', 6114.49, 1, 1], ['ZAR', 1295.26, 1, 1], [null, 10, 1, 0]]);
 
-console.log(`\n${ran} checks over 16 functions, ${missed.length} missed`);
+console.log(`\n${ran} checks over 18 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

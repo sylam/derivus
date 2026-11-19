@@ -7,10 +7,9 @@ import {
 import { DocumentLoader } from './components/DocumentLoader';
 import { JobHeader } from './components/JobHeader';
 import { ActivityStrip, ReconcileBanner, SeatControl, WorklistBanner } from './components/Record';
-import { bookClock } from './desk';
 import { WORKSPACES } from './registry';
 import { pinnedAt, polled, ringsAhead } from './spine';
-import { AppContext, INITIAL, bookLoaded, reducer } from './state';
+import { AppContext, INITIAL, bookLoaded, clockOf, reducer } from './state';
 
 const BOOK_POLL_MS = 2000;
 
@@ -96,7 +95,7 @@ export function App() {
   // moves, and where the record stands - a booking, an amendment or a tick moves the first, an
   // approval or a record event the book prices off the second - and the numbers follow either.
   const recordAt = pinnedAt(state.record.spine);
-  const clock = state.source?.kind === 'book' ? bookClock(state.source.etag, recordAt) : null;
+  const clock = clockOf(state);
 
   // The risk verb RUNS the book on a miss, so it is priced while a desk is LOOKING at it and only
   // then: taking the tab prices it, every move of the clock under that gaze re-prices it, and a tab

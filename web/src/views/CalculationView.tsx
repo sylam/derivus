@@ -7,10 +7,11 @@ import { DescriptorPanel } from '../components/FieldView';
 import { DataTable } from '../components/DataTable';
 import { Navigator, type Page } from '../components/Navigator';
 import { TimeSeriesChart } from '../components/TimeSeriesChart';
-import { ownDials } from '../desk';
-import { useApp } from '../state';
+import { currencyOf, lagsBook, ownDials, stampText, tableReading } from '../desk';
+import { clockOf, marketOf, useApp } from '../state';
 import { formatNumber, isObject, token } from '../tokens';
-import type { Schema, TableShape } from '../types';
+import type { JobDoc, Schema, TableShape } from '../types';
+import { OnStrip } from './RiskView';
 
 // a page of a table: its leading rows and columns, the whole of it a download away
 const PAGE = 200;
@@ -31,7 +32,10 @@ const dials = (block: Record<string, unknown>) =>
   Object.fromEntries(Object.entries(block).filter(([key]) => key !== 'Object'));
 type Save = (name: string, calculation: Record<string, unknown> | null) =>
   Promise<string[] | null>;
-type Submit = (origin: string, post: () => Promise<{ result_id: string }>) => Promise<void>;
+/** A run asked for by the page `origin`, at `calculation` over the top-level node `scope` names or
+ * the whole book. */
+type Submit = (origin: string, calculation: Record<string, unknown>, scope: string | undefined,
+               post: () => Promise<{ result_id: string }>) => Promise<void>;
 
 /** The calculations a desk runs: the book's own, read-only here, and the ones this workstation
  * keeps under a name - filed by type, each its own dials over the book's and its own Run, over the
@@ -93,10 +97,16 @@ export function CalculationView() {
 
   if (!doc || !schema) return null;
 
-  /** One submission, filed under the page that asked. */
-  const submit: Submit = async (origin, post) => {
+  /** One submission, filed under the page that asked with the book's clock as it was asked for
+   * and the document it prices. */
+  const submit: Submit = async (origin, calculation, scope, post) => {
+    const clock = clockOf(state);
+    const deals = doc.Calc.Deals;
+    const ran: JobDoc = { ...doc, Calc: { ...doc.Calc, Calculation: calculation,
+      Deals: scope === undefined ? deals
+        : { ...deals, Deals: { Children: [deals.Deals.Children[Number(scope)]] } } } };
     const submitted = await post();
-    dispatch({ type: 'RUN_SUBMITTED', resultId: submitted.result_id, origin });
+    dispatch({ type: 'RUN_SUBMITTED', resultId: submitted.result_id, origin, clock, doc: ran });
   };
 
   /** A save answered by the file as it now stands, or by what to fix. */
@@ -117,7 +127,8 @@ export function CalculationView() {
       <>
         <DescriptorPanel title={`Calculation — ${type}`} fields={schema.Calculation.types[type]}
                          values={dials(calculation)} />
-        <RunStrip origin="book" submit={() => submit('book', () => postExecute(doc))} />
+        <RunStrip origin="book"
+                  submit={() => submit('book', calculation, undefined, () => postExecute(doc))} />
       </>
     ) },
     ...Object.entries(saved).map(([name, block]) => ({
@@ -163,7 +174,8 @@ function NamedCalculation({ schema, name, block, own, scopes, save, submit }: {
         onAmend={(key, wire) => save(name, { ...block, [key]: wire })} />
       <RunStrip
         origin={name}
-        submit={() => submit(name, () => runCalculation(name, scope || undefined))}
+        submit={() => submit(name, { ...own, ...block }, scope || undefined,
+                             () => runCalculation(name, scope || undefined))}
         extra={
           <>
             <select value={scope} onChange={(event) => setScope(event.target.value)}>
@@ -243,7 +255,16 @@ function RunStrip({ origin, submit, extra }: {
       </div>
       {refused && <div className="error-box">{refused}</div>}
       {mine && run.error && <div className="error-box">{run.error}</div>}
-      {mine && run.status === 'done' && <Results />}
+      {mine && run.status === 'done' && run.doc && (
+        <>
+          <OnStrip
+            computed={<>asked for {stampText(new Date(run.startedAt!).toISOString())}</>}
+            title={`result ${run.resultId}`} currency={currencyOf(run.doc)} doc={run.doc}
+            lagging={lagsBook(run.clock, clockOf(state))} loading={false}
+            again=" Run it again for the numbers of the book on screen." />
+          <Results doc={run.doc} />
+        </>
+      )}
     </>
   );
 }
@@ -300,12 +321,15 @@ function StatCard({ name, value, nest = true }: { name: string; value: unknown; 
   );
 }
 
-function Results() {
+/** A run's results; `doc` the document it priced, which says what its tables are in. */
+function Results({ doc }: { doc: JobDoc }) {
   const { state, dispatch } = useApp();
   const { run } = state;
   const tables = run.summary?.tables ?? {};
   const listed = Object.keys(tables).filter((name) => !isScalar(tables[name])).sort();
   const whole = run.table ? tables[run.table] : undefined;
+  const reading = run.page && tableReading(run.page.name, whole?.columns ?? run.page.columns,
+    isDateIndexed(run.page.index), doc, state.schema, marketOf(state));
   // every key the service publishes appears: a number is a tile, a dict a card, anything else a
   // line. Four verbs answer ENTIRELY under a dict key, and Results empty beside it
   const stats = Object.entries(run.summary?.stats ?? {});
@@ -360,6 +384,18 @@ function Results() {
             <a className="ghost" href={tableCsv(run.resultId, run.table!)} download
                title="the whole table, every number at full precision">download CSV</a>
           )}
+        </div>
+      )}
+      {reading && (
+        <div className="tablenote">
+          <span><b>{run.page!.name}</b> — amounts in <b>{reading.currency || '—'}</b>
+            {reading.currency === currencyOf(doc) && ", the run's report currency"}
+            {reading.collateral.length > 0 && <>; the exposure is net of the collateral held
+              under {reading.collateral.join(', ')}, so a set holding more than it is owed reads
+              below nought</>}</span>
+          {reading.columns.map(([column, words]) => (
+            <span key={column}><b>{column}</b> {words}</span>
+          ))}
         </div>
       )}
       {run.page && isDateIndexed(run.page.index) && <TimeSeriesChart page={run.page} />}
