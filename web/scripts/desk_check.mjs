@@ -273,6 +273,38 @@ check('a run read after the book moved under it says it is of an earlier book; a
        reopened.run.resultId],
       [false, true, 'r1', null]);
 
+// --- an FX spot on its pair as the market quotes it, by the blotter's rule
+const PAIRS = { 'System Parameters': { Base_Currency: 'USD' }, 'Price Factors': {
+  'FXVol.USD.ZAR': {}, 'FXVol.EUR.USD': {}, 'FxRate.ZAR': { Spot: 0.0576369 },
+  'FxRate.EUR': { Spot: 1.158 }, 'FxRate.GBP': { Spot: 1.312 },
+  'FxRate.JPY': { Domestic_Currency: 'EUR', Spot: 0.0061 } } };
+check("a spot reads on its pair: the base currency's price of a rand is USDZAR, turned",
+      "the engine's level shown as is, USD per ZAR at 0.0576 where a desk reads 17.35; every "
+      + 'spot turned, which reads EURUSD as 0.86; or a spot with no pair the market names given '
+      + 'one',
+      ['FxRate.ZAR', 'FxRate.EUR', 'FxRate.GBP', 'FxRate.JPY'].map((factor) => {
+        const read = desk.spotQuoted(factor, PAIRS['Price Factors'][factor].Spot, PAIRS);
+        return read ? [read.pair, Number(read.level.toFixed(4)), read.turned, read.held] : null;
+      }),
+      [['USDZAR', 17.35, true, 'USD per 1 ZAR'], ['EURUSD', 1.158, false, 'USD per 1 EUR'],
+       null, null]);
+const zar = desk.onPair(GREEKS[0], PAIRS);
+check("a turned spot's delta is per 1% of the pair: the engine's number with its sign turned",
+      'the 1% of FxRate.ZAR shown under USDZAR, a long rand read as long dollars; or the per-unit '
+      + 'derivative left per unit of USD per ZAR, whose hover then reads at 17.35',
+      [zar.pair, Number(zar.level.toFixed(4)), Math.round(zar.risk),
+       Math.round(zar.value * zar.level * 0.01)],
+      ['USDZAR', 17.35, -Math.round(GREEKS[0].risk), -Math.round(GREEKS[0].risk)]);
+
+// --- a credit curve read back as the spreads entered
+check('a credit curve reads as the spreads typed: average hazard times one less the recovery',
+      'the average hazard shown as the spread, 383bp where 230bp was typed; the cumulative -ln S '
+      + 'taken for the hazard, which reads the 5Y at 1,501bp; or the knot at nought divided by '
+      + 'nought',
+      desk.spreads([[0, 0], [1, 0.0383333], [3.00274, 0.1351233], [5.00274, 0.250137], [50, 2.5]],
+                   0.4).map(([tenor, spread]) => [tenor, Math.round(spread * 1e4)]),
+      [[1, 230], [3.00274, 270], [5.00274, 300], [50, 300]]);
+
 // --- XVA: a row's own currency
 const xset = (reference, currency, cva, fva) => ({ reference, currency, cva, fva, status: 'done',
   note: null, recalc: null });
@@ -284,7 +316,7 @@ check('amounts in two currencies are never added: one sum per currency the rows 
       desk.xvaTotals(VIEW).sums.map((sum) => [sum.currency, sum.cva, sum.counted, sum.countedFva]),
       [['USD', 6114.49, 1, 1], ['ZAR', 1295.26, 1, 1], [null, 10, 1, 0]]);
 
-console.log(`\n${ran} checks over 18 functions, ${missed.length} missed`);
+console.log(`\n${ran} checks over 22 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

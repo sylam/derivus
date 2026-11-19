@@ -135,15 +135,17 @@ export type AmendField = (key: string, wireValue: unknown) => Promise<string[] |
  * `aside` is what a top-level field's label carries beside it - whose the entry is. `ask` is
  * what filing an edit does, where that is more than a save: a changed field asks it first.
  * `tables` edits a table too, a cell at a time; `currency` reads the currency an amount's
- * description names, a container's children reading their deal's. */
-export function DescriptorPanel({ title, fields, values, onAmend, editable, aside, ask, tables,
-                                  currency }: {
+ * description names, a container's children reading their deal's. `beside` is what a top-level
+ * field's value carries beside it - how a desk reads it. */
+export function DescriptorPanel({ title, fields, values, onAmend, editable, aside, beside, ask,
+                                  tables, currency }: {
   title: string;
   fields?: Record<string, Descriptor>;
   values: Record<string, unknown>;
   onAmend?: AmendField;
   editable?: (key: string, descriptor: Descriptor) => boolean;
   aside?: (key: string) => ReactNode;
+  beside?: (key: string) => ReactNode;
   ask?: string;
   tables?: boolean;
   currency?: (description: string) => string | undefined;
@@ -184,7 +186,7 @@ export function DescriptorPanel({ title, fields, values, onAmend, editable, asid
                       declared={!!descriptor || !undeclared.includes(key)} tables={tables}
                       currency={descriptor && inCurrency(descriptor.description)}
                       onAmend={onAmend && (!descriptor || !editable || editable(key, descriptor))
-                        ? onAmend : undefined} aside={aside?.(key)}
+                        ? onAmend : undefined} aside={aside?.(key)} beside={beside?.(key)}
                       normal={quotesNormal(fields, values)} ask={ask} />
           );
         })}
@@ -199,7 +201,7 @@ export function DescriptorPanel({ title, fields, values, onAmend, editable, asid
 export function DealPanels({ deal, schema, own, cut = (fields) => fields, ...panel }: {
   deal: Record<string, unknown>; schema: Schema | null; own?: boolean;
   cut?: (fields: Section) => Section;
-  onAmend?: AmendField; ask?: string; tables?: boolean;
+  onAmend?: AmendField; ask?: string; tables?: boolean; beside?: (key: string) => ReactNode;
 }) {
   const object = String(deal.Object ?? '?');
   const sections = schema?.Instrument.types[object];
@@ -230,10 +232,10 @@ export function DealPanels({ deal, schema, own, cut = (fields) => fields, ...pan
  * engine's own booking verdict says. `required` is the Instrument store's reading, MUST BE
  * STATED; on every other store it is still `default=REQUIRED`, and this panel renders both. A
  * convention left unstated reads as one, lighter and named so; `currency` is the amount's. */
-function FieldRow({ name, descriptor, value, stated, declared, onAmend, aside, normal, ask,
+function FieldRow({ name, descriptor, value, stated, declared, onAmend, aside, beside, normal, ask,
                     tables, currency }: {
   name: string; descriptor?: Descriptor; value: unknown; stated?: boolean; declared: boolean;
-  onAmend?: AmendField; aside?: ReactNode; normal?: boolean; ask?: string;
+  onAmend?: AmendField; aside?: ReactNode; beside?: ReactNode; normal?: boolean; ask?: string;
   tables?: boolean; currency?: string;
 }) {
   const editable = onAmend !== undefined && descriptor !== undefined &&
@@ -257,6 +259,7 @@ function FieldRow({ name, descriptor, value, stated, declared, onAmend, aside, n
             ? <EditableScalar name={name} descriptor={descriptor!} value={value} onAmend={onAmend!}
                               ask={ask} />
             : <FieldView value={value} descriptor={descriptor} normal={normal} />}
+        {beside}
       </div>
     </>
   );

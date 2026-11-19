@@ -3,11 +3,11 @@ import { getBookMarkets, patchMarket } from '../api';
 import { DescriptorPanel, type AmendField } from '../components/FieldView';
 import { Navigator } from '../components/Navigator';
 import { Whose } from '../components/Whose';
-import { stampText } from '../desk';
+import { spotQuoted, spreads, stampText } from '../desk';
 import { marketsView } from '../spine';
 import { blockHint, marketOf, useApp, written } from '../state';
-import { isObject } from '../tokens';
-import type { BookMarkets, Schema } from '../types';
+import { curveOf, formatNumber, isObject, tenorLabel } from '../tokens';
+import type { BookMarkets, Market, Schema, Section } from '../types';
 
 /** `ModelParams.search` ported (config.py): a `Price Models` block keyed exactly wins; else the
  * first matching Model Configuration filter row; else the type's default; else static. */
@@ -43,13 +43,15 @@ function resolveProcess(
 /** One price factor of the market the book prices on, marked whose it is: its declared fields,
  * VALUES editable over the live book - the bind='value' declaration is the whole predicate, so
  * structure stays read-only exactly where the engine refuses it anyway, and an edit to a file's
- * factor lands on the block - and the process that simulates it. */
-function FactorBlock({ schema, name, block, priceModels, modelConfig, live }: {
+ * factor lands on the block - and the process that simulates it. A value a desk quotes otherwise
+ * says beside it how the desk reads it. */
+function FactorBlock({ schema, name, block, priceModels, modelConfig, live, market }: {
   schema: Schema; name: string; block: Record<string, unknown>;
-  priceModels: Record<string, unknown>; modelConfig: unknown; live: boolean;
+  priceModels: Record<string, unknown>; modelConfig: unknown; live: boolean; market: Market;
 }) {
   const { dispatch } = useApp();
   const type = name.split('.')[0];
+  const fields = schema.Factor.types[type];
   const onPatch: AmendField | undefined = live
     ? async (key, wireValue) => written(dispatch, await patchMarket(name, { [key]: wireValue }))
     : undefined;
@@ -57,8 +59,11 @@ function FactorBlock({ schema, name, block, priceModels, modelConfig, live }: {
     <>
       <div className="pager"><Whose path={['Price Factors', name]} /></div>
       <DescriptorPanel
-        title={name} fields={schema.Factor.types[type]} values={block} onAmend={onPatch}
-        editable={(_, descriptor) => descriptor.bind === 'value'} />
+        title={name} fields={fields} values={block} onAmend={onPatch}
+        editable={(_, descriptor) => descriptor.bind === 'value'}
+        beside={(key) => fields?.[key]?.bind === 'value'
+          && <ReadAs name={name} value={block[key]} block={block} fields={fields}
+                     market={market} />} />
       <ProcessPanel schema={schema} factorName={name} block={block}
                     priceModels={priceModels} modelConfig={modelConfig} />
       {(schema.Interpolation_factor_map[type] ?? []).length > 0 && (
@@ -107,7 +112,8 @@ export function MarketDataView() {
           hint: blockHint(doc, ['Price Factors', name]),
           content: isObject(block) ? (
             <FactorBlock schema={schema} name={name} block={block} priceModels={priceModels}
-                         modelConfig={market['Model Configuration']} live={live} />
+                         modelConfig={market['Model Configuration']} live={live}
+                         market={market} />
           ) : <DescriptorPanel title={name} values={{ value: block }} />,
         };
       })} />
@@ -187,6 +193,45 @@ function RecordMarkets() {
         </tbody>
       </table>
     </section>
+  );
+}
+
+/** A factor's value as a desk reads it, beside the box holding it as the engine does: an FX spot
+ * on its pair as the market quotes it, a credit curve as the spreads a credit officer typed. */
+function ReadAs({ name, value, block, fields, market }: {
+  name: string; value: unknown; block: Record<string, unknown>; fields: Section; market: Market;
+}) {
+  const spot = typeof value === 'number' ? spotQuoted(name, value, market) : undefined;
+  const curve = curveOf(value);
+  const recovery = block.Recovery_Rate ?? fields.Recovery_Rate?.value;
+  if (spot) {
+    return (
+      <span className="readas">
+        the market quotes <b>{spot.pair} {formatNumber(spot.level)}</b>
+        {spot.turned ? <> · this box holds {spot.held}, as the engine does</>
+          : <>, as this box holds it</>}
+      </span>
+    );
+  }
+  if (!curve || typeof recovery !== 'number') return null;
+  return (
+    <div className="readas">
+      <div>
+        the curve is the cumulative hazard; as the spreads a credit officer types, each its average
+        hazard to the tenor times one less the recovery of {formatNumber(100 * recovery, 'percent')}
+      </div>
+      <table className="data">
+        <thead><tr><th>Tenor</th><th className="n">Spread</th></tr></thead>
+        <tbody>
+          {spreads(curve.data, recovery).map(([tenor, spread]) => (
+            <tr key={tenor}>
+              <td>{tenorLabel(tenor)}</td>
+              <td className="n">{formatNumber(spread * 1e4, 'basis')}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

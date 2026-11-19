@@ -1,11 +1,12 @@
 import { amendDeal } from '../api';
+import { quoted, toRows } from '../blotter';
 import { DealPanels, DescriptorPanel, type AmendField } from '../components/FieldView';
 import { Tree, type TreeNode } from '../components/Tree';
 import {
   GROUPINGS, NO_PAPER, POSITION, byId, byPath, clientName, clientTree, nodeAt, portfolioTree,
   type Paper, type Position,
 } from '../positions';
-import { useApp, written } from '../state';
+import { marketOf, useApp, written } from '../state';
 import type { DealNode, Descriptor } from '../types';
 
 /** A tree node's id is its POSITIONAL path ('0/2/1') - the same identity the service's
@@ -49,6 +50,20 @@ export function PortfolioView() {
   const held = position ? [position] : (dealPath && byPath(paper.positions).get(dealPath)) || [];
   const selected = dealPath !== undefined ? nodeAt(children, dealPath) : undefined;
   const deal = selected?.Instrument['.Deal'];
+
+  // the deal as the market quotes it, by the blotter's rule: what its level boxes say beside them
+  const read = selected && quoted(toRows([selected], schema.Instrument.containers, undefined)[0],
+                                  marketOf(state));
+  const beside = (key: string) => {
+    const level = [read?.strike, read?.barrier].find((picked) => picked?.key === key);
+    if (level?.title) return <span className="readas">the market quotes {level.title}</span>;
+    if (key === 'Barrier_Type' && read?.terms) {
+      return <span className="readas">the market reads {read.terms.parts.join(' · ')}</span>;
+    }
+    return key === 'Option_Type' && read?.on && read.sense && (
+      <span className="readas">
+        a {read.sense} on {String(read.on.value)} as the market quotes it</span>);
+  };
 
   // editing exists only over the LIVE BOOK - a local file has nothing server-side to amend.
   // A successful amendment refreshes the book at once rather than waiting a poll tick.
@@ -95,7 +110,7 @@ export function PortfolioView() {
           </div>
         )}
         {deal && (
-          <DealPanels deal={deal} schema={schema} onAmend={onAmend}
+          <DealPanels deal={deal} schema={schema} onAmend={onAmend} beside={beside}
                       ask={recording ? RESTRIKE : undefined} />
         )}
       </div>

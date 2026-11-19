@@ -8,6 +8,7 @@
 // the XVA verb never runs anything at all. A recalc is asked for through the MCP verbs, and this
 // module has no vocabulary for one on purpose.
 
+import { quoted, type BlotterRow } from './blotter';
 import type { Position } from './positions';
 import {
   COLLATERAL, axisText, formatNumber, isObject, label, tenorLabel, token, uncollateralised,
@@ -250,6 +251,47 @@ export function pendingUnder(marks: DealMark[], positions: Position[]): Map<stri
     if (held.length) under.set(path, held);
   }
   return under;
+}
+
+/** An FX spot on its pair as the market quotes it. `FxRate.ZAR` is the base currency's price of
+ * one rand - a level of a deal on ZAR priced in USD - so it reads by the blotter's own rule: USDZAR
+ * 17.35 for 0.0576, `turned` where that is its reciprocal. Undefined where no pair is known. */
+export function spotQuoted(factor: string, level: number, market: Market | null):
+  { pair: string; level: number; turned: boolean; held: string } | undefined {
+  const [family, currency] = factor.split('.');
+  const domestic = String(token(market?.['Price Factors']?.[factor], 'Domestic_Currency')
+    || token(market?.['System Parameters'], 'Base_Currency') || '');
+  if (family !== 'FxRate' || !domestic) return undefined;
+  const deal = { Currency: domestic, Underlying_Currency: currency, Buy_Currency: currency,
+                 Sell_Currency: domestic, Strike_Price: level };
+  const row: BlotterRow = { path: factor, target: null, depth: 0, object: family,
+                            reference: factor, container: false, ignored: false, deal,
+                            children: [] };
+  const read = quoted(row, market);
+  if (!read.on || typeof read.strike?.value !== 'number') return undefined;
+  return { pair: String(read.on.value), level: read.strike.value,
+           turned: read.strike.value !== level, held: `${domestic} per 1 ${currency}` };
+}
+
+/** A gradient row of an FX spot re-read on its pair: the level the market quotes, the derivative
+ * per unit of it, and the risk per 1% of it - the engine's 1% of a reciprocal is minus 1% of the
+ * pair, to first order exactly. Any other row as it came. */
+export function onPair(row: GreekRow, market: Market | null): GreekRow & { pair?: string } {
+  const spot = typeof row.level === 'number'
+    ? spotQuoted(row.factor, row.level, market) : undefined;
+  if (!spot || !spot.turned) return spot ? { ...row, pair: spot.pair } : row;
+  return { ...row, pair: spot.pair, level: spot.level, value: -row.value * row.level! ** 2,
+           risk: row.risk === null || row.risk === undefined ? row.risk : -row.risk };
+}
+
+// ---- the market as a desk reads it --------------------------------------------------------------
+
+/** A credit curve as the spreads a credit officer types: `-ln S(t)` over `t` is the average hazard
+ * to each tenor, and the spread is that hazard times one less the recovery. The knot at nought
+ * states no hazard and is left off. */
+export function spreads(curve: number[][], recovery: number): [number, number][] {
+  return curve.filter(([tenor]) => tenor > 0)
+    .map(([tenor, hazard]) => [tenor, (hazard / tenor) * (1 - recovery)]);
 }
 
 // ---- what a table of a run's results is in ------------------------------------------------------

@@ -1,7 +1,7 @@
 import { Fragment, useMemo, useState, type ReactNode } from 'react';
 import { NO_SEAT } from '../api';
 import {
-  factorAxes, factorFamily, lagsBook, marketSource, marksTotal, pendingUnder, perOf,
+  factorAxes, factorFamily, lagsBook, marketSource, marksTotal, onPair, pendingUnder, perOf,
   perUnitText, plural, quoteText, quoteView, reconciles, riskOf, riskReading, sharedPer,
   sortGreeks, stampText, tenorText, valuationDay, type GreekKey, type Ladder,
 } from '../desk';
@@ -30,9 +30,11 @@ export function RiskView() {
   // from quotes, one click away
   const quotes = (risk.data?.quotes ?? []).length > 0 && state.selection.picks.risk === 'quotes';
 
+  const market = marketOf(state);
   const rows = useMemo(
-    () => (risk.data && quotes ? sortGreeks(quoteView(risk.data), key, descending) : []),
-    [risk.data, quotes, key, descending]);
+    () => (risk.data && quotes ? sortGreeks(quoteView(risk.data), key, descending)
+      .map((row) => onPair(row, market)) : []),
+    [risk.data, quotes, key, descending, market]);
 
   // the risk verb answers over the LIVE book; a document opened from a file has no server-side
   // book to differentiate, and saying so is better than showing another book's numbers under it
@@ -155,7 +157,7 @@ export function RiskView() {
                   <tbody>
                     {rows.map((row, position) => (
                       <tr key={`${row.factor}:${tenorText(row.tenor)}:${position}`}>
-                        <FactorCell factor={row.factor} />
+                        <FactorCell factor={row.factor} pair={row.pair} />
                         <td className="tenor" title={row.quote ?? row.tenor?.join(' / ')}>
                           {row.quote === undefined ? tenorText(row.tenor, factorAxes(
                             state.schema, row.factor, row.tenor?.length ?? 0)) : quoteText(row.quote)}
@@ -229,11 +231,14 @@ function DeskReading({ rows, currency }: { rows: GreekRow[]; currency: string })
     );
   }
   const per = sharedPer(reading.spots);
+  const spots = reading.spots.map((row) => onPair(row, marketOf(state)));
   return (
     <>
-      {reading.spots.length > 0 && (
+      {spots.length > 0 && (
         <section className="card ladder">
-          <h3>Spot delta</h3>
+          <h3>Spot delta{spots.some((row) => row.pair) && (
+            <span className="hint">an FX spot reads on its pair as the market quotes it, and its
+              delta per 1% of that pair</span>)}</h3>
           <table className="data desk">
             <thead>
               <tr>
@@ -243,9 +248,10 @@ function DeskReading({ rows, currency }: { rows: GreekRow[]; currency: string })
               </tr>
             </thead>
             <tbody>
-              {reading.spots.map((row) => (
+              {spots.map((row) => (
                 <tr key={row.factor}>
-                  <FactorCell factor={row.factor} per={per ? undefined : perOf(row)} />
+                  <FactorCell factor={row.factor} pair={row.pair}
+                              per={per ? undefined : perOf(row)} />
                   <td className="n">{row.level === null || row.level === undefined
                     ? '' : formatNumber(row.level)}</td>
                   <Risk row={row} />
@@ -352,11 +358,13 @@ function LadderCard({ ladder, unit }: { ladder: Ladder; unit: string }) {
   );
 }
 
-function FactorCell({ factor, per }: { factor: string; per?: string }) {
+/** A factor by its name, or an FX spot by the pair it is read on with its name beside. */
+function FactorCell({ factor, per, pair }: { factor: string; per?: string; pair?: string }) {
   return (
     <td title={factor}>
-      <span className="family">{factorFamily(factor)}</span>
-      {factor.slice(factorFamily(factor).length)}
+      {pair ? <><b>{pair}</b> <span className="hint">{factor}</span></> : <>
+        <span className="family">{factorFamily(factor)}</span>
+        {factor.slice(factorFamily(factor).length)}</>}
       {per && <span className="hint"> {per}</span>}
     </td>
   );
