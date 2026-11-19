@@ -439,6 +439,10 @@ export type WorkRow = {
   booker?: string; tier?: string | null; price?: number | null; waits_on?: string | null;
 };
 
+/** What an agreement's terms never state, `GET /book/agreements` names: the netting set's `fields`
+ * and the `collateral_columns` of its collateral tables - settlement state, not paper. */
+export type SettlementState = { fields: string[]; collateral_columns: string[] };
+
 /** `GET /book/close/check` - whether a close on `date` is legal, and the diary rows it waits on. */
 export type CloseVerdict = {
   date: string; legal: boolean; due: number;

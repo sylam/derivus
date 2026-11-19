@@ -21,7 +21,9 @@ import { pinnedAt } from '../spine';
 import { clockOf, marketOf, opened, standing, useApp } from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
 import { markOf, wholeRecord } from '../trade';
-import type { ActivityRow, BookRisk, BookXva, DealMark, Market, Schema, XvaSet } from '../types';
+import type {
+  ActivityRow, BookRisk, BookXva, DealMark, Market, Schema, SettlementState, XvaSet,
+} from '../types';
 import { Side, Value } from './BlotterView';
 import { CreditCard, SpreadTable } from './CurvesView';
 import { AgreementForm } from './PaperView';
@@ -46,7 +48,7 @@ export function useRead<T>(read: (() => Promise<T>) | null, keys: unknown[]) {
  * row of it, the XVA projection, and the consolidated risk for the marks. */
 type Reads = {
   entities: Entity[] | null; agreements: Agreement[] | null; positions: Position[] | null;
-  record: ActivityRow[] | null;
+  unstated: SettlementState | null; record: ActivityRow[] | null;
   xva: { data: BookXva | null; error: string | null };
   risk: { data: BookRisk | null; error: string | null };
 };
@@ -82,7 +84,8 @@ export function ClientView() {
   const [legal, signed, held, record] = paper.data ?? [null, null, null, null];
   const reads: Reads = {
     entities: legal?.entities ?? null, agreements: signed?.agreements ?? null,
-    positions: held?.positions ?? null, record, xva, risk,
+    unstated: signed?.settlement_state ?? null, positions: held?.positions ?? null, record, xva,
+    risk,
   };
   const market = marketOf(state);
   const factors = market?.['Price Factors'] ?? {};
@@ -175,14 +178,15 @@ function ClientPage({ id, lines, own, reads, rows, factor, market, schema }: {
                          amend={entities ? () => setForm({ agreement: row }) : undefined} />
         ))}
       </section>
-      {form?.agreement && entities && reads.agreements && (
+      {form?.agreement && entities && reads.agreements && reads.unstated && (
         <>
           <div className="statusrow">
             <span className="hint">Paper's agreement form, opened here</span>
             <button className="ghost" onClick={() => setForm(null)}>close the form</button>
           </div>
           <AgreementForm key={JSON.stringify(form.agreement)} schema={schema} entities={entities}
-                         agreements={reads.agreements} from={form.agreement} />
+                         agreements={reads.agreements} unstated={reads.unstated}
+                         from={form.agreement} />
         </>
       )}
 

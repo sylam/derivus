@@ -11,7 +11,7 @@ import type {
   CalculationsAnswer, CloseVerdict, CurveOutcome, CurvesAnswer, Decided, DescribeResult, JobDoc,
   PathMaps,
   PathsAnswer, Reconcile, Recorded, ResultSummary, Schema, SecuritiesAnswer, SeedOutcome,
-  TablePage, ValidateResult, Worklist,
+  SettlementState, TablePage, ValidateResult, Worklist,
 } from './types';
 
 /** Where this browser keeps who it acts as: the ID token a deployment's sign-in stored, else the
@@ -187,7 +187,7 @@ export const getMarkedDays = () => call<MarkedDays>('GET', '/book/marks');
 export const getPnl = (query: string) => call<Pnl>('GET', `/book/pnl?${query}`);
 export const getBookEntities = () => call<{ entities: Entity[] }>('GET', '/book/entities');
 export const getBookAgreements = () =>
-  call<{ agreements: Agreement[] }>('GET', '/book/agreements');
+  call<{ agreements: Agreement[]; settlement_state: SettlementState }>('GET', '/book/agreements');
 // the paper, declared under the acting seat: an entity, and an agreement whose terms are its set
 export const declareEntity = (entity: Record<string, unknown>) =>
   call<Recorded>('POST', '/book/entities', signed(entity));

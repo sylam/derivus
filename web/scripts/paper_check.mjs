@@ -1,6 +1,7 @@
 // Drives the rules the Paper tab reads an agreement by, where the eye cannot: the sections a type's
-// own terms are, when a set's collateral is off and what then reads, the currency an amount's
-// description names, the terms a restatement moves, and where an agreement stands in the book.
+// own terms are, when a set's collateral is off and what then reads, what paper never states, the
+// currency an amount's description names, the terms a restatement moves, and where an agreement
+// stands in the book.
 // Every check names the MUTATION it kills - the change that would still typecheck, still render,
 // and still be wrong.
 //
@@ -77,6 +78,30 @@ check('an uncollateralised read keeps what the terms state and the flag, a conta
       [Object.keys(cut), Object.keys(cut.Credit_Support_Amounts.sub_fields)],
       [['Agreement_Currency', 'Collateralized', 'Credit_Support_Amounts'], ['Counterparty']]);
 
+const table = (col_names, obj) =>
+  field('Table', 'null', { col_names, obj, sub_types: obj.map(() => ({})) });
+const SET = {
+  ...TERMS, Opening_Balance: field('Float', 0, { convention: true }),
+  Collateral_Assets: field('Container', {}, { sub_fields: {
+    Cash_Collateral: table(['Currency', 'Amount', 'Haircut_Posted'], ['Text', 'Float', 'Percent']),
+    Equity_Collateral: table(['Equity', 'Units'], ['Text', 'Float']) } }),
+  Received_Threshold: field('Table', support([[1, 0]]), {
+    col_names: ['Threshold Amount', 'Credit Rating'], obj: 'CreditSupportList' }),
+};
+const paper = tokens.onPaper(SET, { fields: ['Opening_Balance'],
+                                    collateral_columns: ['Amount', 'Units'] });
+const cash = paper.Collateral_Assets.sub_fields.Cash_Collateral;
+check("an agreement's form leaves out the fields and the collateral columns the read names paper "
+      + 'never states, each column with its form, and nothing else',
+      'the balance offered, which the service refuses; a column dropped from the names alone, '
+      + 'which files Haircut_Posted under the Amount form; the tables of a container left whole; '
+      + "a column matched inside another's name, which strips a threshold table's Threshold "
+      + 'Amount; or a table with nothing to cut rewritten',
+      [Object.keys(paper).includes('Opening_Balance'), cash.col_names, cash.obj,
+       cash.sub_types.length, paper.Collateral_Assets.sub_fields.Equity_Collateral.col_names,
+       paper.Received_Threshold === SET.Received_Threshold, paper.Netted === SET.Netted],
+      [false, ['Currency', 'Haircut_Posted'], ['Text', 'Percent'], 2, ['Equity'], true, true]);
+
 const read = (values) => (key) => values[key];
 check("an amount is in the currency field its description says it is in, by key or in words",
       "any mention of a currency field read, which tags a quanto rate 'payoff currency per unit' "
@@ -128,7 +153,7 @@ check('an agreement stands where the book holds a set of its type under its id, 
       [{ path: '1', moved: [] }, { path: '2/0', moved: ['Netted'] }, { path: null, moved: [] },
        { path: null, moved: [] }]);
 
-console.log(`\n${ran} checks over 6 functions, ${missed.length} missed`);
+console.log(`\n${ran} checks over 7 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

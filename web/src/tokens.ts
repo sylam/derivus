@@ -1,7 +1,7 @@
 // The wire tokens a job document carries (`CustomJsonEncoder` is the source of truth), the small
 // formatters the read-only renderer shares, and the write half's encoder.
 
-import type { Descriptor, Section } from './types';
+import type { Descriptor, Section, SettlementState } from './types';
 
 export function token(value: unknown, name: string): unknown {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -213,6 +213,23 @@ export function statedOnly(fields: Section, values: Record<string, unknown>,
     .filter(([key]) => values[key] !== undefined || also.includes(key))
     .map(([key, field]) => [key, field.sub_fields && isObject(values[key])
       ? { ...field, sub_fields: statedOnly(field.sub_fields, values[key]) } : field]));
+}
+
+/** `fields` as an agreement's paper states them: the fields `unstated` names left out, and the
+ * columns it names left out of every table - a container's among them - with their forms. */
+export function onPaper(fields: Section, unstated: SettlementState): Section {
+  return Object.fromEntries(Object.entries(fields)
+    .filter(([key]) => !unstated.fields.includes(key))
+    .map(([key, field]) => {
+      if (field.sub_fields) {
+        return [key, { ...field, sub_fields: onPaper(field.sub_fields, unstated) }];
+      }
+      const cut = (field.col_names ?? []).map((name) => unstated.collateral_columns.includes(name));
+      const kept = <T>(list?: T[]) => list?.filter((_, at) => !cut[at]);
+      return [key, !cut.some(Boolean) ? field : {
+        ...field, col_names: kept(field.col_names), sub_types: kept(field.sub_types),
+        obj: Array.isArray(field.obj) ? kept(field.obj) : field.obj }];
+    }));
 }
 
 /** Every term two statements of a deal differ on, a container's by `Container.Term`: a blank or

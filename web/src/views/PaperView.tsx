@@ -10,8 +10,8 @@ import { EmptyState } from '../components/EmptyState';
 import type { Agreement, Entity } from '../positions';
 import { worklistAt } from '../spine';
 import { opened, standing, useApp } from '../state';
-import { COLLATERAL, statedOnly, termsMoved, uncollateralised } from '../tokens';
-import type { Schema } from '../types';
+import { COLLATERAL, onPaper, statedOnly, termsMoved, uncollateralised } from '../tokens';
+import type { Schema, SettlementState } from '../types';
 
 /** What a declaration answered: where it landed, or the service's refusal in its own words. */
 type Said = { refused: boolean; text: string } | null;
@@ -27,9 +27,10 @@ export function PaperView() {
   const { state, dispatch } = useApp();
   const { schema } = state;
   const at = worklistAt(state.source?.kind === 'book' ? state.record.spine : null);
-  const [paper, setPaper] = useState<{
-    entities: Entity[]; agreements: Agreement[]; error: string | null }>(
-    { entities: [], agreements: [], error: null });
+  const [paper, setPaper] = useState<{ entities: Entity[]; agreements: Agreement[];
+                                       unstated: SettlementState; error: string | null }>(
+    { entities: [], agreements: [], unstated: { fields: [], collateral_columns: [] },
+      error: null });
   const [amending, setAmending] = useState<{ from: Agreement; at: number } | null>(null);
 
   useEffect(() => {
@@ -37,7 +38,10 @@ export function PaperView() {
     let live = true;
     Promise.all([getBookEntities(), getBookAgreements()])
       .then(([legal, signed]) => {
-        if (live) setPaper({ entities: legal.entities, agreements: signed.agreements, error: null });
+        if (live) {
+          setPaper({ entities: legal.entities, agreements: signed.agreements,
+                     unstated: signed.settlement_state, error: null });
+        }
       })
       .catch((error) => {
         if (live) setPaper((held) => ({ ...held, error: failure(error).error }));
@@ -106,13 +110,14 @@ export function PaperView() {
                     setAmending({ from: row, at: Date.now() });
                   }}>amend</button>
                 </summary>
-                <Terms schema={schema} terms={row.terms} />
+                <Terms schema={schema} terms={row.terms} unstated={paper.unstated} />
               </details>
             );
           })}
         </section>
         <AgreementForm key={amending?.at} schema={schema} entities={paper.entities}
-                       agreements={paper.agreements} from={amending?.from} />
+                       agreements={paper.agreements} unstated={paper.unstated}
+                       from={amending?.from} />
       </div>
     </div>
   );
@@ -120,17 +125,19 @@ export function PaperView() {
 
 /** An agreement's terms as the netting set declares them: its own sections, the way a deal's
  * panel renders, each term its convention where the terms state nothing - those of a set whose
- * collateral is off left out, being collateral it does not have - and every term, a table's
- * cells among them, editable where `onChange` takes the terms back. */
-function Terms({ schema, terms, onChange }: {
-  schema: Schema; terms: Record<string, unknown>;
+ * collateral is off left out, being collateral it does not have, and what paper never states
+ * (`unstated`) - and every term, a table's cells among them, editable where `onChange` takes the
+ * terms back. */
+function Terms({ schema, terms, unstated, onChange }: {
+  schema: Schema; terms: Record<string, unknown>; unstated: SettlementState;
   onChange?: (terms: Record<string, unknown>) => void;
 }) {
   const bare = !onChange && (schema.Instrument.types[SET] ?? []).some((section) =>
     uncollateralised(schema.Instrument.sections[section], terms));
   return (
     <DealPanels deal={terms} schema={schema} own tables={!!onChange}
-                cut={bare ? (fields) => statedOnly(fields, terms, [COLLATERAL]) : undefined}
+                cut={(fields) => onPaper(bare ? statedOnly(fields, terms, [COLLATERAL]) : fields,
+                                         unstated)}
                 onAmend={onChange && (async (key, wire) => {
                   onChange({ ...terms, [key]: wire });
                   return null;
@@ -178,9 +185,10 @@ function EntityForm({ entities }: { entities: Entity[] }) {
  * set every position under it compiles into, edited off the declaration and posted as it stands.
  * Started `from` an agreement in force, it holds that one's terms - from an entity alone, a new
  * agreement with it; an id the record declares already is a restatement, which names every term it
- * moves before it is filed. */
-export function AgreementForm({ schema, entities, agreements, from }: {
-  schema: Schema; entities: Entity[]; agreements: Agreement[]; from?: Partial<Agreement>;
+ * moves before it is filed. What paper never states (`unstated`) is left out, and said once. */
+export function AgreementForm({ schema, entities, agreements, unstated, from }: {
+  schema: Schema; entities: Entity[]; agreements: Agreement[]; unstated: SettlementState;
+  from?: Partial<Agreement>;
 }) {
   const [named, setNamed] = useState({
     agreement: from?.agreement ?? '', entity: from?.entity ?? '', kind: from?.kind ?? '' });
@@ -200,6 +208,7 @@ export function AgreementForm({ schema, entities, agreements, from }: {
     }
   }
 
+  const words = (keys: string[]) => keys.map((key) => key.replace(/_/g, ' ')).join(', ');
   return (
     <section className="card" ref={card}>
       <h3>{held ? `Restate ${held.agreement}` : 'Declare an agreement'}</h3>
@@ -228,7 +237,12 @@ export function AgreementForm({ schema, entities, agreements, from }: {
         </div>
       )}
       {said && <div className={said.refused ? 'error-box' : 'hint'}>{said.text}</div>}
-      <Terms schema={schema} terms={terms} onChange={setTerms} />
+      {unstated.fields.length + unstated.collateral_columns.length > 0 && (
+        <div className="note">Paper states no {words(unstated.fields)}, nor a collateral row's{' '}
+          {words(unstated.collateral_columns)}: those are settlement state, which the record holds
+          from each collateral settlement the Back Office files.</div>
+      )}
+      <Terms schema={schema} terms={terms} unstated={unstated} onChange={setTerms} />
     </section>
   );
 }
