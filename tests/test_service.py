@@ -6051,6 +6051,39 @@ def test_an_xva_row_says_the_currency_its_own_run_reported_in(desk_xva, tmp_path
     assert xva_rows()['NS_A']['currency'] is None
 
 
+def test_a_booking_into_one_set_leaves_another_set_s_xva_run_where_it_was(recorded, tmp_path):
+    """On a recording desk every write pins the record's head beside `Calc`: genesis is four
+    events and each booking one fill, so the file reads LSN 5 at the first full recalc and 6 at the
+    second, the second fill booked into NS_A. NS_B's row is the same row to the byte, `as_of`
+    included - its recalc answered by the run already filed - and NS_A's plan moves.
+
+    Killing mutation: the pin left in the xVA job, which hashes NS_B to a new plan and runs it again.
+    """
+    xva_book(tmp_path, [netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')]),
+                        netting_set('NS_B', 'CPTY_B', [dict(VANILLA, Reference='OPT_B')])])
+
+    def booked(reference, units):
+        answer = CLIENT.post('/book/deals', content=dump(
+            {'action': 'add', 'deal': dict(VANILLA, Reference=reference, Units=units),
+             'parent_reference': 'NS_A', 'quantity': 1.0,
+             'execution_reference': 'EXEC-' + reference}), headers=JSON).json()
+        assert answer['written'] is True, answer
+        return service.BOOK.pinned()['lsn']
+
+    try:
+        assert booked('OPT_A2', 5000.0) == 5
+        recalc()
+        before = xva_rows()
+        assert booked('OPT_A3', 2000.0) == 6
+        recalc()
+        after = xva_rows()
+    finally:
+        service.BOOK = None
+    assert {row['status'] for row in before.values()} == {'done'}, before
+    assert after['NS_B'] == before['NS_B'], 'a booking into NS_A ran NS_B again'
+    assert after['NS_A']['plan_hash'] != before['NS_A']['plan_hash']
+
+
 def test_an_unknown_set_refuses_by_name_and_a_missing_survival_curve_lands_in_the_row(
         tmp_path, monkeypatch):
     """Two refusals, neither losing the projection.

@@ -484,7 +484,8 @@ where the file lost them) and the client's name - and paper that is not its decl
 reading, never a refusal. **Held by**
 `test_spine_engine.py::test_the_pin_cannot_move_the_plan_hash`,
 `::test_a_fill_the_file_never_took_is_what_reconcile_is_for`,
-`::test_a_partial_unwind_leaves_the_file_and_the_record_agreeing`.
+`::test_a_partial_unwind_leaves_the_file_and_the_record_agreeing`,
+`test_service.py::test_a_booking_into_one_set_leaves_another_set_s_xva_run_where_it_was`.
 
 A close is legal when nothing due by its day waits: a fixing nobody printed, a payment or a
 premium nobody settled, an expiry nobody elected, or any `unreadable` row. A deal the compile left out is judged

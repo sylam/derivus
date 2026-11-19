@@ -3969,6 +3969,8 @@ def xva_document(document, node, counterparty):
     where it states none, as the engine reads a blank: the report currency's own curve.
     """
     run = deepcopy(document)
+    # the pin moves on a booking into any set, so one set's plan does not carry it
+    run.pop(SPINE_PIN, None)
     job_children(run)[:] = [node]
     calculation = dict(run['Calc']['Calculation'], Object='CreditMonteCarlo')
     calculation.setdefault('Batch_Size', XVA_BATCH_SIZE)
