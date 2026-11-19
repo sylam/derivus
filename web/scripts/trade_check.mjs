@@ -140,23 +140,26 @@ check('an unwind fills toward nothing from either side, the cash in the desk\'s 
       [{ quantity: -0.5, left: 0.5, receives: 7500 }, { quantity: 2, left: 0, receives: -600 }]);
 const CALL = { amount: { key: 'Underlying_Amount', value: 2000000 },
                of: { key: 'Underlying_Currency', value: 'USD' } };
-check('an unwind states what it deals in the currency its size is of, and nothing for a size in '
-        + 'the underlying\'s own units',
-      'a volume stated as a notional in a currency named "volume", which a capped tier then reads',
-      [trade.notionalOf(CALL, -0.5),
-       trade.notionalOf({ amount: { key: 'Volume', value: 100 },
-                          of: { key: 'Volume', value: 'volume' } }, 1)],
-      [{ notional: 1000000, notional_currency: 'USD' }, {}]);
-check('the confirm says how much of what is held, the cash and what is left, in the trade\'s size',
-      'what is left said as what was unwound, a confirm that cannot tell half from all; or the '
-        + 'cash said as received whatever its sign',
-      [trade.unwindWords(1, 0.25, 15000, 'USD', CALL),
-       trade.unwindWords(-1, 1, 0, 'USD', {}), trade.unwindWords(-2, 1, 300, 'USD', {})],
-      ['Unwind 0.25 (500,000 USD) of the 1 (2,000,000 USD) held, at 15,000 USD a unit: the desk '
-        + 'receives 3,750 USD, and 0.75 (1,500,000 USD) is left.',
+const SPOT = { amount: 15000, currency: 'USD', day: '2026-11-20' };
+check('a priced unwind settles on its day, and one at a price of nothing names none',
+      'the day sent whatever the price, a value date on a fill with no consideration to date; or '
+        + 'dropped, a priced unwind due on no day',
+      [trade.unwindFill(1, 0.5, SPOT), trade.unwindFill(-1, 1, { ...SPOT, amount: 0 })],
+      [{ quantity: -0.5, price: 15000, price_currency: 'USD', value_date: '2026-11-20' },
+       { quantity: 1, price: 0, price_currency: 'USD' }]);
+check('the confirm says how much of what is held, who pays whom what on which day, and what is '
+        + 'left, in the trade\'s size',
+      'what is left said as what was unwound, a confirm that cannot tell half from all; the '
+        + 'client said as paying whatever the sign of the cash; or the day left out',
+      [trade.unwindWords(1, 0.25, CALL, SPOT, 'Kestrel'),
+       trade.unwindWords(-1, 1, {}, { amount: 0, currency: 'USD' }, 'Kestrel'),
+       trade.unwindWords(-2, 1, {}, { amount: 300, currency: 'USD', day: '2026-11-18' },
+                         'Kestrel')],
+      ['Unwind 0.25 (500,000 USD) of the 1 (2,000,000 USD) held, at 15,000 USD a unit: Kestrel '
+        + 'pays the desk 3,750 USD on 2026-11-20, and 0.75 (1,500,000 USD) is left.',
        'Unwind 1 of the 1 short held, at 0 USD a unit: no cash moves, and nothing is left.',
-       'Unwind 1 of the 2 short held, at 300 USD a unit: the desk pays 300 USD, and 1 short is '
-        + 'left.']);
+       'Unwind 1 of the 2 short held, at 300 USD a unit: the desk pays Kestrel 300 USD on '
+        + '2026-11-18, and 1 short is left.']);
 
 // --- the way there and back
 const said = [];

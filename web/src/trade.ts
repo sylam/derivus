@@ -2,7 +2,7 @@
 // `quote.ts` are: which node of the file a path's trade is, what it is worth, what happened to it
 // on the record, and what an unwind of it files and leaves.
 
-import { SET, UNIT_FIELDS, dateOf, sizeOf, type BlotterRow, type Size } from './blotter';
+import { SET, dateOf, sizeOf, type BlotterRow, type Size } from './blotter';
 import { formatNumber } from './tokens';
 import type { ActivityPage, ActivityRow, DealMark, DealNode, Schema } from './types';
 
@@ -84,7 +84,10 @@ export function datesOf(row: BlotterRow): { key: string; date: string }[] {
     || a.key.localeCompare(b.key));
 }
 
-/** What an unwind of `units` of a position holding `held` files: the fill's signed quantity,
+/** What one unit of a trade changes hands at: an amount in a currency, and the day it settles. */
+export type Price = { amount: number; currency: string; day?: string };
+
+/** What an unwind of `units` of a position holding `held` does: the fill's signed quantity,
  * taking the position toward nothing, what is left, and the cash the desk receives at `price`
  * per unit - the consideration from its own side, negative where it pays. */
 export function unwindOf(held: number, units: number, price: number):
@@ -93,29 +96,27 @@ export function unwindOf(held: number, units: number, price: number):
   return { quantity, left: held + quantity, receives: -quantity * price };
 }
 
-/** What `units` of a trade of `size` deal, for the desk's tiers to route its ticket on: that many
- * of its size, unsigned, in the currency it is of - nothing where the size counts the underlying
- * in its own units, or the trade states none. */
-export function notionalOf(size: Size, units: number):
-  { notional?: number; notional_currency?: unknown } {
-  const { amount, of } = size;
-  return amount && typeof amount.value === 'number' && of && !UNIT_FIELDS.includes(amount.key)
-    ? { notional: Math.abs(units * amount.value), notional_currency: of.value } : {};
+/** The fill an unwind posts: its signed quantity and its price a unit, settling on the price's day
+ * - a price of nothing moves no cash and names no day. */
+export function unwindFill(held: number, units: number, price: Price): Record<string, unknown> {
+  return { quantity: unwindOf(held, units, price.amount).quantity, price: price.amount,
+           price_currency: price.currency, ...(price.amount ? { value_date: price.day } : {}) };
 }
 
-/** The confirm an unwind asks: how much of what is held, at what price, the cash that moves and
- * what is left - in the trade's own size where it states one. */
-export function unwindWords(held: number, units: number, price: number, currency: string,
-                            size: Size): string {
-  const { left, receives } = unwindOf(held, units, price);
+/** The confirm an unwind asks: how much of what is held, at what price, who pays whom what on
+ * which day, and what is left - in the trade's own size where it states one. */
+export function unwindWords(held: number, units: number, size: Size, price: Price,
+                            client: string): string {
+  const { left, receives } = unwindOf(held, units, price.amount);
   const amount = size.amount?.value;
   const told = (count: number, short = count < 0) => `${formatNumber(Math.abs(count))}${
     typeof amount === 'number' ? ` (${[formatNumber(Math.abs(count) * amount, 'money'),
       size.of?.value].filter(Boolean).join(' ')})` : ''}${short ? ' short' : ''}`;
-  const cash = receives === 0 ? 'no cash moves'
-    : `the desk ${receives > 0 ? 'receives' : 'pays'} ${formatNumber(Math.abs(receives), 'money')}`
-      + ` ${currency}`;
+  const cash = `${formatNumber(Math.abs(receives), 'money')} ${price.currency}${
+    price.day ? ` on ${price.day}` : ''}`;
   return `Unwind ${told(units, false)} of the ${told(held)} held, at `
-    + `${formatNumber(price, 'money')} ${currency} a unit: ${cash}, and ${left === 0
-      ? 'nothing is left' : `${told(left)} is left`}.`;
+    + `${formatNumber(price.amount, 'money')} ${price.currency} a unit: ${receives === 0
+      ? 'no cash moves' : receives > 0 ? `${client} pays the desk ${cash}`
+        : `the desk pays ${client} ${cash}`}, and ${left === 0 ? 'nothing is left'
+      : `${told(left)} is left`}.`;
 }

@@ -25,7 +25,7 @@ const OTHER: Record<string, string> = {
 };
 
 /** Amounts counting the underlying in its own units: no currency is ever beside them. */
-export const UNIT_FIELDS = ['Units', 'Volume'];
+const UNIT_FIELDS = ['Units', 'Volume'];
 
 const AMOUNT_FIELDS = [
   'Principal', 'Underlying_Amount', 'Amount', 'Buy_Amount', 'Near_Buy_Amount', 'Sell_Amount',

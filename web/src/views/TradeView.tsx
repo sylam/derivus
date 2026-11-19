@@ -5,15 +5,15 @@ import {
 } from '../blotter';
 import { EmptyState } from '../components/EmptyState';
 import { currencyOf, lagsBook, stampText } from '../desk';
-import { NO_PAPER, byPath, nodeAt, type Position, type Ticket } from '../positions';
+import { NO_PAPER, byPath, clientName, nodeAt, type Position, type Ticket } from '../positions';
 import { clientText, salesNames, verdictOf, type Verdict } from '../quote';
 import { WORKSPACES } from '../registry';
 import { pinnedAt } from '../spine';
 import { clockOf, marketOf, useApp, written } from '../state';
 import { formatNumber, ungrouped } from '../tokens';
 import {
-  bookedBy, datesOf, historyOf, legsOf, markOf, notionalOf, tradeAt, tradeSize, unwindOf,
-  unwindWords, wholeRecord,
+  bookedBy, datesOf, historyOf, legsOf, markOf, tradeAt, tradeSize, unwindFill, unwindWords,
+  wholeRecord, type Price,
 } from '../trade';
 import type { ActivityRow, PendingQuote } from '../types';
 import { Side, Value } from './BlotterView';
@@ -440,9 +440,10 @@ function Actions({ row, held, recording }: {
   );
 }
 
-/** One position unwound: how much of it - all of it unless typed - at what price and in which
- * currency, asked once more in words saying what moves and what is left, then filed as a fill
- * toward nothing under an execution reference minted for that confirm. */
+/** One position unwound: how much of it - all of it unless typed - at what price, in which
+ * currency and, where the price moves cash, settling on which day, asked once more in words saying
+ * who pays whom what and when and what is left, then filed as a fill toward nothing under an
+ * execution reference minted for that confirm. */
 function Unwind({ row, position, onVerdict }: {
   row: BlotterRow; position: Position; onVerdict: (said: Verdict | null) => void;
 }) {
@@ -451,20 +452,24 @@ function Unwind({ row, position, onVerdict }: {
   const [units, setUnits] = useState(String(Math.abs(held)));
   const [price, setPrice] = useState('');
   const [currency, setCurrency] = useState(currencyOf(state.doc));
+  const [day, setDay] = useState('');
   const [asking, setAsking] = useState<string | null>(null);
   const [filing, setFiling] = useState(false);
   const count = Number(ungrouped(units.trim()));
   const at = Number(ungrouped(price.trim()));
-  const typed = units.trim() !== '' && price.trim() !== '' && isFinite(count) && isFinite(at);
+  const cost: Price = { amount: at, currency: currency.trim(), day: day || undefined };
+  const typed = units.trim() !== '' && price.trim() !== '' && isFinite(count) && isFinite(at)
+    && (at === 0 || !!day);
   const size = tradeSize(row, state.schema);
+  const client = clientName(state.paper.data?.entities ?? [], position.counterparty)
+    || 'the client';
 
   async function file(execution: string) {
     setFiling(true);
     try {
       const answer = await fillDeal(position.deal_paths[0], {
-        reference: row.reference, quantity: unwindOf(held, count, at).quantity,
-        execution_reference: execution, price: at, price_currency: currency.trim(),
-        portfolio: position.portfolio, ...notionalOf(size, count) });
+        reference: row.reference, execution_reference: execution, portfolio: position.portfolio,
+        ...unwindFill(held, count, cost) });
       onVerdict(verdictOf(answer));
       if (answer.written) await written(dispatch, answer);
       setAsking(null);
@@ -492,6 +497,13 @@ function Unwind({ row, position, onVerdict }: {
                onChange={(event) => { setPrice(event.target.value); setAsking(null); }} />
         <input className="ccy" type="text" value={currency}
                onChange={(event) => { setCurrency(event.target.value); setAsking(null); }} />
+        {at !== 0 && isFinite(at) && (
+          <>
+            <span className="hint">settling on</span>
+            <input type="date" value={day}
+                   onChange={(event) => { setDay(event.target.value); setAsking(null); }} />
+          </>
+        )}
         <button className="primary" disabled={!typed || filing}
                 onClick={() => {
                   onVerdict(null);
@@ -504,7 +516,7 @@ function Unwind({ row, position, onVerdict }: {
       </div>
       {asking && typed && (
         <div className="banner">
-          {unwindWords(held, count, at, currency.trim(), size)}{' '}
+          {unwindWords(held, count, size, cost, client)}{' '}
           <button className="primary" disabled={filing} onClick={() => file(asking)}>
             {filing ? 'filing…' : 'file the unwind'}
           </button>{' '}
