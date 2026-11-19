@@ -2180,10 +2180,13 @@ def test_an_edited_quote_refuses_whether_or_not_the_book_moved(recorded, quoting
     pin it books (`service.quoted_terms`), and an acceptance books nothing whose file no longer
     hashes to them. Inside the desk's firm window seat two books on another client's set, so the
     book has moved and the plan is only a reading - and a strike edited on disk still refuses by
-    name; the same edit on a book that did not move refuses too. Neither moves the record's head or
-    the book file.
+    name; the same edit on a book that did not move refuses too, and so does the file pointed at
+    another client's netting set or handed a model pin the quote never carried. None moves the
+    record's head or the book file.
 
-    Killing mutation: the pin not compared, which books the edited strike both times.
+    Killing mutations: the pin not compared, which books the edited strike both times; the pin
+    leaving out the netting set, which books the collar under CLIENT_B; the pin leaving out the
+    models, which merges a pin nobody priced.
     """
     document = json.loads(quoting.read_text())
     document['Calc']['Deals']['Deals']['Children'].append(
@@ -2192,7 +2195,16 @@ def test_an_edited_quote_refuses_whether_or_not_the_book_moved(recorded, quoting
     quoting.write_text(json.dumps(document, indent=2), newline='\n')
     service.BOOK = service.Book(str(quoting))
 
-    for moved in (True, False):
+    def strike(filed):
+        filed['deal']['Children'][0]['Instrument']['.Deal']['Strike_Price'] *= 1.01
+
+    def other_set(filed):
+        filed['quote']['netting_set'] = 'CLIENT_B'
+
+    def model_pin(filed):
+        filed['quote']['valuation_configuration'] = {'FxRate.ZAR': 'GBMAssetPriceModel'}
+
+    for moved, edit in ((True, strike), (False, strike), (False, other_set), (False, model_pin)):
         quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET, actor=ACTOR)
         if moved:
             assert CLIENT.post('/book/deals', content=dump({
@@ -2202,14 +2214,14 @@ def test_an_edited_quote_refuses_whether_or_not_the_book_moved(recorded, quoting
                 headers=JSON).json()['written'] is True
         path = quoting.parent / 'tmp' / (quote['quote_id'] + '.json')
         filed = json.loads(path.read_text())
-        filed['deal']['Children'][0]['Instrument']['.Deal']['Strike_Price'] *= 1.01
+        edit(filed)
         path.write_text(json.dumps(filed, indent=2), newline='\n')
         before, book = head(recorded), quoting.read_bytes()
 
         refused = accept(quote, actor=ACTOR)
-        assert refused.status_code == 422, (moved, refused.json())
-        assert 'no longer says what was quoted' in refused.json()['detail'], moved
-        assert (head(recorded), quoting.read_bytes()) == (before, book), moved
+        assert refused.status_code == 422, (moved, edit.__name__, refused.json())
+        assert 'no longer says what was quoted' in refused.json()['detail'], (moved, edit.__name__)
+        assert (head(recorded), quoting.read_bytes()) == (before, book), (moved, edit.__name__)
 
 
 def test_a_declared_pillar_window_refuses_a_quote_struck_on_an_old_board(recorded, quoting):
