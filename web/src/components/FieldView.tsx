@@ -199,10 +199,12 @@ export function DescriptorPanel({ title, fields, values, onAmend, editable, asid
 
 /** A deal as its type declares it: a card per section holding that section's fields - its `own`
  * alone, the sections every type shares left out - then every key no section covers, the viewer's
- * honesty panel; a type nobody declared is one card whole. `cut` narrows a section's fields. */
-export function DealPanels({ deal, schema, own, cut = (fields) => fields, ...panel }: {
+ * honesty panel; a type nobody declared is one card whole. `cut` narrows a section's fields, and
+ * `hold` - what holds the seat from amending - reads in place of every input. */
+export function DealPanels({ deal, schema, own, cut = (fields) => fields, hold, onAmend,
+                             ...panel }: {
   deal: Record<string, unknown>; schema: Schema | null; own?: boolean;
-  cut?: (fields: Section) => Section;
+  cut?: (fields: Section) => Section; hold?: string | null;
   onAmend?: AmendField; ask?: string; tables?: boolean; beside?: (key: string) => ReactNode;
 }) {
   const object = String(deal.Object ?? '?');
@@ -217,10 +219,11 @@ export function DealPanels({ deal, schema, own, cut = (fields) => fields, ...pan
   const extra = pick((key) => !sections.some((section) => key in of(section)));
   return (
     <>
+      {hold && <div className="note">{hold}</div>}
       {sections.filter((section) => !shared.includes(section)).map((section) => (
         <DescriptorPanel key={section} title={schema.Instrument.titles?.[section] ?? section}
                          fields={cut(of(section))} values={pick((key) => key in of(section))}
-                         {...panel} />
+                         onAmend={hold ? undefined : onAmend} {...panel} />
       ))}
       <DescriptorPanel title="Fields the engine does not know" values={extra} />
     </>

@@ -6,7 +6,7 @@ import {
   GROUPINGS, NO_PAPER, POSITION, byId, byPath, clientName, clientTree, closed, nodeAt,
   portfolioTree, type Paper, type Position,
 } from '../positions';
-import { marketOf, openTrade, useApp, written } from '../state';
+import { heldBack, marketOf, openTrade, useApp, written } from '../state';
 import { tradeAt } from '../trade';
 import type { DealNode, Descriptor } from '../types';
 
@@ -130,6 +130,7 @@ export function DealEditor({ path, node }: { path: string; node: DealNode }) {
     : undefined;
   return (
     <DealPanels deal={node.Instrument['.Deal']} schema={state.schema} onAmend={onAmend}
+                hold={heldBack(state, 'book')}
                 beside={beside} ask={recording ? RESTRIKE : undefined} />
   );
 }

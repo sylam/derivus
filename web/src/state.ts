@@ -11,8 +11,8 @@ import { isObject } from './tokens';
 import { tradeAt } from './trade';
 import type {
   ActivityPage, BookMarket, BookResponse, BookRisk, BookXva, DealNode, DescribeResult, JobDoc,
-  Market, PathsAnswer, Reconcile, ResultSummary, Schema, SpineBlock, TablePage, ValidateResult,
-  Worklist,
+  Market, PathsAnswer, Reconcile, ResultSummary, Schema, SeatGrants, SpineBlock, TablePage,
+  ValidateResult, Worklist,
 } from './types';
 
 /** `opened` names the job file the served book was opened from, where it was opened from one. */
@@ -88,6 +88,8 @@ export type AppState = {
   paper: Fetched<Paper>;
   /** How the Portfolio screen and the blotter group the book - one choice for both. */
   grouping: Grouping;
+  /** What `GET /book/seat` answered asked as the seat `asked`, or its refusal (`heldBack`). */
+  grants: { asked: string; read: SeatGrants | null; refused: string | null } | null;
 };
 
 export const IDLE_RUN: RunState = {
@@ -112,6 +114,7 @@ export const INITIAL: AppState = {
   tab: 'portfolio', back: null, seat: stored(SEAT), selection: { deal: null, picks: {} },
   describe: null, validate: null, run: IDLE_RUN, risk: IDLE_RISK, xva: IDLE_XVA,
   market: IDLE_MARKET, paths: IDLE_PATHS, record: NO_RECORD, paper: IDLE_PAPER, grouping: 'book',
+  grants: null,
 };
 
 export type Action =
@@ -152,7 +155,8 @@ export type Action =
   | { type: 'RECORD_READ'; spine: SpineBlock | null; page: ActivityPage | null }
   | { type: 'RECONCILED'; reconcile: Reconcile; at: string | null }
   // the one worklist every screen counts from, read at a head and seat (`worklistAt`)
-  | { type: 'WORKLISTED'; at: string | null; worklist: Worklist | null; error: string | null };
+  | { type: 'WORKLISTED'; at: string | null; worklist: Worklist | null; error: string | null }
+  | { type: 'GRANTS'; grants: AppState['grants'] };
 
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
@@ -282,6 +286,8 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'WORKLISTED':
       return { ...state, record: { ...state.record, worklist: action.worklist,
                                    worklistAt: action.at, worklistError: action.error } };
+    case 'GRANTS':
+      return { ...state, grants: action.grants };
   }
 }
 
@@ -378,6 +384,31 @@ export function standing(doc: JobDoc | null, reconcile: Reconcile | null,
 export function blockHint(doc: JobDoc, path: string[]): string | undefined {
   const merge = doc.Calc.MergeMarketData;
   return merge?.MarketDataFile && holds(merge.ExplicitMarketData, path) ? 'block' : undefined;
+}
+
+// ---- what the seat may do -----------------------------------------------------------------------
+
+/** An act a grant names, as the record's refusal of a seat lacking it names it. */
+export type Act = 'book' | 'approve' | 'mark' | 'document' | 'settle' | 'confirm' | 'collateral';
+
+/** Why the seat may not `act` at `node` - the book by default, null for the firm's own facts, which
+ * only a grant over every node reaches - in a line naming the act; null where it may: off a desk
+ * that records, until its grants are read for this seat, and where it holds the act at `node` or
+ * at a node above it. */
+export function heldBack(state: AppState, act: Act,
+                         node: string | null = String(state.doc?.Calc.Deals.Reference ?? '')):
+  string | null {
+  const { grants } = state;
+  if (state.source?.kind !== 'book' || !state.record.spine || grants?.asked !== state.seat) {
+    return null;
+  }
+  if (grants.refused !== null) return grants.refused;
+  const { read } = grants;
+  const held = read?.verbs[act];
+  if (!read || !held || (node !== null && held.some((at) => node === at
+                                                     || node.startsWith(`${at}/`)))) return null;
+  return `Needs ${act}${held.length ? ` over ${node ?? 'the whole firm'}` : ''}: ${read.seat} `
+    + `holds it ${held.length ? `only over ${held.join(', ')}` : 'nowhere'}.`;
 }
 
 export const AppContext = createContext<{ state: AppState; dispatch: Dispatch<Action> } | null>(null);

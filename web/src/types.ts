@@ -445,6 +445,10 @@ export type WorkRow = {
  * and the `collateral_columns` of its collateral tables - settlement state, not paper. */
 export type SettlementState = { fields: string[]; collateral_columns: string[] };
 
+/** `GET /book/seat` - the seat a request's acts are filed under and, per act, the nodes it holds
+ * it at, each reaching every path under it: null where nothing narrows it. */
+export type SeatGrants = { seat: string; verbs: Record<string, string[] | null> };
+
 /** `GET /book/close/check` - whether a close on `date` is legal, and the diary rows it waits on. */
 export type CloseVerdict = {
   date: string; legal: boolean; due: number;

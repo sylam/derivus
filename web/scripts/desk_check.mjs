@@ -428,6 +428,49 @@ check("a field naming price factors offers the market's of its types, by the nam
        desk.factorNames({ widget: 'Text', description: '', value: '' }, CURVES),
        desk.factorNames(named(['InterestRate']), null)],
       [['EUR', 'USD-OIS', 'ZAR'], ['USD.ZAR'], ['ACME'], [], [], []]);
+
+// --- what the seat may do: one rule over GET /book/seat
+const verbs = (held) => ({ book: [], approve: [], mark: [], document: [], settle: [], confirm: [],
+                            collateral: [], validate: [], admin: [], ...held });
+const seated = (grants, seat = 'sales-1', extra = {}) => ({
+  source: { kind: 'book' }, record: { spine: { lsn: 1 } }, seat,
+  doc: { Calc: { Deals: { Reference: 'HARBOURLINE' } } },
+  grants: grants && { asked: seat, read: { seat, verbs: verbs(grants) }, refused: null },
+  ...extra });
+const NO_SEAT = 'No seat is set, and this desk files every act under the seat that asks.';
+check('a seat may act where a node it holds the act at is the node or above it, the book by '
+      + 'default and the whole firm only by a grant over every node; and says, naming the act, '
+      + 'what holds it elsewhere',
+      'the held nodes matched by prefix, which lets a grant over HARBOURLINE act at HARBOURLINE-2; '
+      + 'a grant at a node read as reaching the firm, which offers a declaration the record '
+      + 'refuses; a node above the one held read as reached, which offers HARBOURLINE to a seat '
+      + 'holding HARBOURLINE/fx; an empty list read as everywhere; or another act\'s grant read',
+      [state.heldBack(seated({ mark: ['HARBOURLINE'] }), 'mark'),
+       state.heldBack(seated({ book: ['HARBOURLINE'] }), 'book', 'HARBOURLINE/fx/spot'),
+       state.heldBack(seated({ document: null }), 'document', null),
+       state.heldBack(seated({ book: ['HARBOURLINE'] }), 'mark'),
+       state.heldBack(seated({ book: ['HARBOURLINE'] }), 'book', 'HARBOURLINE-2'),
+       state.heldBack(seated({ document: ['HARBOURLINE'] }), 'document', null),
+       state.heldBack(seated({ book: ['HARBOURLINE/fx'] }), 'book'),
+       state.heldBack(seated({ mark: ['HARBOURLINE'] }), 'mark', null)],
+      [null, null, null, 'Needs mark: sales-1 holds it nowhere.',
+       'Needs book over HARBOURLINE-2: sales-1 holds it only over HARBOURLINE.',
+       'Needs document over the whole firm: sales-1 holds it only over HARBOURLINE.',
+       'Needs book over HARBOURLINE: sales-1 holds it only over HARBOURLINE/fx.',
+       'Needs mark over the whole firm: sales-1 holds it only over HARBOURLINE.']);
+check('nothing is held back off a desk that records, before the grants of the seat on screen are '
+      + 'read, or where nothing narrows the act; a refused read holds every act in its own words',
+      'a plain desk held back for want of a record, which hides every control it can use; the '
+      + "grants of the seat typed before read for the one typed now; a null act read as nowhere; "
+      + 'or a refusal - no seat named - read as leave to act',
+      [state.heldBack(seated({}, 'sales-1', { record: { spine: null } }), 'book'),
+       state.heldBack(seated({}, 'sales-1', { source: { kind: 'local' } }), 'book'),
+       state.heldBack({ ...seated({}), seat: 'fx-trader' }, 'approve'),
+       state.heldBack(seated(null), 'book'),
+       state.heldBack(seated({ approve: null }), 'approve'),
+       state.heldBack(seated(null, '', { grants: { asked: '', read: null, refused: NO_SEAT } }),
+                      'book')],
+      [null, null, null, null, null, NO_SEAT]);
 const NETTED = { Calc: { Deals: { Deals: { Children: [
   { Instrument: { '.Deal': { Object: 'NettingCollateralSet', Credit_Support_Amounts: {
     Counterparty: 'KESTREL' } } }, Children: [{ Instrument: { '.Deal': { Object: 'FXOptionDeal' } } },
@@ -471,7 +514,7 @@ check("a profile's peaks are each column's largest number on the day it falls, t
       [{ ee: { value: 5, day: '2026-12-16' }, pfe: { value: 9, day: '2027-02-16', quantile: 97.5 } },
        { ee: { value: 5, day: '2026-12-16' } }]);
 
-console.log(`\n${ran} checks over 35 functions, ${missed.length} missed`);
+console.log(`\n${ran} checks over 36 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

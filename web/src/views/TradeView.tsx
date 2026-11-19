@@ -12,7 +12,7 @@ import {
 import { clientText, quoteAt, verdictOf, type Verdict } from '../quote';
 import { WORKSPACES } from '../registry';
 import { pinnedAt } from '../spine';
-import { clockOf, marketOf, useApp, written } from '../state';
+import { clockOf, heldBack, marketOf, useApp, written } from '../state';
 import { formatNumber, ungrouped } from '../tokens';
 import {
   bookedBy, datesOf, historyOf, legsOf, markOf, movedTerms, tradeAt, tradeName, tradeSize,
@@ -404,7 +404,8 @@ function Actions({ row, held, recording }: {
         {!recording ? (
           <div className="note">This desk keeps no record, so nothing is unwound at a price here:
             an unwind is a fill, and a fill is filed on a desk that records.</div>
-        ) : open.length ? open.map((position) => (
+        ) : heldBack(state, 'book') ? <div className="note">{heldBack(state, 'book')}</div>
+          : open.length ? open.map((position) => (
           <Unwind key={`${position.agreement}/${position.portfolio}`} row={row} position={position}
                   onVerdict={setVerdict} />
         )) : (

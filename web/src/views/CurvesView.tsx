@@ -13,7 +13,7 @@ import {
   SURVIVAL, creditCounterparties, entityText, refusedAt, spreadForm, spreadRequest, spreads,
   survivalCurve, valuationDay, type SpreadForm,
 } from '../desk';
-import { blockHint, marketOf, useApp, written } from '../state';
+import { blockHint, heldBack, marketOf, useApp, written } from '../state';
 import { curveOf, formatNumber, isObject, tenorLabel, token } from '../tokens';
 import type {
   ConfigSection, CurveBlock, CurveOutcome, CurveRow, CurvesAnswer, Descriptor, Schema,
@@ -220,6 +220,7 @@ export function CreditCard({ id, title, factor, base, convention, recording }: {
   recording: boolean;
 }) {
   const { state, dispatch } = useApp();
+  const hold = heldBack(state, 'mark');
   const [name, setName] = useState(id ?? '');
   const [form, setForm] = useState(() => spreadForm(factor, convention));
   const [said, setSaid] = useState<{ at: string; text: string } | null>(null);
@@ -282,6 +283,7 @@ export function CreditCard({ id, title, factor, base, convention, recording }: {
       </section>
       <section className="card credit">
         <h3>{curve ? 'Restate the curve' : 'State the curve'}</h3>
+        {hold ? <div className="note">{hold}</div> : <>
         {!id && (
           <div className="statusrow">
             <input placeholder={recording ? 'an entity the record declares' : 'counterparty'}
@@ -345,6 +347,7 @@ export function CreditCard({ id, title, factor, base, convention, recording }: {
           {said?.at === 'done' && <span className="chip done">{said.text}</span>}
           {refusal('act')}{id && refusal('counterparty')}
         </div>
+        </>}
       </section>
     </>
   );

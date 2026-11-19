@@ -10,8 +10,8 @@ import type {
   CalculationOutcome, PendingQuote, QuoteGiven,
   CalculationsAnswer, CloseVerdict, CurveOutcome, CurvesAnswer, Decided, DescribeResult, JobDoc,
   PathMaps,
-  PathsAnswer, Reconcile, Recorded, ResultSummary, Schema, SecuritiesAnswer, SeedOutcome,
-  SettlementState, TablePage, ValidateResult, Worklist,
+  PathsAnswer, Reconcile, Recorded, ResultSummary, Schema, SeatGrants, SecuritiesAnswer,
+  SeedOutcome, SettlementState, TablePage, ValidateResult, Worklist,
 } from './types';
 
 /** Where this browser keeps who it acts as: the ID token a deployment's sign-in stored, else the
@@ -236,6 +236,8 @@ export const getTable = (id: string, table: string, offset = 0, limit?: number,
   call<TablePage>('GET', `/results/${id}/${table}?offset=${offset}${
     limit === undefined ? '' : `&limit=${limit}`}${
     width === undefined ? '' : `&width=${width}`}`);
+// ---- what the seat asking may do, and over which nodes ----
+export const getSeat = () => call<SeatGrants>('GET', '/book/seat');
 // two paths a link opens rather than a call: the service answers each as the file a browser
 // saves, a table whole at full precision and the served book byte for byte
 export const tableCsv = (id: string, table: string) => `/results/${id}/${table}?format=csv`;

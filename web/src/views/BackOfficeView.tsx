@@ -7,7 +7,7 @@ import { EmptyState } from '../components/EmptyState';
 import { stampText } from '../desk';
 import { NO_PAPER } from '../positions';
 import { clientText, quoteAt, spreadText } from '../quote';
-import { marketOf, opened, useApp } from '../state';
+import { heldBack, marketOf, opened, useApp, type Act } from '../state';
 import { formatNumber, ungrouped } from '../tokens';
 import {
   holdsFor, paperText, ticketWords, tradeAt, tradeName, waitedText, waitingElsewhere,
@@ -17,7 +17,7 @@ import { TicketCard, useQuoteList, useQuotes } from './QuoteView';
 
 /** The three lists this seat clears, each by its own verb. */
 type List = 'payments' | 'unconfirmed' | 'calls';
-const LISTS: { list: List; title: string; verb: string }[] = [
+const LISTS: { list: List; title: string; verb: Act }[] = [
   { list: 'payments', title: 'Payments due', verb: 'settle' },
   { list: 'unconfirmed', title: 'Trades to confirm', verb: 'confirm' },
   { list: 'calls', title: 'Collateral called', verb: 'collateral' },
@@ -80,13 +80,20 @@ export function BackOfficeView() {
                   </tbody>
                 </table>
               </div>
-            ) : <div className="hint">nothing waits on this seat</div>}
+            ) : <div className="nested">
+              {nothing(heldBack(state, verb), 'nothing waits on this seat')}
+            </div>}
           </section>
         ))}
       </div>
     </div>
   );
 }
+
+/** A list this seat clears none of: what holds it from clearing one, else that none waits - the
+ * worklist lists only the rows a seat clears. */
+const nothing = (hold: string | null, none: string) =>
+  <div className={hold ? 'note' : 'hint signing'}>{hold ?? none}</div>;
 
 /** What a verdict answered, kept on the card once its ticket has left the list. */
 type Said = { status: string | null; text: string };
@@ -121,16 +128,20 @@ function Tickets({ worklist }: { worklist: Worklist }) {
   const quotes = useQuotes([...new Set([...worklist.pending, ...elsewhere]
     .flatMap((row) => given(row)?.quote_id ?? []))]);
   const own = worklist.pending.filter((row) => row.booker === worklist.seat).length;
-  const signing = (row: WorkRow, listed: boolean) => {
+  const signing = (row: WorkRow, hold: string | null) => {
     const at = row.deal_path ? tradeAt(children, row.deal_path) : undefined;
     const quote = given(row);
     return (
-      <Signing key={row.key} row={row} trade={at && rows.get(at.path)} now={now}
-               hold={holdsFor(row, worklist.seat, listed)} execution={executions.get(row.key)}
+      <Signing key={row.key} row={row} trade={at && rows.get(at.path)} now={now} hold={hold}
+               execution={executions.get(row.key)}
                quote={!desk.data ? undefined : quote ? quotes.data?.[quote.quote_id] : null}
                onSaid={setSaid} />
     );
   };
+  // what holds this seat from signing: once on a card where it holds every row, else per row
+  const hold = heldBack(state, 'approve');
+  const holds = elsewhere.map((row) => holdsFor(row, worklist.seat, false));
+  const once = hold ?? (new Set(holds).size === 1 ? holds[0] : null);
   return (
     <>
       <section className="card">
@@ -150,10 +161,8 @@ function Tickets({ worklist }: { worklist: Worklist }) {
               <span>{said.text}</span>
             </div>
           )}
-          {worklist.pending.map((row) => signing(row, true))}
-          {!worklist.pending.length && (
-            <div className="hint signing">nothing waits on this seat to sign</div>
-          )}
+          {worklist.pending.map((row) => signing(row, holdsFor(row, worklist.seat, true)))}
+          {!worklist.pending.length && nothing(hold, 'nothing waits on this seat to sign')}
           {worklist.pending.length > 0 && (
             <div className="hint signing">
               Which check sent a ticket past the tiers above its own - its size, its tenor, where it
@@ -166,7 +175,10 @@ function Tickets({ worklist }: { worklist: Worklist }) {
         <section className="card">
           <h3>Waiting on another seat ({elsewhere.length}) <span className="hint">read only</span>
           </h3>
-          <div className="nested">{elsewhere.map((row) => signing(row, false))}</div>
+          <div className="nested">
+            {once && <div className="note">{once}</div>}
+            {elsewhere.map((row, at) => signing(row, hold || holds[at] === once ? '' : holds[at]))}
+          </div>
         </section>
       )}
     </>
@@ -176,7 +188,8 @@ function Tickets({ worklist }: { worklist: Worklist }) {
 /** One pending ticket as its signer reads it: the client and the trade in one line, its reference
  * opening its page; who booked it, when and how long it has waited; why it waits, in the tier's own
  * words; what it was quoted at, its ticket a click away; the paper it books under - then its two
- * verdicts, or what holds for this seat. Either refusal is the service's sentence, verbatim. */
+ * verdicts, or what holds for this seat, blank where its card says it. Either refusal is the
+ * service's sentence, verbatim. */
 function Signing({ row, trade, now, hold, execution, quote, onSaid }: {
   row: WorkRow; trade?: BlotterRow; now: number; hold: string | null; execution?: string;
   quote?: PendingQuote | null; onSaid: (said: Said) => void;
@@ -246,7 +259,7 @@ function Signing({ row, trade, now, hold, execution, quote, onSaid }: {
         <dd>{row.agreement ? paperText(row.agreement, paper.agreements, schema) : ''}</dd>
       </dl>
       {showing && quote && <TicketCard pending={quote} />}
-      {hold ? <div className="note">{hold}</div> : (
+      {hold !== null ? hold && <div className="note">{hold}</div> : (
         <div className="statusrow">
           <span className="editcell">
             <button className="ghost" disabled={filing}
@@ -343,6 +356,7 @@ function Clearing({ list, row, day }: { list: List; row: WorkRow; day: string })
 /** The book's day's close behind the check's own verdict: legal, and declaring it is one act; not,
  * and what it waits on is listed. The close refuses an illegal day in its own words besides. */
 function CloseCheck({ check }: { check: CloseVerdict }) {
+  const hold = heldBack(useApp().state, 'mark', null);
   const [refused, setRefused] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
 
@@ -366,10 +380,13 @@ function CloseCheck({ check }: { check: CloseVerdict }) {
           {check.legal ? 'legal' : `waits on ${check.outstanding.length}`}
         </span>
         <span className="hint">{check.due} due by the day</span>
-        <button className="ghost" disabled={!check.legal || closing} onClick={close}>
-          declare the close
-        </button>
+        {!hold && (
+          <button className="ghost" disabled={!check.legal || closing} onClick={close}>
+            declare the close
+          </button>
+        )}
       </div>
+      {hold && <div className="note">{hold}</div>}
       {refused && <div className="error-box">{refused}</div>}
       {!check.legal && (
         <div className="tablewrap">

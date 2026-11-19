@@ -9,7 +9,7 @@ import { openClient } from '../client';
 import { EmptyState } from '../components/EmptyState';
 import type { Agreement, Entity } from '../positions';
 import { worklistAt } from '../spine';
-import { opened, standing, useApp } from '../state';
+import { heldBack, opened, standing, useApp } from '../state';
 import { COLLATERAL, onPaper, statedOnly, termsMoved, uncollateralised } from '../tokens';
 import type { Schema, SettlementState } from '../types';
 
@@ -32,6 +32,7 @@ export function PaperView() {
     { entities: [], agreements: [], unstated: { fields: [], collateral_columns: [] },
       error: null });
   const [amending, setAmending] = useState<{ from: Agreement; at: number } | null>(null);
+  const hold = heldBack(state, 'document', null);
 
   useEffect(() => {
     if (at === null) return;
@@ -105,10 +106,12 @@ export function PaperView() {
                       opened(dispatch, state.doc, path);
                     }}>open its set</button>
                   )}
-                  <button className="ghost" onClick={(event) => {
-                    event.preventDefault();
-                    setAmending({ from: row, at: Date.now() });
-                  }}>amend</button>
+                  {!hold && (
+                    <button className="ghost" onClick={(event) => {
+                      event.preventDefault();
+                      setAmending({ from: row, at: Date.now() });
+                    }}>amend</button>
+                  )}
                 </summary>
                 <Terms schema={schema} terms={row.terms} unstated={paper.unstated} />
               </details>
@@ -148,6 +151,7 @@ function Terms({ schema, terms, unstated, onChange }: {
 /** Declaring a legal entity: its id as the legal system knows it, its name and the parent it is
  * grouped under. */
 function EntityForm({ entities }: { entities: Entity[] }) {
+  const hold = heldBack(useApp().state, 'document', null);
   const [entity, setEntity] = useState({ entity: '', name: '', parent: '' });
   const [said, setSaid] = useState<Said>(null);
 
@@ -162,7 +166,7 @@ function EntityForm({ entities }: { entities: Entity[] }) {
     }
   }
 
-  return (
+  return hold ? <div className="note">{hold}</div> : (
     <div className="statusrow">
       {(['entity', 'name'] as const).map((field) => (
         <input key={field} placeholder={field} value={entity[field]}
@@ -190,6 +194,7 @@ export function AgreementForm({ schema, entities, agreements, unstated, from }: 
   schema: Schema; entities: Entity[]; agreements: Agreement[]; unstated: SettlementState;
   from?: Partial<Agreement>;
 }) {
+  const hold = heldBack(useApp().state, 'document', null);
   const [named, setNamed] = useState({
     agreement: from?.agreement ?? '', entity: from?.entity ?? '', kind: from?.kind ?? '' });
   const [terms, setTerms] = useState<Record<string, unknown>>(from?.terms ?? { Object: SET });
@@ -212,6 +217,7 @@ export function AgreementForm({ schema, entities, agreements, unstated, from }: 
   return (
     <section className="card" ref={card}>
       <h3>{held ? `Restate ${held.agreement}` : 'Declare an agreement'}</h3>
+      {hold ? <div className="note">{hold}</div> : <>
       <div className="statusrow">
         <input placeholder="agreement" value={named.agreement}
                onChange={(event) => setNamed({ ...named, agreement: event.target.value })} />
@@ -243,6 +249,7 @@ export function AgreementForm({ schema, entities, agreements, unstated, from }: 
           from each collateral settlement the Back Office files.</div>
       )}
       <Terms schema={schema} terms={terms} unstated={unstated} onChange={setTerms} />
+      </>}
     </section>
   );
 }

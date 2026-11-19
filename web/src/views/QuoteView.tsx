@@ -13,7 +13,7 @@ import {
   salesNames, solvedNumbers, solving, spreadText, standsAt, ticketFields, ticketLegs, verdictOf,
   type Draft, type Kept, type TicketLeg, type Verdict,
 } from '../quote';
-import { clockOf, openTrade, useApp } from '../state';
+import { clockOf, heldBack, openTrade, useApp } from '../state';
 import { formatNumber } from '../tokens';
 import type { PendingQuote, Quote, QuoteGiven, Schema, StructureType } from '../types';
 import { useRead } from './ClientView';
@@ -692,7 +692,8 @@ function Acceptance({ id, pending, verdict, quoting, onVerdict, onRequote }: {
             <span>The client's price stands on the record at position {pending.accepted.lsn}; this
               desk's tiers did not book it, and quoting again does not change that.</span>
           </div>
-        ) : asking ? (
+        ) : heldBack(state, 'book') ? <div className="note">{heldBack(state, 'book')}</div>
+        : asking ? (
           <div className="banner">
             Book the {salesName(state.schema, quote.structure)} for{' '}
             <b>{clientText(quote.netting_set, paper.entities, paper.agreements)}</b> at net{' '}

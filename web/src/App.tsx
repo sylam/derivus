@@ -2,13 +2,13 @@ import { useEffect, useReducer, useRef, useState } from 'react';
 import {
   DOORBELL, failure, getBook, getBookActivity, getBookAgreements, getBookEntities, getBookMarket,
   getBookPortfolios, getBookPositions, getBookRisk, getBookStatus, getBookXva, getPaths, getSchema,
-  postDescribe,
+  getSeat, postDescribe,
 } from './api';
 import { DocumentLoader } from './components/DocumentLoader';
 import { JobHeader } from './components/JobHeader';
 import { ActivityStrip, ReconcileBanner, SeatControl, WorklistBanner } from './components/Record';
 import { WORKSPACES } from './registry';
-import { pinnedAt, polled, ringsAhead } from './spine';
+import { pinnedAt, polled, ringsAhead, worklistAt } from './spine';
 import { AppContext, INITIAL, bookLoaded, clockOf, reducer } from './state';
 
 const BOOK_POLL_MS = 2000;
@@ -166,6 +166,26 @@ export function App() {
       .catch((error) => { if (live) dispatch({ type: 'PAPER_FAILED', ...failure(error) }); });
     return () => { live = false; };
   }, [state.source, paperWanted, recordAt]);
+
+  // What the seat may do, asked again where the seat or the record's head moved. A refusal - no
+  // seat named, under grants - stands in its place; any other failure leaves acts to the service.
+  const grantsAt = worklistAt(state.source?.kind === 'book' ? state.record.spine : null,
+                              state.seat);
+  useEffect(() => {
+    if (grantsAt === null) return;
+    let live = true;
+    const asked = state.seat;
+    const held = (grants: typeof state.grants) => {
+      if (live) dispatch({ type: 'GRANTS', grants });
+    };
+    getSeat()
+      .then((read) => held({ asked, read, refused: null }))
+      .catch((error) => {
+        const { status, error: refused } = failure(error);
+        held(status === 422 ? { asked, read: null, refused } : null);
+      });
+    return () => { live = false; };
+  }, [grantsAt]);
 
   // describe whenever the document moves
   useEffect(() => {
