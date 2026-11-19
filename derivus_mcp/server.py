@@ -19,8 +19,8 @@ here is structure: a new factor, a moved pillar, a changed convention is authori
 Answers are SUMMARIES AND POINTERS, never payloads: the model needs to know a deal booked or a
 calculation ran, not to hold a simulation cube in its context. A run comes back as its replay
 tuple, its stats and each table's SHAPE; cells come one capped page at a time through
-`fetch_table`, a table too wide to read as text is refused by name (that is what the web UI is
-for), and `deal_values` checks a result's shape before it fetches anything.
+`fetch_table`, a table too wide to read as text is refused by name (the service serves it whole as
+a file), and `deal_values` checks a result's shape before it fetches anything.
 
 THE BLOTTER'S TWO DATA VIEWS are `book_risk_summary` and `xva_view`, and they answer two different
 questions on purpose. RISK is whole-book and COUNTERPARTY-BLIND: one base valuation with first-order
@@ -287,7 +287,9 @@ def _booking(outcome):
                ('missing_factors', len(verdict.get('factors', []))),
                ('calculation_messages', len(verdict.get('calculation', [])))) if count}
     if issues:
-        outcome['book_issues'] = dict(issues, hint='validate_book lists them')
+        outcome['book_issues'] = dict(issues, hint='outstanding on the book before this booking, '
+                                                   'apart from what `refused` names: validate_book '
+                                                   'lists them')
     return outcome
 
 
@@ -1941,17 +1943,19 @@ def poll_result(result_id: str) -> dict:
 @MCP.tool(annotations=READ_ONLY)
 def fetch_table(result_id: str, table: str, offset: int = 0, limit: int = 50) -> dict:
     """One table of a finished run, paged and CAPPED: at most 200 rows per call, and a table wider
-    than 60 columns - a scenario cube - is refused by name, because it belongs in the web UI and
-    not in a context window. Table names come from the result summary; a grouped table is a path
-    (`cashflows/USD`)."""
+    than 60 columns - a scenario cube, a wide book's `Greeks_Second` - is refused by name with
+    nothing fetched, the refusal naming the file the service serves it whole as. Table names come
+    from the result summary; a grouped table is a path (`cashflows/USD`)."""
     shape = _raw_result(result_id).get('tables', {}).get(table)
     if shape is None:
         raise ToolError('result {} has no table {!r} - poll_result lists them'.format(
             result_id, table))
     if len(shape['columns']) > MAX_TABLE_COLUMNS:
-        raise ToolError('{} is {} columns wide - a simulation cube, not a table to read as text. '
-                        'View it in the web UI, or fetch a summary table instead.'.format(
-                            table, len(shape['columns'])))
+        raise ToolError('{} is {} columns wide, more than the {} read here as text, so nothing was '
+                        'fetched: the service serves it whole as a file at '
+                        '/results/{}/{}?format=csv, and a narrower table of the run reads here - '
+                        'poll_result lists them.'.format(table, len(shape['columns']),
+                                                         MAX_TABLE_COLUMNS, result_id, table))
     return service().call('GET', '/results/{}/{}?offset={}&limit={}'.format(
         result_id, table, offset, min(int(limit), MAX_PAGE_ROWS)))
 

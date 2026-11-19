@@ -1445,9 +1445,11 @@ def test_a_run_comes_back_as_shapes_never_cells(book):
 
 def test_fetch_table_is_capped_and_a_cube_is_refused():
     """A page is at most 200 rows however much is asked for, and a table wider than 60 columns -
-    a simulation cube - is refused BY NAME, pointed at the web UI, with nothing fetched.
+    a simulation cube - is refused BY NAME, with nothing fetched, pointed at the file the service
+    serves it whole as.
 
-    Killing mutation: the page cap dropped, which pages all 500 rows.
+    Killing mutations: the page cap dropped, which pages all 500 rows; the refusal pointing at a
+    screen instead of the file.
     """
     long = pd.DataFrame({'a': np.arange(500.0), 'b': np.arange(500.0)})
     wide = pd.DataFrame(np.zeros((3, 100)), columns=[str(c) for c in range(100)])
@@ -1458,9 +1460,11 @@ def test_fetch_table_is_capped_and_a_cube_is_refused():
 
     counting = Counting(TestClient(service.app))
     mcp_server.configure(base_url='http://testserver', session=counting)
-    with pytest.raises(ToolError, match='web UI'):
+    with pytest.raises(ToolError, match=r'100 columns wide.*/results/mcp-caps/wide\?format=csv'):
         mcp_server.fetch_table('mcp-caps', 'wide')
     assert not any(path.endswith('/wide') for path in counting.paths)
+    whole = CLIENT.get('/results/mcp-caps/wide', params={'format': 'csv'})
+    assert whole.status_code == 200 and len(whole.text.splitlines()[0].split(',')) == 101
 
 
 def test_deal_values_refuses_a_cube_without_fetching():
@@ -1481,9 +1485,12 @@ def test_deal_values_refuses_a_cube_without_fetching():
 
 def test_a_booking_answer_is_the_booking_not_the_book(book):
     """The booking outcome carries what happened to THIS deal; the rest of the book's troubles
-    arrive as counts with a pointer, never as the whole verdict.
+    arrive as counts with a pointer, never as the whole verdict - and say they stood before it:
+    beside a binary the file holds without its payoff, a clean booking counts the 1 message and
+    the 3 equity factors `validate_book` read before it.
 
-    Killing mutation: the book's whole verdict left on the answer.
+    Killing mutations: the book's whole verdict left on the answer; the pointer saying nothing of
+    when the issues arose, which reads as if this booking caused them.
     """
     clean = mcp_server.book_deal(json.loads(dump(BOOKED)))
     assert 'validate' not in clean and 'book_issues' not in clean
@@ -1494,6 +1501,19 @@ def test_a_booking_answer_is_the_booking_not_the_book(book):
     assert rejected['written'] is False and rejected['refused']
     assert rejected['book_issues']['deal_messages'] == 1
     assert 'validate_book' in rejected['book_issues']['hint']
+
+    standing = json.loads(book.read_text())
+    standing['Calc']['Deals']['Deals']['Children'].append(
+        {'Instrument': {'.Deal': json.loads(dump(BINARY))}})
+    book.write_text(json.dumps(standing, indent=2), newline='\n')
+    service.BOOK = service.Book(str(book))
+    before = mcp_server.validate_book()
+    beside = mcp_server.book_deal(json.loads(dump(dict(BOOKED, Reference='CF3'))))
+    assert beside['written'] is True and (len(before['deals']), len(before['factors'])) == (1, 3)
+    assert beside['book_issues'] == {
+        'deal_messages': 1, 'missing_factors': 3,
+        'hint': 'outstanding on the book before this booking, apart from what `refused` names: '
+                'validate_book lists them'}
 
 
 class Terminal:
