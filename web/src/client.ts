@@ -250,6 +250,11 @@ export function creditLines(id: string, reads: CreditReads, schema: Schema): Cre
             .map((row) => line(row.agreement, null))];
 }
 
+/** Whether the collateral read's refusal says no close stands to read a call on: no market the
+ * record designates for the P&L, none declared under that name, or no marks for the book's day. */
+export const unmarked = (refusal: string | null): boolean =>
+  /^(this record designates no market|no market is declared|no marks stand)/.test(refusal ?? '');
+
 /** What a set's own terms say the bank holds, on a desk keeping no record: its opening balance -
  * at its declared convention where it states none - in its balance currency, else its agreement's,
  * else the market's base, with the market's spots in that currency; no call is worked without a

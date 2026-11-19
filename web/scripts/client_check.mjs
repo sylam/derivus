@@ -282,6 +282,17 @@ check("on a desk keeping no record a set holds what its terms state - its openin
        stated({ Balance_Currency: 'ZAR', Agreement_Currency: 'EUR', Opening_Balance: 10000 }), stated({})],
       [['EUR', 400, 0.8, null, 500], ['ZAR', 10000, 20, null, 500], ['USD', 0, 1, null, 1000]]);
 
+check('a collateral read refused for want of a close reads no close marked - no market designated '
+      + 'for the P&L, none declared under its name, no marks for the day - and any other refusal not',
+      "a record that never declared its close read as unread rather than unmarked; or a seat's "
+      + 'refusal read as no close marked',
+      ["this record designates no market for 'pnl', so there is nothing to strike it on",
+       "no market is declared under the name 'official' in this record",
+       "no marks stand for 2026-11-16 on 'official' - the days marked are none",
+       'No seat is set, and this desk files every act under the seat that asks', null]
+        .map(client.unmarked),
+      [true, true, true, false, false]);
+
 const KES_LINES = client.creditLines('KES', CREDIT, SCHEMA);
 check("a client's sums are over every one of its book's sets or none - an unread set blanks it, and "
       + 'adjustments in two currencies, or a set that left the book, are never added',
@@ -321,7 +332,7 @@ check('clients with something to act on come first, then the largest exposure af
                           { name: 'E', wrong: [], after: 10 }]).map((row) => row.name),
       ['C', 'D', 'B', 'E', 'A']);
 
-console.log(`\n${ran} checks over 16 functions, ${missed.length} missed`);
+console.log(`\n${ran} checks over 17 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

@@ -5,7 +5,7 @@ import {
 import { SET, fieldsOf, rowsByPath, toRows } from '../blotter';
 import {
   WRONG, actionFirst, agreementsOf, creditLines, exposureAfter, openClient, runSum, statedHolding,
-  summed, wrongWith, type CreditLine, type Wrong,
+  summed, unmarked, wrongWith, type CreditLine, type Wrong,
 } from '../client';
 import { EmptyState } from '../components/EmptyState';
 import { TimeSeriesChart } from '../components/TimeSeriesChart';
@@ -132,7 +132,7 @@ export function XvaView() {
     [kind, clients.flatMap((client) => client.wrong).filter((wrong) => wrong.kind === kind).length] as const)
     .filter(([, count]) => count);
   const marked = collateral.data ? `close of ${collateral.data.date}`
-    : /^no marks stand/.test(collateral.error ?? '') ? 'no close marked' : null;
+    : unmarked(collateral.error) ? 'no close marked' : null;
   const reads = { currency, recording, marked, collateralError: collateral.error,
                   riskError: risk.error, profiles: profiles.data, read: view.as_of };
 
@@ -142,11 +142,11 @@ export function XvaView() {
         <OnStrip
           computed={<>each row its own set's last run, with its own age; the value to the desk
             {risk.data ? <> read {stampText(risk.data.as_of)}</> : ' unread'}
-            {recording && <>; collateral on the {marked ?? 'close: unread'}</>}</>}
+            {recording && <>; collateral {collateral.data ? `on the ${marked}` : `: ${marked ?? 'unread'}`}</>}</>}
           currency={currency} lagging={lagsBook(xva.clock, clock)} loading={xva.loading}
         />
         {[risk.error && `The value to the desk is not read: ${risk.error}`,
-          !marked && collateral.error && `The collateral is not read: ${collateral.error}`]
+          collateral.error && `The collateral is not read: ${collateral.error}`]
           .map((refused) => refused && <div key={refused} className="error-box">{refused}</div>)}
         <div className={`blotterbar wrongs${acting.length ? ' act' : ''}`}>
           {acting.length ? (
