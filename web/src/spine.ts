@@ -45,8 +45,8 @@ export function reconciledAs(reconcile: Reconcile | null): string | null {
 }
 
 /** What this client holds of the record: where the file stands, the strip as it has been merged,
- * the reconcile answer with the file etag it was folded against, and the one worklist every
- * screen counts from with the head and seat it was read at (`worklistAt`) or the read's refusal.
+ * the reconcile answer with the head and file it was read at (`reconcileAt`), and the one worklist
+ * every screen counts from with the head and seat it was read at (`worklistAt`) or the read's refusal.
  * The two transitions below are the whole of what a beat can do to it. */
 export type RecordHeld = {
   spine: SpineBlock | null;
@@ -69,22 +69,31 @@ export function readRecord(held: RecordHeld, spine: SpineBlock | null,
     ? held : { ...held, spine, rows };
 }
 
-/** The record after one reconcile answer - the same object where the lists and the file it was
- * folded against are the ones already in hand. A fetched answer is a NEW object every time, so
- * identity alone would repaint the whole desk once per fold. */
+/** The record after one reconcile answer - the same object where the lists and where they were
+ * read are the ones already in hand. A fetched answer is a NEW object every time, so identity
+ * alone would repaint the whole desk once per fold. */
 export function reconciledRecord(held: RecordHeld, reconcile: Reconcile,
-                                 etag: string | null): RecordHeld {
-  return etag === held.reconciledAt && reconciledAs(reconcile) === reconciledAs(held.reconcile)
-    ? held : { ...held, reconcile, reconciledAt: etag };
+                                 at: string | null): RecordHeld {
+  return at === held.reconciledAt && reconciledAs(reconcile) === reconciledAs(held.reconcile)
+    ? held : { ...held, reconcile, reconciledAt: at };
 }
 
-/** Whether the banner owes a `/book/reconcile`: the record holding positions the file's pin has
- * not seen, or a FILE that has moved since the answer in hand was fetched - the file being the
- * only thing that can drift under a record standing still, and `positions_behind` the only count
- * that can mean a row. A fold at the head is what this costs, so it is not asked on the beat. */
+/** The record's head: the file's pin and how far the record has moved past it, blank on a file
+ * nothing has pinned. */
+const headOf = (spine: SpineBlock): string =>
+  (spine.lsn === null ? '' : String(spine.lsn + (spine.events_behind ?? 0)));
+
+/** Where a reconcile answer is read: the record's head and the file's etag, so a declaration -
+ * which moves the head and neither a position nor the file - asks again, and so does a file write. */
+export function reconcileAt(spine: SpineBlock | null, etag: string | null): string | null {
+  return spine === null ? null : `${headOf(spine)}|${etag ?? ''}`;
+}
+
+/** Whether the banner and the Paper owe a `/book/reconcile`: the head or the file moved since the
+ * answer in hand. A fold at the head is what this costs, so it is never asked on the beat. */
 export function wantsReconcile(spine: SpineBlock | null, heldAt: string | null,
                                etag: string | null): boolean {
-  return spine !== null && ((spine.positions_behind ?? 0) > 0 || heldAt !== etag);
+  return spine !== null && heldAt !== reconcileAt(spine, etag);
 }
 
 /** What the banner says about the file it is looking at. `none` is a desk that records nothing. */
@@ -208,8 +217,7 @@ export function reconcileVerdict(spine: SpineBlock | null | undefined,
  * included, which moves no position, and so does another seat named; a file write that re-pins
  * at the same head, a tick among them, asks nothing. */
 export function worklistAt(spine: SpineBlock | null, seat = ''): string | null {
-  return spine === null ? null
-    : `${spine.lsn === null ? '' : spine.lsn + (spine.events_behind ?? 0)}|${seat}`;
+  return spine === null ? null : `${headOf(spine)}|${seat}`;
 }
 
 /** Whether the one worklist read is owed: the head or the seat moved since the answer in hand.

@@ -3,7 +3,8 @@ import { SEAT, TOKEN, failure, getBookReconcile, getWorklist, stored } from '../
 import { stampText } from '../desk';
 import { positionId } from '../positions';
 import {
-  WAITING, divergences, reconcileVerdict, wantsReconcile, wantsWorklist, worklistAt, worklistLine,
+  WAITING, divergences, reconcileAt, reconcileVerdict, wantsReconcile, wantsWorklist, worklistAt,
+  worklistLine,
 } from '../spine';
 import { opened, useApp, type AppState } from '../state';
 import type { Reconcile } from '../types';
@@ -27,21 +28,19 @@ export function ReconcileBanner() {
   const { reconcile, reconciledAt } = state.record;
   const verdict = reconcileVerdict(spine, reconcile);
   const etag = state.source?.kind === 'book' ? state.source.etag : null;
-  const records = spine !== null;
-  const positions = spine?.positions_behind ?? 0;
+  const at = reconcileAt(spine, etag);
 
-  // WHAT the two disagree about costs a fold at the head: asked for where the record holds
-  // positions the pin has not seen or the FILE has moved under the answer in hand, never on the
-  // beat, and never on `events_behind`, which a fixings policy moves and no row follows.
+  // WHAT the two disagree about costs a fold at the head: asked where the record's head or the
+  // FILE moved under the answer in hand - a declaration among them - and never on the beat
   useEffect(() => {
     if (!wantsReconcile(spine, reconciledAt, etag)) return;
     let live = true;
     getBookReconcile()
-      .then((answer) => { if (live) dispatch({ type: 'RECONCILED', reconcile: answer, etag }); })
+      .then((answer) => { if (live) dispatch({ type: 'RECONCILED', reconcile: answer, at }); })
       .catch(() => undefined);
     return () => { live = false; };
-    // the answer's own etag is not a dependency: it moves BECAUSE of this fetch
-  }, [records, positions, etag, dispatch]);
+    // where the answer in hand was read is not a dependency: it moves BECAUSE of this fetch
+  }, [at, dispatch]);
 
   if (verdict.state === 'none' || verdict.state === 'clean') return null;
 

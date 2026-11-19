@@ -259,21 +259,28 @@ check('a pin nothing has written reads clean rather than as a null lag',
         { lsn: null, head: null, events_behind: null, positions_behind: null }, null).state,
       'clean');
 
-// --- wantsReconcile: what a fold at the head is asked for
-check('the fold is asked for where the record holds positions the pin has not seen',
-      '`events_behind` read instead, after which every fixing, checkpoint and attestation a '
-      + 'recorded desk takes pays for a full head fold and repaints the screen',
-      [spine.wantsReconcile(PINNED, ETAG, ETAG), spine.wantsReconcile(POLICY, ETAG, ETAG),
-       spine.wantsReconcile(BEHIND, ETAG, ETAG)], [false, false, true]);
-check('and where the FILE has moved under the answer in hand',
-      'the etag test dropped, after which a hand edit or a delete - which move the file and no '
-      + 'count at all - is never looked for; or the answer never marked, which re-folds per beat',
-      [spine.wantsReconcile(PINNED, null, ETAG), spine.wantsReconcile(PINNED, ETAG, MOVED),
-       spine.wantsReconcile(PINNED, ETAG, ETAG)], [true, true, false]);
+// --- wantsReconcile: what a fold at the head is asked for - the record's head, or the file, moved
+// a declaration moves the head and no position: the restatement a Paper chip has to follow
+const DECLARED = { ...PINNED, events_behind: 1 };
+const READ = spine.reconcileAt(PINNED, ETAG);
+check('the fold is asked for at every move of the record\'s head, a declaration included',
+      'the ask gated on `positions_behind` - the counts - after which an agreement restated off '
+      + 'the set the file holds leaves the Paper\'s chip reading `as declared` until a reload; or '
+      + 'the head left out of `reconcileAt`, which asks only when the file moves',
+      [spine.wantsReconcile(PINNED, READ, ETAG), spine.wantsReconcile(DECLARED, READ, ETAG),
+       spine.wantsReconcile(BEHIND, READ, ETAG)], [false, true, true]);
+check('and where the FILE has moved under the answer in hand, and a re-pin at the same head asks '
+      + 'nothing',
+      'the etag left out of `reconcileAt`, after which a hand edit or a delete - which move the '
+      + 'file and no count - is never looked for; the key read off the pin, which re-folds on every '
+      + 'tick that re-pins the file; or the answer never marked, which re-folds per beat',
+      [spine.wantsReconcile(PINNED, null, ETAG), spine.wantsReconcile(PINNED, READ, MOVED),
+       spine.wantsReconcile({ ...PINNED, lsn: 21, events_behind: 0 },
+                            spine.reconcileAt(DECLARED, ETAG), ETAG)], [true, true, false]);
 check('a desk that records nothing is never asked',
       'the null test dropped, which 404s once per beat on the owner\'s own book',
-      [spine.wantsReconcile(null, null, ETAG), spine.wantsReconcile(null, ETAG, MOVED)],
-      [false, false]);
+      [spine.wantsReconcile(null, null, ETAG), spine.wantsReconcile(null, ETAG, MOVED),
+       spine.reconcileAt(null, ETAG)], [false, false, null]);
 
 check('a netting set off its paper is drift, named by its agreement',
       'the paper mismatch left out of the drift test, which reads a client set a hand edit moved '
@@ -387,7 +394,7 @@ check("the desk's own book is asked every beat whether it moved, a document open
        spine.polled({ kind: 'local', name: 'job.json' }), spine.polled(null)],
       [true, false, false, false]);
 
-console.log(`\n${ran} checks over 14 functions, ${missed.length} missed`);
+console.log(`\n${ran} checks over 15 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

@@ -139,9 +139,9 @@ export type Action =
   | { type: 'PAPER_FAILED'; error: string; status: number | null }
   | { type: 'GROUP'; grouping: Grouping }
   // the record, read on the book poll's own beat: where the file stands, and the strip's next
-  // page; then the reconcile answer, under the file etag it was folded against
+  // page; then the reconcile answer, under the head and file it was read at (`reconcileAt`)
   | { type: 'RECORD_READ'; spine: SpineBlock | null; page: ActivityPage | null }
-  | { type: 'RECONCILED'; reconcile: Reconcile; etag: string | null }
+  | { type: 'RECONCILED'; reconcile: Reconcile; at: string | null }
   // the one worklist every screen counts from, read at a head and seat (`worklistAt`)
   | { type: 'WORKLISTED'; at: string | null; worklist: Worklist | null; error: string | null };
 
@@ -267,7 +267,7 @@ export function reducer(state: AppState, action: Action): AppState {
       return record === state.record ? state : { ...state, record };
     }
     case 'RECONCILED': {
-      const record = reconciledRecord(state.record, action.reconcile, action.etag);
+      const record = reconciledRecord(state.record, action.reconcile, action.at);
       return record === state.record ? state : { ...state, record };
     }
     case 'WORKLISTED':
