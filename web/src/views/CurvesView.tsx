@@ -212,8 +212,9 @@ export function SpreadTable({ rows }: { rows: [string, unknown, number][] }) {
 
 /** One counterparty's credit curve: the curve the book holds read back as the spreads typed, and
  * the form stating it - one flat spread or a spread per tenor, at a recovery offered at the
- * factor's convention - with what it will write beside it, written on one confirm. A refusal is the
- * service's own sentence beside what it is about. With no `id` the counterparty is typed by name. */
+ * factor's convention - with what it will write beside it, written on one confirm, and how far the
+ * write runs it on. A refusal is the service's own sentence beside the box it opens with. With no
+ * `id` the counterparty is typed by name. */
 export function CreditCard({ id, title, factor, base, convention, recording }: {
   id?: string; title: string; factor?: unknown; base: string; convention: number;
   recording: boolean;
@@ -243,7 +244,8 @@ export function CreditCard({ id, title, factor, base, convention, recording }: {
     try {
       const answer = await stateSurvival(request);
       await written(dispatch, answer);
-      setSaid({ at: 'done', text: `wrote ${answer.factor}` });
+      setSaid({ at: 'done', text: `wrote ${answer.factor}, its last spread run on to ${
+        formatNumber(answer.horizon)} years` });
       if (id) return;
       // the counterparty now has a page of its own, which is where its curve reads back
       setName('');
@@ -251,7 +253,7 @@ export function CreditCard({ id, title, factor, base, convention, recording }: {
       dispatch({ type: 'PICK', screen: 'curves', id: CREDIT + request.counterparty });
     } catch (error) {
       const text = failure(error).error;
-      setSaid({ at: refusedAt(text), text });
+      setSaid({ at: refusedAt(text, request), text });
     } finally {
       setSaving(false);
     }
@@ -292,6 +294,7 @@ export function CreditCard({ id, title, factor, base, convention, recording }: {
           <input value={form.recovery} inputMode="decimal"
                  onChange={(event) => edit({ recovery: event.target.value })} />
           <span className="hint">the factor's convention is {String(convention)}</span>
+          {refusal('recovery')}
         </div>
         <div className="statusrow">
           <label><input type="radio" checked={form.flat} onChange={() => edit({ flat: true })} />
@@ -305,6 +308,7 @@ export function CreditCard({ id, title, factor, base, convention, recording }: {
               <span>bp</span>
             </>
           )}
+          {refusal('spread')}
         </div>
         {!form.flat && (
           <>
@@ -327,7 +331,6 @@ export function CreditCard({ id, title, factor, base, convention, recording }: {
               rows: [...form.rows, { tenor: '', spread: '' }] })}>add a tenor</button>
           </>
         )}
-        <div className="statusrow">{refusal('curve')}</div>
         <div className="hint">What it will write: each spread read as a hazard rate, the spread
           divided by one less the recovery, counted ACT/365 from {base} to its tenor. A flat spread
           is stated at one year. Past the last tenor the curve runs on at its last spread.</div>
@@ -340,7 +343,7 @@ export function CreditCard({ id, title, factor, base, convention, recording }: {
           {recording && state.seat && <span className="hint">as {state.seat}</span>}
           {saving && <span className="chip running">writing</span>}
           {said?.at === 'done' && <span className="chip done">{said.text}</span>}
-          {refusal('act')}
+          {refusal('act')}{id && refusal('counterparty')}
         </div>
       </section>
     </>

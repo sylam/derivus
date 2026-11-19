@@ -391,11 +391,11 @@ export function spreadForm(factor: unknown, convention: number): SpreadForm {
            rows: rows.length ? rows : [{ tenor: '', spread: '' }] };
 }
 
-/** Where the survival route's refusal reads: its counterparty's by the counterparty, one about the
- * spread, the recovery or the tenors by them, any other - a seat without the grant - by the act. */
-export function refusedAt(sentence: string): 'counterparty' | 'curve' | 'act' {
-  return /^a survival curve for /.test(sentence) ? 'counterparty'
-    : /^(a survival curve is |the tenors )|is not a period/.test(sentence) ? 'curve' : 'act';
+/** Where the survival route's refusal reads: beside the field of `request` its sentence opens with,
+ * any other - the tenors, a seat without the grant - by the act. */
+export function refusedAt(sentence: string, request: SpreadRequest): keyof SpreadRequest | 'act' {
+  const field = sentence.split(' ')[0];
+  return Object.keys(request).includes(field) ? field as keyof SpreadRequest : 'act';
 }
 
 /** Who a credit curve is stated for: on a desk that records, the entities its record declares; on

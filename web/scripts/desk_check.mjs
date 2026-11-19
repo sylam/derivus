@@ -382,20 +382,32 @@ check('spreads typed, curve written, spreads read: the form and the read-back ar
        { recovery: '0.4', flat: true, rows: [{ tenor: '', spread: '' }] }, [[0, 0], [1, NaN]],
        { counterparty: 'X', recovery: 'forty', spread: [{ tenor: '1Y', spread: 1250 },
          { tenor: '2Y', spread: '2,5' }] }]);
-check("a refusal of a credit curve reads beside what it is about, in the route's own words",
-      'every refusal printed in one place; the spread-and-recovery sentence filed by the '
-      + 'counterparty it quotes first; a tenor that is no period filed by the act; or a seat '
-      + 'without the grant filed by the curve',
-      ["a survival curve for 'NOBODY': the record declares ALDERBY-AM, KESTREL, MARRICK - declare "
-         + 'the entity first',
-       'a survival curve is a counterparty, a positive spread in basis points or rows [{tenor, '
-         + "spread}] of them, and a recovery in [0, 1) - not 'ALDERBY-AM', -5 and 0.4",
+const ASKED = desk.spreadRequest('KESTREL', FLAT);
+check("a refusal of a credit curve reads beside the box of the request field it opens with, any "
+      + 'other by the write',
+      'every refusal printed in one place; a field matched anywhere in the sentence, which files '
+      + "the recovery's refusal by the counterparty it never names first, or a seat's by the "
+      + 'spread; the first word taken without asking the request, which files the tenors by a '
+      + "field 'the'; or a word matched by prefix or case, which files 'spreads' or 'Recovery' by "
+      + 'a box',
+      ["counterparty 'NOBODY' is no legal entity the record declares - it declares ALDERBY-AM, "
+         + 'KESTREL, MARRICK: declare the entity first',
+       "counterparty '' names nobody: a survival curve is written for the counterparty a netting "
+         + 'set names',
+       'spread -5 is no positive spread: a credit spread is basis points over nothing, one flat '
+         + 'or rows [{tenor, spread}] of them',
+       'recovery 1.4 is outside [0, 1): it is the share of a claim recovered on default, 0.4 by '
+         + 'convention',
        "the tenors ['5Y', '3Y'] do not rise - a term structure is one spread per tenor, shortest "
          + 'first',
        "'soon' is not a period - a count and one of D, W, M or Y, largest unit first (3M, 1Y6M)",
-       "actor 'sales-1' holds no mark scope over 'HARBOURLINE', so no survival curve is written.",
-       'No seat is set, and this desk files every act under the seat that asks'].map(desk.refusedAt),
-      ['counterparty', 'curve', 'curve', 'curve', 'act', 'act']);
+       "actor 'sales-1' holds no mark scope over 'HARBOURLINE', so no survival curve is written: "
+         + 'the spread and the recovery are the marking seat\'s',
+       'No seat is set, and this desk files every act under the seat that asks',
+       'spreads are no field', 'Recovery is not the field']
+        .map((said) => desk.refusedAt(said, ASKED)),
+      ['counterparty', 'counterparty', 'spread', 'recovery', 'act', 'act', 'act', 'act', 'act',
+       'act']);
 
 const CURVES = { 'Price Factors': {
   'InterestRate.ZAR': {}, 'InterestRate.USD-OIS': {}, 'InterestRate.EUR': {}, 'FxRate.ZAR': {},
