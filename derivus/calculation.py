@@ -6054,10 +6054,6 @@ class SACCR(NettingSetCalculation):
         if not terms.strike:
             return [self.entry(asset, hedging, subclass, bucket, notional, side, maturity, mpor)]
         strike, expiry = fields[terms.strike], expiry or fields[terms.expiry]
-        known = expiry < self.valuation['Base_Date']
-        if paid == 'cash' and known:
-            # its expiry has fixed the cash it pays: its value V's alone
-            return []
         spread = supervisory['option_volatility'] * math.sqrt(self.years(expiry))
         shift = self.shifts.get(hedging, 0.0) if asset == 'IR' else 0.0
         forward = (self.mean(asset, deal, terms) if terms.average else self.underlying(
@@ -6076,7 +6072,8 @@ class SACCR(NettingSetCalculation):
         rows = [] if paid == 'cash' else [dict(self.entry(
             asset, hedging, subclass, bucket, notional, black(strike) * (1.0 if call else -1.0), maturity, mpor),
             Component='{} vanilla'.format(reference))]
-        if known:
+        if expiry < self.valuation['Base_Date']:
+            # its expiry has fixed what it pays: cash its value V's alone, units its vanilla's row
             return rows
         # Q per unit of its amount: one of cash, a unit's strike
         cash = strike if paid == 'units' else 1.0
