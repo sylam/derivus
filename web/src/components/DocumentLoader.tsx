@@ -1,4 +1,5 @@
 import { BOOK_DOCUMENT, failure, getBook, openBook } from '../api';
+import { fileName } from '../desk';
 import { bookLoaded, useApp } from '../state';
 import type { JobDoc } from '../types';
 
@@ -53,7 +54,7 @@ export function DocumentLoader() {
         <>
           <span className="source-chip" title={state.source.path}>
             ● {state.source.opened ? `opened · ${state.source.opened}`
-              : `live book · ${state.source.path.split('/').pop()}`}
+              : `live book · ${fileName(state.source.path)}`}
           </span>
           {state.source.opened && (
             <button className="ghost" onClick={closeOpened}
