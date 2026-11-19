@@ -327,13 +327,13 @@ function CreditCard({ id, title, factor, base, convention, recording }: {
           </>
         )}
         <div className="statusrow">{refusal('curve')}</div>
-        <div className="hint">What it will write: each spread a hazard of the spread over one less
-          the recovery, from {base} to its tenor ACT/365, a flat spread read to a year, and past the
-          last tenor the curve runs on at its spread.</div>
+        <div className="hint">What it will write: each spread read as a hazard rate, the spread
+          divided by one less the recovery, counted ACT/365 from {base} to its tenor. A flat spread
+          is stated at one year. Past the last tenor the curve runs on at its last spread.</div>
         <SpreadTable rows={typed.map((held, at) =>
           [held.tenor, held.spread, Math.exp(-knots[at][1])])} />
         <div className="statusrow">
-          <button onClick={() => void write()} disabled={saving}>
+          <button className="primary" onClick={() => void write()} disabled={saving}>
             write {SURVIVAL}.{request.counterparty || '…'}
           </button>
           {recording && state.seat && <span className="hint">as {state.seat}</span>}
