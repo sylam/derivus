@@ -198,10 +198,10 @@ export const savePaths = (maps: PathMaps) => call<PathsAnswer>('POST', '/paths',
 // spreadsheet a client is sent, and the acceptance that books it
 export const quoteStructure = (request: Record<string, unknown>) =>
   call<{ result_id: string; status: string }>('POST', '/book/structure', signed(request));
-const quoted = (id: string) => `/book/quote/${encodeURIComponent(id)}`;
-export const getQuote = (id: string) => call<PendingQuote>('GET', quoted(id));
-export const getQuoteSheet = async (id: string) =>
-  (await send('GET', `${quoted(id)}/sheet`)).blob();
+export const getQuote = (id: string) =>
+  call<PendingQuote>('GET', `/book/quote/${encodeURIComponent(id)}`);
+export const QUOTE_SHEET = (id: string) => `/book/quote/${encodeURIComponent(id)}/sheet`;
+export const getQuoteSheet = async (id: string) => (await send('GET', QUOTE_SHEET(id))).blob();
 export const acceptQuote = (id: string) =>
   call<Acceptance>('POST', '/book/quote', signed({ quote_id: id }));
 export const postDescribe = (doc: JobDoc) => call<DescribeResult>('POST', '/describe', doc);
