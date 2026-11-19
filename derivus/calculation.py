@@ -5385,12 +5385,14 @@ class SACCR(NettingSetCalculation):
     and one paid on another index, one basis trade, long the index it receives in the hedging set of
     the pair at half Table 2's factor (52.46, 52.72-52.73); legs paying two currencies are one FX
     trade (52.35, footnote 11 to 52.46), in that class alone (52.28: a convention), M a resetting
-    swap's next reset (52.37(5)), and three refuse by name. A leg its compile prices as caplets or
-    floorlets, and a cap or a floor booked by its terms, reads a row per optionlet whose rate is
-    still to be known (52.43), named by its deal and its period's end, a caplet a call and a
-    floorlet a put on that rate, long where its value is, a cap over legs on the legs' own sides as
-    its pricer reads it; S and E its period's, T the day its rate is known, its last fixing, M the
-    trade's last day; one fixed reads none, its value V's alone, and a digital one refuses by name.
+    swap's next reset (52.37(5)), and three refuse by name; a leg on a factor beside its currency's
+    rates, an inflation leg or a swaplet list, is none of these, its own row. A leg its compile
+    prices as caplets or floorlets, and a cap or a floor booked by its terms, reads a row per
+    optionlet whose rate is still to be known (52.43), named by its deal and its period's end, a
+    caplet a call and a floorlet a put on that rate, long where its value is, a cap over legs on
+    the legs' own sides as its pricer reads it; S and E its period's, T the day its rate is known,
+    its last fixing, M the trade's last day; one fixed reads none, its value V's alone, and a
+    digital one refuses by name.
     A strip, a type dealing its amount `per` row of a table, is its fixings (52.43): a row per leg
     it declares at each row whose first cell, the day it fixes and T, is still to come, named by the
     deal, that day and the field the leg differs in, its strike or else its amount, one fixed none,
@@ -5425,10 +5427,13 @@ class SACCR(NettingSetCalculation):
     its cash there, a swaption settled in cash or an FRA paid at its start (52.32 Table 1 and its
     FAQ2), T its declared expiry, nothing once reached (52.31).
     Its d is an IR or credit notional crossed times SD, averaged over its life where it amortises,
-    a leg's over its periods (52.37(2)), its delta by the sign of what it receives, an FX trade's
+    a leg's over its periods (52.37(2)), its delta by the sign of what it receives, an inflation
+    leg's in a hedging set of its own, its currency's and index's (52.57 FAQ1), an FX trade's
     foreign leg, the larger where both are, a forward's legs its two amounts and an
     option's its amount and that at its strike, or an equity or commodity trade's units at a unit's
-    price, a floating energy leg's every period's still to pay, its volume at its price multiplier
+    price, a floating energy leg's every period's still to pay, its volume at its price multiplier,
+    a swaplet list's the period's still to end first, which the next resets and does not add to,
+    its shares or the principal it states, none once every period has ended, M its last pay day
     (52.34-52.37); a non-deliverable forward is on the pair it buys and sells, its settlement
     currency outside it (52.29, 52.45). Its delta plus or minus one by its long side and the amount's
     sign, or an option's by Black on the supervisory vol at P, its underlying's forward at T off the
@@ -5481,6 +5486,9 @@ class SACCR(NettingSetCalculation):
         'currency it receives, $M$ its last pay day or, where its compile resets a leg\'s notional on',
         'the pair, as a mark-to-market swap\'s, its next reset (CRE52.37(5)), that leg\'s notional the',
         'other currency\'s as its compile states it; legs of three currencies refuse the run by name. A',
+        'leg on a factor beside its currency\'s rates, an inflation leg or a swaplet list, is none of',
+        'these but its own row beside them (CRE52.42(4)). Inflation trades are rate trades in a',
+        'hedging set of their own, here per currency and index (CRE52.57 FAQ1), at the rate factor. A',
         'cap or a floor is its caplets or floorlets (CRE52.43): a leg its compile prices as optionlets,',
         'and a cap or floor booked by its terms, reads a row per period whose rate is still to be known,',
         'its `Component` its deal and its period\'s end, its $d$ the period\'s notional times $SD(S,E)$,',
@@ -5516,15 +5524,18 @@ class SACCR(NettingSetCalculation):
         '',
         'Per trade, its dates in years of 30/360 from the base date: the adjusted notional $d$',
         '(CRE52.34-52.37), an IR or credit trade\'s notional, averaged over time where it amortises -',
-        'a floating leg\'s over the periods its compile binds still to pay (CRE52.37(2)), $S$, $E$ and $M$',
-        'their first start, last end and last pay day, $\\delta$ $+1$ received - times',
+        'a floating or inflation leg\'s over the periods its compile binds still to pay (CRE52.37(2)),',
+        '$S$, $E$ and $M$ their first start, last end and last pay day, $\\delta$ $+1$ received - times',
         '$SD=(e^{-0.05S}-e^{-0.05E})/0.05$ floored at ten business days, an FX trade\'s foreign leg,',
         'the larger where both are (CRE52.35) - a forward\'s legs its two amounts, an option\'s its amount',
         'and that at its strike, a non-deliverable forward on the pair it buys and sells, its settlement',
         'currency outside it - and an equity or commodity trade\'s units at a unit\'s price, an',
         'average-price swap\'s all the units it references, fixed or to fix, a floating energy leg\'s',
         'every period\'s its compile binds still to pay, its volume at its price multiplier, $M$ its last',
-        'pay day, long where it receives the average (CRE52.36); the',
+        'pay day, long where it receives the average, an equity swaplet list\'s those of the period',
+        'still to end first, which the next resets and does not add to, its shares or the principal it',
+        'states with no unit priced, $M$ its last pay day, long where it receives the return, and none',
+        'once every period has ended, its value in $V$ alone (CRE52.36); the',
         'supervisory delta $\\delta$ (CRE52.38-52.40), $\\pm1$ by its long side or an option\'s Black',
         'delta on Table 2\'s vol at its underlying\'s forward $P$ (CRE52.40 FAQ1, the forward for the',
         'rate and the dividends), a reference price\'s for the delivery its fixing curve maps $T$ to,',
@@ -5865,13 +5876,13 @@ class SACCR(NettingSetCalculation):
         return [row for found in rows for row in found]
 
     def legs(self, children):
-        """`[(position, deal, terms)]` of the linear legs among `children`: each declaring the
-        currency it pays and its size a table's its compile binds, or none, its amounts fixed today,
-        and priced as no optionlets."""
+        """`[(position, deal, terms)]` of the linear rate legs among `children`: each declaring the
+        currency it pays and no other risk factor, and its size a table's its compile binds, or none,
+        its amounts fixed today, and priced as no optionlets."""
         return [(position, child['Instrument'], terms) for position, child in enumerate(children) if isinstance(
             terms := schema.EXPOSURES.get(child['Instrument'].field['Object']), schema.Exposure) and terms.currency
-            and (terms.amount is None or isinstance(child['Instrument'].field[terms.amount], dict))
-            and not self.optionlets(child['Instrument'])]
+            and not terms.underlying and (terms.amount is None or isinstance(
+                child['Instrument'].field[terms.amount], dict)) and not self.optionlets(child['Instrument'])]
 
     def crossed(self, legs, mpor):
         """The one FX row of `legs` paying two currencies, a cross-currency swap (52.35; footnote 11
@@ -6000,14 +6011,21 @@ class SACCR(NettingSetCalculation):
         asset, paid = self.asset(deal), terms.pays(fields)
         if isinstance(fields[terms.amount], dict):
             # a leg: S, E and M its periods' first start, last end and last pay day; a commodity's
-            # units each period's volume at its price multiplier (52.36), else its notional averaged
-            # over them as an amortising swap's is (52.37(2))
+            # units each period's volume at its price multiplier, an equity's the period's still to end
+            # first, the next resetting it (52.36); else its notional averaged as an amortising swap's (52.37(2))
             cash = self.schedule(deal).schedule
             starts, nominal = cash[:, utils.CASHFLOW_INDEX_Start_Day], cash[:, CASHFLOW_INDEX_Nominal]
             start, end, last = (self.years(day) for day in (
                 starts.min(), cash[:, utils.CASHFLOW_INDEX_End_Day].max(), cash[:, CASHFLOW_INDEX_Pay_Day].max()))
-            amount = (nominal * cash[:, utils.CASHFLOW_INDEX_Start_Mult]).sum() if asset == 'Commodity' else (
-                self.averaged(nominal[0], zip(map(self.years, starts[1:]), -np.diff(nominal)), end))
+            if asset == 'Equity':
+                live = cash[cash[:, utils.CASHFLOW_INDEX_End_Day] > 0, utils.CASHFLOW_INDEX_FixedAmt]
+                if not live.size:
+                    # every return fixed: known cash, its value V's alone
+                    return []
+                amount = live[0]
+            else:
+                amount = (nominal * cash[:, utils.CASHFLOW_INDEX_Start_Mult]).sum() if asset == 'Commodity' else (
+                    self.averaged(nominal[0], zip(map(self.years, starts[1:]), -np.diff(nominal)), end))
         else:
             end = last = self.years(fields[terms.end] if terms.end else max(day for *_, day in schema.settlement_days(
                 fields, schema.tenor_fields(type(deal))) if day is not None))
@@ -6019,6 +6037,9 @@ class SACCR(NettingSetCalculation):
         bucket = ''
         if asset == 'IR':
             hedging, subclass, bucket = utils.check_rate_name(fields[terms.currency])[0], '', self.bucket(end)
+            if name:
+                # an inflation leg: a set of its own per currency and index (52.57 FAQ1)
+                hedging += ' ' + name
         elif asset == 'FX':
             own = utils.check_rate_name(fields[terms.currency])[0]
             pair = sorted((own, utils.check_rate_name(fields[terms.underlying])[0]))
@@ -6046,7 +6067,8 @@ class SACCR(NettingSetCalculation):
                 (size, fields[terms.currency]), (other, fields[terms.underlying]))
                 if utils.check_rate_name(currency) != utils.check_rate_name(self.params['Currency']))
         else:
-            price, currency = self.price(deal, terms.price or terms.underlying)
+            price, currency = self.price(deal, terms.price or terms.underlying) if terms.priced(fields) else (
+                1.0, fields[terms.currency])
             notional = size * price * self.fx(currency)
 
         # M the last day, or the start a trade settles its cash at (Table 1, 52.32 FAQ2)

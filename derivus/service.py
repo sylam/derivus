@@ -1308,7 +1308,7 @@ def deal_size(market, base, deal):
                 stated += [(fields.get(cash.currency or 'Currency') or fields.get('Currency'), amounts[0])
                            for *_, cash in declared_settlements(cls)]
                 continue
-            if part.currency:
+            if not part.priced(fields):
                 # an FX trade stating its other side too is the larger of the two (CRE52.35)
                 stated += zip([fields.get(part.currency), fields.get(part.underlying)], amounts)
                 continue

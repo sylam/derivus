@@ -121,7 +121,8 @@ Observes = namedtuple('Observes', 'index family table column elects expires moni
                       defaults=(None,) * 6)
 
 #: What a deal type's SA-CCR exposure is read off: `amount` its size, a notional in the currency
-#: `currency` names or units priced at the factor `price` names (`underlying`'s where None), a
+#: `currency` names or units priced at the factor `price` names (`underlying`'s where None), units
+#: too where a type naming a currency states them under the (field, value) `units` (`priced`), a
 #: table's per period as its compile binds it, None where its amounts are fixed today;
 #: `underlying` its primary risk factor (an FX trade's other currency), `start` its start, `long`
 #: the (field, value) long that factor or, an option, bought, else by the amount's sign; `strike`,
@@ -135,8 +136,13 @@ Observes = namedtuple('Observes', 'index family table column elects expires moni
 #: row of, each row's first cell the day it fixes, an option's expiry. A type of several declares
 #: each.
 class Exposure(namedtuple('Exposure', 'amount currency underlying price start long strike expiry call '
-                                      'amortisation other runs average digital end per', defaults=(None,) * 15)):
+                                      'amortisation other runs average digital end per units', defaults=(None,) * 16)):
     __slots__ = ()
+
+    def priced(self, fields):
+        """Whether a deal stating `fields` states the amount this declares in units, priced at a
+        unit's price (52.36), not as a notional in the currency `currency` names."""
+        return not self.currency or bool(self.units) and fields[self.units[0]] == self.units[1]
 
     def pays(self, fields):
         """How a deal stating `fields` pays the amount this declares: 'cash' a digital paying it,

@@ -3279,6 +3279,7 @@ class CFFloatingInterestListDeal(Deal):
 
 class YieldInflationCashflowListDeal(Deal):
     vernacular = 'inflation-linked bond, linker, inflation cashflows'
+    exposure = Exposure('Cashflows', 'Currency', 'Index')
     fields = [ADMIN, PRICING, CASHFLOWLISTDEAL, own('YieldInflationCashflowListDeal', [
         F('Index', 'Text', default='', factors=['InflationRate']),
         F('Index_Reference', 'Container',
@@ -6072,6 +6073,7 @@ class EquityDeal(Deal):
 
 class EquitySwapletListDeal(Deal):
     vernacular = 'equity swap, total return swap, TRS'
+    exposure = Exposure('Cashflows', 'Currency', 'Equity', units=('Amount_Type', 'Shares'))
     fields = [ADMIN, PRICING, own('EquitySwapletListDeal', [
         F('Accrual_Calendars', 'Text', default='', convention=True),
         F('Equity', 'Text', default='', factors=['EquityPrice', 'DividendRate']),

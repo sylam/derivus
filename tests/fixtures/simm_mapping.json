@@ -24,6 +24,7 @@
    "DealDefaultSwap": "Credit",
    "QEDI_CustomAutoCallSwap": "Equity",
    "EquitySwapLeg": "Equity",
+   "EquitySwapletListDeal": "Equity",
    "EquityForwardDeal": "Equity",
    "EquityOptionDeal": "Equity",
    "EquityDiscreteExplicitAsianOption": "Equity",

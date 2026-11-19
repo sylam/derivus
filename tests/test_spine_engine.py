@@ -3050,6 +3050,53 @@ def test_a_cash_digital_is_sized_at_its_payout_and_one_paying_shares_at_their_pr
         assert dollars(quoting, dealt['deal_path']) == size, deal['Reference']
 
 
+#: Two years from the base date, a year a period: a swap of the share's return on a thousand shares,
+#: then two thousand, and a leg paying 2% on a million dollars grown by an index, then two million.
+YEARS = [BASE + pd.DateOffset(years=k) for k in range(3)]
+SWAPLETS = {'Object': 'EquitySwapletListDeal', 'Reference': 'SHARES', 'Currency': 'USD', 'Equity_Currency': 'USD',
+            'Discount_Rate': 'USD', 'Equity': 'EQ', 'Buy_Sell': 'Buy', 'Amount_Type': 'Shares', 'Cashflows': {'Items': [
+                {'Start_Date': start, 'End_Date': end, 'Payment_Date': end, 'Amount': amount, 'Start_Multiplier': 1.0,
+                 'End_Multiplier': 1.0, 'Dividend_Multiplier': 0.0}
+                for start, end, amount in zip(YEARS[:-1], YEARS[1:], (1e3, 2e3))]}}
+LINKER = {'Object': 'YieldInflationCashflowListDeal', 'Reference': 'LINKER', 'Currency': 'USD', 'Discount_Rate': 'USD',
+          'Buy_Sell': 'Buy', 'Index': 'CPI', 'Index_Reference': {'Months_Lag': 3, 'Reference_Type': 'Interpolated'},
+          'Cashflows': {'Items': [{
+              'Payment_Date': end, 'Notional': notional, 'Base_Reference_Date': start, 'Base_Reference_Value': 0.0,
+              'Final_Reference_Date': end, 'Final_Reference_Value': 0.0, 'Accrual_Start_Date': start,
+              'Accrual_End_Date': end, 'Accrual_Day_Count': 'ACT_365', 'Accrual_Year_Fraction': 1.0,
+              'Yield': utils.Percent(2.0), 'Rate_Multiplier': 1.0}
+              for start, end, notional in zip(YEARS[:-1], YEARS[1:], (1e6, 2e6))]}}
+
+
+def test_a_swaplet_list_is_sized_at_its_shares_price_or_its_principal_and_a_linker_at_its_notional(
+        recorded, quoting):
+    """A TOTAL RETURN SWAP DEALS ITS UNITS AT TODAY'S PRICE, OR ITS PRINCIPAL (CRE52.36), AND AN
+    INFLATION LEG ITS NOTIONAL, each its largest period's as a table is sized: on a share at 50, a
+    swaplet list of a thousand shares then two thousand carries 2,000 x 50 = 100,000 dollars, and
+    the same stating 1.5 million dollars then three million as its principal 3,000,000; a leg on a
+    million dollars grown by an index, then two million, 2,000,000.
+
+    Killing mutation: a type naming a currency sized in it whatever its amount states (`if
+    part.currency` in `service.deal_size`) - the shares 2,000 dollars.
+    """
+    document = json.loads(quoting.read_text())
+    document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].update(json.loads(dump(dict(
+        EQUITY, **{INDEX: dict(EQUITY[INDEX], Spot=50.0)}, **{
+            'PriceIndex.CPI': {'Index': utils.Curve([], [[float((pd.Timestamp(day) - utils.excel_offset).days), 100.0]
+                                                         for day in ('2024-01-01', '2024-05-01')]),
+                               'Last_Period_Start': pd.Timestamp('2024-05-01'), 'Publication_Period': 'Monthly',
+                               'Next_Publication_Date': BASE + pd.DateOffset(days=12), 'Currency': 'USD'},
+            'InflationRate.CPI': {'Price_Index': 'CPI', 'Day_Count': 'ACT_365', 'Currency': 'USD',
+                                  'Curve': utils.Curve([], [[0.0, 0.025], [5.0, 0.025]])}}))))
+    quoting.write_text(json.dumps(document, indent=2), newline='\n')
+    principal = dict(SWAPLETS, Reference='PRINCIPAL', Amount_Type='Principal', Cashflows={'Items': [
+        dict(item, Amount=1.5e3 * item['Amount']) for item in SWAPLETS['Cashflows']['Items']]})
+    for deal, size in ((SWAPLETS, 1e5), (principal, 3e6), (LINKER, 2e6)):
+        dealt = booked(deal, 'EXEC-' + deal['Reference'])
+        assert dealt['written'] is True, dealt
+        assert dollars(quoting, dealt['deal_path']) == size, deal['Reference']
+
+
 #: A swap buying a million dollars for rand a month out and 100,000 rand back for dollars a year
 #: out - 1,850,000 dollars on this book's axis.
 SWAP = {'Object': 'FXSwapDeal', 'Reference': 'SWAP', 'Near_Buy_Far_Sell_Ccy': 'USD',

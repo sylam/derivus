@@ -271,6 +271,15 @@ Grouped by where a validator meets them.
   states no delta for, and so does a TARF stating `InvertedTarget`, whose fixings pay on the
   reciprocal of its pair; an FX touch declares no exposure, its payout possibly in the currency
   its barrier prices, which no collar of a cash digital reads.
+- **SA-CCR reads a total return swap to its last payment, and inflation per index** (2026-11-20).
+  An equity swaplet list is a linear trade on the shares, or the principal, of the period still to
+  end first (CRE52.36), a later period resetting it; its M is its last payment day, where
+  CRE52.37(5) would let a swap that settles and resets at each payment take its next, and a period
+  not yet begun reads its whole amount at plus or minus one, though its return's start is not
+  fixed: neither understates it. An inflation leg is a rate trade in a hedging set of its own per
+  currency and index, where CRE52.57 FAQ1 names one per currency, so two indices of a currency do
+  not offset; one in a package beside rate legs of another currency reads its own row and no FX
+  row.
 - **The replay tuple pins neither build nor device** (2026-10-11). `engine_version` is a hand-set
   string, no commit, torch, CUDA or device is recorded, and `Deterministic_Kernels` defaults to
   `No`, so bit-for-bit replay holds only on one build, stack and device, and for a GPU gradient only

@@ -10,8 +10,10 @@ pound at 1.5 and a dollar at 150 yen, so a notional in any is crossed; three sur
 CRE99.41 rates the entities; three commodities whose forward curves price a unit at 80, 100 and 25
 dollars, silver with an LBMA basis of -0.5 and WTI sampled daily; an index at 4,000 and a share at
 50, each yielding 2%; the FX, equity and commodity vol surfaces flat at 10%, which no exposure
-reads; a USD-OIS curve flat at 3.9%, a basis's second index; and a USD cap surface flat at 20%,
-which the caps and floors price on and no exposure reads. The swaps' rates and the default swaps' coupons are
+reads; a USD-OIS curve flat at 3.9%, a basis's second index; a USD cap surface flat at 20%,
+which the caps and floors price on and no exposure reads; and a price index printed monthly
+through 2024 with its inflation curve flat at 2.5%, which the inflation legs price on and no
+exposure reads. The swaps' rates and the default swaps' coupons are
 solved for the market values the examples state and the receiver's vol for its 50 thousand. A
 commodity forward is worth its funded price, ten million and more, which no term moves, so silver
 is lent at the rate that makes the three forwards worth the 20 thousand CRE99.59 states together:
@@ -86,6 +88,8 @@ def commodity(name, price, repo='USD'):
 
 #: The lease that funds silver's forward at two thousandths over its ten million (CRE99.59's 20).
 LEASE = 0.04 + math.log1p(2e-3) / tenor(years(5))
+#: The first of each month of 2024, when CPI prints, 0.2% a month up from 100.
+PRINTS = [pd.Timestamp('2024-01-01') + pd.DateOffset(months=k) for k in range(12)]
 
 
 def factors(vol):
@@ -105,6 +109,11 @@ def factors(vol):
         'InterestYieldVol.EUR': {'Property_Aliases': None, 'Distribution_Type': 'Lognormal',
                                  'Shift': utils.Percent(0.0), 'Surface': flat_space(vol)},
         'InterestRateVol.USD': {'Property_Aliases': None, 'Surface': flat_space(0.2)},
+        'PriceIndex.CPI': {'Index': utils.Curve([], [[excel(day), 100.0 * 1.002 ** k] for k, day in enumerate(PRINTS)]),
+                           'Last_Period_Start': PRINTS[-1], 'Next_Publication_Date': BASE + pd.DateOffset(days=12),
+                           'Publication_Period': 'Monthly', 'Currency': 'USD'},
+        'InflationRate.CPI': {'Price_Index': 'CPI', 'Day_Count': 'ACT_365', 'Accrual_Calendar': '', 'Currency': 'USD',
+                              'Curve': utils.Curve([], [[0.0, 0.025], [40.0, 0.025]])},
         'ForwardRate.CARRY': {'Currency': 'USD', 'Curve': utils.Curve(
             [], [[excel(BASE), 0.01], [excel(years(10)), 0.01]])}}, **{
         name: {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness', 'Surface': surface}
@@ -755,7 +764,14 @@ def world(tmp_path_factory):
             'STRIP_SIGNS': ({}, [node(dict(strip, Reference=strip['Reference'] + legs, Strike_Price=strike, **{amount: 0.0}))
                                  for strip in STRIPS[:2] for legs, strike, amount in (
                                      ('_CALLS', 1.0, 'LeverageNotional'), ('_PUTS', 1.6, 'Underlying_Amount'))]),
-            'RANGE': ({}, [node(STRIPS[3])])}
+            'RANGE': ({}, [node(STRIPS[3])]),
+            'INFLATION': ({}, [node(LINKER)]),
+            'INFLATION_FIXED': ({}, INFLATION_SWAPS[:1]), 'INFLATION_FLOATING': ({}, INFLATION_SWAPS[1:]),
+            'INFLATION_NETTED': ({}, [node(LINKER), node(dict(LINKER, Reference='PAID', Buy_Sell='Sell'))]),
+            'INFLATION_AMORTISING': ({}, [node(inflation('LEG', 'Buy', STARTED, AMORTISED))]),
+            'SWAPLETS': ({}, [node(deal) for deal in SWAPLETS]), 'SWAPLETS_ENDED': ({}, [node(ENDED)]),
+            'SWAPLET_PACKAGE': ({}, [package('TRS', [SWAPLETS[0], cashflows(
+                FLOATING, 'FUNDING', 'Sell', HALVES, 4e6)])])}
     return mapping, run(document(sets, saccr(mapping), receiver_vol()))
 
 
@@ -2020,6 +2036,149 @@ def test_a_range_accrual_is_a_digital_bought_at_its_lower_bound_and_one_sold_at_
     assert rows['AdjustedNotional'].tolist() == pytest.approx(adjusted, rel=1e-15), rows
     assert netting_sets(output).loc['RANGE', 'AddOn_FX'] == pytest.approx(0.04 * math.sqrt(62 / 360) * sum(
         notional * delta for notional, delta in zip(adjusted, deltas)), rel=1e-12)
+
+
+def inflation(reference, side, dates, notionals):
+    """A dollar leg paying 2% a year on each of `notionals` (or the one) grown by CPI over its period,
+    a period between each two of `dates`, paid at its end, received where `side` is Buy."""
+    sizes = notionals if isinstance(notionals, list) else [notionals] * (len(dates) - 1)
+    return {'Object': 'YieldInflationCashflowListDeal', 'Reference': reference, 'Currency': 'USD',
+            'Discount_Rate': 'USD', 'Buy_Sell': side, 'Index': 'CPI',
+            'Index_Reference': {'Months_Lag': 3, 'Reference_Type': 'Interpolated'}, 'Cashflows': {'Items': [{
+                'Payment_Date': end, 'Notional': size, 'Base_Reference_Date': start, 'Base_Reference_Value': 0.0,
+                'Final_Reference_Date': end, 'Final_Reference_Value': 0.0, 'Accrual_Start_Date': start,
+                'Accrual_End_Date': end, 'Accrual_Day_Count': 'ACT_365',
+                'Accrual_Year_Fraction': (end - start).days / 365.0, 'Yield': utils.Percent(2.0),
+                'Rate_Multiplier': 1.0} for start, end, size in zip(dates[:-1], dates[1:], sizes)]}}
+
+
+#: A leg on ten million grown by CPI received yearly for seven years, and swaps of it against a fixed
+#: and a floating leg paid on its days.
+SEVEN = every(12, 7)
+LINKER = inflation('LINKER', 'Buy', SEVEN, 1e7)
+INFLATION_SWAPS = [package(reference, [LINKER, cashflows(kind, 'RATE', 'Sell', SEVEN, 1e7)])
+                   for reference, kind in (('FIXED', FIXED), ('FLOATING', FLOATING))]
+
+
+def test_an_inflation_leg_is_a_rate_trade_in_a_hedging_set_of_its_own(world):
+    """CRE52.34, CRE52.37(2), CRE52.39 AND CRE52.57 FAQ1: INFLATION IS A RATE TRADE IN A SET OF ITS
+    OWN. A leg paying 2% a year on ten million dollars grown by CPI, yearly for seven years from the
+    base date, received, its value above nothing, is one IR row in the set of its currency and index,
+    `USD InflationRate.CPI`, apart from USD's own: S nothing, E and M seven, d = 10,000,000 (1 -
+    e^(-0.35)) / 0.05 = 59,062,382.06 in bucket 3 at 0.5%, +1, its maturity factor one; the add-on
+    295,311.91. Swapped against a fixed leg paid on its days it reads that row alone, the fixed leg's
+    amounts fixed today in V alone; against a floating leg paid on its days, two rows, the floating
+    leg's 59,062,382.06 short in USD's set, which the inflation row does not net: the add-on each
+    leg's, 590,623.82, and V the swap's on its first row. A received and a paid leg on one schedule,
+    the paid one worth less than nothing, net to nothing in their set. A leg on ten million
+    amortising two a year, begun six months ago, reads its notional averaged over its 4.5 years
+    left, the floating leg's (10 x 0.5 + 8 + 6 + 4 + 2) / 4.5 million x (1 - e^(-0.225)) / 0.05 =
+    22,387,086.80, in bucket 2 of its own set.
+
+    Killing mutations: the leg read into its currency's rate set - the floating swap's add-on
+    nothing; the leg signed by its field, `long=('Buy_Sell', 'Buy')` declared - the paid leg +1 and
+    the netted set's add-on 590,623.82; the leg recomposed with the rate leg beside it, `legs` taking
+    a leg on another factor - the run refused, a `KeyError` on the forecast curve it binds none of.
+    """
+    _, output = world
+    found, adjusted = netting_sets(output), 1e7 * supervisory_duration(0.0, 7.0)
+    row = trades(output, 'INFLATION').loc['LINKER']
+    assert (row['HedgingSet'], row['Bucket'], row['SupervisoryFactor'], row['Delta'], row['MaturityFactor']) == (
+        'USD InflationRate.CPI', '3', 0.005, 1.0, 1.0), row
+    assert row['AdjustedNotional'] == pytest.approx(adjusted, rel=1e-14) and row['Value'] > 0.0, row
+    assert found.loc['INFLATION', 'AddOn_IR'] == pytest.approx(0.005 * adjusted, rel=1e-14), found.loc['INFLATION']
+    columns = ['HedgingSet', 'Bucket', 'AdjustedNotional', 'Delta', 'MaturityFactor', 'EffectiveNotional']
+    fixed, floating = trades(output, 'INFLATION_FIXED'), trades(output, 'INFLATION_FLOATING')
+    assert list(fixed['Component']) == ['INFLATION_FIXED_LINKER'], fixed
+    assert list(fixed.loc['FIXED', columns]) == list(row[columns]), fixed
+    assert list(zip(floating['Component'], floating['HedgingSet'], floating['Bucket'], floating['Delta'])) == [
+        ('INFLATION_FLOATING_LINKER', 'USD InflationRate.CPI', '3', 1.0), ('INFLATION_FLOATING_RATE', 'USD', '3', -1.0)]
+    assert floating['AdjustedNotional'].tolist() == pytest.approx([adjusted] * 2, rel=1e-14), floating
+    assert found.loc['INFLATION_FLOATING', 'AddOn_IR'] == pytest.approx(0.01 * adjusted, rel=1e-14)
+    assert floating['Value'].iloc[0] == found.loc['INFLATION_FLOATING', 'V'] and math.isnan(floating['Value'].iloc[1])
+    netted = trades(output, 'INFLATION_NETTED')
+    assert list(netted['Delta']) == [1.0, -1.0] and netted.loc['PAID', 'Value'] < 0.0, netted
+    assert found.loc['INFLATION_NETTED', 'AddOn_IR'] == 0.0, found.loc['INFLATION_NETTED']
+    amortising = trades(output, 'INFLATION_AMORTISING').loc['LEG']
+    assert (amortising['HedgingSet'], amortising['Bucket']) == ('USD InflationRate.CPI', '2'), amortising
+    assert amortising['AdjustedNotional'] == pytest.approx(
+        (10 * 0.5 + 8 + 6 + 4 + 2) * 1e6 / 4.5 * supervisory_duration(0.0, 4.5), rel=1e-14), amortising
+
+
+def swaplets(reference, side, equity, kind, amounts, dates, known):
+    """A dollar swap of `equity`'s price return over each period between two of `dates`, paid at its
+    end, on each of `amounts`, shares under `kind` Shares and dollars under Principal, the return
+    received where `side` is Buy, a start behind the base date fixed at `known`."""
+    return {'Object': 'EquitySwapletListDeal', 'Reference': reference, 'Currency': 'USD', 'Equity_Currency': 'USD',
+            'Discount_Rate': 'USD', 'Equity': equity, 'Buy_Sell': side, 'Amount_Type': kind, 'Cashflows': {'Items': [{
+                'Start_Date': start, 'End_Date': end, 'Payment_Date': end, 'Amount': amount, 'Start_Multiplier': 1.0,
+                'End_Multiplier': 1.0, 'Dividend_Multiplier': 0.0, 'Known_Start_Price': known if start < BASE else 0.0}
+                for start, end, amount in zip(dates[:-1], dates[1:], amounts)]}}
+
+
+#: Two half-years from three months ago: a thousand index units' return received, then two thousand,
+#: and a million dollars' worth of the share's paid, then three million; and a thousand index units'
+#: from a month ago to yesterday, fixed at 3,900 and 3,990 and paid in a week.
+HALVES = every(6, 2, BASE - pd.DateOffset(months=3))
+SWAPLETS = [swaplets('SHARES', 'Buy', 'INDEX', 'Shares', [1e3, 2e3], HALVES, 3900.0),
+            swaplets('PRINCIPAL', 'Sell', 'SHARE', 'Principal', [1e6, 3e6], HALVES, 49.0)]
+ENDED = swaplets('ENDED', 'Buy', 'INDEX', 'Shares', [1e3], [BASE - pd.DateOffset(months=1), BASE - pd.DateOffset(
+    days=1)], 3900.0)
+ENDED['Cashflows']['Items'][0].update(Payment_Date=BASE + pd.DateOffset(days=7), Known_End_Price=3990.0)
+
+
+def test_a_swaplet_list_is_a_linear_equity_trade_on_the_period_it_is_in(world):
+    """CRE52.36, CRE52.39 AND CRE52.48: A TOTAL RETURN SWAP IS LINEAR. A swaplet list reads one row,
+    its amount the period's it is in, its first still to end, which the next resets and does not add
+    to: stated in shares, its units at today's price; stated as a principal, that amount in its
+    currency, no unit priced; +1 where it receives the return and -1 where it pays, as its value is
+    above or below nothing; M its last payment day. A thousand index units received for the half
+    from three months ago, two thousand the next: d 1,000 x 4,000 = 4,000,000 in the index's set at
+    20%, +1. A million dollars' worth of the share's return paid, three million the next: d
+    1,000,000 at 32%, -1. Each M nine months, its maturity factor 0.75^0.5 = 0.866025; the add-on
+    CRE52.66's single factor over the index's 692,820.32 at 80% and the share's -277,128.13 at 50%,
+    634,980.31. A list whose one return fixed yesterday at 3,990 against 3,900 and pays in a week
+    owes what is known: no row, its value in V alone, 1,000 x 90 e^(-0.04 x 7/365) = 89,930.99.
+
+    Killing mutations: the periods summed - d 12,000,000 and 4,000,000; the principal priced as
+    shares - 50,000,000; M the first payment day - 0.5; a list whose every return has fixed read on
+    a period it is in - the run refused, an `IndexError`.
+    """
+    _, output = world
+    found, rows = netting_sets(output), trades(output, 'SWAPLETS')
+    assert list(zip(rows.index, rows['HedgingSet'], rows['Subclass'], rows['AdjustedNotional'], rows['Delta'])) == [
+        ('SHARES', 'EquityPrice.INDEX', 'Index', 4e6, 1.0), ('PRINCIPAL', 'EquityPrice.SHARE', 'Single', 1e6, -1.0)]
+    assert rows['Value'].iloc[0] > 0.0 > rows['Value'].iloc[1], rows
+    assert rows['MaturityFactor'].tolist() == pytest.approx([math.sqrt(0.75)] * 2, rel=1e-15), rows
+    add_ons = [0.2 * 4e6 * math.sqrt(0.75), -0.32 * 1e6 * math.sqrt(0.75)]
+    assert found.loc['SWAPLETS', 'AddOn_Equity'] == pytest.approx(math.sqrt(sum(single_factor(
+        add_ons, [0.8, 0.5]))), rel=1e-14), found.loc['SWAPLETS']
+    assert trades(output, 'SWAPLETS_ENDED').empty and found.loc['SWAPLETS_ENDED', 'AddOn_Equity'] == 0.0
+    assert found.loc['SWAPLETS_ENDED', 'V'] == pytest.approx(9e4 * math.exp(-0.04 * 7 / 365), rel=1e-12)
+
+
+def test_a_swaplet_list_beside_its_funding_leg_reads_each_its_own_row(world):
+    """CRE52.34, CRE52.36 AND CRE52.42(4). The thousand index units' list booked in a package beside a
+    floating leg paid on four million dollars over its days reads two rows, each its child's: the
+    list's as alone, 4,000,000 at +1 in the index's set, and the floating leg's, S nothing and E 0.75,
+    4,000,000 (1 - e^(-0.0375)) / 0.05 = 2,944,446.58 in bucket 1 of USD at -1; each at the maturity
+    factor 0.75^0.5; the equity add-on 20% of 4,000,000 x 0.866025, 692,820.32, and the rate one 0.5%
+    of 2,944,446.58 x 0.866025, 12,749.83; V the package's on its first row.
+
+    Killing mutation: the list taken for a rate leg of the package, `legs` taking a leg on another
+    factor - the run refused, a `KeyError` on the forecast curve its compile binds none of.
+    """
+    _, output = world
+    found, rows = netting_sets(output).loc['SWAPLET_PACKAGE'], trades(output, 'SWAPLET_PACKAGE')
+    funding = 4e6 * supervisory_duration(0.0, 0.75)
+    assert list(zip(rows['Component'], rows['AssetClass'], rows['HedgingSet'], rows['Bucket'], rows['Delta'])) == [
+        ('SWAPLET_PACKAGE_SHARES', 'Equity', 'EquityPrice.INDEX', '', 1.0),
+        ('SWAPLET_PACKAGE_FUNDING', 'IR', 'USD', '1', -1.0)], rows
+    assert rows['AdjustedNotional'].tolist() == pytest.approx([4e6, funding], rel=1e-14), rows
+    assert rows['MaturityFactor'].tolist() == pytest.approx([math.sqrt(0.75)] * 2, rel=1e-15), rows
+    assert (found['AddOn_Equity'], found['AddOn_IR']) == pytest.approx(
+        (0.2 * 4e6 * math.sqrt(0.75), 0.005 * funding * math.sqrt(0.75)), rel=1e-14), found
+    assert rows['Value'].iloc[0] == found['V'] and math.isnan(rows['Value'].iloc[1]), rows
 
 
 @pytest.mark.parametrize('deal, drop, said', [

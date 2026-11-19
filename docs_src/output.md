@@ -110,7 +110,8 @@ one compile's counts as a base valuation's does (`Deals loaded`, `Deals Skipped`
   `CAP_LEG 2027-01-15`, a strip's deal `Reference`, its fixing date and the field naming the leg,
   `TARF 2025-02-15 LeverageNotional`, or an asset-or-nothing digital's deal `Reference` and
   vanilla or digital), `NettingSet`, `AssetClass`, `HedgingSet` (an IR
-  trade's currency, an FX trade's pair, a credit or equity trade's entity, a commodity trade's
+  trade's currency, an inflation leg's currency and index, `USD InflationRate.CPI`, an FX
+  trade's pair, a credit or equity trade's entity, a commodity trade's
   set), `Subclass` (Table 2's row), `Bucket` (an IR trade's maturity bucket, a commodity trade's
   type), `SupervisoryFactor`, `AdjustedNotional`, `Delta`, `MaturityFactor`, `EffectiveNotional`
   (a digital's capped at its payoff over its `SupervisoryFactor`, so not always the product of
