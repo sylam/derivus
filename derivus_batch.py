@@ -759,7 +759,6 @@ class SA_CVA(JOB):
 
         # update the params
         self.params['Currency'] = 'ZAR'
-        self.params['Deflation_Interest_Rate'] = 'ZAR-SWAP'
         self.params['Credit_Valuation_Adjustment'] = cva_sect
         self.params['Credit_Valuation_Adjustment']['CDS_Tenors'] = [0.5, 1, 3, 5, 10]
         self.params['Credit_Valuation_Adjustment']['Gradient'] = 'Yes'
