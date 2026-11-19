@@ -192,7 +192,7 @@ const HOLDS = {
 
 /** Rows of a credit curve as the officer reads one: a tenor, its spread - a number in basis points,
  * anything else as typed - and the survival to it. */
-function SpreadTable({ rows }: { rows: [string, unknown, number][] }) {
+export function SpreadTable({ rows }: { rows: [string, unknown, number][] }) {
   return (
     <table className="data">
       <thead><tr><th>Tenor</th><th className="n">Spread</th><th className="n">Survival</th></tr></thead>
@@ -214,7 +214,7 @@ function SpreadTable({ rows }: { rows: [string, unknown, number][] }) {
  * the form stating it - one flat spread or a spread per tenor, at a recovery offered at the
  * factor's convention - with what it will write beside it, written on one confirm. A refusal is the
  * service's own sentence beside what it is about. With no `id` the counterparty is typed by name. */
-function CreditCard({ id, title, factor, base, convention, recording }: {
+export function CreditCard({ id, title, factor, base, convention, recording }: {
   id?: string; title: string; factor?: unknown; base: string; convention: number;
   recording: boolean;
 }) {

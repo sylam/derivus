@@ -7,6 +7,8 @@ import { BackOfficeView } from './views/BackOfficeView';
 import { BlotterView } from './views/BlotterView';
 import { BootstrapperView } from './views/BootstrapperView';
 import { CalculationView } from './views/CalculationView';
+import { CLIENT } from './client';
+import { ClientView } from './views/ClientView';
 import { CurvesView } from './views/CurvesView';
 import { MarketDataView } from './views/MarketDataView';
 import { MarketPricesView } from './views/MarketPricesView';
@@ -39,6 +41,8 @@ export const WORKSPACES: Workspace[] = [
   // under - its counterparties and their agreements
   { id: 'backoffice', label: 'Back Office', view: BackOfficeView },
   { id: 'paper', label: 'Paper', view: PaperView },
+  // one client whole: whether it is ready to trade, its paper, its curve, its trades and its XVA
+  { id: CLIENT, label: 'Clients', view: ClientView },
   // the market, in the order it is built: the quotes, the benchmark rows a curve is set up from,
   // the dials that turn them into factors, the factors themselves
   { id: 'prices', label: 'Market Prices', view: MarketPricesView },

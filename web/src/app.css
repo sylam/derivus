@@ -665,6 +665,30 @@ table.data th .sub { font-size: 10.5px; font-weight: 400; text-transform: none; 
 table.desk td .unit { margin-left: 2px; color: var(--text-muted); font-size: 11px; }
 table.desk td .unit.unknown { color: var(--warn); }
 
+/* ---- one client's page ---- */
+
+.clienthead { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin: 0 0 12px; }
+.clienthead h2 { margin: 0; font-size: 19px; font-weight: 650; }
+.clientpage .hint { color: var(--text-muted); font-size: 12.5px; }
+.clientpage .card > :is(.note, .hint, .error-box) { margin: 10px 14px; }
+/* the verdict the page leads with, then each fact behind it marked by what it does to a booking */
+.verdict { padding: 10px 14px 2px; font-size: 14px; font-weight: 650; }
+.verdict.ready { color: var(--good); }
+.verdict.not { color: var(--bad); }
+.facts { list-style: none; margin: 0; padding: 4px 14px 10px; font-size: 13px; }
+.facts li { position: relative; padding: 3px 0 3px 20px; }
+.facts li::before { position: absolute; left: 2px; font-weight: 700; }
+.facts li[data-tone='ok']::before { content: '✓'; color: var(--good); }
+.facts li[data-tone='todo']::before { content: '✕'; color: var(--bad); }
+.facts li[data-tone='warn']::before { content: '!'; color: var(--warn); }
+.facts li[data-tone='note']::before { content: '·'; color: var(--text-muted); }
+.facts li button { margin-left: 10px; }
+/* one agreement, or the trades under it, as a block of its card */
+.card > .agreement { padding: 2px 14px 10px; border-bottom: 1px solid var(--border); }
+.card > .agreement:last-child { border-bottom: none; }
+.agreement .csa { margin: 2px 0 8px; font-size: 13.5px; font-weight: 550; }
+.agreement .csa .hint { font-weight: 400; }
+
 /* ---- the quote ticket ---- */
 
 .quoteopen { display: flex; gap: 6px; padding: 0 10px 8px; }

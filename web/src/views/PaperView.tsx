@@ -173,10 +173,11 @@ function EntityForm({ entities }: { entities: Entity[] }) {
 
 /** Declaring an agreement with an entity: its id, the document's kind and its terms - the netting
  * set every position under it compiles into, edited off the declaration and posted as it stands.
- * Started `from` an agreement in force, it holds that one's terms; an id the record declares
- * already is a restatement, which names every term it moves before it is filed. */
-function AgreementForm({ schema, entities, agreements, from }: {
-  schema: Schema; entities: Entity[]; agreements: Agreement[]; from?: Agreement;
+ * Started `from` an agreement in force, it holds that one's terms - from an entity alone, a new
+ * agreement with it; an id the record declares already is a restatement, which names every term it
+ * moves before it is filed. */
+export function AgreementForm({ schema, entities, agreements, from }: {
+  schema: Schema; entities: Entity[]; agreements: Agreement[]; from?: Partial<Agreement>;
 }) {
   const [named, setNamed] = useState({
     agreement: from?.agreement ?? '', entity: from?.entity ?? '', kind: from?.kind ?? '' });
