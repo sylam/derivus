@@ -6300,6 +6300,36 @@ def test_a_refused_survival_curve_names_the_field_it_is_about(recorded, book, mo
     assert book.read_bytes() == before, 'a refused curve was written'
 
 
+def test_a_written_survival_curve_names_the_horizon_it_runs_on_to(book, monkeypatch):
+    """The answer to a written credit curve says the horizon its last line runs on to. 150bp flat
+    at a 40% recovery is a hazard of 0.015/0.6 = 0.025, so the curve is 0.025 at a year and runs on
+    to 0.025 x 50 = 1.25 at the fifty-year horizon. A term structure whose last row is sixty years
+    out - 21,915 days, 60.041 years, at 120bp: 0.012 x 60.041/0.6 = 1.2008 - already reaches past
+    the horizon, so nothing is run on and the answer still names the horizon it ran on to.
+
+    Killing mutation: the horizon answered as where the written curve ends, which reads the sixty-
+    year curve as run on to sixty years.
+    """
+    monkeypatch.delenv('DV_SPINE_HOME', raising=False)
+
+    def written(**body):
+        answer = CLIENT.post('/book/survival', content=dump(dict(body, counterparty='CPTY_A')),
+                             headers=JSON).json()
+        return {key: value for key, value in answer.items() if key != 'etag'}
+
+    def curve(*knots):
+        return [pytest.approx(knot, rel=1e-12) for knot in knots]
+
+    assert written(spread=150.0) == {
+        'written': True, 'factor': 'SurvivalProb.CPTY_A', 'recovery': 0.4, 'horizon': 50.0,
+        'curve': curve([0.0, 0.0], [1.0, 0.025], [50.0, 1.25])}
+    ten, sixty = 3652 / 365.0, 21915 / 365.0
+    assert written(spread=[{'tenor': '10Y', 'spread': 100.0}, {'tenor': '60Y', 'spread': 120.0}]
+                   ) == {
+        'written': True, 'factor': 'SurvivalProb.CPTY_A', 'recovery': 0.4, 'horizon': 50.0,
+        'curve': curve([0.0, 0.0], [ten, 0.01 * ten / 0.6], [sixty, 0.012 * sixty / 0.6])}
+
+
 def test_fva_is_a_column_of_the_same_row_off_the_same_run(desk_xva, tmp_path):
     """CVA and FVA are two columns of ONE row from ONE credit Monte Carlo, sharing the row's
     identity: one `as_of`, one `result_id`, one `plan_hash`. That is what makes them addable - two

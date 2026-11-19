@@ -4498,8 +4498,8 @@ def book_survival(request: dict):
     points, flat or as rows `[{tenor, spread}]`, and `recovery`, 0.4 by the factor's convention.
     Each spread is a hazard s/(1-R), so the curve - minus the log of survival, ACT/365, linear - is
     [[0, 0], [T, sT/(1-R)]] per row, T its tenor and a year for a flat spread, and runs on the last
-    row's line to `SURVIVAL_HORIZON`: a flat spread is a flat hazard to fifty years. Nothing here
-    looks a spread up.
+    row's line to `SURVIVAL_HORIZON`, which the answer names as `horizon`: a flat spread is a flat
+    hazard to fifty years. Nothing here looks a spread up.
 
     Under a home the seat holds `mark` over the book - market data is the marking seat's - its
     refusal landed, and the counterparty is an entity the record declares. A counterparty that
@@ -4548,7 +4548,8 @@ def book_survival(request: dict):
         document['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault(
             'Price Factors', {})[factor] = as_json(
                 {'Recovery_Rate': recovery, 'Curve': utils.Curve([], points)})
-        return True, {'written': True, 'factor': factor, 'recovery': recovery, 'curve': points}
+        return True, {'written': True, 'factor': factor, 'recovery': recovery, 'curve': points,
+                      'horizon': SURVIVAL_HORIZON}
 
     try:
         return live.mutate(edit)

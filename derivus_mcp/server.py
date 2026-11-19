@@ -1917,7 +1917,8 @@ def declare_survival_curve(counterparty: str, spread: float | list[dict], recove
     hazard spread / (1 - recovery), the last one's line run on to fifty years, so a flat spread is a
     flat hazard to fifty years. Never look a spread up or guess one: it is the desk's number.
     On a recorded desk the counterparty is a declared legal entity and the seat holds `mark`.
-    Answers `{written, factor, recovery, curve}`; `recalc_xva` then prices the set.
+    Answers `{written, factor, recovery, curve, horizon}`, `horizon` the years the last line runs
+    on to; `recalc_xva` then prices the set.
     """
     return service().call('POST', '/book/survival', json=dict(
         {'counterparty': counterparty, 'spread': spread, 'recovery': recovery},
