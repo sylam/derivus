@@ -9,7 +9,7 @@
 // module has no vocabulary for one on purpose.
 
 import { quoted, type BlotterRow } from './blotter';
-import type { Position } from './positions';
+import { clientName, type Entity, type Position } from './positions';
 import {
   COLLATERAL, axisText, formatNumber, isObject, label, tenorLabel, token, uncollateralised,
 } from './tokens';
@@ -20,6 +20,13 @@ import { axisNames } from './vols';
 
 /** A file as a reader names it: its name, never the folders it sits in on the server. */
 export const fileName = (path: string): string => path.split(/[\\/]/).pop()!;
+
+/** An entity as a reader tells it from another: its name with its id beside it, the id alone where
+ * legal declared no name. */
+export function entityText(entities: Entity[], id: string): string {
+  const name = clientName(entities, id);
+  return name === id ? id : `${name} (${id})`;
+}
 
 // ---- stamps -------------------------------------------------------------------------------------
 // The service stamps every answer on its own clock to milliseconds, with the offset it runs at. Two
@@ -239,14 +246,25 @@ export function riskReading(rows: GreekRow[], schema: Schema | null) {
   return { spots, curves, surfaces, units };
 }
 
-/** The positions awaiting a second seat inside each marked row, by its deal path: a position the
- * row's node holds, or one any node beneath it does. */
-export function pendingUnder(marks: DealMark[], positions: Position[]): Map<string, Position[]> {
+/** What a marked row holds, off the positions inside it: the clients it is against, each by name
+ * and id, and the trades in it that wait on a second seat. */
+export function markHolds(held: Position[], entities: Entity[]):
+  { clients: string[]; pending: Position[] } {
+  return {
+    clients: [...new Set(held.flatMap((position) => position.counterparty ?? []))]
+      .map((id) => entityText(entities, id)),
+    pending: held.filter((position) => position.pending !== 0),
+  };
+}
+
+/** The positions inside each marked row, by its deal path: a position the row's node holds, or one
+ * any node beneath it does. */
+export function positionsUnder(marks: DealMark[], positions: Position[]): Map<string, Position[]> {
   const under = new Map<string, Position[]>();
   for (const mark of marks) {
     if (mark.deal_path === null) continue;
     const path = mark.deal_path;
-    const held = positions.filter((position) => position.pending !== 0 && position.deal_paths
+    const held = positions.filter((position) => position.deal_paths
       .some((at) => at === path || at.startsWith(`${path}/`)));
     if (held.length) under.set(path, held);
   }

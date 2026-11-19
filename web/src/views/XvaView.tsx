@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  ageOf, currencyOf, isOrphan, lagsBook, lastRunChip, replayRows, stampText,
+  ageOf, currencyOf, entityText, fileName, isOrphan, lagsBook, lastRunChip, replayRows, stampText,
   statusChip, xvaTotals, type XvaSum,
 } from '../desk';
 import { EmptyState } from '../components/EmptyState';
@@ -78,6 +78,7 @@ export function XvaView() {
   const totals = xvaTotals(view);
   const currency = currencyOf(doc);
   const lagging = lagsBook(xva.clock, clockOf(state));
+  const named = (id: string) => entityText(state.paper.data?.entities ?? [], id);
 
   return (
     <div className="main">
@@ -105,10 +106,11 @@ export function XvaView() {
             credit Monte Carlo would start one by accident */}
         <div className="note">
           Recalcs are asked for through the MCP verbs — <code>recalc_xva</code> — and never from
-          here. A credit Monte Carlo is minutes of device time, so this screen is a <b>read</b> of{' '}
-          <span className="mono" title={view.path}>{view.path}</span>: the last run per set, as old
-          as each row says it is. The adjustments are unilateral — only the counterparty defaults —
-          and each is in the currency its own run reported in, at that run's FX.
+          here. A credit Monte Carlo is minutes of device time, so this screen is a <b>read</b> of
+          the desk's XVA projection, the file <span className="mono">{fileName(view.path)}</span>:
+          the last run per set, as old as each row says it is. The adjustments are unilateral —
+          only the counterparty defaults — and each is in the currency its own run reported in, at
+          that run's FX.
           {totals.running > 0 && ' A recalc is in flight — this view re-reads when you return to it.'}
         </div>
 
@@ -140,6 +142,7 @@ export function XvaView() {
                   <Row
                     key={id}
                     set={set}
+                    named={named}
                     read={view.as_of}
                     opened={opened === id}
                     onOpen={() => setOpened(opened === id ? null : id)}
@@ -175,8 +178,8 @@ function Sums({ sum }: { sum: XvaSum }) {
   );
 }
 
-function Row({ set, read, opened, onOpen }: {
-  set: XvaSet; read: string; opened: boolean; onOpen: () => void;
+function Row({ set, named, read, opened, onOpen }: {
+  set: XvaSet; named: (id: string) => string; read: string; opened: boolean; onOpen: () => void;
 }) {
   const orphan = isOrphan(set);
   const age = ageOf(set.as_of, read);
@@ -195,7 +198,7 @@ function Row({ set, read, opened, onOpen }: {
         <td className="path">
           {set.deal_path ?? <span className="hint">—</span>}
         </td>
-        <td>{set.counterparty ?? <span className="hint">—</span>}</td>
+        <td>{set.counterparty ? named(set.counterparty) : <span className="hint">—</span>}</td>
         <td>
           {/* a real boolean off the wire - the book stores this as the text "True"/"False" and the
               service reads it, so nothing here has to guess what "False" means */}

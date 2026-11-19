@@ -220,14 +220,28 @@ const position = (reference, paths, pending) => ({ reference, deal_paths: paths,
 const MARKS = [{ reference: 'ISDA-KESTREL', deal_path: '0', value: 1 },
                { reference: 'NDF-TOP', deal_path: '1', value: 1 },
                { reference: 'SPARE', deal_path: '10', value: 1 }];
-const held = desk.pendingUnder(MARKS, [position('GBPZAR-NDF', ['0/1'], 1),
-                                       position('USDZAR-CALL', ['0/0'], 0),
-                                       position('NDF-TOP', ['1'], 2), position('X', ['10/0'], 1)]);
-check('a marked row holds the trades pending beneath it or on itself, and only those',
-      "a path matched on its prefix alone, which files 10/0 under 1; or a position counted for its "
-      + 'status with nothing awaiting a second seat',
+const held = desk.positionsUnder(MARKS, [
+  position('GBPZAR-NDF', ['0/1'], 1), position('USDZAR-CALL', ['0/0'], 0),
+  position('NDF-TOP', ['1'], 2), position('X', ['10/0'], 1)]);
+check('a marked row holds the positions beneath it or on itself, and only those',
+      'a path matched on its prefix alone, which files 10/0 under 1',
       [...held].map(([path, rows]) => [path, rows.map((row) => row.reference)]),
-      [['0', ['GBPZAR-NDF']], ['1', ['NDF-TOP']], ['10', ['X']]]);
+      [['0', ['GBPZAR-NDF', 'USDZAR-CALL']], ['1', ['NDF-TOP']], ['10', ['X']]]);
+const ENTITIES = [{ entity: 'KESTREL', name: 'Kestrel Mining Ltd', parent: null }];
+const holds = desk.markHolds([
+  ...held.get('0').map((row) => ({ ...row, counterparty: 'KESTREL' })),
+  { ...position('Y', ['0/2'], 0), counterparty: 'NONAME' }], ENTITIES);
+check('a marked row names its clients by name and id, once each, and the trades waiting in it',
+      'the client by id alone, `KESTREL`, which a credit officer reads as a code; a client named '
+      + 'once per trade; or a position counted pending for its status with nothing awaiting a '
+      + 'second seat',
+      [holds.clients, holds.pending.map((row) => row.reference)],
+      [['Kestrel Mining Ltd (KESTREL)', 'NONAME'], ['GBPZAR-NDF']]);
+check('an entity reads as its name with its id, and a file as its name off any server path',
+      "the counterparty's id shown bare; or the XVA file's whole path on the server",
+      [desk.entityText(ENTITIES, 'KESTREL'), desk.entityText(ENTITIES, 'ALDERBY'),
+       desk.fileName('C:\\desk\\home\\xva.json'), desk.fileName('/srv/desk/xva.json')],
+      ['Kestrel Mining Ltd (KESTREL)', 'ALDERBY', 'xva.json', 'xva.json']);
 
 // --- what a run's table is in
 const SETS = { Instrument: { types: { NettingCollateralSet: ['Fields'], FXOptionDeal: ['Option'] },
@@ -316,7 +330,7 @@ check('amounts in two currencies are never added: one sum per currency the rows 
       desk.xvaTotals(VIEW).sums.map((sum) => [sum.currency, sum.cva, sum.counted, sum.countedFva]),
       [['USD', 6114.49, 1, 1], ['ZAR', 1295.26, 1, 1], [null, 10, 1, 0]]);
 
-console.log(`\n${ran} checks over 22 functions, ${missed.length} missed`);
+console.log(`\n${ran} checks over 26 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

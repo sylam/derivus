@@ -1,9 +1,9 @@
 import { Fragment, useMemo, useState, type ReactNode } from 'react';
 import { NO_SEAT } from '../api';
 import {
-  factorAxes, factorFamily, lagsBook, marketSource, marksTotal, onPair, pendingUnder, perOf,
-  perUnitText, plural, quoteText, quoteView, reconciles, riskOf, riskReading, sharedPer,
-  sortGreeks, stampText, tenorText, valuationDay, type GreekKey, type Ladder,
+  factorAxes, factorFamily, lagsBook, markHolds, marketSource, marksTotal, onPair, perOf,
+  perUnitText, plural, positionsUnder, quoteText, quoteView, reconciles, riskOf, riskReading,
+  sharedPer, sortGreeks, stampText, tenorText, valuationDay, type GreekKey, type Ladder,
 } from '../desk';
 import { EmptyState } from '../components/EmptyState';
 import type { Position } from '../positions';
@@ -380,18 +380,21 @@ function Risk({ row }: { row: GreekRow }) {
   );
 }
 
-/** The per-deal marks: one row per TOP-LEVEL trade, so a structure or a netting set appears once
- * with its net and `mtm` is exactly this column's total. The legs are not here on purpose - they
- * are inside the row their container reports, and adding them again would double the book. On a
- * desk that records, a row holding a trade that waits on a second seat says which. */
+/** The per-deal marks, the desk's side of each: one row per TOP-LEVEL trade, so a structure or a
+ * netting set appears once with its net and `mtm` is exactly this column's total. The legs are not
+ * here on purpose - they are inside the row their container reports, and adding them again would
+ * double the book. On a desk that records, a row names the clients it is against and the trades
+ * in it that wait on a second seat. */
 function Marks({ risk, currency }: { risk: BookRisk; currency: string }) {
   const { state, dispatch } = useApp();
   const total = marksTotal(risk.per_deal);
   const agrees = reconciles(risk);
   const recording = state.record.spine !== null;
   const positions = state.paper.data?.positions;
-  const pending = pendingUnder(risk.per_deal, positions ?? []);
-  const waiting = [...pending.values()].flat();
+  const under = positionsUnder(risk.per_deal, positions ?? []);
+  const holds = (path: string | null) => markHolds(
+    (path === null ? undefined : under.get(path)) ?? [], state.paper.data?.entities ?? []);
+  const waiting = risk.per_deal.flatMap((row) => holds(row.deal_path).pending);
 
   return (
     <>
@@ -423,8 +426,9 @@ function Marks({ risk, currency }: { risk: BookRisk; currency: string }) {
       </div>
       <div className="blotterbar">
         <span className="hint">
-          <b>Per-deal marks</b> — one row per top-level node of the book; a structure and a netting
-          set each report their net
+          <b>Per-deal marks</b> — the desk's side of each: positive is worth that much to the
+          desk; one row per top-level node of the book, a structure and a netting set each
+          reporting their net
         </span>
       </div>
       <div className="tablewrap">
@@ -432,14 +436,16 @@ function Marks({ risk, currency }: { risk: BookRisk; currency: string }) {
           <thead>
             <tr>
               <th>Reference</th>
+              {recording && <th>Client</th>}
               <th>Path</th>
               {recording && <th>Waiting on a second seat</th>}
-              <th className="n">{currency ? `Value (${currency})` : 'Value'}</th>
+              <th className="n" title="the mark from the desk's side: positive is worth that much to the desk">
+                {`Desk's value${currency ? ` (${currency})` : ''}`}</th>
             </tr>
           </thead>
           <tbody>
             {risk.per_deal.map((row, position) => {
-              const held = (row.deal_path && pending.get(row.deal_path)) || [];
+              const { clients, pending: held } = holds(row.deal_path);
               return (
                 <tr
                   key={`${row.deal_path ?? '?'}:${position}`}
@@ -449,6 +455,10 @@ function Marks({ risk, currency }: { risk: BookRisk; currency: string }) {
                     && dispatch({ type: 'SELECT_DEAL', path: row.deal_path })}
                 >
                   <td>{row.reference || <span className="hint">(no reference)</span>}</td>
+                  {recording && (
+                    <td>{positions ? clients.join(', ')
+                      || <span className="hint">—</span> : <span className="hint">…</span>}</td>
+                  )}
                   <td className="path">
                     {row.deal_path ?? (
                       <span className="hint" title="this reference is not unique in the book, so no positional identity is offered for it">
@@ -464,12 +474,12 @@ function Marks({ risk, currency }: { risk: BookRisk; currency: string }) {
               );
             })}
             {risk.per_deal.length === 0 && (
-              <tr><td colSpan={recording ? 4 : 3} className="hint">this book marks nothing.</td></tr>
+              <tr><td colSpan={recording ? 5 : 3} className="hint">this book marks nothing.</td></tr>
             )}
             <tr className="total">
               <td>Book</td>
               <td />
-              {recording && <td />}
+              {recording && <><td /><td /></>}
               <td className={`n${total < 0 ? ' neg' : ''}`} title={String(total)}>
                 {formatNumber(total, 'money')}
               </td>

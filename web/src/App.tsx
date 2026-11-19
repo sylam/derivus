@@ -143,9 +143,9 @@ export function App() {
   }, [state.source]);
 
   // The positions and the paper they sit under, for the screens that group the book by them and
-  // the Risk screen counting what waits on a second seat: read while one is looked at on a desk
-  // that records, and again whenever the file or the record moves under it.
-  const paperWanted = ['portfolio', 'blotter', 'risk'].includes(state.tab) && visible
+  // the Risk and XVA screens naming the clients: read while one is looked at on a desk that
+  // records, and again whenever the file or the record moves under it.
+  const paperWanted = ['portfolio', 'blotter', 'risk', 'xva'].includes(state.tab) && visible
     && recording;
   useEffect(() => {
     if (state.source?.kind !== 'book' || !paperWanted) return;
