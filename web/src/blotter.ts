@@ -8,7 +8,7 @@
 // block and what an amount is a size of (`sizeOf`). A type nobody anticipated therefore still
 // fills what columns it can and renders the rest in its expander, rather than raising.
 
-import { closed, type Position } from './positions';
+import { closed, netOf, type Position } from './positions';
 import { formatNumber, isObject, token, type Kind } from './tokens';
 import type { TreeNode } from './tree';
 import type { DealNode, Descriptor, JobDoc, Market, Schema } from './types';
@@ -481,7 +481,7 @@ export function rowsByPath(rows: BlotterRow[],
 export function heldRows(rows: BlotterRow[], held: Map<string, Position[]>,
                          units?: number): BlotterRow[] {
   return rows.map((row) => {
-    const at = held.get(row.path)?.reduce((sum, position) => sum + position.quantity, 0) ?? units;
+    const at = netOf(held.get(row.path) ?? []) ?? units;
     return { ...row, units: at, children: heldRows(row.children, held, at) };
   });
 }

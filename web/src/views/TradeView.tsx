@@ -6,7 +6,7 @@ import {
 import { EmptyState } from '../components/EmptyState';
 import { currencyOf, lagsBook, stampText } from '../desk';
 import {
-  NO_PAPER, byPath, clientName, closed, nodeAt, type Position, type Ticket,
+  NO_PAPER, byPath, clientName, closed, netOf, nodeAt, type Position, type Ticket,
 } from '../positions';
 import { clientText, quoteAt, verdictOf, type Verdict } from '../quote';
 import { WORKSPACES } from '../registry';
@@ -66,6 +66,7 @@ export function TradeView() {
   const record = useRecordRows(recording, pinnedAt(state.record.spine));
   const paper = state.paper.data ?? NO_PAPER;
   const held = (trade && byPath(paper.positions).get(trade.path)) || [];
+  const units = netOf(held);
   const listed = useQuoteList();
 
   if (!doc) return null;
@@ -86,10 +87,10 @@ export function TradeView() {
         <h2 className="tradetitle">{row.reference || '(no reference)'}
           <span className="hint" title="where the book file holds it">{row.object} at{' '}
             <span className="mono">{trade.path}</span></span></h2>
-        <Terms row={row} set={trade.set} held={recording ? held : undefined}
+        <Terms row={row} set={trade.set} units={recording ? units ?? null : undefined}
                quote={quote ?? undefined} />
         <Origin recording={recording} held={held} history={history} quote={quote} />
-        <Worth path={trade.path} />
+        <Worth path={trade.path} legs={row.children.length} shut={closed(units)} />
         <History recording={recording} history={history} />
         <Actions key={`act ${trade.path}`} row={row} held={held} recording={recording} />
       </div>
@@ -99,16 +100,16 @@ export function TradeView() {
 
 /** What the trade is, as the market says it: the client, what it is and on what, how much of it
  * the record holds, its dates, and each leg's side, size and levels on the market's axis. */
-function Terms({ row, set, held, quote }: {
-  row: BlotterRow; set: string | null; held?: Position[]; quote?: QuoteGiven;
+function Terms({ row, set, units, quote }: {
+  row: BlotterRow; set: string | null; units?: number | null; quote?: QuoteGiven;
 }) {
   const { state } = useApp();
   const { schema } = state;
   const paper = state.paper.data ?? NO_PAPER;
   const market = marketOf(state);
-  const units = held?.length ? held.reduce((sum, position) => sum + position.quantity, 0)
-    : undefined;
-  const shut = closed(units);
+  const shut = closed(units ?? undefined);
+  // a trade the record closed reads at its sizes as written
+  const scale = shut ? undefined : units ?? undefined;
   const read = quoted(row, market, schema);
   const what = tradeName(row, quote, schema);
   const legs = legsOf(row);
@@ -122,9 +123,9 @@ function Terms({ row, set, held, quote }: {
           {read.on && (
             <span title={read.on.title ?? read.on.key}>on {cellText(read.on.value)}</span>
           )}
-          {held && (
+          {units !== undefined && (
             <span title="the net of every fill, in units of the trade as written">
-              {units === undefined ? <>the record holds <b>none</b> of it now: its sizes are as
+              {units === null ? <>the record holds <b>none</b> of it now: its sizes are as
                 written</> : shut ? <><b>closed</b>: netted to nothing, its sizes are as written</>
                 : <>held <b>{formatNumber(units)}</b> of the trade as written</>}
             </span>
@@ -150,7 +151,7 @@ function Terms({ row, set, held, quote }: {
             </thead>
             <tbody>
               {legs.map((leg) => {
-                const size = sizeOf(leg.deal, leg.object, schema, shut ? undefined : units);
+                const size = sizeOf(leg.deal, leg.object, schema, scale);
                 const levels = quoted(leg, market, schema);
                 return (
                   <tr key={leg.path}>
@@ -275,7 +276,7 @@ function Origin({ recording, held, history, quote }: {
 
 /** What the trade is worth to the desk, and what the number is on: its own mark where the risk
  * answer holds one, else the top-level node it sits inside, said as that. */
-function Worth({ path }: { path: string }) {
+function Worth({ path, legs, shut }: { path: string; legs: number; shut: boolean }) {
   const { state } = useApp();
   const { risk } = state;
   const body = () => {
@@ -287,29 +288,35 @@ function Worth({ path }: { path: string }) {
       return <div className={risk.error === NO_SEAT ? 'banner' : 'error-box'}>{risk.error}</div>;
     }
     if (!risk.data) return <div className="hint">pricing the book…</div>;
-    const { own, inside } = markOf(risk.data.per_deal, path);
+    const { own, inside } = markOf([...risk.data.per_deal, ...risk.data.in_sets], path);
     const currency = risk.data.currency ?? '';
-    const mark = own ?? inside;
+    const stat = (label: string, value: number, title: string) => (
+      <div className="stat" title={title}>
+        <div className="label">{label}</div>
+        <div className={`value${value < 0 ? ' neg' : ''}`}>
+          {formatNumber(value, 'money')} <span className="unit">{currency}</span>
+        </div>
+      </div>
+    );
     return (
       <>
         <OnStrip computed={stampText(risk.data.as_of)} title={`risk etag ${risk.data.etag}`}
                  currency={currency} lagging={lagsBook(risk.clock, clockOf(state))}
                  loading={risk.loading} />
-        {own ? (
-          <div className="stats">
-            <div className="stat" title="positive is worth that much to the desk">
-              <div className="label">desk's value</div>
-              <div className={`value${own.value < 0 ? ' neg' : ''}`}>
-                {formatNumber(own.value, 'money')} <span className="unit">{currency}</span>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="note">
-            The service marks each top-level node of the book, and this trade is not one: it has
-            no mark of its own.{mark && <> It sits inside <b>{mark.reference}</b>, whose net is{' '}
-              <b>{formatNumber(mark.value, 'money')} {currency}</b> to the desk.</>}
-          </div>
+        <div className="stats">
+          {own && stat(own.value < 0 ? "worth to the desk, in the client's favour"
+            : "worth to the desk, in the desk's favour", own.value,
+                       'positive is worth that much to the desk')}
+          {inside && stat(`the net of ${inside.reference}, which holds it`, inside.value,
+                          'the netting set\'s value to the desk, this trade inside it')}
+        </div>
+        {!own && (
+          <div className="note">{shut ? 'Closed: the record holds none of it, so the book marks '
+            + 'it at nothing.' : 'The risk answer holds no mark of this trade\'s own.'}</div>
+        )}
+        {legs > 0 && (
+          <div className="hint">Its {legs} legs have no mark of their own: the book marks the
+            structure whole.</div>
         )}
       </>
     );

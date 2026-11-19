@@ -21,7 +21,7 @@ import { pinnedAt } from '../spine';
 import { clockOf, marketOf, opened, standing, useApp } from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
 import { markOf, wholeRecord } from '../trade';
-import type { ActivityRow, BookRisk, BookXva, Market, Schema, XvaSet } from '../types';
+import type { ActivityRow, BookRisk, BookXva, DealMark, Market, Schema, XvaSet } from '../types';
 import { Side, Value } from './BlotterView';
 import { CreditCard, SpreadTable } from './CurvesView';
 import { AgreementForm } from './PaperView';
@@ -287,14 +287,16 @@ function CurveRead({ id, factor, restate }: { id: string; factor: unknown; resta
 }
 
 /** What the desk has on with the client, agreement by agreement: each trade in the blotter's
- * reading, the count, and the set's mark where the consolidated risk gives one - in the risk's
- * currency, said as the desk's side. A trade the record holds nothing of reads as closed. */
+ * reading with its own mark, the count, and the set's mark where the consolidated risk gives one -
+ * in the risk's currency, said as the desk's side. A trade the record holds nothing of reads as
+ * closed. */
 function OnBook({ own, reads, rows, market, schema }: {
   own: Agreement[]; reads: Reads; rows: Map<string, BlotterRow>; market: Market | null;
   schema: Schema;
 }) {
   const { state } = useApp();
   const risk = reads.risk.data;
+  const marks = risk ? [...risk.per_deal, ...risk.in_sets] : [];
   return (
     <section className="card">
       <h3>What the desk has on with it</h3>
@@ -326,12 +328,15 @@ function OnBook({ own, reads, rows, market, schema }: {
                       <th className="n">Amount</th><th>Ccy</th><th className="n">Strike</th>
                       <th className="n">Barrier</th><th>Terms</th><th>Expiry</th>
                       {reads.positions && <><th className="n">Qty</th><th>Status</th></>}
+                      <th className="n" title="the trade's own mark, positive worth that much to the desk">
+                        Desk's value{risk?.currency ? ` (${risk.currency})` : ''}</th>
                     </tr>
                   </thead>
                   <tbody>
                     {trades.map((trade, at) => (
                       <TradeRow key={at} trade={trade} market={market} schema={schema}
-                                recording={!!reads.positions} />
+                                recording={!!reads.positions}
+                                mark={trade.row && markOf(marks, trade.row.path).own} />
                     ))}
                   </tbody>
                 </table>
@@ -346,8 +351,8 @@ function OnBook({ own, reads, rows, market, schema }: {
 
 /** One trade in the blotter's reading, in the blotter's own cells: its side and size as the desk
  * holds it, its levels on the market's axis and its expiry; a click opens the trade's page. */
-function TradeRow({ trade, market, schema, recording }: {
-  trade: Held; market: Market | null; schema: Schema; recording: boolean;
+function TradeRow({ trade, market, schema, recording, mark }: {
+  trade: Held; market: Market | null; schema: Schema; recording: boolean; mark?: DealMark;
 }) {
   const { state, dispatch } = useApp();
   const { row, position, closed } = trade;
@@ -358,6 +363,7 @@ function TradeRow({ trade, market, schema, recording }: {
         <td colSpan={9} className="hint">booked under this agreement and not in the book file under
           its set, so nothing prices it</td>
         <td className="n">{formatNumber(position!.quantity)}</td><td>{statusText([position!])}</td>
+        <td />
       </tr>
     );
   }
@@ -386,6 +392,8 @@ function TradeRow({ trade, market, schema, recording }: {
           <td>{closed ? 'closed: the record holds nothing of it' : statusText([position!])}</td>
         </>
       )}
+      <td className={`n${mark && mark.value < 0 ? ' neg' : ''}`} title={mark && String(mark.value)}>
+        {mark ? formatNumber(mark.value, 'money') : ''}</td>
     </tr>
   );
 }

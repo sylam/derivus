@@ -255,8 +255,8 @@ export type QuoteRow = {
   per?: string;
 };
 
-/** One TOP-LEVEL trade's mark. A structure or a netting set appears once, with its net - its legs
- * are inside the row their container reports, which is why `mtm` is exactly the sum of these. */
+/** One trade's mark: a TOP-LEVEL node's in `per_deal` - a structure or a netting set once, with
+ * its net, which is why `mtm` is exactly their sum - or one a top-level set holds in `in_sets`. */
 export type DealMark = {
   reference: string;
   /** The positional identity the other book verbs take, or null where the reference is not
@@ -273,6 +273,8 @@ export type BookRisk = {
   currency: string | null;
   mtm: number;
   per_deal: DealMark[];
+  /** Each trade a top-level netting set holds, inside its set's value and never summed. */
+  in_sets: DealMark[];
   greeks: GreekRow[];
   /** The risk in QUOTE space, every quote of every block the book's factors are built from. */
   quotes: QuoteRow[];

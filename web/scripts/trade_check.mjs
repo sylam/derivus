@@ -73,11 +73,14 @@ check('a trade at the book\'s root sits in no set',
 
 // --- the mark
 const MARKS = [{ reference: 'ISDA-A', deal_path: '0', value: 5.5 },
-               { reference: 'FWD', deal_path: '1', value: -2.25 }];
-check('a top-level trade has its own mark; one inside a set has the set\'s net, said as that',
-      'the set\'s net returned as the trade\'s own mark, a number of three trades read as one',
-      [trade.markOf(MARKS, '1'), trade.markOf(MARKS, '0/1')],
-      [{ own: MARKS[1] }, { inside: MARKS[0] }]);
+               { reference: 'FWD', deal_path: '1', value: -2.25 },
+               { reference: 'COLLAR', deal_path: '0/1', value: 1.5 }];
+check('a trade has its own mark, at the top or inside a set, beside the set\'s net that holds it; '
+        + 'a leg has the set\'s net alone',
+      'the set\'s net returned as the trade\'s own mark, a number of three trades read as one; or '
+        + 'the set\'s net dropped where the trade has its own, which loses what the mark sits in',
+      [trade.markOf(MARKS, '1'), trade.markOf(MARKS, '0/1'), trade.markOf(MARKS, '0/1/0')],
+      [{ own: MARKS[1] }, { own: MARKS[2], inside: MARKS[0] }, { inside: MARKS[0] }]);
 
 // --- the record, read whole
 const RECORD = Array.from({ length: 450 }, (_, at) => ({ lsn: at + 1 }));

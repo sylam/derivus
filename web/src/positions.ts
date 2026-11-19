@@ -74,6 +74,10 @@ export const positionId = (position: Position): string =>
  * nowhere. */
 export const closed = (units: number | undefined): boolean => units === 0;
 
+/** What the record holds of a node at the net of its positions, and none where it holds none. */
+export const netOf = (held: Position[]): number | undefined =>
+  (held.length ? held.reduce((sum, row) => sum + row.quantity, 0) : undefined);
+
 /** The positions by their ids. */
 export const byId = (positions: Position[]): Map<string, Position> =>
   new Map(positions.map((position) => [positionId(position), position]));
@@ -122,7 +126,7 @@ export function statusText(held: Position[]): string {
 export function heldColumns(held: Position[], entities: Entity[]):
   [number | undefined, string, string, string] {
   const distinct = (values: string[]) => [...new Set(values)].join(', ');
-  const net = held.length ? held.reduce((sum, row) => sum + row.quantity, 0) : undefined;
+  const net = netOf(held);
   return [net, distinct(held.map((row) => row.portfolio)),
     distinct(held.map((row) => clientName(entities, row.counterparty))),
     closed(net) ? 'closed' : statusText(held)];

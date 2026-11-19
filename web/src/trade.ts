@@ -33,11 +33,13 @@ export function tradeAt(nodes: DealNode[], path: string):
   return undefined;
 }
 
-/** A trade's mark in the risk answer: its own row where it is a top-level node, else the
- * top-level row it sits inside - the only mark that holds it, as part of a net. */
+/** A trade's mark among the risk answer's rows: its own where they hold one - a top-level node's,
+ * or a trade's a top-level set holds - and, below the top, the top-level row it sits inside, whose
+ * net holds it. */
 export function markOf(marks: DealMark[], path: string): { own?: DealMark; inside?: DealMark } {
-  const own = marks.find((row) => row.deal_path === path);
-  return own ? { own } : { inside: marks.find((row) => row.deal_path === path.split('/')[0]) };
+  const top = path.split('/')[0];
+  return { own: marks.find((row) => row.deal_path === path),
+           inside: top === path ? undefined : marks.find((row) => row.deal_path === top) };
 }
 
 /** Every row of the record, read a page at a time from its first event: each page asked from the
