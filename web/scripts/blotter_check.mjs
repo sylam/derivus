@@ -64,9 +64,13 @@ const SCHEMA = { Instrument: {
       Near_Settlement_Date: date('Near Settlement Date',
                                  cash('Near_Buy_Far_Sell_Ccy', 'Near_Buy_Amount'),
                                  cash('Near_Sell_Far_Buy_Ccy', 'Near_Sell_Amount', -1.0)),
+      Far_Settlement_Date: date('Far Settlement Date',
+                                cash('Near_Sell_Far_Buy_Ccy', 'Far_Buy_Amount'),
+                                cash('Near_Buy_Far_Sell_Ccy', 'Far_Sell_Amount', -1.0)),
       Near_Buy_Far_Sell_Ccy: text('Near Buy Far Sell Ccy'),
       Near_Sell_Far_Buy_Ccy: text('Near Sell Far Buy Ccy'),
-      Near_Buy_Amount: sized('Near Buy Amount'), Near_Sell_Amount: sized('Near Sell Amount') },
+      Near_Buy_Amount: sized('Near Buy Amount'), Near_Sell_Amount: sized('Near Sell Amount'),
+      Far_Buy_Amount: sized('Far Buy Amount'), Far_Sell_Amount: sized('Far Sell Amount') },
     'EquityDeal.Fields': { Currency: text('Currency'), Buy_Sell: side('Buy Sell'),
                            Units: sized('Units') },
     'NettingCollateralSet.Fields': {
@@ -192,8 +196,8 @@ const node = (deal, children) => (
 const rowOf = (deal, children) => blotter.toRows([node(deal, children)], ['StructuredDeal'],
                                                  '2026-11-16')[0];
 /** A row as a reader sees it - [on, sense, strike, barrier, terms] - numbers as cells print them. */
-const shown = (deal, children, market = MARKET) => {
-  const read = blotter.quoted(rowOf(deal, children), market);
+const shown = (deal, children, market = MARKET, schema = null) => {
+  const read = blotter.quoted(rowOf(deal, children), market, schema);
   return [read.on?.value ?? null, read.sense ?? null, blotter.cellText(read.strike?.value) ?? null,
           blotter.cellText(read.barrier?.value) ?? null, read.terms?.parts.join(' · ') ?? null];
 };
@@ -221,10 +225,52 @@ check('a forward\'s outright is the quote currency\'s amount per the base\'s, on
       [shown(FORWARD), shown(NDF)],
       [['EURZAR', null, '20.0913', null, null], ['USDZAR', null, '18.3', null, null]]);
 
-check('a deal naming no pair the market holds a surface for shows no pair and no rate',
-      'a pair guessed from the two currencies the market holds no surface for, which prints a '
-      + 'GBPZAR outright nobody quotes',
+check('a currency no surface of the market relates to the other is on no pair, and shows no rate',
+      'a pair guessed from the deal\'s own order where the market says nothing, which prints '
+      + 'GBPZAR off a Buy_Currency the deal sells',
       shown({ ...NDF, Buy_Currency: 'GBP' }), [null, null, null, null, null]);
+
+// a market quoting the dollar legs and one cross of its own
+const LEGS = { 'Price Factors': { 'FXVol.GBP.USD': {}, 'FXVol.USD.ZAR': {}, 'FXVol.EUR.USD': {},
+                                  'FXVol.EUR.ZAR': {} } };
+const GBPZAR = { ...NDF, Buy_Currency: 'GBP', Buy_Amount: -5e6, Sell_Amount: -1.138e8 };
+check('a cross the market holds no surface for reads as its legs order it, its outright on that '
+      + 'pair, whichever way the deal writes it',
+      'the chain dropped - only a surface of the pair itself read - which leaves a GBPZAR NDF with '
+      + 'no pair and no rate; or the deal\'s order read, which prints ZARGBP 0.0439 for one '
+      + 'written buying the rand',
+      [shown(GBPZAR, undefined, LEGS),
+       shown({ ...GBPZAR, Buy_Currency: 'ZAR', Buy_Amount: 1.138e8, Sell_Currency: 'GBP',
+               Sell_Amount: 5e6 }, undefined, LEGS)],
+      [['GBPZAR', null, '22.76', null, null], ['GBPZAR', null, '22.76', null, null]]);
+const on = (deal, market) => blotter.quoted(rowOf(deal), market).on;
+check('the pair\'s hover names the surfaces it was read off, and a chained one says so',
+      'the shortest chain not sought, which reads EURZAR through the dollar beside the EURZAR '
+      + 'surface the market holds; or the hover left on one surface name the market does not hold',
+      [on(GBPZAR, LEGS).key, on(GBPZAR, LEGS).title, on(FORWARD, LEGS).key,
+       on(FORWARD, LEGS).title ?? null],
+      ['FXVol.GBP.USD × FXVol.USD.ZAR', 'the market holds no GBPZAR surface, so the pair reads as '
+        + 'its legs are quoted: GBPUSD × USDZAR', 'FXVol.EUR.ZAR', null]);
+check('two currencies the surfaces order against a third but not against each other are on no pair',
+      'the surfaces walked either way round, which strings EUR and GBP together through the dollar '
+      + 'they are both quoted against and prints an EURGBP nobody\'s market says',
+      shown({ ...FORWARD, Buy_Currency: 'GBP', Buy_Amount: 860000 }, undefined, LEGS),
+      [null, null, null, null, null]);
+
+const SWAP = { Object: 'FXSwapDeal', Near_Buy_Far_Sell_Ccy: 'EUR', Near_Sell_Far_Buy_Ccy: 'USD',
+               Near_Buy_Amount: 1e6, Near_Sell_Amount: 1158000, Far_Buy_Amount: 1166500,
+               Far_Sell_Amount: 1e6 };
+check('a swap is on the pair its legs exchange, its far outright the strike and its near in its '
+      + 'terms, whichever currency it buys near',
+      'the exchanges read off the Buy_ and Sell_ words alone, which leaves a swap with no pair and '
+      + 'no rate; the near shown as the strike beside the far leg\'s expiry; or the near dropped',
+      [shown(SWAP, undefined, LEGS, SCHEMA),
+       shown({ ...SWAP, Near_Buy_Far_Sell_Ccy: 'USD', Near_Sell_Far_Buy_Ccy: 'EUR',
+               Near_Buy_Amount: 1158000, Near_Sell_Amount: 1e6, Far_Buy_Amount: 1e6,
+               Far_Sell_Amount: 1166500 }, undefined, LEGS, SCHEMA),
+       shown(FORWARD, undefined, LEGS, SCHEMA)],
+      [['EURUSD', null, '1.1665', null, 'near 1.158'], ['EURUSD', null, '1.1665', null, 'near 1.158'],
+       ['EURZAR', null, '20.0913', null, null]]);
 
 check('a deal naming no pair - a metal - reads as written, on what it names',
       'the commodity read as a pair or turned, or what it is on left blank for want of a pair',

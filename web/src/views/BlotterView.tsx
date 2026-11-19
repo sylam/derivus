@@ -123,7 +123,7 @@ export function BlotterView() {
                 </th>
                 <th>Ccy</th>
                 <th className="n" title={recording ? HELD : undefined}>Amount</th>
-                <th className="n" title={`${LEVELS}; a forward's outright`}>Strike</th>
+                <th className="n" title={`${LEVELS}; a forward's outright, a swap's far one`}>Strike</th>
                 <th className="n" title={LEVELS}>Barrier</th>
                 <th>Terms</th>
                 <th>Expiry</th>
@@ -185,7 +185,7 @@ function Row(props: {
 }) {
   const { row, schema, selected, emphasised, collapsed, opened } = props;
   const size = sizeOf(row.deal, row.object, schema, row.units);
-  const read = quoted(row, props.market);
+  const read = quoted(row, props.market, schema);
 
   return (
     <>
@@ -206,7 +206,7 @@ function Row(props: {
         </td>
         <td className="type" title={row.object}>{row.object}</td>
         <td><Side side={size.side} /></td>
-        <td title={read.on?.key}>
+        <td title={read.on?.title ?? read.on?.key}>
           {read.on ? cellText(read.on.value) : ''}{read.sense && <span> {read.sense}</span>}
         </td>
         <td title={size.of?.key}>{size.of ? cellText(size.of.value) ?? '' : ''}</td>

@@ -207,19 +207,55 @@ export function cellText(value: unknown, kind: Kind = 'plain'): string | undefin
 // `Currency` per 1 `Underlying_Currency`; the market quotes a pair, base then quote. The deal names
 // its pair, so the turn between the two is read off the deal and never off a table of currencies.
 
-/** A currency pair as the market writes it, base then quote: EURZAR is ZAR per 1 EUR. */
-type Pair = { base: string; quote: string };
+/** A currency pair as the market writes it, base then quote: EURZAR is ZAR per 1 EUR. `through`
+ * is the chain of surfaces a pair the market holds none of is quoted along. */
+type Pair = { base: string; quote: string; through?: string[] };
+
+/** One side of an exchange: a currency, how much of it, and the field stating that amount. */
+type Leg = { currency: string; amount: number; key: string };
+
+/** What a deal exchanges, an amount of one currency for one of another: each date its type
+ * declares settling two payments in two currencies - a forward's one, a swap's near then far -
+ * else its `Buy_` and `Sell_` amounts, as a type declaring no such date states them. */
+function exchanges(deal: Record<string, unknown>, fields?: Record<string, Descriptor>): Leg[][] {
+  const declared = Object.values(fields ?? {}).flatMap((field) => (
+    Array.isArray(field.settles) && field.settles.length === 2 ? [field.settles] : []));
+  return (declared.length ? declared : [['Buy', 'Sell'].map(
+    (word) => ({ currency: `${word}_Currency`, amount: `${word}_Amount` }))])
+    .map((cash) => cash.map(({ currency, amount }) => ({
+      currency: String(deal[currency] ?? ''), amount: Math.abs(Number(deal[amount ?? ''])),
+      key: amount ?? '' })))
+    .filter(([one, other]) => one.currency && other.currency && one.currency !== other.currency);
+}
+
+/** The shortest chain of the market's `FXVol.BASE.QUOTE` surfaces from `base` to `quote`, each
+ * the quote of the one before - a surface of the pair itself is the chain of two. */
+function chain(market: Market | null, base: string, quote: string): string[] | undefined {
+  const surfaces = Object.keys(market?.['Price Factors'] ?? {}).map((name) => name.split('.'))
+    .filter((name) => name.length === 3 && name[0] === 'FXVol');
+  const reached = new Map([[base, [base]]]);
+  for (const [at, path] of reached) {
+    if (at === quote) return path;
+    surfaces.filter((name) => name[1] === at && !reached.has(name[2]))
+      .forEach((name) => reached.set(name[2], [...path, name[2]]));
+  }
+  return undefined;
+}
 
 /** The pair a deal is on: the `BASE.QUOTE` its `FX_Volatility` names, else - a forward names none
- * - the one the market holds an `FXVol.BASE.QUOTE` surface for on the two currencies it buys and
- * sells, in either order. */
-function pairOf(deal: Record<string, unknown>, market: Market | null): Pair | undefined {
+ * - its two currencies in the order the market's surfaces put them: one of the pair, else a chain
+ * through a third, a cross being quoted as the product of its legs - GBPUSD and USDZAR make
+ * GBPZAR. Two currencies no chain orders are on no pair the market can say. */
+function pairOf(deal: Record<string, unknown>, market: Market | null,
+                fields?: Record<string, Descriptor>): Pair | undefined {
   const named = String(deal.FX_Volatility ?? '').split('.');
   if (named.length === 2) return { base: named[0], quote: named[1] };
-  const surfaces = market?.['Price Factors'] ?? {};
-  const [base, quote] = [[deal.Buy_Currency, deal.Sell_Currency],
-    [deal.Sell_Currency, deal.Buy_Currency]].find(([a, b]) => `FXVol.${a}.${b}` in surfaces) ?? [];
-  return base ? { base: String(base), quote: String(quote) } : undefined;
+  const [one, other] = exchanges(deal, fields)[0]?.map((leg) => leg.currency) ?? [];
+  for (const [base, quote] of one ? [[one, other], [other, one]] : []) {
+    const through = chain(market, base, quote);
+    if (through) return { base, quote, through };
+  }
+  return undefined;
 }
 
 /** Whether a deal states its levels on its pair's QUOTE currency, so the market reads each as
@@ -239,17 +275,19 @@ function onAxis(deal: Record<string, unknown>, picked: Picked | undefined,
     + `${deal.Underlying_Currency}` };
 }
 
-/** A forward's outright on its pair: the quote currency's `<Buy|Sell>_Amount` per the base's. */
-function outright(deal: Record<string, unknown>, pair?: Pair): Picked | undefined {
-  if (!pair) return undefined;
-  const [quote, base] = [pair.quote, pair.base].map((currency) => ['Buy', 'Sell'].find(
-    (word) => deal[`${word}_Currency`] === currency));
-  if (!quote || !base) return undefined;
-  const [over, under] = [quote, base].map((word) => Math.abs(Number(deal[`${word}_Amount`])));
-  const value = over / under;
-  return { key: `${quote}_Amount`, value, title: `${pair.base}${pair.quote} ${formatNumber(value)}`
-    + `, the outright: ${formatNumber(over, 'money')} ${pair.quote} for `
-    + `${formatNumber(under, 'money')} ${pair.base}` };
+/** A forward's outright on its pair, one per exchange - a swap's near then far: the quote
+ * currency's amount per the base's. */
+function outrights(deal: Record<string, unknown>, pair: Pair | undefined,
+                   fields?: Record<string, Descriptor>): Picked[] {
+  return !pair ? [] : exchanges(deal, fields).flatMap((legs) => {
+    const [over, under] = [pair.quote, pair.base].map(
+      (currency) => legs.find((leg) => leg.currency === currency));
+    const value = over && under ? over.amount / under.amount : NaN;
+    return over && under && isFinite(value) ? [{
+      key: over.key, value, title: `${pair.base}${pair.quote} ${formatNumber(value)}, the `
+        + `outright: ${formatNumber(over.amount, 'money')} ${pair.quote} for `
+        + `${formatNumber(under.amount, 'money')} ${pair.base}` }] : [];
+  });
 }
 
 /** A row's terms, each a few words, and the hover saying them whole. */
@@ -257,9 +295,10 @@ export type Terms = { parts: string[]; title: string };
 
 /** The terms a row's other columns cannot hold, its hover adding the levels as written: a strip's
  * fixings and that its amount is per fixing, an average's fixings, a target in its unit, a
- * leverage, a range's two levels and a barrier's direction - the last two on the pair's axis. A
- * type nobody anticipated says nothing rather than something wrong. */
-function termsOf(deal: Record<string, unknown>, pair?: Pair): Terms | undefined {
+ * leverage, a range's two levels and a barrier's direction - the last two on the pair's axis - and
+ * the outright of every `near` exchange before the one the strike column shows. A type nobody
+ * anticipated says nothing rather than something wrong. */
+function termsOf(deal: Record<string, unknown>, pair?: Pair, near: Picked[] = []): Terms | undefined {
   const count = (keys: string[]) => {
     const rows = pick(deal, keys)?.value;
     return Array.isArray(rows) ? rows.length : undefined;
@@ -281,33 +320,48 @@ function termsOf(deal: Record<string, unknown>, pair?: Pair): Terms | undefined 
       && `range ${formatNumber(low)}\u00a0–\u00a0${formatNumber(high)}`,
     typeof deal.Barrier_Type === 'string' && (inverts(deal, pair) ? other(deal.Barrier_Type)
       : deal.Barrier_Type).replace(/_/g, ' ').toLowerCase(),
+    ...near.map((rate) => `near ${formatNumber(Number(rate.value))}`),
   ].filter((part): part is string => !!part);
-  const written = range.map((level) => level?.title).filter(Boolean);
+  const written = [...range, ...near].map((level) => level?.title).filter(Boolean);
   return parts.length ? { parts, title: [parts.join(' · '), ...written].join('\n') } : undefined;
 }
 
 /** A row the way the market states it: what it is on - the pair as the market writes it, else the
  * commodity, equity or index it names, else the one thing every row under it is on - an option's
- * sense on that pair, its two level columns and its terms. */
+ * sense on that pair, its two level columns - a swap's strike its far outright - and its terms. */
 export type Quoted = {
   on?: Picked; sense?: string; strike?: Picked; barrier?: Picked; terms?: Terms;
 };
 
-export function quoted(row: BlotterRow, market: Market | null): Quoted {
+/** The pair's cell: the surface it was read off, and where a chain ordered it, the legs it is
+ * quoted as. */
+const pairCell = (deal: Record<string, unknown>, pair: Pair): Picked => {
+  const legs = (pair.through ?? []).slice(1).map((quote, at) => [pair.through![at], quote]);
+  return {
+    key: deal.FX_Volatility ? 'FX_Volatility'
+      : legs.map(([base, quote]) => `FXVol.${base}.${quote}`).join(' × '),
+    value: pair.base + pair.quote,
+    title: legs.length > 1 ? `the market holds no ${pair.base}${pair.quote} surface, so the pair `
+      + `reads as its legs are quoted: ${legs.map((leg) => leg.join('')).join(' × ')}` : undefined,
+  };
+};
+
+export function quoted(row: BlotterRow, market: Market | null, schema: Schema | null = null): Quoted {
   const { deal } = row;
-  const pair = pairOf(deal, market);
-  const legs = row.children.map((child) => quoted(child, market).on);
+  const fields = fieldsOf(schema, row.object);
+  const pair = pairOf(deal, market, fields);
+  const legs = row.children.map((child) => quoted(child, market, schema).on);
   const named = pick(deal, UNDERLYING_FIELDS);
   const sense = typeof deal.Option_Type === 'string' ? deal.Option_Type : undefined;
+  const rates = outrights(deal, pair, fields);
   return {
-    on: pair ? { key: deal.FX_Volatility ? 'FX_Volatility' : `FXVol.${pair.base}.${pair.quote}`,
-                 value: pair.base + pair.quote }
+    on: pair ? pairCell(deal, pair)
       : named ?? (new Set(legs.map((leg) => leg?.value)).size === 1 ? legs[0] : undefined),
     sense: sense && inverts(deal, pair) ? other(sense) : sense,
-    strike: onAxis(deal, pick(deal, STRIKE_FIELDS), pair) ?? outright(deal, pair),
+    strike: onAxis(deal, pick(deal, STRIKE_FIELDS), pair) ?? rates[rates.length - 1],
     // a barrier of nought is no barrier
     barrier: onAxis(deal, pick(deal, BARRIER_FIELDS.filter((key) => deal[key] !== 0)), pair),
-    terms: termsOf(deal, pair),
+    terms: termsOf(deal, pair, rates.slice(0, -1)),
   };
 }
 
