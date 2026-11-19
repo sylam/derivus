@@ -1078,7 +1078,8 @@ def test_a_resetting_cross_currency_swap_exchanges_principal_as_its_setting_says
 
     KILLING MUTATIONS: the last principal repaid whatever the setting - the euro-resetting `Start`
     swap reads -923,505.75 and its last row books -803,999.00 euros; the reset payments dropped
-    where the setting names no Maturity - it reads -942,338.55.
+    where the setting names no Maturity - it reads -942,338.55; the swap registering no day of its
+    own - one matured behind the base date is counted a structure the run skipped.
     """
     N, a, x = 1e6, 91 / 365.0, 1.25 * math.exp(-0.02 * 2 / 365.0)
     dates = [BASE + pd.Timedelta(weeks=52 + 13 * k) for k in range(5)]
@@ -1145,6 +1146,14 @@ def test_a_resetting_cross_currency_swap_exchanges_principal_as_its_setting_says
     cash = out['Results']['cashflows']
     assert cash['USD'].loc[dates[-1]].to_numpy() == pytest.approx(N * 0.04 * a, rel=1e-12)
     assert cash['EUR'].loc[dates[-1]].to_numpy() == pytest.approx(-0.8 * N * math.expm1(0.02 * a), rel=1e-12)
+
+    # a swap matured behind the base date is left out as expired: the run skips nothing and the live
+    # swap beside it marks as it did alone
+    live = swap('Pay', 'Start_Maturity')
+    dates[:] = [BASE - pd.Timedelta(weeks=13 * k) for k in range(5, 0, -1)]
+    beside, stats = book.marks([live, dict(swap('Receive', 'Start_Maturity'), Reference='MATURED')])
+    assert beside['PayStart_Maturity'] == marks['PayStart_Maturity']
+    assert not {'Deals Skipped', 'Structs Skipped'} & set(stats), stats
 
 
 def test_a_reset_fixed_by_the_base_date_reads_the_rate_its_document_states(caplog):
