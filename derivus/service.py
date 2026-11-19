@@ -7088,13 +7088,23 @@ def pending_written(path, pending, **facts):
 
     `accepted {lsn, ticket}` is WHERE THE QUOTE WAS FILED, so the decision verbs seek to one frame
     instead of folding every quote the desk has ever struck; `booked {lsn, deal_path}` is where the
-    trade landed, which is how a second acceptance is told the quote is already on the book rather
-    than that the book has moved - it moved because this booking moved it. Re-written on a retried
+    trade landed, `lsn` null with no record, which is how a second acceptance is told the quote is
+    already on the book rather than booked again or told the book moved. Re-written on a retried
     acceptance with the same numbers, the record coalescing a repeat onto the LSN it already has.
     """
     pending.update(facts)
     with open(path, 'w', encoding='utf-8', newline='') as handle:
         json.dump(as_json(pending), handle, indent=2)
+
+
+def booked_already(pending, quote_id):
+    """The answer to a quote its pending file says booked, or None where it did not."""
+    if not pending.get('booked'):
+        return None
+    return {'written': False, 'accepted': pending.get('accepted'), 'booked': pending['booked'],
+            'note': 'quote {} is booked at {} - it is already on the book and there is nothing '
+                    'further to do; quote again to deal again'.format(
+                        quote_id, pending['booked']['deal_path'])}
 
 
 @app.post('/book/quote', summary='Accept a quote already given - the booking half of a structure')
@@ -7131,10 +7141,10 @@ def book_quote(request: dict):
     age, the window and the remedy. No policy holds every quote bookable for ever. A pending file
     carrying no `quoted_at` is treated as AGED: an unknown age is not an age inside the window.
 
-    A QUOTE THAT ALREADY BOOKED IS TOLD SO. The acceptance writes `booked {lsn, deal_path}` onto the
-    pending file in the same act as `accepted`, so a second acceptance answers
-    `{written: false, booked}` naming where the trade landed rather than reporting the move the
-    booking itself made.
+    A QUOTE BOOKS ONCE, ON EITHER DESK. The acceptance writes `booked {lsn, deal_path}` onto the
+    pending file in the same act as `accepted`, `lsn` null where nothing is recorded, and reads it
+    again under the book lock, so a second acceptance - sent after or racing this one - answers
+    `{written: false, booked}` naming where the trade landed rather than booking it again.
 
     UNDER A SPINE HOME, THREE MORE CHECKS AND ONE READING, in order and all of them before anything
     appends: the PLAN the charge was solved against, refused where the book has moved under it; the
@@ -7173,13 +7183,9 @@ def book_quote(request: dict):
                                  '/book/structure - so the {!r} this one names is refused: '
                                  'accept quote {} as quoted, or quote again for that '
                                  'node'.format(request['portfolio'], quote_id))
-    if pending.get('booked'):
-        return {'written': False, 'accepted': pending.get('accepted'),
-                'booked': pending['booked'],
-                'note': 'quote {} was accepted at LSN {} and booked at {} - it is already on the '
-                        'book and there is nothing further to do; quote again to deal '
-                        'again'.format(quote_id, (pending.get('accepted') or {}).get('lsn'),
-                                       pending['booked']['deal_path'])}
+    landed = booked_already(pending, quote_id)
+    if landed:
+        return landed
 
     # the window is read off the BOOK as it stands now, not off the quote: the mandate is the
     # desk's, and it is about the QUOTE rather than about the book the trade lands in
@@ -7210,6 +7216,11 @@ def book_quote(request: dict):
     parent, models = quoted.get('netting_set'), quoted.get('valuation_configuration')
 
     def accept(book, etag):
+        # read again under the book lock: an acceptance landing since the read above is answered
+        with open(path, encoding='utf-8') as handle:
+            landed = booked_already(json.load(handle), quote_id)
+        if landed:
+            return False, landed
         # the baseline before the client's declared set is spliced, as a booking takes it; the
         # record's questions are asked of the document THIS write lands in, never of the read
         # above: this runs under the book lock and that read did not
@@ -7225,9 +7236,11 @@ def book_quote(request: dict):
             structures.pin_models(book, pending['deal'], models)
             outcome = dict(outcome, valuation_configuration=models)
         if verdict is None:
-            return True, dict(outcome, **spine_fill(
-                book, outcome['deal_path'], MIRROR_AS_WRITTEN, quote_id, request.get('actor'),
-                price=mirror_price(pending['quote'])))
+            filled = spine_fill(book, outcome['deal_path'], MIRROR_AS_WRITTEN, quote_id,
+                                request.get('actor'), price=mirror_price(pending['quote']))
+            pending_written(path, pending, booked={'lsn': (filled.get('recorded') or {}).get(
+                'lsn'), 'deal_path': outcome['deal_path']})
+            return True, dict(outcome, **filled)
         context = load(book)
         plan = context.plan_hash()
         if plan != pending['pinned'].get('plan'):

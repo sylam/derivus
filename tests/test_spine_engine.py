@@ -2052,6 +2052,30 @@ def test_a_booking_raced_by_a_lockless_write_files_its_fill_exactly_once(recorde
     assert reconciles_clean(), 'the record and the file disagree after the booking'
 
 
+def test_a_quote_books_once_on_a_desk_that_records_nothing(unrecorded, quoting):
+    """A QUOTE BOOKS ONCE ON EITHER DESK. With no record the acceptance still writes where the trade
+    landed onto the pending file, `lsn` null, and reads it again under the book lock: an acceptance
+    landing between this one's first read and its act - a double-click - leaves this one answered
+    as booked, and so is a third sent after both. One collar in the file.
+
+    Killing mutations: the no-record acceptance writing no `booked`, which books the collar twice;
+    the pending file not read again under the lock, which books the raced one twice.
+    """
+    quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
+    service.BOOK = RacingBook(str(quoting))
+    raced = []
+    service.BOOK.arm(before=lambda: raced.append(accept(quote).json()))
+    outer, again = accept(quote).json(), accept(quote).json()
+
+    assert raced and raced[0]['written'] is True, raced
+    landed = {'lsn': None, 'deal_path': raced[0]['deal_path']}
+    assert (outer['written'], outer.get('booked')) == (False, landed), outer
+    assert (again['written'], again.get('booked')) == (False, landed), again
+    assert 'already on the book' in again['note']
+    assert [node['Instrument']['.Deal']['Reference'] for _, node in walk_job_deals(
+        json.loads(quoting.read_text()))].count(quote['deal']['Reference']) == 1, 'booked twice'
+
+
 def test_a_moved_market_between_the_quote_and_the_acceptance_books_and_says_so(recorded, quoting):
     """THE RULING: between a quote and the client's word the market may move materially, and we
     follow the spine as usual. The move is REPORTED on the booking - the values struck on, the ones
