@@ -5436,7 +5436,8 @@ class SACCR(NettingSetCalculation):
     margined set 1.5 sqrt(MPOR / 250) (52.48, 52.52).
 
     Not built: CDO tranches (52.41); a digital's collar (52.42(3)), an option declaring it pays one
-    and a leg paying digital optionlets refused by name; volatility hedging sets (52.47), a
+    and a leg paying digital optionlets refused by name; a strip's fixings (52.37(4)), a type
+    dealing its amount `per` row of a table refused by name; volatility hedging sets (52.47), a
     volatility trade sitting in its ordinary set; the non-daily, cleared, illiquid and disputed
     MPOR floors (52.50(2)-(3), 52.51(2)-(3)), which a netting set declares nothing to read off;
     several margin agreements to a set or sets to an agreement (52.74-52.76).
@@ -5536,8 +5537,10 @@ class SACCR(NettingSetCalculation):
         'margined (CRE52.10, CRE52.18), a margined set\'s EAD capped at its unmargined one (CRE52.2).',
         '',
         'Not built: CDO tranches (CRE52.41); a digital\'s collar (CRE52.42(3)), an option or a leg',
-        'paying one refusing the run by name; volatility hedging sets (CRE52.47); a trade\'s',
-        'allocation to several classes (CRE52.28); the non-daily, cleared, illiquid and disputed MPOR',
+        'paying one refusing the run by name; a strip\'s fixings (CRE52.37(4)), a type dealing its',
+        'amount at every row of a table refusing the run by name; volatility hedging sets',
+        '(CRE52.47); a trade\'s allocation to several classes (CRE52.28); the non-daily, cleared,',
+        'illiquid and disputed MPOR',
         'floors (CRE52.50-52.51); several margin agreements to a set, or sets to one (CRE52.74-52.76). A',
         'type declaring no exposure refuses the run by name.'])
     #: Table 2's rows (52.72) by asset class, each subclass a factor, correlation and option vol:
@@ -5773,7 +5776,8 @@ class SACCR(NettingSetCalculation):
         """The rows `node` reads: its type's declaration's, none where that states its amounts fixed
         today, its optionlets' where its compile prices caplets or floorlets (`caplets`); a
         package's, a type with children declaring none or pricing optionlets that neither settles
-        in their place nor is a netting set, its children's (`package`)."""
+        in their place nor is a netting set, its children's (`package`). A strip, dealing its
+        amount `per` row of a table, refuses by name."""
         deal = node['Instrument']
         kind = deal.field['Object']
         terms, optionlets = schema.EXPOSURES.get(kind), self.optionlets(deal)
@@ -5783,6 +5787,11 @@ class SACCR(NettingSetCalculation):
         if terms is None:
             raise ValueError('SACCR: trade {} is a {}, which declares no exposure CRE52 reads'.format(
                 deal.field.get('Reference'), kind))
+        strip = next((part.per for part in ([terms] if isinstance(terms, schema.Exposure) else terms)
+                      if part.per), None)
+        if strip:
+            raise ValueError('SACCR: trade {} is a {}, which deals its amount per row of {}: a strip, whose '
+                             'fixings are not read yet'.format(deal.field.get('Reference'), kind, strip))
         if isinstance(terms, schema.Exposure):
             return [] if terms.amount is None else self.caplets(deal, terms, mpor) if optionlets else [
                 self.row(deal, terms, mpor)]

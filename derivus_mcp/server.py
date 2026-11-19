@@ -563,8 +563,7 @@ def book_deal(deal: dict | None = None, parent_reference: str | None = None,
               quantity: float | None = None, execution_reference: str | None = None,
               actor: str | None = None, agreement: str | None = None,
               portfolio: str | None = None, price: float | None = None,
-              price_currency: str | None = None, notional: float | None = None,
-              notional_currency: str | None = None, deal_path: str | None = None,
+              price_currency: str | None = None, deal_path: str | None = None,
               reference: str | None = None, value_date: str | None = None) -> dict:
     """Book one deal into the live book. VALIDATED FIRST: the service splices it into a copy,
     validates the whole document, and only writes the file if nothing is said against this deal -
@@ -596,12 +595,13 @@ def book_deal(deal: dict | None = None, parent_reference: str | None = None,
     seat the fact is filed under. A desk that keeps no record ignores all of them.
 
     EVERY BOOKING IS A TICKET, which the answer carries: where the desk's tiers policy caps sizes
-    or tenors, state the `notional` and `notional_currency` the whole trade deals, its `quantity`
-    already in it - a cap reads what is stated and nothing else - and a tier wanting a second seat
-    books it PENDING with `waits_on`, which another seat clears with `approve_ticket`; a ticket no
-    tier admits books nothing and names every bound it broke. An amendment is a ticket too, routed
-    the same way. An `agreement` whose netting set the book does not carry yet is brought by its
-    first booking, out of the terms legal declared.
+    or tenors, the size is read off the deal as booked at its `quantity` - nothing you state - a
+    strip at every fixing still to come, and a type declaring none carries no size, so a cap passes
+    it to the next tier; a tier wanting a second seat books it PENDING with `waits_on`, which
+    another seat clears with `approve_ticket`; a ticket no tier admits books nothing and names
+    every bound it broke. An amendment is a ticket too, routed the same way. An `agreement` whose
+    netting set the book does not carry yet is brought by its first booking, out of the terms legal
+    declared.
 
     A deal the book ALREADY HOLDS that nobody booked - each `book_reconcile` names under
     `in_file_not_in_record`, a book written before its record or landed by another system - is
@@ -630,14 +630,12 @@ def book_deal(deal: dict | None = None, parent_reference: str | None = None,
         **_stated(parent_reference=parent_reference, quantity=quantity,
                   execution_reference=execution_reference, actor=actor, agreement=agreement,
                   portfolio=portfolio, price=price, price_currency=price_currency,
-                  notional=notional, notional_currency=notional_currency, reference=reference,
-                  value_date=value_date))))
+                  reference=reference, value_date=value_date))))
 
 
 @MCP.tool()
 def amend_deal(deal_path: str, fields: dict, reference: str | None = None,
-               actor: str | None = None, notional: float | None = None,
-               notional_currency: str | None = None) -> dict:
+               actor: str | None = None) -> dict:
     """Change one or more fields of a booked deal - "make the notional 3m", "move settlement a
     week". `fields` MERGES into the deal at `deal_path` (from `read_book`); every other field
     stands. The same validate-before-write contract as `book_deal`: a refusal comes back as
@@ -647,12 +645,11 @@ def amend_deal(deal_path: str, fields: dict, reference: str | None = None,
     path: another host's booking moves every position, and a path that no longer holds it refuses
     rather than amending whoever sits there now. `actor` is the seat the amendment is filed under
     where the desk keeps a record. A RESTRIKE IS A TICKET: where the desk's tiers policy is in
-    force it is routed as `book_deal` is, on the `notional` and `notional_currency` it states, and
-    under four eyes the position reads PENDING until another seat signs (`approve_ticket`)."""
+    force it is routed as `book_deal` is, on the size of the terms it amends to, and under four
+    eyes the position reads PENDING until another seat signs (`approve_ticket`)."""
     return _booking(service().call('POST', '/book/deals', json=dict(
         {'action': 'amend', 'deal_path': deal_path, 'fields': fields},
-        **_stated(reference=reference, actor=actor, notional=notional,
-                  notional_currency=notional_currency))))
+        **_stated(reference=reference, actor=actor))))
 
 
 @MCP.tool()

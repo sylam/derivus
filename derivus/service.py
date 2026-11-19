@@ -119,7 +119,8 @@ import pandas as pd
 
 from . import (PATHS_FILE, Context, bootstrappers, content_hash, dv_home, instruments, riskfactors,
                solve_deal_field, spine, structures, utils)
-from .schema import (PRICES_KEY, mapping, deal_at, declared_defaults, declared_fields,
+from .schema import (EXPOSURES, PRICES_KEY, Exposure, mapping, deal_at, declared_block,
+                     declared_defaults, declared_factors, declared_fields, declared_settlements,
                      instrument_of, job_children, live_deals, quote_plan, quote_stamps, remove_deal,
                      settlement_days, sniff_indent, splice_deal, stated_messages, tables_of,
                      tenor_fields, update_market_quote, validate_instrument, value_message,
@@ -1265,40 +1266,89 @@ def deal_expiry(deal):
     return max(days, default=None)
 
 
-def ticket_terms(document, stated, deal, values_hash):
+def deal_size(market, base, deal):
+    """`{currency: amount}`, the most `deal` deals in each currency it states one in, read off what
+    its type declares SA-CCR reads (`schema.Exposure`), the largest of several - a container's the
+    largest of its children's, never its own terms. An amount is its field's, a table's its largest
+    `sized` cell, units' at today's price of one where `market` states that as one number, in the
+    price's currency (CRE52.36), and a strip's times its rows dated on or after `base` (`per`,
+    CRE52.37(4)); amounts fixed today are the cash their settlements state (`schema.Cash`). Empty
+    where the type declares none."""
+    def sized(field, value):
+        # every amount `field` declares in `value`: itself, or its sub-fields' or its rows' cells
+        if field.sub_fields and isinstance(value, dict):
+            return [cell for sub in field.sub_fields for cell in sized(sub, value.get(sub.key))]
+        if field.row and isinstance(value, list):
+            return [cell for row in value for column in field.row.fields
+                    for cell in sized(column, field.row.read(row).get(column.key))]
+        return [abs(value)] if field.sized and isinstance(value, (int, float)) else []
+
+    cls = getattr(instruments, str(deal.get('Object')), None)
+    terms, stated = EXPOSURES.get(deal.get('Object')), []
+    if deal.get('Children'):
+        stated = [item for child in deal['Children']
+                  for item in deal_size(market, base, instrument_of(child)).items()]
+    elif terms is not None:
+        declared = declared_fields(cls)
+        fields = declared_block(declared.values(), deal)
+        for part in [terms] if isinstance(terms, Exposure) else terms:
+            if part.amount is None:
+                stated += [(fields.get(cash.currency or 'Currency'), fields.get(cash.amount))
+                           for *_, cash in declared_settlements(cls) if cash.amount]
+                continue
+            amount = max(sized(declared[part.amount], fields.get(part.amount)), default=0.0)
+            if part.per:
+                rows = fields.get(part.per)
+                amount *= sum(structures.timestamp(row[0]) >= base
+                              for row in (rows if isinstance(rows, list) else []))
+            if part.currency:
+                stated.append((fields.get(part.currency), amount))
+                continue
+            named = part.price or part.underlying
+            unit = (market.get('Price Factors') or {}).get('{}.{}'.format(
+                declared_factors(cls)[named][0], fields.get(named))) or {}
+            if isinstance(unit.get('Spot'), (int, float)):
+                stated.append((unit.get('Currency'), amount * unit['Spot']))
+    size = {}
+    for currency, amount in stated:
+        if currency and isinstance(amount, (int, float)) and abs(amount) > size.get(currency, 0.0):
+            size[currency] = abs(amount)
+    return size
+
+
+def ticket_terms(document, deal, values_hash, quantity=1.0):
     """What a tiers policy is handed about a ticket: `{notional_in, tenor_years, values_hash}`,
     the record adding where it books (`spine.routed`).
 
-    THE NOTIONAL IS STATED, NEVER CROSSED BY A POLICY CHECK: `stated` carries `notional` and
-    `notional_currency` - a quote's params, a booking's request. Its OWN currency needs no market
-    data and is always there; every other currency is one this book can VALUE it in, crossed at the
-    book's own spots through the seam `margin_value` converts on, so the ticket is a fact about the
-    trade rather than about whichever policy happens to be in force. A currency whose cross is not
-    a finite positive number - a spot block installed and not yet ticked carries its declared zero
-    - is simply not among them, which is what makes a cap in it fail its tier by name rather than
-    taking the booking down. `notional` is the size the whole trade deals, its quantity already in
-    it, and carries no side.
+    THE NOTIONAL IS THE TRADE'S, NEVER STATED AND NEVER CROSSED BY A POLICY CHECK: `deal_size` off
+    the terms as booked, at `quantity`'s magnitude - the size the whole trade deals, its quantity in
+    it, carrying no side; a quote's acceptance and a restrike are the terms as written. Each
+    amount's OWN currency needs no market data and is always there; every other currency is one
+    this book can VALUE it in, crossed at the book's own spots through the seam `margin_value`
+    converts on, the largest in each, so the ticket is a fact about the trade rather than about
+    whichever policy happens to be in force. A currency whose cross is not a finite positive number
+    - a spot block installed and not yet ticked carries its declared zero - is simply not among
+    them, nor is any where the type declares no size, which is what makes a cap in it fail its
+    tier by name rather than taking the booking down.
 
     `tenor_years` is ACT/365 from the book's base date to the day `deal` expires or matures
     (`deal_expiry`), and null where it names none, which fails a tier that bounds the tenor.
     """
-    amount, currency = stated.get('notional'), stated.get('notional_currency')
+    market = market_of(document)
+    base = structures.timestamp(document['Calc']['Calculation']['Base_Date'])
+    scale = abs(quantity) if isinstance(quantity, (int, float)) else 0.0
     notional_in = {}
-    if isinstance(amount, (int, float)) and not isinstance(amount, bool) and amount > 0 and currency:
-        notional_in[currency] = float(amount)
-        market = market_of(document)
-        for name in structures.market_data(market):
-            if not name.startswith('FxRate.'):
-                continue
-            other = name.split('.', 1)[1]
+    for currency, amount in deal_size(market, base, deal).items():
+        for other in [currency] + [name.split('.', 1)[1] for name in market.get('Price Factors') or {}
+                                   if name.startswith('FxRate.')]:
             try:
-                crossed = float(amount) * structures.engine_spot(market, currency, other)
+                crossed = scale * amount * (
+                    1.0 if other == currency else structures.engine_spot(market, currency, other))
             except (KeyError, TypeError, ValueError, ZeroDivisionError):
                 continue
-            if math.isfinite(crossed) and crossed > 0:
+            if math.isfinite(crossed) and crossed > notional_in.get(other, 0.0):
                 notional_in[other] = crossed
     expires = deal_expiry(deal)
-    base = structures.timestamp(document['Calc']['Calculation']['Base_Date'])
     return {'notional_in': notional_in, 'values_hash': values_hash,
             'tenor_years': None if expires is None else (expires - base).days / 365.0}
 
@@ -1362,7 +1412,7 @@ def book_deals(request: dict):
     it back, and nothing filed, where it had lost it - while one stating other fields under that
     reference is refused by name, a second execution wanting its own; a restrike sent again after it
     landed is answered the same way. AN AMENDMENT IS A TICKET TOO: where a tiers policy is in force
-    each is routed on the `notional` and `notional_currency` it states and the tenor its terms name,
+    each is routed on the size and the tenor its terms name (`ticket_terms`), nothing stated,
     an automatic tier signed by the hub before the event, a four-eyes one landing it PENDING - a
     restruck position reading the restrike's ticket - and one no tier admits writing nothing. A
     `delete` records nothing: what ends a trade is an election, an expiry observation or a status
@@ -1423,7 +1473,7 @@ def book_deals(request: dict):
                 return written, dict(outcome, _validated=outcome['validate'])
             # a restrike is a trade: ticketed over the plan the book has WITH it, and routed
             context = load(document)
-            terms = ticket_terms(document, request, instrument_of(deal_at(document, held)),
+            terms = ticket_terms(document, instrument_of(deal_at(document, held)),
                                  context.values_hash())
             restruck = spine_amendment(document, held, before, request.get('actor'),
                                        context.plan_hash(), terms)
@@ -1457,8 +1507,9 @@ def book_deals(request: dict):
             request.get('execution_reference'), request.get('actor'), request.get('agreement'),
             request.get('portfolio'), request.get('price'), request.get('price_currency'),
             context.plan_hash(), ticket_terms(
-                document, request, instrument_of(deal_at(document, outcome['deal_path'])),
-                context.values_hash()), once=True, value_date=request.get('value_date'))
+                document, instrument_of(deal_at(document, outcome['deal_path'])),
+                context.values_hash(), request.get('quantity')), once=True,
+            value_date=request.get('value_date'))
         if 'refused' in filled:
             return False, dict(filled, written=False)
         if 'booked' in filled:
@@ -7248,8 +7299,7 @@ def book_quote(request: dict):
             book, outcome['deal_path'], MIRROR_AS_WRITTEN, quote_id, request.get('actor'),
             portfolio=pending.get('portfolio'), price=mirror_price(pending['quote']), plan=plan,
             value_date=spot_day(book, context, quoted['params']['pair']),
-            terms=ticket_terms(book, quoted.get('params') or {}, pending['deal'],
-                               pending['pinned']['values_hash']),
+            terms=ticket_terms(book, pending['deal'], pending['pinned']['values_hash']),
             quote={'quote_id': quote_id, 'structure': quoted['structure'],
                    'plan_hash': pending['pinned']['plan_hash'],
                    'values': spine.canonical(pending['pinned']['values']),

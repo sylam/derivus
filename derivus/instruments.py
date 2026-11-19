@@ -642,8 +642,9 @@ class Deal(object):
     observes = None
 
     #: What the type's SA-CCR exposure is read off (`schema.Exposure`), read through
-    #: `schema.EXPOSURES` as `observes` is: a type declaring none has no exposure the calculation
-    #: can read, and refuses there by name.
+    #: `schema.EXPOSURES` as `observes` is, and what a ticket is sized by (`service.deal_size`): a
+    #: type declaring none has no exposure the calculation can read, refuses there by name, and
+    #: carries no size.
     exposure = None
 
     #: The `SpotModel` values this deal type HONOURS, declared the way a process declares
@@ -6449,6 +6450,8 @@ class FXPartialTimeBarrierOption(Deal):
 class FXTARFOptionDeal(Deal):
     vernacular = 'TARF, target redemption forward, target forward'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'TARF_ExpiryDates', 2)
+    exposure = (Exposure('Underlying_Amount', 'Underlying_Currency', per='TARF_ExpiryDates'),
+                Exposure('LeverageNotional', 'Underlying_Currency', per='TARF_ExpiryDates'))
     fields = [ADMIN, FX_STRIP_ADMIN, FXOPTIONBASE, own('FXTARFOptionDeal', [
         F('Expiry_Date', 'Date', default=''),
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
@@ -6604,6 +6607,8 @@ class FXTARFOptionDeal(Deal):
 class FXAccumulatorOptionDeal(Deal):
     vernacular = 'FX accumulator, decumulator, accu'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Accumulator_ExpiryDates', 2)
+    exposure = (Exposure('Underlying_Amount', 'Underlying_Currency', per='Accumulator_ExpiryDates'),
+                Exposure('LeverageNotional', 'Underlying_Currency', per='Accumulator_ExpiryDates'))
     fields = [ADMIN, FX_STRIP_ADMIN, FXOPTIONBASE, own('FXAccumulatorOptionDeal', [
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
         F('LeverageNotional', 'Float', default=0.0, sized=True),
@@ -6744,6 +6749,7 @@ class FXAccumulatorOptionDeal(Deal):
 class FXExtendableForwardDeal(Deal):
     vernacular = 'extendable forward, extendible forward'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Extendable_ExpiryDates', 2)
+    exposure = Exposure('Underlying_Amount', 'Underlying_Currency', per='Extendable_ExpiryDates')
     fields = [ADMIN, FX_STRIP_ADMIN, FXOPTIONBASE, own('FXExtendableForwardDeal', [
         F('Extension_Strike', 'Float', default=REQUIRED),
         F('Extension_Date', 'Date', default=REQUIRED),
@@ -7048,6 +7054,7 @@ class FXBinaryOption(FXOptionDeal):
 class FXRangeAccrualDeal(Deal):
     vernacular = 'FX range accrual, corridor, fairway, digital strip'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Observation_Dates', 1)
+    exposure = Exposure('Payoff', 'Currency', per='Observation_Dates')
     fields = [ADMIN, FX_STRIP_ADMIN, own('FXRangeAccrualDeal', [
         F('Currency', 'Text', default='', factors=['FxRate']),
         F('Underlying_Currency', 'Text', default='', factors=['FxRate']),

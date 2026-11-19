@@ -114,14 +114,13 @@ CLIENTS = (('LEI-A', 'Client A Treasury', 'CSA-A', 'USD', 100_000.0, 10_000.0),
 STRUCTURE = 'ZeroCostCollar'
 BOOKS = {'FX': 'Options', 'RATES': 'Swaps', 'COMMODITIES': 'Metals'}
 #: What each trade is booked as - its term sheet the harness's (`play.term_sheets`): `(desk, the
-#: node below the desk, agreement, quantity, price per unit in dollars, the notional the ticket
-#: states)`. The script decides these.
-BOOKED = {'CARRIED': ('RATES', (), 'CSA-B', 1.0, 18_490_000.0, (1_000_000.0, 'ZAR')),
-          'FWD-1': ('FX', (), 'CSA-A', 1.0, 0.0, (200_000.0, 'USD')),
-          'DEP-1': ('RATES', (), 'CSA-B', 1.0, 0.0, (5_000_000.0, 'ZAR')),
-          'FRA-1': ('RATES', ('Swaps',), 'CSA-B', 1.0, 0.0, (50_000_000.0, 'ZAR')),
-          'SWAP-1': ('RATES', ('Swaps',), 'CSA-B', 1.0, 0.0, (100_000_000.0, 'ZAR')),
-          'METAL-1': ('COMMODITIES', ('Metals',), 'CSA-C', 1.0, 1_150_000.0, (1_150_000.0, 'USD'))}
+#: node below the desk, agreement, quantity, price per unit in dollars)`. The script decides these.
+BOOKED = {'CARRIED': ('RATES', (), 'CSA-B', 1.0, 18_490_000.0),
+          'FWD-1': ('FX', (), 'CSA-A', 1.0, 0.0),
+          'DEP-1': ('RATES', (), 'CSA-B', 1.0, 0.0),
+          'FRA-1': ('RATES', ('Swaps',), 'CSA-B', 1.0, 0.0),
+          'SWAP-1': ('RATES', ('Swaps',), 'CSA-B', 1.0, 0.0),
+          'METAL-1': ('COMMODITIES', ('Metals',), 'CSA-C', 1.0, 1_150_000.0)}
 #: What `/book/reconcile` can say the file and the record disagree about.
 DIVERGENCES = ('in_record_not_in_file', 'in_file_not_in_record', 'terms_mismatch')
 #: How long a seat waits on the hub's compute before it says so rather than hanging the day.
@@ -292,11 +291,10 @@ class Table:
 def book(table, reference, **changed):
     """The desk's trader books `reference` as `BOOKED` says, `changed` overriding what it states;
     the answer, recorded with its ticket and what it waits on."""
-    desk, below, agreement, quantity, price, (amount, currency) = BOOKED[reference]
+    desk, below, agreement, quantity, price = BOOKED[reference]
     stated = dict(deal=table.sheets[reference], agreement=agreement, portfolio=node(desk, *below),
                   quantity=quantity, execution_reference='EXEC-' + reference,
-                  actor=seat(desk, 'trader'), price=price, notional=amount,
-                  notional_currency=currency)
+                  actor=seat(desk, 'trader'), price=price)
     stated.update(changed)
     booked = binding.book_deal(**stated)
     table.did(stated['actor'], 'book_deal ' + reference, written=booked['written'],
@@ -396,19 +394,20 @@ def trade_fx(table):
 
 
 def trade_rates(table):
-    """Rates: a deposit starting on the next day under the automatic tier, an FRA and a par swap -
-    one reset a coupon, the first today - above it, waiting for the desk's approver."""
+    """Rates: a deposit starting on the next day, whose type declares no size the automatic tier's
+    cap could read, and an FRA and a par swap - one reset a coupon, the first today - above it,
+    each waiting for the desk's approver."""
     for reference in ('DEP-1', 'FRA-1', 'SWAP-1'):
         book(table, reference)
 
 
 def trade_commodities(table):
-    """Commodities: a metal forward above the cap, restruck while it waits - the restrike is a
-    ticket of its own, which the approver then signs."""
+    """Commodities: a metal forward priced off a reference curve, which states no one price a cap
+    could size it at, restruck while it waits - the restrike is a ticket of its own, which the
+    approver then signs."""
     book(table, 'METAL-1')
     amended = binding.amend_deal(path_of('METAL-1'), {'Units': 400.0}, reference='METAL-1',
-                                 actor=seat('COMMODITIES', 'trader'), notional=920_000.0,
-                                 notional_currency='USD')
+                                 actor=seat('COMMODITIES', 'trader'))
     table.did(seat('COMMODITIES', 'trader'), 'amend_deal METAL-1 while pending',
               recorded=amended['recorded']['lsn'], ticket=amended.get('ticket'),
               waits_on=amended.get('waits_on'))

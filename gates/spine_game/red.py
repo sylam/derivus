@@ -210,9 +210,10 @@ def book_a_deleted_trade_a_hundredfold(table, out):
 
 
 def restrike_to_hide_a_loss(table, out):
-    """The commodities trader restrikes its losing forward and states no notional, hoping the
-    hub signs it: a cap reads what is stated, so no automatic tier admits it and the restrike
-    lands PENDING, unsigned - a fact at the head, with the fold behind it unchanged."""
+    """The commodities trader restrikes its losing forward, hoping the hub signs it: a cap reads
+    the size the terms declare and a forward priced off a reference curve declares none, so no
+    automatic tier admits it and the restrike lands PENDING, unsigned - a fact at the head, with
+    the fold behind it unchanged."""
     trader = seat('COMMODITIES', 'trader')
     before = table.read(lambda log: PROJECTORS['positions'].rows(
         fold(log, PROJECTORS['positions'])))
@@ -221,7 +222,7 @@ def restrike_to_hide_a_loss(table, out):
     at = amended['recorded']['lsn']
     behind = table.read(lambda log: PROJECTORS['positions'].rows(
         fold(log, PROJECTORS['positions'], lsn=at - 1)))
-    table.did(trader, 'amend_deal METAL-1 (no notional)', recorded=at, ticket=amended['ticket'],
+    table.did(trader, 'amend_deal METAL-1 to 300', recorded=at, ticket=amended['ticket'],
               waits_on=amended.get('waits_on'))
     return _row('restrike a losing trade to hide it',
                 'the restrike lands pending on a ticket of its own, the fold behind it unchanged',

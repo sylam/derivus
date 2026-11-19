@@ -65,7 +65,7 @@ FAILED = {
         '{value} of it - book it under a tier that admits the size, or split the clip',
     'unstated_notional':
         'the ticket\'s notional is not stated in {bound[currency]}, the currency the {tier} tier '
-        'caps {check} in - state it in that currency at the caller, since a check that crossed one '
+        'caps {check} in - the trade carries no size there, and a check that crossed one '
         'currency into another would be a policy check reading a market',
     'over_tenor':
         'the {tier} tier caps {check} at {bound} years and this ticket runs {value} - book it '

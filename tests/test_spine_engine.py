@@ -2673,8 +2673,7 @@ def test_a_currency_the_tick_has_not_valued_is_not_a_currency_the_ticket_states(
 
 def terms_of(document, pending):
     """What the tiers read of a pending quote, as the acceptance hands them over."""
-    return service.ticket_terms(document, pending['quote']['params'], pending['deal'],
-                                pending['pinned']['values_hash'])
+    return service.ticket_terms(document, pending['deal'], pending['pinned']['values_hash'])
 
 
 def test_size_tenor_and_market_route_a_ticket_through_the_tiers(recorded, quoting):
@@ -2769,12 +2768,12 @@ def with_client(path):
 def test_every_booking_is_a_ticket_the_tiers_route(recorded, desk):
     """EVERY BOOKING IS A TICKET. A direct booking's fill carries a ticket over the plan the book
     has WITH it and the fill as filed, the tier its route fell in aside, and where a tiers policy
-    is in force it is routed on the notional it STATES and the tenor its terms name, as an
-    acceptance is: under the cap the hub signs in its own voice and then the fill lands, approved;
-    over it the fill lands PENDING under four eyes, the booker's own approval clearing nothing and
-    another seat's clearing it; a tier covering the node the booking sits at reads it; and a
-    booking no tier admits - a cap it states no notional against, a tenor cap it settles past -
-    books nothing.
+    is in force it is routed on the size and the tenor its terms name, as an acceptance is: under
+    the cap - 250,000 rand, 4,625,000 dollars on this book's axis - the hub signs in its own voice
+    and then the fill lands, approved; over it - 5,000,000 rand - the fill lands PENDING under four
+    eyes, the booker's own approval clearing nothing and another seat's clearing it; a tier
+    covering the node the booking sits at reads it; and a booking no tier admits - a cap its size
+    breaks, a tenor cap it settles past - books nothing.
 
     Killing mutations: the ticket taken before the splice, which is the book's own plan and every
     booking's; and a tier's scope read at the book rather than where the booking sits, which routes
@@ -2786,7 +2785,7 @@ def test_every_booking_is_a_ticket_the_tiers_route(recorded, desk):
         {'name': 'auto', 'max_notional': {'amount': BIG, 'currency': 'USD'}},
         {'name': 'desk', 'four_eyes': True}))
 
-    signed = ticketed('EXEC-AUTO', notional=AMOUNT, notional_currency='USD').json()
+    signed = ticketed('EXEC-AUTO').json()
     fill = facts(recorded, 'fill')[-1]
     assert signed['tier'] == {'name': 'auto', 'four_eyes': False, 'approval_lsn': fill[0] - 1}
     assert fill[2]['ticket'] == signed['ticket'] == spine.ticket(
@@ -2795,11 +2794,10 @@ def test_every_booking_is_a_ticket_the_tiers_route(recorded, desk):
         'the ticket is not the plan the book has with this booking'
     assert facts(recorded, 'approval')[-1][2] == {'plan_hash': signed['ticket']}
 
-    waiting = ticketed('EXEC-BIG', notional=10 * BIG, notional_currency='USD').json()
+    waiting = ticketed('EXEC-BIG', amount=BIG).json()
     assert waiting['written'] is True and waiting['tier']['name'] == 'desk'
     assert 'no verdict is filed' in waiting['waits_on']
-    placed = ticketed('EXEC-FX', notional=10 * BIG, notional_currency='USD',
-                      portfolio='spine-desk/FX').json()
+    placed = ticketed('EXEC-FX', amount=BIG, portfolio='spine-desk/FX').json()
     assert placed['tier']['name'] == 'fx', 'the node\'s own tier was read past'
 
     def status(execution):
@@ -2816,13 +2814,158 @@ def test_every_booking_is_a_ticket_the_tiers_route(recorded, desk):
         {'name': 'capped', 'max_notional': {'amount': BIG, 'currency': 'USD'}},
         {'name': 'short', 'max_tenor_years': 1.0}))
     before, head_before = desk.read_bytes(), head(recorded)
-    refused = ticketed('EXEC-NONE').json()
+    refused = ticketed('EXEC-NONE', amount=BIG).json()
     assert refused['written'] is False and 'recorded' not in refused, refused
-    assert any('not stated in USD' in one for one in refused['refused'])
+    assert any('caps max_notional' in one for one in refused['refused'])
     assert any('caps max_tenor_years' in one for one in refused['refused']), refused['refused']
     assert desk.read_bytes() == before and head(recorded) == head_before, \
         'a booking no tier admits booked something'
     assert verify_home(recorded)['events'] == head(recorded)
+
+
+def capped(home, amount):
+    """Declare an automatic tier capped at `amount` dollars and a four-eyes one behind it."""
+    declare(home, policy.TIERS_POLICY, tiers(
+        {'name': 'auto', 'max_notional': {'amount': amount, 'currency': 'USD'}},
+        {'name': 'desk', 'four_eyes': True}))
+
+
+def dollars(path, deal_path, quantity=1.0):
+    """The dollars the ticket of what the file at `path` holds at `deal_path` carries, as its
+    booking hands it to the tiers."""
+    document = json.loads(path.read_text())
+    return service.ticket_terms(document, service.instrument_of(deal_at(document, deal_path)), None,
+                                quantity)['notional_in'].get('USD')
+
+
+def booked(deal, execution, quantity=1.0, **body):
+    """`deal` booked under the client's set by the desk's own seat, as `/book/deals` answers."""
+    return CLIENT.post('/book/deals', content=dump(dict(
+        {'action': 'add', 'deal': deal, 'parent_reference': CLIENT_SET, 'quantity': quantity,
+         'execution_reference': execution, 'actor': ACTOR}, **body)), headers=JSON).json()
+
+
+#: A 2Y monthly TARF on a million dollars a fixing, geared twice against the client.
+TARF = {'pair': 'USDZAR', 'expiry': '2Y', 'notional': AMOUNT, 'notional_currency': 'USD',
+        'buy_currency': 'USD', 'fixing_frequency': '1M', 'target': USDZAR * 0.1, 'leverage': 2.0}
+
+
+def test_a_strip_is_sized_at_its_amount_at_every_fixing_still_to_come(recorded, quoting):
+    """A STRIP DEALS ITS AMOUNT AT EVERY FIXING (CRE52.37(4)). A 2Y monthly TARF quoted on a
+    million dollars a fixing deals up to its 2,000,000 `LeverageNotional` at each of 24 fixings, so
+    its ticket carries 24 x 2,000,000 = 48,000,000 USD whatever the quote states, and an automatic
+    tier capped at 5,000,000 passes it to four eyes. Its leg booked partway through its life, its
+    first five fixings printed behind the base date and a notional of one dollar in the request,
+    carries the 19 to come, 38,000,000, which an automatic tier capped at 40,000,000 signs.
+
+    Killing mutations: the rows not counted - 2,000,000, the TARF signed by the hub; the leveraged
+    amount not read - 24,000,000, still four eyes, so the size is asserted; every row counted
+    whatever its date - the seasoned leg 48,000,000 and pending.
+    """
+    capped(recorded, BIG)
+    quote = quote_of('TargetRedemptionForward', TARF, netting_set=CLIENT_SET)
+    pending = pending_of(quoting.parent, quote)
+    answer = accept(quote).json()
+    assert answer['written'] is True and answer['tier']['name'] == 'desk', answer
+    assert terms_of(json.loads(quoting.read_text()), pending)['notional_in']['USD'] == 48_000_000.0
+
+    capped(recorded, 40_000_000.0)
+    leg = dict(pending['deal']['Children'][0]['Instrument']['.Deal'], Reference='TARF-SEASONED')
+    leg['TARF_ExpiryDates'] = [[{'.Timestamp': str((BASE - pd.DateOffset(months=5 - k)).date())}] * 2
+                               + [USDZAR] for k in range(5)] + leg['TARF_ExpiryDates'][5:]
+    seasoned = booked(leg, 'EXEC-SEASONED', notional=1.0, notional_currency='USD')
+    assert seasoned['written'] is True and seasoned['tier']['name'] == 'auto', seasoned
+    assert dollars(quoting, seasoned['deal_path']) == 38_000_000.0
+
+
+#: A year of monthly observations paying 8% a year on a million dollars inside a band about spot.
+RANGE = {'pair': 'USDZAR', 'expiry': '1Y', 'notional': AMOUNT, 'notional_currency': 'USD',
+         'fixing_frequency': '1M', 'tiers': [[USDZAR * 0.9, USDZAR * 1.1, 8.0]]}
+
+
+def test_a_range_accrual_is_sized_at_its_payoff_at_every_observation_to_come(recorded, quoting):
+    """A range accrual can still pay its `Payoff` at every observation to come. Quoted at 8% a year
+    on a million dollars to a last observation 367 days out, it pays 1,000,000 x 8% x 367/365 / 12
+    = 6,703.20 a fixing, and its ticket carries 12 x 6,703.20 = 80,438.36 USD, which an automatic
+    tier capped at 80,000 passes to four eyes.
+
+    Killing mutation: the rows not counted - 6,703.20, signed by the hub.
+    """
+    capped(recorded, 80_000.0)
+    quote = quote_of('RangeAccrual', RANGE, netting_set=CLIENT_SET)
+    pending = pending_of(quoting.parent, quote)
+    answer = accept(quote).json()
+    assert answer['written'] is True and answer['tier']['name'] == 'desk', answer
+    assert terms_of(json.loads(quoting.read_text()), pending)['notional_in']['USD'] == \
+        pytest.approx(AMOUNT * 0.08 * 367 / 365, rel=1e-14)
+
+
+#: A swap buying a million dollars for rand a month out and 100,000 rand back for dollars a year
+#: out - 1,850,000 dollars on this book's axis.
+SWAP = {'Object': 'FXSwapDeal', 'Reference': 'SWAP', 'Near_Buy_Far_Sell_Ccy': 'USD',
+        'Near_Sell_Far_Buy_Ccy': 'ZAR', 'Near_Buy_Far_Sell_Discount_Rate': 'USD',
+        'Near_Sell_Far_Buy_Discount_Rate': 'ZAR', 'Near_Settlement_Date': BASE + pd.DateOffset(
+            months=1), 'Far_Settlement_Date': BASE + pd.DateOffset(years=1),
+        'Near_Buy_Amount': AMOUNT, 'Near_Sell_Amount': AMOUNT * USDZAR, 'Far_Buy_Amount': 1e5,
+        'Far_Sell_Amount': 1e5 * SPOT}
+
+
+def test_a_structure_is_its_largest_leg_and_a_swap_its_larger_side(recorded, quoting):
+    """A CONTAINER IS ITS LARGEST CHILD, never their sum: a collar's two legs are each on a million
+    dollars, so it is a 1,000,000 trade an automatic tier capped at 1,500,000 signs. An FX swap of a
+    million dollars near and 100,000 rand far is sized by its larger side, the far one at 1,850,000
+    dollars, which that tier passes to four eyes.
+
+    Killing mutations: the children summed - the collar 2,000,000 and pending; the swap read by its
+    first exposure alone - 1,000,000, signed by the hub.
+    """
+    capped(recorded, 1_500_000.0)
+    quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
+    answer = accept(quote).json()
+    assert answer['written'] is True and answer['tier']['name'] == 'auto', answer
+    swapped = booked(SWAP, 'EXEC-SWAP')
+    assert swapped['written'] is True and swapped['tier']['name'] == 'desk', swapped
+    assert dollars(quoting, swapped['deal_path']) == 1e5 * SPOT
+
+
+#: A deposit of a thousand rand: 18,500 dollars on this book's axis, were its type to declare it.
+DEPOSIT = {'Object': 'DepositDeal', 'Reference': 'DEPOSIT', 'Currency': 'ZAR',
+           'Discount_Rate': 'ZAR', 'Interest_Rate': 'ZAR', 'Effective_Date': BASE,
+           'Maturity_Date': BASE + pd.DateOffset(months=3), 'Amount': 1e3}
+
+
+def test_a_fill_is_its_quantity_times_the_instrument_and_an_undeclared_type_no_size(recorded,
+                                                                                    desk):
+    """THE QUANTITY MULTIPLIES, BY MAGNITUDE. A cash flow of 100,000 rand is 1,850,000 dollars on
+    this book's axis: filled three times over it is 5,550,000, past an automatic tier capped at
+    5,000,000 and pending, and half of one unwound is 925,000, which the hub signs. A TYPE THAT
+    DECLARES NOTHING HAS NO SIZE: a deposit carries no notional at all, fails the automatic tier as
+    `unstated_notional` and lands pending.
+
+    Killing mutations: the quantity not read - 1,850,000, signed by the hub; its sign kept - the
+    unwind no size and pending; the deposit's type declaring its `Amount` an exposure - 18,500
+    dollars, signed by the hub.
+    """
+    with_client(desk)
+    capped(recorded, BIG)
+    three = ticketed('EXEC-3', amount=1e5, quantity=3.0).json()
+    assert three['written'] is True and three['tier']['name'] == 'desk', three
+    assert dollars(desk, three['deal_path'], 3.0) == 5_550_000.0
+    half = CLIENT.post('/book/deals', content=dump({
+        'action': 'fill', 'deal_path': three['deal_path'], 'reference': 'EXEC-3',
+        'quantity': -0.5, 'execution_reference': 'EXEC-HALF', 'actor': ACTOR}),
+        headers=JSON).json()
+    assert half['written'] is True and half['tier']['name'] == 'auto', half
+    assert dollars(desk, three['deal_path'], -0.5) == 925_000.0
+
+    deposit = booked(DEPOSIT, 'EXEC-DEPOSIT')
+    assert deposit['written'] is True and deposit['tier']['name'] == 'desk', deposit
+    document = json.loads(desk.read_text())
+    terms = service.ticket_terms(document, service.instrument_of(deal_at(
+        document, deposit['deal_path'])), None)
+    assert terms['notional_in'] == {}
+    assert any('not stated in USD' in one for one in spine.route_ticket(
+        deposit['ticket'], terms, ACTOR)['refusals'])
 
 
 #: Two desks' approvers, each at its own node of the book.
@@ -2945,8 +3088,8 @@ def test_a_restrike_is_a_trade_and_the_position_reads_its_ticket(recorded, desk)
     declare(recorded, policy.TIERS_POLICY, tiers(
         {'name': 'capped', 'max_notional': {'amount': BIG, 'currency': 'USD'}}))
     before, at = desk.read_bytes(), head(recorded)
-    refused = restruck(booked['deal_path'], Amount=60_000.0)
-    assert refused['written'] is False and any('not stated in USD' in one
+    refused = restruck(booked['deal_path'], Amount=BIG)
+    assert refused['written'] is False and any('caps max_notional' in one
                                                for one in refused['refused'])
     assert desk.read_bytes() == before and head(recorded) == at, 'a restrike no tier admits landed'
     assert oracle.failed(oracle.report(recorded)) == []
@@ -2984,14 +3127,14 @@ def test_a_strip_row_names_the_trade_who_did_it_and_what_it_opens(recorded, desk
     """
     with_client(desk)
     papered(recorded)
-    auto = ticketed('EXEC-AUTO', notional=AMOUNT, notional_currency='USD').json()
-    big = ticketed('EXEC-BIG', notional=10 * BIG, notional_currency='USD').json()
+    auto = ticketed('EXEC-AUTO').json()
+    big = ticketed('EXEC-BIG', amount=BIG).json()
     assert CLIENT.post('/book/approve', json={'ticket': big['ticket'], 'actor': DESK_TWO}
                        ).status_code == 200
     assert CLIENT.post('/book/deals', content=dump({
         'action': 'fill', 'deal_path': auto['deal_path'], 'reference': 'EXEC-AUTO',
-        'quantity': -0.5, 'execution_reference': 'EXEC-HALF', 'notional': AMOUNT / 2,
-        'notional_currency': 'USD', 'actor': ACTOR}), headers=JSON).json()['written'] is True
+        'quantity': -0.5, 'execution_reference': 'EXEC-HALF', 'actor': ACTOR}),
+        headers=JSON).json()['written'] is True
     seated = CLIENT.post('/book/approve', json={'ticket': big['ticket'], 'actor': RISK_SEAT})
     assert seated.status_code == 422 and 'holds no approve scope' in seated.json()['detail']
     assert restruck(big['deal_path'], Amount=300_000.0)['written'] is True
@@ -3039,7 +3182,7 @@ def test_the_worklist_names_each_ticket_and_the_seat_it_waits_on(recorded, desk)
     with_client(desk)
     assert worklist(actor=DESK_TWO)['seat'] is None, 'a box narrowing no seat named one'
     papered(recorded)
-    waiting = ticketed('EXEC-BIG', notional=10 * BIG, notional_currency='USD', price=1250.0).json()
+    waiting = ticketed('EXEC-BIG', amount=BIG, price=1250.0).json()
     assert CLIENT.post('/book/approve', json={'ticket': waiting['ticket'], 'actor': ACTOR}
                        ).json()['status'] == 'pending'
 

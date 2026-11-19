@@ -222,7 +222,8 @@ CRE52, `1.4 (RC + PFE)`, off its trades' values and their terms as each type dec
 `schema.OBSERVES` does `observes`): the fields its notional and its currency, or its units and the
 factor pricing a unit, its start and its long side are read off, an FX trade's amount in its other
 currency, and an option's strike, expiry and call; `schema.KNOWN_CASH`, amounts fixed today, reads
-no row and its value enters V alone. A trade reads one or more rows (`SACCR.read`), its value
+no row and its value enters V alone; a strip, its amount dealt `per` row of a table (CRE52.37(4)),
+refuses by name, its fixings not read yet. A trade reads one or more rows (`SACCR.read`), its value
 counted once a trade: a type declaring a tuple of exposures, each stating its `end`, reads a row
 per component still to settle, named by that field (`FXSwapDeal`'s near and far forwards); a package - a type with children declaring none, neither settling in their
 place nor a netting set - reads its children's rows (`SACCR.package`), the child the row's

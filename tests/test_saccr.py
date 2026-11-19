@@ -1707,9 +1707,31 @@ EQUITY_LEG = {'Object': 'EquitySwapLeg', 'Reference': 'LEG', 'Currency': 'USD',
               'Payment_Frequency': pd.DateOffset(months=3), 'Principal_Fixed_Variable': 'Variable',
               'Units': 1e4}
 
+#: The four strips on the euro, each fixing monthly for two months and settling two days on.
+STRIP_FX = {'Currency': 'USD', 'Underlying_Currency': 'EUR', 'Discount_Rate': 'USD',
+            'FX_Volatility': 'EUR.USD', 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
+            'Strike_Price': 1.3, 'Underlying_Amount': 1e6}
+FIXINGS = [[BASE + pd.DateOffset(months=k), BASE + pd.DateOffset(months=k, days=2), None]
+           for k in (1, 2)]
+STRIPS = [
+    dict(STRIP_FX, Object='FXTARFOptionDeal', Reference='TARF', Expiry_Date=FIXINGS[-1][1],
+         LeverageNotional=2e6, TargetLevel=0.1, TARF_ExpiryDates=FIXINGS),
+    dict(STRIP_FX, Object='FXAccumulatorOptionDeal', Reference='ACCUMULATOR', LeverageNotional=2e6,
+         Barrier_Type='Up_And_Out', Barrier_Price=1.6, Accumulator_ExpiryDates=FIXINGS),
+    dict(STRIP_FX, Object='FXExtendableForwardDeal', Reference='EXTENDABLE', Extension_Strike=1.3,
+         Extension_Date=FIXINGS[0][0], Extendable_ExpiryDates=[row + [None] for row in FIXINGS]),
+    {'Object': 'FXRangeAccrualDeal', 'Reference': 'RANGE', 'Currency': 'USD', 'Buy_Sell': 'Buy',
+     'Underlying_Currency': 'EUR', 'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD',
+     'Lower_Barrier': 1.2, 'Upper_Barrier': 1.3, 'Payoff': 1e4, 'Settlement_Date': FIXINGS[-1][1],
+     'Observation_Dates': [row[:1] + [None] for row in FIXINGS]}]
+
 
 @pytest.mark.parametrize('deal, drop, said', [
     (EQUITY_LEG, (), 'SET_LEG is a EquitySwapLeg, which declares no exposure CRE52 reads'),
+    *[(strip, (), 'SET_{} is a {}, which deals its amount per row of {}: a strip, whose fixings are '
+                  'not read yet'.format(strip['Reference'], strip['Object'], table))
+      for strip, table in zip(STRIPS, ('TARF_ExpiryDates', 'Accumulator_ExpiryDates',
+                                       'Extendable_ExpiryDates', 'Observation_Dates'))],
     (MIXED[2], ('EquityForwardDeal',), 'SET_INDEX_FWD is a EquityForwardDeal, and the mapping '
                                        'classes it under no SACCR.Asset_Class'),
     (default_swap('CDS', 'UNRATED', years(5), 'Buy'), (),
@@ -1719,13 +1741,16 @@ EQUITY_LEG = {'Object': 'EquitySwapLeg', 'Reference': 'LEG', 'Currency': 'USD',
 def test_a_trade_whose_exposure_the_declarations_do_not_state_is_refused_by_name(
         tmp_path, deal, drop, said):
     """A TRADE IS READ THROUGH ITS DECLARATIONS. An equity swap leg, whose type declares no
-    exposure; an equity forward, which does, under a mapping classing its type in no asset class;
-    a default swap on a survival curve the mapping rates nothing; and an Asian paying a digital,
-    whose collar is not built: each refuses the run by name.
+    exposure; the four strips, each dealing its amount per row of its table (CRE52.37(4)), whose
+    fixings are not read yet; an equity forward, which does, under a mapping classing its type in
+    no asset class; a default swap on a survival curve the mapping rates nothing; and an Asian
+    paying a digital, whose collar is not built: each refuses the run by name.
 
     Killing mutations: a type declaring no exposure skipped - the leg's set valued and its EAD
-    written, nothing refused; a digital read as the vanilla its strike states - the Asian's set
-    valued.
+    written, nothing refused; a strip read as one trade - a `KeyError` on a field its declaration
+    leaves unstated, the TARF's and the accumulator's end and the extendable's other currency, and
+    the range accrual refused for the asset class the mapping states none of; a digital read as the
+    vanilla its strike states - the Asian's set valued.
     """
     mapping = mapping_file(tmp_path / 'mapping.json', drop)
     with pytest.raises(ValueError, match='SACCR: trade ' + said):

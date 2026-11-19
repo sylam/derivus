@@ -557,11 +557,17 @@ declaration, so one nobody could read never lands; the last declaration stands (
 `spine.ticket(plan_hash, trade)` hashes the plan the book has once a trade lands with the trade's
 fields as filed, so a retried fill or restrike coalesces and a changed plan needs a new approval.
 The first tier whose `scope` covers the ticket and whose every declared check passes applies.
-`max_notional` is `{amount, currency}` against notionals the caller states, so no check reads a
-market and an unstated currency fails that tier; `max_tenor_years` reads the latest day the type
-declares (`schema.tenor_fields`); `market` requires the quote's values to stand under that name. A
-tier is automatic - the hub's approval in the writer's voice - unless it declares `four_eyes`;
-staleness is `firmness`'s alone. **Held by** `test_spine_tiers.py`.
+`max_notional` is `{amount, currency}` against the size the service reads off the deal as booked,
+times the fill's quantity, and crosses at the book's spots (`service.ticket_terms`): what its type
+declares for SA-CCR (`schema.Exposure`), a strip's amount at every fixing still to come, a
+container's largest child. No check reads a market, and a currency the ticket carries no size in -
+a type declaring none, a cross the book cannot value - fails that tier; `max_tenor_years` reads
+the latest day the type declares (`schema.tenor_fields`); `market` requires the quote's values to
+stand under that name. A tier is automatic - the hub's approval in the writer's voice - unless it
+declares `four_eyes`; staleness is `firmness`'s alone. **Held by** `test_spine_tiers.py`,
+`test_spine_engine.py::test_a_strip_is_sized_at_its_amount_at_every_fixing_still_to_come`,
+`::test_a_structure_is_its_largest_leg_and_a_swap_its_larger_side`,
+`::test_a_fill_is_its_quantity_times_the_instrument_and_an_undeclared_type_no_size`.
 
 A booking is routed in one act (`spine.routed`): `SpineLog.admits` asks vocabulary and scope
 writing nothing, then the ticket, an acceptance's `quote_filed`, the route, an automatic approval,
