@@ -3343,6 +3343,43 @@ def test_a_restrike_row_says_what_it_moved(recorded, desk):
                     'again')], told
 
 
+def test_one_trade_s_history_is_asked_by_its_path_through_its_restrikes(recorded, desk):
+    """ONE TRADE'S HISTORY, ASKED BY ITS PATH. Two trades under four eyes, the first signed, then
+    restruck - which keeps its node's path and moves its instrument - and that restrike signed,
+    the second signed last. Asked for the first trade's path, the strip answers its four rows -
+    LSNs 6, 8, 9 and 10, after genesis's four, the tiers and the second fill at 7 - the fill and
+    the signature on the terms the restrike left included, exactly as the whole strip tells them,
+    and none of the second's; a page of two from genesis and the next from its
+    cursor walk those four in turn, and the newest page's cursor is the head.
+
+    Killing mutation: the page cut before the trade's rows are picked, which reads the first two
+    events of the record and finds no row of the trade in them.
+    """
+    with_client(desk)
+    declare(recorded, policy.TIERS_POLICY, tiers({'name': 'desk', 'four_eyes': True}))
+    one, two = ticketed('EXEC-ONE').json(), ticketed('EXEC-TWO').json()
+    CLIENT.post('/book/approve', json={'ticket': one['ticket'], 'actor': DESK_TWO})
+    amended = restruck(one['deal_path'], Amount=300_000.0)
+    CLIENT.post('/book/approve', json={'ticket': amended['ticket'], 'actor': DESK_TWO})
+    CLIENT.post('/book/approve', json={'ticket': two['ticket'], 'actor': DESK_TWO})
+    (held,) = [row for row in CLIENT.get('/book/positions').json()['positions']
+               if row['reference'] == 'EXEC-ONE']
+    assert held['deal_paths'] == [one['deal_path']]
+    assert held['instrument'] != one['recorded']['instrument'], 'the restrike moved nothing'
+
+    trade = [row for row in strip()['rows'] if row['deal_path'] == one['deal_path']]
+    assert [(row['lsn'], row['event_type']) for row in trade] == [
+        (6, 'fill'), (8, 'approval'), (9, 'amendment'), (10, 'approval')]
+    asked = strip(deal_path=one['deal_path'])
+    assert (asked['rows'], asked['lsn']) == (trade, head(recorded))
+    first = strip(deal_path=one['deal_path'], since=0, limit=2)
+    assert (first['rows'], first['lsn']) == (trade[:2], trade[1]['lsn'])
+    rest = strip(deal_path=one['deal_path'], since=first['lsn'], limit=2)
+    assert (rest['rows'], rest['lsn']) == (trade[2:], trade[3]['lsn'])
+    assert strip(deal_path=one['deal_path'], limit=1) == {'lsn': head(recorded),
+                                                          'rows': trade[-1:]}
+
+
 def test_the_worklist_names_each_ticket_and_the_seat_it_waits_on(recorded, desk):
     """ONE ANSWER FOR WHAT WAITS ON A SEAT. A ticket under four eyes waits on the seat that may sign
     it, named as a trade - its reference, path, client and agreement, its booker, its tier, the

@@ -2586,7 +2586,7 @@ def expiries(rows, today):
 
 
 @app.get('/book/activity', summary="The record's own strip - one line per event")
-def book_activity(since: str = None, limit: int = 200, actor: str = None):
+def book_activity(since: str = None, limit: int = 200, actor: str = None, deal_path: str = None):
     """`{lsn, rows}` - one line per event, newest last, beside the cursor to ask again from.
 
     THE FOLD OPENS NO BODY: the `activity` fold reads envelopes alone and every type in the
@@ -2610,6 +2610,11 @@ def book_activity(since: str = None, limit: int = 200, actor: str = None):
     never steps over what it did not read. `actor` is the seat reading, which sees the events of
     the books it holds a grant at - an envelope names no node - the cursor walking past the rest.
     404 where no home is configured.
+
+    `deal_path` asks for ONE TRADE: the rows that open the node at that path, which a restrike
+    keeps while it moves the instrument, so every earlier set of terms the restrikes link to it is
+    the trade's too. The page and its cursor walk those rows alone, every row being told to find
+    them.
     """
     recorded()
     projections = spine.package().projections
@@ -2619,16 +2624,19 @@ def book_activity(since: str = None, limit: int = 200, actor: str = None):
                                    'lsn': start, 'state': projector.initial()}
 
     def read(log):
-        rows = projector.rows(projections.fold(log, projector, seed=seed))
-        rows = rows[:wanted] if start is not None else rows[max(len(rows) - wanted, 0):]
-        # an empty page under a cursor keeps the cursor, so a walker never skips what it did not
-        # read; a cursor past the head answers the head
-        head = log.head()[0]
-        cursor = min(start, head) if start is not None else head
-        return {'lsn': rows[-1]['lsn'] if rows else cursor, 'rows': rows}
+        return projector.rows(projections.fold(log, projector, seed=seed)), log.head()[0]
 
-    page = spine.folded(read)
-    return dict(page, rows=told(spine.visible(page['rows'], spine.sight(actor), 'book')))
+    (rows, head), sight = spine.folded(read), spine.sight(actor)
+    if deal_path is not None:
+        # which trade a row is about is known once it is told, so one trade's page is cut after
+        rows = [row for row in told(spine.visible(rows, sight, 'book'))
+                if row['deal_path'] == deal_path]
+    rows = rows[:wanted] if start is not None else rows[max(len(rows) - wanted, 0):]
+    # an empty page under a cursor keeps the cursor, so a walker never skips what it did not
+    # read; a cursor past the head answers the head
+    cursor = min(start, head) if start is not None else head
+    return {'lsn': rows[-1]['lsn'] if rows and start is not None else cursor,
+            'rows': rows if deal_path is not None else told(spine.visible(rows, sight, 'book'))}
 
 
 def told(rows):
