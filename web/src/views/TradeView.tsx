@@ -50,11 +50,22 @@ function useQuotes(references: string[]) {
   return found;
 }
 
+/** The way back to the tab a page was opened from, where it was opened from one. */
+export function Back() {
+  const { state, dispatch } = useApp();
+  const back = WORKSPACES.find((workspace) => workspace.id === state.back);
+  return back ? (
+    <button className="ghost" onClick={() => dispatch({ type: 'TAB', tab: back.id })}>
+      ‹ back to {back.label}
+    </button>
+  ) : null;
+}
+
 /** One trade on one page: what it is in the market's words, where it came from, what it is
  * worth, what happened to it on the record, and the amendment and the unwind - each part saying
  * what holds on this desk where it keeps no record. A leg opens its structure's page. */
 export function TradeView() {
-  const { state, dispatch } = useApp();
+  const { state } = useApp();
   const { doc, schema } = state;
   const market = marketOf(state);
   const children = doc?.Calc.Deals?.Deals?.Children ?? [];
@@ -81,18 +92,11 @@ export function TradeView() {
   const history = typeof record === 'string' || record === null ? record
     : historyOf(record, trade.path);
   const quote = Object.values(quotes ?? {}).find(Boolean) ?? undefined;
-  const back = WORKSPACES.find((workspace) => workspace.id === state.back);
 
   return (
     <div className="main">
       <div className="panel tradepage">
-        <div className="pager">
-          {back && (
-            <button className="ghost" onClick={() => dispatch({ type: 'TAB', tab: back.id })}>
-              ‹ back to {back.label}
-            </button>
-          )}
-        </div>
+        <div className="pager"><Back /></div>
         <h2 className="tradetitle">{row.reference || '(no reference)'}
           <span className="hint" title="where the book file holds it">{row.object} at{' '}
             <span className="mono">{trade.path}</span></span></h2>

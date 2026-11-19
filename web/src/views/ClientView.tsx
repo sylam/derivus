@@ -17,7 +17,6 @@ import {
   valuationDay,
 } from '../desk';
 import { statusText, type Agreement, type Entity, type Position } from '../positions';
-import { WORKSPACES } from '../registry';
 import { pinnedAt } from '../spine';
 import { clockOf, marketOf, opened, standing, useApp } from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
@@ -26,6 +25,7 @@ import type { ActivityRow, BookRisk, BookXva, Market, Schema, XvaSet } from '../
 import { Side, Value } from './BlotterView';
 import { CreditCard, SpreadTable } from './CurvesView';
 import { AgreementForm } from './PaperView';
+import { Back } from './TradeView';
 
 /** One read of the live book while this page is up, again whenever `keys` move - the answer held
  * on screen while the next is read - or the service's refusal in its own words. */
@@ -131,16 +131,11 @@ function ClientPage({ id, lines, own, reads, rows, factor, market, schema }: {
   const onPaper = () => opened(dispatch, state.doc, null, id);
   const fix = (line: Line) => (line.fix === 'entity' ? onPaper()
     : setForm(line.fix === 'curve' ? { curve: true } : { agreement: { entity: id } }));
-  const back = WORKSPACES.find((workspace) => workspace.id === state.back);
 
   return (
     <div className="clientpage">
       <div className="clienthead">
-        {back && (
-          <button className="ghost" onClick={() => dispatch({ type: 'TAB', tab: back.id })}>
-            ‹ back to {back.label}
-          </button>
-        )}
+        <Back />
         <h2>{entity?.name ?? id}</h2>
         {entity && <span className="mono">{id}</span>}
         {entity?.parent && <span className="hint">under {entityText(entities!, entity.parent)}</span>}

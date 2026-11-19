@@ -274,7 +274,8 @@ export function CreditCard({ id, title, factor, base, convention, recording }: {
           </>
         ) : id && (
           <div className="note">No credit curve yet: a CVA against this counterparty has no default
-            to read, and no trade books under a netting set naming it until it has one.</div>
+            to read, and the first trade under a netting set naming it is refused until it has
+            one.</div>
         )}
       </section>
       <section className="card credit">
