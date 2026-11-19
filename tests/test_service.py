@@ -6206,9 +6206,9 @@ def test_a_survival_curve_is_written_from_the_cva_desk_s_spread(recorded, tmp_pa
                            ({'counterparty': 'GHOST', 'spread': -5.0}, 'positive spread'),
                            ({'counterparty': 'GHOST', 'spread': True}, 'positive spread'),
                            ({'counterparty': 'GHOST', 'spread': 150.0, 'recovery': 1.0},
-                            'recovery in'),
+                            'outside [0, 1)'),
                            ({'counterparty': 'GHOST', 'spread': 150.0, 'recovery': False},
-                            'recovery in'),
+                            'outside [0, 1)'),
                            ({'counterparty': 'GHOST', 'spread': [{'tenor': '5Y', 'spread': 200.0},
                                                                  {'tenor': '1Y', 'spread': 100.0}]},
                             'do not rise')):
@@ -6258,6 +6258,46 @@ def test_a_survival_curve_is_written_from_the_cva_desk_s_spread(recorded, tmp_pa
             log.close()
     finally:
         service.BOOK = None
+
+
+def test_a_refused_survival_curve_names_the_field_it_is_about(recorded, book, monkeypatch):
+    """Each cause a credit curve is refused for is a sentence of its own, opening with the field it
+    is about and what it stated, then what holds: a counterparty the record does not declare, a
+    spread that is not a positive number - negative, `true`, a row of nothing - and a recovery
+    outside [0, 1), one or `false`; and, on a desk that records nothing, a counterparty naming
+    nobody. Nothing is written.
+
+    Killing mutation: the recovery read inside the spread's check, which answers a recovery of one
+    with the spread's sentence.
+    """
+    assert CLIENT.post('/book/entities', content=dump({'entity': 'GHOST', 'name': 'Ghost Ltd'}),
+                       headers=JSON).status_code == 200
+    spread = ('spread {} is no positive spread: a credit spread is basis points over nothing, one '
+              'flat or rows [{{tenor, spread}}] of them')
+    recovery = ('recovery {} is outside [0, 1): it is the share of a claim recovered on default, '
+                '0.4 by convention')
+    before = book.read_bytes()
+    for body, said in (
+            ({'counterparty': 'NOBODY', 'spread': 150.0},
+             "counterparty 'NOBODY' is no legal entity the record declares - it declares GHOST: "
+             "declare the entity first"),
+            ({'counterparty': 'GHOST', 'spread': -5.0}, spread.format(-5.0)),
+            ({'counterparty': 'GHOST', 'spread': True}, spread.format(True)),
+            ({'counterparty': 'GHOST', 'spread': [{'tenor': '5Y', 'spread': 0.0}]},
+             spread.format([{'tenor': '5Y', 'spread': 0.0}])),
+            ({'counterparty': 'GHOST', 'spread': 150.0, 'recovery': 1.0}, recovery.format(1.0)),
+            ({'counterparty': 'GHOST', 'spread': 150.0, 'recovery': False},
+             recovery.format(False))):
+        refused = CLIENT.post('/book/survival', content=dump(body), headers=JSON)
+        assert (refused.status_code, refused.json()['detail']) == (422, said), body
+
+    monkeypatch.delenv('DV_SPINE_HOME')
+    refused = CLIENT.post('/book/survival', content=dump({'counterparty': '', 'spread': 150.0}),
+                          headers=JSON)
+    assert (refused.status_code, refused.json()['detail']) == (
+        422, "counterparty '' names nobody: a survival curve is written for the counterparty a "
+             "netting set names")
+    assert book.read_bytes() == before, 'a refused curve was written'
 
 
 def test_fva_is_a_column_of_the_same_row_off_the_same_run(desk_xva, tmp_path):

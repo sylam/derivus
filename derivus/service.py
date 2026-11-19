@@ -4486,9 +4486,10 @@ def book_survival(request: dict):
     looks a spread up.
 
     Under a home the seat holds `mark` over the book - market data is the marking seat's - its
-    refusal landed, and the counterparty is an entity the record declares. A spread that is not a
-    positive number, a recovery outside [0, 1) and tenors that do not rise refuse by name. One
-    atomic write, as every market verb.
+    refusal landed, and the counterparty is an entity the record declares. A counterparty that
+    names nobody, a spread that is not a positive number, a recovery outside [0, 1) and tenors that
+    do not rise each refuse in a sentence of their own, the first three opening with the field
+    they are about and what it stated. One atomic write, as every market verb.
     """
     live, counterparty, recovery = live_book(), request.get('counterparty'), request.get(
         'recovery', 0.4)
@@ -4499,19 +4500,22 @@ def book_survival(request: dict):
                        book_name(live.read()[0]), 'survival_curve', 'no survival curve is written')
         declared = sorted(row['entity'] for row in spine.entities())
         if counterparty not in declared:
-            raise HTTPException(422, 'a survival curve for {!r}: the record declares {} - declare '
-                                     'the entity first'.format(counterparty,
-                                                               ', '.join(declared) or 'none'))
+            raise HTTPException(422, 'counterparty {!r} is no legal entity the record declares - '
+                                     'it declares {}: declare the entity first'.format(
+                                         counterparty, ', '.join(declared) or 'none'))
+    if not (isinstance(counterparty, str) and counterparty):
+        raise HTTPException(422, 'counterparty {!r} names nobody: a survival curve is written for '
+                                 'the counterparty a netting set names'.format(counterparty))
     # a JSON true is a Python int, so a number is asked of its type
-    if not (isinstance(counterparty, str) and counterparty and type(recovery) in (int, float)
-            and 0.0 <= recovery < 1.0 and rows
-            and all(isinstance(row, dict) and isinstance(row.get('tenor'), str)
-                    and type(row.get('spread')) in (int, float) and row['spread'] > 0.0
-                    for row in rows)):
-        raise HTTPException(422, 'a survival curve is a counterparty, a positive spread in basis '
-                                 'points or rows [{{tenor, spread}}] of them, and a recovery in '
-                                 '[0, 1) - not {!r}, {!r} and {!r}'.format(
-                                     counterparty, spread, recovery))
+    if not (rows and all(isinstance(row, dict) and isinstance(row.get('tenor'), str)
+                         and type(row.get('spread')) in (int, float) and row['spread'] > 0.0
+                         for row in rows)):
+        raise HTTPException(422, 'spread {!r} is no positive spread: a credit spread is basis '
+                                 'points over nothing, one flat or rows [{{tenor, spread}}] of '
+                                 'them'.format(spread))
+    if not (type(recovery) in (int, float) and 0.0 <= recovery < 1.0):
+        raise HTTPException(422, 'recovery {!r} is outside [0, 1): it is the share of a claim '
+                                 'recovered on default, 0.4 by convention'.format(recovery))
 
     def edit(document, etag):
         base = structures.timestamp(document['Calc']['Calculation']['Base_Date'])
