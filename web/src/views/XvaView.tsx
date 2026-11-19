@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { openClient } from '../client';
 import {
   ageOf, currencyOf, entityText, fileName, isOrphan, lagsBook, lastRunChip, replayRows, stampText,
   statusChip, xvaTotals, type XvaSum,
@@ -181,6 +182,7 @@ function Sums({ sum }: { sum: XvaSum }) {
 function Row({ set, named, read, opened, onOpen }: {
   set: XvaSet; named: (id: string) => string; read: string; opened: boolean; onOpen: () => void;
 }) {
+  const { dispatch } = useApp();
   const orphan = isOrphan(set);
   const age = ageOf(set.as_of, read);
   const chip = statusChip(set);
@@ -198,7 +200,14 @@ function Row({ set, named, read, opened, onOpen }: {
         <td className="path">
           {set.deal_path ?? <span className="hint">—</span>}
         </td>
-        <td>{set.counterparty ? named(set.counterparty) : <span className="hint">—</span>}</td>
+        <td>
+          {set.counterparty ? (
+            <button className="ghost" title="open this client's page"
+                    onClick={() => openClient(dispatch, set.counterparty!)}>
+              {named(set.counterparty)}
+            </button>
+          ) : <span className="hint">—</span>}
+        </td>
         <td>
           {/* a real boolean off the wire - the book stores this as the text "True"/"False" and the
               service reads it, so nothing here has to guess what "False" means */}

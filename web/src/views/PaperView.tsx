@@ -5,6 +5,7 @@ import {
 import { SET } from '../blotter';
 import { DealPanels } from '../components/FieldView';
 import { entityText } from '../desk';
+import { openClient } from '../client';
 import { EmptyState } from '../components/EmptyState';
 import type { Agreement, Entity } from '../positions';
 import { worklistAt } from '../spine';
@@ -69,6 +70,8 @@ export function PaperView() {
                     <td className="mono">{row.entity}</td>
                     <td>{row.name}</td>
                     <td>{row.parent ? `under ${named(row.parent)}` : ''}</td>
+                    <td><button className="ghost" onClick={() => openClient(dispatch, row.entity)}>
+                      open its page</button></td>
                   </tr>
                 ))}
               </tbody>
