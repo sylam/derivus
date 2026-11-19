@@ -125,12 +125,14 @@ Observes = namedtuple('Observes', 'index family table column elects expires moni
 #: table's per period as its compile binds it, None where its amounts are fixed today;
 #: `underlying` its primary risk factor (an FX trade's other currency), `start` its start, `long`
 #: the (field, value) long that factor or, an option, bought, else by the amount's sign; `strike`,
-#: `expiry` and `call` the (field, value) of a call where an option; `amortisation` its steps;
-#: `other` an FX trade's amount in that other currency, where its terms state one; `runs` the
-#: (field, value) under which it runs to its end, else settling at its start; `average` the field
-#: stating what has fixed of the average an option is on; `digital` the (field, value) of a digital;
-#: `end` its last day, the last its tenor fields name where None; `per` the table a strip deals its
-#: amount again at every row of. A type of several declares each.
+#: `expiry` and `call` the (field, value) of a call where an option, True always one; `amortisation`
+#: its steps; `other` an FX trade's amount in that other currency, where its terms state one; `runs`
+#: the (field, value) under which it runs to its end, else settling at its start; `average` the
+#: field stating what has fixed of the average an option is on; `digital` the (field, value) of a
+#: digital paying its amount in cash, any value after it one paying it in units of its underlying,
+#: True always the first; `end` its last day, the last its tenor fields name where None; `per` the
+#: table a strip deals its amount again at every row of, each row's first cell the day it fixes, an
+#: option's expiry. A type of several declares each.
 Exposure = namedtuple('Exposure', 'amount currency underlying price start long strike expiry call '
                                   'amortisation other runs average digital end per', defaults=(None,) * 15)
 

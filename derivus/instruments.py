@@ -4223,6 +4223,8 @@ class EquityBarrierBinaryOption(Deal):
     vernacular = 'barrier digital, knock-in digital, knock-out binary'
     observes = Observes('Equity', 'EquityPrice', 'Barrier_Dates', 1, expires='Expiry_Date',
                         monitors=True)
+    # CRE52 states no barrier's delta: the digital at its strike and expiry, the barrier unread
+    exposure = EQUITY_OPTION._replace(amount='Cash_Payoff', digital=True)
     fields = [ADMIN, PRICING, EQUITYOPTIONBASE, own('EquityBarrierBinaryOption', [
         F('Barrier_Dates', 'Table', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Observed', 'Float')])),
@@ -4473,6 +4475,7 @@ class EquityOptionDeal(Deal):
 class EquityBinaryOption(EquityOptionDeal):
     vernacular = 'equity digital, binary option, cash-or-nothing, asset-or-nothing'
     observes = Observes('Equity', 'EquityPrice', 'Price_Fixing', 1, expires='Expiry_Date')
+    exposure = EQUITY_OPTION._replace(amount='Payoff', digital=('Payoff_Style', 'Cash', 'Asset'))
     fields = [ADMIN, PRICING, EQUITYOPTIONBASE, own('EquityBinaryOption', [
         F('Payoff', 'Float', default=REQUIRED, sized=True),
         F('Payoff_Style', 'Text', default='Cash', convention=True, values=['Cash', 'Asset']),
@@ -4972,6 +4975,9 @@ class BarrierLifecycle:
 
 class EquityOneTouchOption(TouchLifecycle, Deal):
     vernacular = 'equity one-touch, one touch, touch option'
+    # CRE52 states no touch's delta: a digital at its barrier, Up a call and Down a put
+    exposure = Exposure('Cash_Payoff', underlying='Equity', long=('Buy_Sell', 'Buy'), strike='Barrier_Price',
+                        expiry='Expiry_Date', call=('Barrier_Type', 'Up'), digital=True)
     fields = [ADMIN, PRICING, EQUITY_TOUCH, TOUCH, own('EquityOneTouchOption', [
         F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry'])
     ], role='Timing', title='Payment timing')]
@@ -5049,6 +5055,7 @@ class EquityOneTouchOption(TouchLifecycle, Deal):
 
 class EquityNoTouchOption(EquityOneTouchOption):
     vernacular = 'equity no-touch, no touch'
+    exposure = EquityOneTouchOption.exposure._replace(long=('Buy_Sell', 'Sell'))
     fields = [ADMIN, PRICING, EQUITY_TOUCH, TOUCH]
 
     no_touch = True
@@ -5288,6 +5295,8 @@ class EquityBarrierOption(BarrierLifecycle, Deal):
 class CommodityDigitalOption(Deal):
     vernacular = 'commodity digital, energy digital, binary option on a reference price'
     observes = Observes('Reference_Type', 'ReferencePrice', 'Price_Fixing', 1, expires='Expiry_Date')
+    exposure = Exposure('Payoff', underlying='Reference_Type', long=('Buy_Sell', 'Buy'), strike='Strike_Price',
+                        expiry='Expiry_Date', call=('Option_Type', 'Call'), digital=('Payoff_Style', 'Cash', 'Asset'))
     fields = [ADMIN, PRICING, own('CommodityDigitalOption', [
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
@@ -5467,6 +5476,7 @@ class CommodityFixingWatch:
 
 class CommodityOneTouchOption(TouchLifecycle, CommodityFixingWatch, Deal):
     vernacular = 'commodity one-touch, energy one-touch, one touch on a reference price'
+    exposure = EquityOneTouchOption.exposure._replace(underlying='Reference_Type')
     fields = [ADMIN, PRICING, COMMODITY_TOUCH, TOUCH, own('CommodityOneTouchOption', [
         F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry'])
     ], role='Timing', title='Payment timing')]
@@ -5497,6 +5507,7 @@ class CommodityOneTouchOption(TouchLifecycle, CommodityFixingWatch, Deal):
 
 class CommodityNoTouchOption(CommodityOneTouchOption):
     vernacular = 'commodity no-touch, energy no-touch, no touch on a reference price'
+    exposure = EquityNoTouchOption.exposure._replace(underlying='Reference_Type')
     fields = [ADMIN, PRICING, COMMODITY_TOUCH, TOUCH]
 
     no_touch = True
@@ -6450,8 +6461,10 @@ class FXPartialTimeBarrierOption(Deal):
 class FXTARFOptionDeal(Deal):
     vernacular = 'TARF, target redemption forward, target forward'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'TARF_ExpiryDates', 2)
-    exposure = (Exposure('Underlying_Amount', 'Underlying_Currency', per='TARF_ExpiryDates'),
-                Exposure('LeverageNotional', 'Underlying_Currency', per='TARF_ExpiryDates'))
+    # at each fixing an option of its kind on Underlying_Amount and the other kind sold on LeverageNotional
+    exposure = (FX_OPTION._replace(expiry=None, per='TARF_ExpiryDates'), FX_OPTION._replace(
+        amount='LeverageNotional', long=('Buy_Sell', 'Sell'), expiry=None, call=('Option_Type', 'Put'),
+        per='TARF_ExpiryDates'))
     fields = [ADMIN, FX_STRIP_ADMIN, FXOPTIONBASE, own('FXTARFOptionDeal', [
         F('Expiry_Date', 'Date', default=''),
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
@@ -6607,8 +6620,9 @@ class FXTARFOptionDeal(Deal):
 class FXAccumulatorOptionDeal(Deal):
     vernacular = 'FX accumulator, decumulator, accu'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Accumulator_ExpiryDates', 2)
-    exposure = (Exposure('Underlying_Amount', 'Underlying_Currency', per='Accumulator_ExpiryDates'),
-                Exposure('LeverageNotional', 'Underlying_Currency', per='Accumulator_ExpiryDates'))
+    exposure = (FX_OPTION._replace(expiry=None, per='Accumulator_ExpiryDates'), FX_OPTION._replace(
+        amount='LeverageNotional', long=('Buy_Sell', 'Sell'), expiry=None, call=('Option_Type', 'Put'),
+        per='Accumulator_ExpiryDates'))
     fields = [ADMIN, FX_STRIP_ADMIN, FXOPTIONBASE, own('FXAccumulatorOptionDeal', [
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
         F('LeverageNotional', 'Float', default=0.0, sized=True),
@@ -7012,6 +7026,8 @@ class FXBinaryOption(FXOptionDeal):
     vernacular = 'FX digital, binary option, cash-or-nothing, asset-or-nothing'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Price_Fixing', 1,
                         expires='Expiry_Date')
+    exposure = FX_OPTION._replace(amount='Payoff', currency='Currency', underlying='Underlying_Currency',
+                                  digital=('Payoff_Style', 'Cash', 'Asset'))
     fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, own('FXBinaryOption', [
         F('Payoff', 'Float', default=REQUIRED, sized=True),
         F('Payoff_Style', 'Text', default='Cash', convention=True, values=['Cash', 'Asset']),
@@ -7054,7 +7070,10 @@ class FXBinaryOption(FXOptionDeal):
 class FXRangeAccrualDeal(Deal):
     vernacular = 'FX range accrual, corridor, fairway, digital strip'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Observation_Dates', 1)
-    exposure = Exposure('Payoff', 'Currency', per='Observation_Dates')
+    # at each observation a digital call bought at the lower bound and one sold at the upper
+    exposure = tuple(Exposure('Payoff', 'Currency', 'Underlying_Currency', long=('Buy_Sell', side), strike=bound,
+                              call=True, digital=True, per='Observation_Dates')
+                     for side, bound in (('Buy', 'Lower_Barrier'), ('Sell', 'Upper_Barrier')))
     fields = [ADMIN, FX_STRIP_ADMIN, own('FXRangeAccrualDeal', [
         F('Currency', 'Text', default='', factors=['FxRate']),
         F('Underlying_Currency', 'Text', default='', factors=['FxRate']),

@@ -106,12 +106,16 @@ one compile's counts as a base valuation's does (`Deals loaded`, `Deals Skipped`
   reading none: `TradeID`, `Component` (blank where the row reads the trade whole, else the
   `Reference` of the child of a package it reads, the field stating the last day of the
   component of a type of several, an FX swap's `Near_Settlement_Date` or
-  `Far_Settlement_Date`, or a caplet's or floorlet's deal `Reference` and its period's end date,
-  `CAP_LEG 2027-01-15`), `NettingSet`, `AssetClass`, `HedgingSet` (an IR
+  `Far_Settlement_Date`, a caplet's or floorlet's deal `Reference` and its period's end date,
+  `CAP_LEG 2027-01-15`, a strip's deal `Reference`, its fixing date and the field naming the leg,
+  `TARF 2025-02-15 LeverageNotional`, or an asset-or-nothing digital's deal `Reference` and
+  vanilla or digital), `NettingSet`, `AssetClass`, `HedgingSet` (an IR
   trade's currency, an FX trade's pair, a credit or equity trade's entity, a commodity trade's
   set), `Subclass` (Table 2's row), `Bucket` (an IR trade's maturity bucket, a commodity trade's
   type), `SupervisoryFactor`, `AdjustedNotional`, `Delta`, `MaturityFactor`, `EffectiveNotional`
-  and `Value`, the trade's on its first row and blank on the rest, so `V` counts each trade once
+  (a digital's capped at its payoff over its `SupervisoryFactor`, so not always the product of
+  the three before it) and `Value`, the trade's on its first row and blank on the rest, so `V`
+  counts each trade once
 
 `Stats['Parameters']` records the `version` the SA-CCR parameters file states, beside the one
 compile's counts.

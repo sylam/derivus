@@ -571,6 +571,40 @@ CAP_LEGS = [optioned('Cap', 'FIRST', 'Buy', ONE_YEAR), optioned('Cap', 'SECOND',
             optioned('Cap', 'SHORT', 'Buy', every(3, 1, BASE + pd.DateOffset(months=3)))]
 
 
+def binary(reference, kind='Call', expiry=None, payoff='Payoff', **terms):
+    """A bought digital `kind` on the share struck at 50, paying 100,000 dollars, the field `payoff`
+    states, at `expiry`, a year out where None."""
+    return dict({'Object': 'EquityBinaryOption', 'Reference': reference, 'Currency': 'USD', 'Discount_Rate': 'USD',
+                 'Equity': 'SHARE', 'Equity_Volatility': 'SHARE', 'Buy_Sell': 'Buy', 'Option_Type': kind,
+                 'Strike_Price': 50.0, payoff: 1e5, 'Expiry_Date': expiry or years(1)}, **terms)
+
+
+def touch(kind, reference, barrier, **terms):
+    """A bought `kind` of touch paying 100,000 dollars a year out where `barrier` is touched from below."""
+    return dict({'Object': kind, 'Reference': reference, 'Currency': 'USD', 'Discount_Rate': 'USD', 'Buy_Sell': 'Buy',
+                 'Cash_Payoff': 1e5, 'Barrier_Type': 'Up', 'Barrier_Price': barrier, 'Expiry_Date': years(1)}, **terms)
+
+
+#: The share digital, its barrier twin knocked out above 70, the share call struck at 55 and the
+#: share's touches there, a WTI digital call struck at 90 paying 100,000 dollars a year out and its
+#: touches there, the euro digital call in dollars paying 100,000 at 1.3, and the euro Asian call paying
+#: its million dollars where its average ends above 1.3.
+DIGITALS = [
+    binary('CALL'), binary('BARRIER', payoff='Cash_Payoff', Object='EquityBarrierBinaryOption',
+                           Barrier_Type='Up_And_Out', Barrier_Price=70.0, Barrier_Dates=[
+                               [BASE + pd.DateOffset(months=k), None] for k in range(1, 13)]),
+    binary('CALL_55', Strike_Price=55.0),
+    *[touch(kind, reference, 55.0, Equity='SHARE', Equity_Volatility='SHARE')
+      for kind, reference in (('EquityOneTouchOption', 'ONE_TOUCH'), ('EquityNoTouchOption', 'NO_TOUCH'))],
+    {'Object': 'CommodityDigitalOption', 'Reference': 'WTI', 'Currency': 'USD', 'Discount_Rate': 'USD',
+     'Reference_Type': 'WTI', 'Reference_Volatility': 'WTI', 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
+     'Strike_Price': 90.0, 'Payoff': 1e5, 'Expiry_Date': years(1)},
+    *[touch(kind, reference, 90.0, Reference_Type='WTI', Reference_Volatility='WTI')
+      for kind, reference in (('CommodityOneTouchOption', 'WTI_ONE'), ('CommodityNoTouchOption', 'WTI_NO'))],
+    dict(MIXED[0], Object='FXBinaryOption', Reference='EURO', Payoff=1e5),
+    dict(ASIANS[0], Is_Digital='Yes')]
+
+
 def document(sets, calculation, vol=0.2):
     """The job of `sets`, `{reference: (agreement terms, [trade node])}`, each trade's reference
     prefixed with its set's, running `calculation` on the world, the receiver's surface at `vol`."""
@@ -701,7 +735,24 @@ def world(tmp_path_factory):
             'CAP_LEGS': ({}, [cap('CAP', 'Buy', CAP_LEGS)]),
             'COLLAR': ({}, [node(optioned('Cap', 'CAP', 'Buy', THREE_YEARS)),
                             node(optioned('Floor', 'FLOOR', 'Sell', THREE_YEARS))]),
-            'COLLAR_LEG': ({}, [node(cashflows(FLOATING, 'LEG', 'Buy', THREE_YEARS, 1e6))])}
+            'COLLAR_LEG': ({}, [node(cashflows(FLOATING, 'LEG', 'Buy', THREE_YEARS, 1e6))]),
+            'DIGITAL': ({}, [node(binary('CALL'))]),
+            'DIGITAL_NEAR': ({}, [node(binary('CALL', expiry=BASE + pd.DateOffset(days=2), Settlement_Date=years(1)))]),
+            'DIGITAL_MARGINED': (THRESHOLD, [node(binary('CALL', expiry=BASE + pd.DateOffset(days=2),
+                                                         Settlement_Date=years(1)))]),
+            'DIGITAL_PAIR': ({}, [node(binary('CALL')), node(binary('PUT', 'Put'))]),
+            'ASSET': ({}, [node(binary(reference, kind, Payoff=1e3, Payoff_Style='Asset'))
+                           for reference, kind in (('CALL', 'Call'), ('PUT', 'Put'))]),
+            'DIGITALS': ({}, [node(deal) for deal in DIGITALS]),
+            'TARF': ({}, [node(TARF)]),
+            'TARF_EVEN': ({}, [node(dict(TARF, LeverageNotional=1e6, TARF_ExpiryDates=TARF['TARF_ExpiryDates'][1:]))]),
+            'FORWARDS_EVEN': ({}, [node(outright('FWD_{:%m}'.format(day), (1e6, 'EUR'), (1.3e6, 'USD'), settles))
+                                   for day, settles, _ in TARF['TARF_ExpiryDates'][1:]]),
+            'ACCUMULATOR': ({}, [node(dict(STRIPS[1], Buy_Sell='Sell', Option_Type='Put'))]),
+            'STRIP_SIGNS': ({}, [node(dict(strip, Reference=strip['Reference'] + legs, Strike_Price=strike, **{amount: 0.0}))
+                                 for strip in STRIPS[:2] for legs, strike, amount in (
+                                     ('_CALLS', 1.0, 'LeverageNotional'), ('_PUTS', 1.6, 'Underlying_Amount'))]),
+            'RANGE': ({}, [node(STRIPS[3])])}
     return mapping, run(document(sets, saccr(mapping), receiver_vol()))
 
 
@@ -1725,32 +1776,250 @@ STRIPS = [
      'Lower_Barrier': 1.2, 'Upper_Barrier': 1.3, 'Payoff': 1e4, 'Settlement_Date': FIXINGS[-1][1],
      'Observation_Dates': [row[:1] + [None] for row in FIXINGS]}]
 
+#: A TARF buying a million euros a fixing at 1.3 and geared two million against: a fixing a day ago
+#: at 1.35 settling tomorrow, its 0.05 past the 0.04 target, then `FIXINGS`.
+TARF = dict(STRIPS[0], TargetLevel=0.04, TARF_ExpiryDates=[
+    [BASE - pd.DateOffset(days=1), BASE + pd.DateOffset(days=1), 1.35]] + FIXINGS)
+
+
+def collar(forward, strike, vol, expiry, call=True):
+    """CRE52.42(3)'s delta of a bought digital: its option bought at 95% of `strike` less the one
+    sold at 105%, a put's the other way round."""
+    bought, sold = (0.95, 1.05) if call else (1.05, 0.95)
+    return (black_delta(forward, bought * strike, vol, expiry, call) -
+            black_delta(forward, sold * strike, vol, expiry, call))
+
+
+def test_a_cash_digital_is_its_collar_its_effective_notional_capped_at_its_payoff_over_sf(world):
+    """CRE52.36, CRE52.40, CRE52.42(3) AND CRE52.48. A bought digital call on the share struck at 50
+    paying 100,000 dollars a year out is a call bought at 47.50 and one sold at 52.50, each on
+    100,000 / (0.1 x 50) = 20,000 shares: one row, its d those shares at 50, 1,000,000, P the
+    share's forward 50 e^(0.02 x 365/365) = 51.010067 at the single name's 120% over T one, so
+    d1 = (ln(51.010067 / 47.5) + 0.72) / 1.2 = 0.659411 and (ln(51.010067 / 52.5) + 0.72) / 1.2 =
+    0.576008, its delta N(0.659411) - N(0.576008) = 0.745184 - 0.717695 = 0.027489; MF one, its
+    effective notional 27,488.91, inside the cap of its payoff over the factor, 100,000 / 32% =
+    312,500, its add-on 32% of it, 8,796.45. The same digital two days from its expiry, settled a
+    year out: P 50.005480, T 2/360, d1 0.619423 and -0.499544, its delta 0.732181 - 0.308698 =
+    0.423483 on the same million, 423,483.06 past the cap, so its effective notional is 312,500 and
+    its add-on the payoff, 100,000. Held under the margined set past its threshold, its MPOR of five
+    floored at ten, its maturity factor 1.5 (10/250)^0.5 = 0.3 and its effective notional
+    127,044.92, inside the cap, its add-on 32% of that; the set's EAD is its unmargined one
+    (CRE52.2), whose add-on the cap holds at 100,000: 1.4 x multiplier(V, C, 100,000) x 100,000, its
+    RC nothing, V under the 200,000 held. The cap binds near the band close to the expiry and never
+    deep in the money, where both legs read nearly one: over every T the most its effective notional
+    reaches is 1.36 times the cap at a forward 6% over the strike, 0.85 at 10%, 0.46 at 20%. A
+    digital put on the same terms, a put bought at 52.50 and one sold at 47.50, reads -0.027489: the
+    two pay 100,000 for certain and read nothing, N(d1) + N(-d1) one on each leg.
+
+    Killing mutations: the collar struck at K on both legs - every delta nothing; the cap not
+    applied - the near digital's effective notional 423,483.06, its add-on 135,514.58; the cap on
+    the margined column alone - the margined set's EAD 109,541.22 against 66,907.21; the put's legs
+    the call's - the pair's add-on 17,592.90.
+    """
+    _, output = world
+    found = netting_sets(output)
+    forward = 50.0 * math.exp(0.02 * between(years(1), 3))
+    delta = collar(forward, 50.0, 1.2, 1.0)
+    row = trades(output, 'DIGITAL').loc['CALL']
+    assert (row['Component'], row['AdjustedNotional'], row['MaturityFactor']) == ('', 1e6, 1.0), row
+    assert row['Delta'] == pytest.approx(delta, rel=1e-12), row
+    assert found.loc['DIGITAL', 'AddOn_Equity'] == pytest.approx(0.32 * 1e6 * delta, rel=1e-12), found
+    near = trades(output, 'DIGITAL_NEAR').loc['CALL']
+    assert near['Delta'] == pytest.approx(collar(50.0 * math.exp(0.02 * between(
+        BASE + pd.DateOffset(days=2), 3)), 50.0, 1.2, 2 / 360), rel=1e-12), near
+    assert near['EffectiveNotional'] == pytest.approx(1e5 / 0.32, rel=1e-15) and 1e5 / 0.32 < 1e6 * near['Delta']
+    assert found.loc['DIGITAL_NEAR', 'AddOn_Equity'] == pytest.approx(1e5, rel=1e-15), found
+    margined = found.loc['DIGITAL_MARGINED']
+    assert margined['AddOn_Equity'] == pytest.approx(0.32 * 0.3 * 1e6 * near['Delta'], rel=1e-12), margined
+    assert margined['EAD'] == pytest.approx(1.4 * multiplier(margined['V'], margined['C'], 1e5) * 1e5, rel=1e-12)
+    pair = trades(output, 'DIGITAL_PAIR')
+    assert pair['Delta'].tolist() == pytest.approx([delta, -delta], rel=1e-12), pair
+    assert found.loc['DIGITAL_PAIR', 'AddOn_Equity'] == pytest.approx(0.0, abs=1e-9), found
+
+
+def test_an_asset_or_nothing_digital_is_its_vanilla_and_a_cash_digital_of_its_units_at_its_strike(world):
+    """CRE52.42(3) AND CRE52.42(4). A digital call paying a thousand shares where the share ends
+    above 50 a year out pays (S - 50) on them and 50 x 1,000 = 50,000 dollars: two rows, the vanilla
+    call on the thousand shares, d 50,000 and delta N((ln(51.010067 / 50) + 0.72) / 1.2) =
+    N(0.616667) = 0.731273, and the cash digital paying 50,000, the collar on 50,000 / 5 = 10,000
+    shares, d 500,000 and delta 0.027489, under the cap 50,000 / 32% = 156,250. The put pays 50,000
+    less (50 - S) on them: the vanilla put sold, +0.268727, and the cash digital put, -0.027489. The
+    two pay the thousand shares for certain: their effective notionals sum to 50,000 to an ulp, the
+    set's add-on 32% of it, 16,000.
+
+    Killing mutations: the shares read as cash - one row each, d 1,000 / 5 x 50 = 10,000; the put's
+    vanilla bought - its delta -0.268727, the pair's sum 23,127.27.
+    """
+    _, output = world
+    forward = 50.0 * math.exp(0.02 * between(years(1), 3))
+    rows = trades(output, 'ASSET')
+    vanilla, digital = black_delta(forward, 50.0, 1.2, 1.0, True), collar(forward, 50.0, 1.2, 1.0)
+    assert list(zip(rows['Component'], rows['AdjustedNotional'])) == [
+        ('ASSET_CALL vanilla', 5e4), ('ASSET_CALL digital', 5e5), ('ASSET_PUT vanilla', 5e4),
+        ('ASSET_PUT digital', 5e5)], rows
+    assert rows['Delta'].tolist() == pytest.approx([vanilla, digital, 1.0 - vanilla, -digital], rel=1e-12)
+    assert rows['EffectiveNotional'].sum() == pytest.approx(5e4, rel=3e-16), rows
+    assert netting_sets(output).loc['ASSET', 'AddOn_Equity'] == pytest.approx(1.6e4, rel=1e-15)
+    assert rows['Value'].notna().tolist() == [True, False, True, False], rows
+
+
+def test_every_digital_type_reads_the_collar_of_its_terms(world):
+    """CRE52.42(1) AND CRE52.42(3); A CONVENTION FOR A BARRIER OR A TOUCH, CRE52 STATING NEITHER'S
+    DELTA. The share digital knocked out above 70 reads the plain digital's row, its barrier unread.
+    A one-touch on the share at 55 paying 100,000 reads the digital call struck there, d 100,000 /
+    5.5 x 50 = 909,090.91 and delta 0.028780, and the no-touch its negative. A WTI digital call
+    struck at 90 paying 100,000 a year out is the collar on 100,000 / 9 = 11,111.11 barrels at
+    today's 80, 888,888.89, P WTI's forward for the expiry's delivery, 80.799635, at crude's 70%:
+    0.055889; WTI's touches at 90 read it and its negative. The euro digital call in dollars
+    paying 100,000 at 1.3 is on 100,000 / 0.13 = 769,230.77 euros, 961,538.46 dollars, P 1.227248
+    at 15%: 0.250197. The euro Asian call paying its million dollars where its average ends above
+    1.3 is on 1,000,000 / 0.13 euros, 9,615,384.62 dollars, P the average's current value, 1.235325:
+    0.253152.
+
+    Killing mutations: a type declaring no exposure - the run refused by name; an FX digital on the
+    currency it is paid in - the euro digital read on the dollar, d 1,250,000 and delta -0.001984;
+    the no-touch the one-touch's sign - +0.028780.
+    """
+    _, output = world
+    rows, columns = trades(output, 'DIGITALS'), ['Delta', 'AdjustedNotional', 'MaturityFactor', 'EffectiveNotional']
+    assert list(rows.loc['BARRIER', columns]) == list(rows.loc['CALL', columns]), rows
+    for one, other, sign in (('ONE_TOUCH', 'CALL_55', 1.0), ('NO_TOUCH', 'CALL_55', -1.0), ('WTI_ONE', 'WTI', 1.0),
+                             ('WTI_NO', 'WTI', -1.0)):
+        assert rows.loc[one, 'Delta'] == sign * rows.loc[other, 'Delta'], rows
+        assert rows.loc[one, 'AdjustedNotional'] == rows.loc[other, 'AdjustedNotional'], rows
+    share = 50.0 * math.exp(0.02 * between(years(1), 3))
+    euro = [1.25 * math.exp((0.04 - math.log(1.06)) * between(day)) for day in (SIX_MONTHS, years(1))]
+    expected = {'CALL_55': (collar(share, 55.0, 1.2, 1.0), 1e5 / 5.5 * 50.0),
+                'WTI': (collar(80.0 * (1.0 + 0.06 * 365 / (years(6) - BASE).days), 90.0, 0.7, 1.0), 1e5 / 9.0 * 80.0),
+                'EURO': (collar(euro[1], 1.3, 0.15, 1.0), 1e5 / 0.13 * EURO),
+                'FX_AVERAGE': (collar((1.24 + sum(euro)) / 3.0, 1.3, 0.15, 1.0), 1e6 / 0.13 * EURO)}
+    for name, (delta, adjusted) in expected.items():
+        assert rows.loc[name, 'Delta'] == pytest.approx(delta, rel=1e-12), rows.loc[name]
+        assert rows.loc[name, 'AdjustedNotional'] == pytest.approx(adjusted, rel=1e-15), rows.loc[name]
+    assert list(rows.loc[['WTI', 'EURO'], 'HedgingSet']) == ['Energy', 'EUR/USD'], rows
+
+
+def test_a_tarf_is_its_fixings_to_come_each_an_option_bought_and_one_sold(world):
+    """CRE52.40 AND CRE52.43; THE TARGET UNREAD, A CONVENTION. A TARF reads a row per leg of each
+    fixing still to come, the strip read to its end as if no target redeemed it, which never
+    understates it: a call bought on its million euros and, geared against, a put sold on its two
+    million, each at 1.3, as its value signs them - bought, its calls alone struck at 1.0 are worth
+    more than nothing and its geared puts alone struck at 1.6 less, an accumulator's alike, each
+    leg long the euro. Each fixing is T, P EUR/USD's forward to it between its spot dates:
+    1.247999 at T 30/360 and 1.246252 at 60/360, so d1 -0.921102 and -0.658893, the
+    deltas N(d1) 0.178499 and 0.254982 on 1,250,000 and N(-d1) 0.821501 and 0.745018 on 2,500,000;
+    M the TARF's last day, 62/360, its maturity factor 0.414997, once for the trade. The fixing a day
+    ago settles tomorrow: known cash, no row, in V alone - its 0.05 has passed the 0.04 target, so
+    the TARF is worth that row's capped payment alone, 1,000,000 x 0.04 e^(-0.04/365) = 39,995.62,
+    on its first row, and the strip is still read past it. The add-on 4% of 0.414997 x
+    4,458,149.04, 74,004.68.
+
+    Killing mutations: the leveraged leg bought - its deltas -0.821501 and -0.745018; the fixed row
+    read as an option - the run refused, a `KeyError` on the print the TARF states none of; the
+    target read as an end - no row; T read as the settlement day - 0.186311 and 0.258499.
+    """
+    _, output = world
+    rows, signs = trades(output, 'TARF'), trades(output, 'STRIP_SIGNS')
+    for kind in ('TARF', 'ACCUMULATOR'):
+        calls, puts = signs.loc[kind + '_CALLS'], signs.loc[kind + '_PUTS']
+        assert calls['Value'].iloc[0] > 0.0 and (calls['Delta'].iloc[::2] > 0.5).all(), calls
+        assert puts['Value'].iloc[0] < 0.0 and (puts['Delta'].iloc[1::2] > 0.5).all(), puts
+    days = [day for day, *_ in FIXINGS]
+    deltas = [sign * black_delta(1.25 * math.exp((0.04 - math.log(1.06)) * between(day)), 1.3, 0.15, k / 12, call)
+              for k, day in enumerate(days, 1) for sign, call in ((1.0, True), (-1.0, False))]
+    assert list(rows['Component']) == ['TARF_TARF {:%Y-%m-%d} {}'.format(day, leg) for day in days
+                                       for leg in ('Underlying_Amount', 'LeverageNotional')], rows
+    assert rows['Delta'].tolist() == pytest.approx(deltas, rel=1e-12), rows
+    assert list(rows['AdjustedNotional']) == [1.25e6, 2.5e6] * 2, rows
+    assert rows['MaturityFactor'].tolist() == pytest.approx([math.sqrt(62 / 360)] * 4, rel=1e-15), rows
+    adjusted = sum(notional * delta for notional, delta in zip([1.25e6, 2.5e6] * 2, deltas))
+    assert netting_sets(output).loc['TARF', 'AddOn_FX'] == pytest.approx(
+        0.04 * math.sqrt(62 / 360) * adjusted, rel=1e-12)
+    assert rows['Value'].iloc[0] == pytest.approx(4e4 * math.exp(-0.04 / 365), rel=1e-12), rows
+    assert rows['Value'].iloc[0] == netting_sets(output).loc['TARF', 'V'] and rows['Value'].iloc[1:].isna().all()
+
+
+def test_a_tarf_geared_one_to_one_reads_the_forward_of_each_fixing(world):
+    """CRE52.39 AND CRE52.40: PUT-CALL PARITY. A TARF whose geared amount is its own million euros
+    buys a call and sells a put at 1.3 at each fixing: the forward. Row by row its two deltas,
+    N(d1) and N(-d1), sum to one and its effective notional to the d of a forward buying the
+    million euros for 1.3 million dollars on the fixing's settlement, 1,250,000, which the forward
+    reads at +1: equal to the last digit, N(d1) + N(-d1) rounding to one on each fixing.
+
+    Killing mutation: the geared leg a call - its delta -N(d1), each fixing's sum nothing.
+    """
+    _, output = world
+    rows, forwards = trades(output, 'TARF_EVEN'), trades(output, 'FORWARDS_EVEN')
+    legs = (rows['AdjustedNotional'] * rows['Delta']).to_numpy().reshape(2, 2).sum(axis=1)
+    assert legs.tolist() == (forwards['AdjustedNotional'] * forwards['Delta']).tolist() == [1.25e6] * 2, rows
+
+
+def test_an_accumulator_sold_is_its_options_sold_at_each_fixing(world):
+    """CRE52.40 AND CRE52.43; THE KNOCK-OUT UNREAD, A CONVENTION. An accumulator is signed as a TARF
+    is, by its value (`STRIP_SIGNS`): sold on puts, it is short a put on its million euros and long a
+    call on its two million at each fixing, both long the euro, N(-d1) 0.821501 and 0.745018 on
+    1,250,000 and N(d1) 0.178499 and 0.254982 on 2,500,000 at the TARF's forwards; its knock-out
+    above 1.6 unread.
+
+    Killing mutation: the leveraged leg bought - its deltas -0.178499 and -0.254982.
+    """
+    _, output = world
+    rows = trades(output, 'ACCUMULATOR')
+    tarf = trades(output, 'TARF')['Delta'].tolist()
+    assert rows['Delta'].tolist() == [tarf[1], tarf[0], tarf[3], tarf[2]], rows
+    assert list(rows['AdjustedNotional']) == [1.25e6, 2.5e6] * 2, rows
+
+
+def test_a_range_accrual_is_a_digital_bought_at_its_lower_bound_and_one_sold_at_its_upper(world):
+    """CRE52.42(3) AND CRE52.43. A range accrual earning 10,000 dollars at each of two monthly
+    observations the euro fixes inside 1.2 to 1.3 is, at each, a digital call bought at 1.2 and one
+    sold at 1.3, each paying 10,000, bought where its value is more than nothing: at
+    1.2 the collar on 10,000 / 0.12 = 83,333.33 euros, 104,166.67 dollars, at 1.3 on 76,923.08
+    euros, 96,153.85 dollars, each observation T at its forward, the deltas +0.561663 and -0.583618
+    a month out and +0.490378 and -0.498175 two; M its settlement, 62/360. Each cap, 10,000 / 4% =
+    250,000, is out of reach; the add-on 4% of 0.414997 x 5,569.10, 92.45.
+
+    Killing mutations: the upper digital bought - its deltas +0.583618 and +0.498175; an FX digital
+    on the currency it is paid in - every row on the dollar, d 125,000 and its delta under 1e-8.
+    """
+    _, output = world
+    rows = trades(output, 'RANGE')
+    days = [day for day, *_ in FIXINGS]
+    forwards = [1.25 * math.exp((0.04 - math.log(1.06)) * between(day)) for day in days]
+    deltas = [sign * collar(forward, bound, 0.15, k / 12) for k, forward in enumerate(forwards, 1)
+              for sign, bound in ((1.0, 1.2), (-1.0, 1.3))]
+    assert list(rows['Component']) == ['RANGE_RANGE {:%Y-%m-%d} {}'.format(day, bound) for day in days
+                                       for bound in ('Lower_Barrier', 'Upper_Barrier')], rows
+    assert rows['Delta'].tolist() == pytest.approx(deltas, rel=1e-12) and rows['Value'].iloc[0] > 0.0, rows
+    adjusted = [1e4 / bound * 10.0 * EURO for bound in (1.2, 1.3)] * 2
+    assert rows['AdjustedNotional'].tolist() == pytest.approx(adjusted, rel=1e-15), rows
+    assert netting_sets(output).loc['RANGE', 'AddOn_FX'] == pytest.approx(0.04 * math.sqrt(62 / 360) * sum(
+        notional * delta for notional, delta in zip(adjusted, deltas)), rel=1e-12)
+
 
 @pytest.mark.parametrize('deal, drop, said', [
     (EQUITY_LEG, (), 'SET_LEG is a EquitySwapLeg, which declares no exposure CRE52 reads'),
-    *[(strip, (), 'SET_{} is a {}, which deals its amount per row of {}: a strip, whose fixings are '
-                  'not read yet'.format(strip['Reference'], strip['Object'], table))
-      for strip, table in zip(STRIPS, ('TARF_ExpiryDates', 'Accumulator_ExpiryDates',
-                                       'Extendable_ExpiryDates', 'Observation_Dates'))],
+    (STRIPS[2], (), 'SET_EXTENDABLE is a FXExtendableForwardDeal, whose extension is an option on a strip of '
+                    'forwards CRE52 states no delta for'),
+    *[(touch(kind, 'TOUCH', 1.4, Underlying_Currency='EUR', FX_Volatility='EUR.USD', Delivery_Date=years(1)), (),
+       'SET_TOUCH is a {}, which declares no exposure CRE52 reads'.format(kind))
+      for kind in ('FXOneTouchOption', 'FXNoTouchOption')],
     (MIXED[2], ('EquityForwardDeal',), 'SET_INDEX_FWD is a EquityForwardDeal, and the mapping '
                                        'classes it under no SACCR.Asset_Class'),
     (default_swap('CDS', 'UNRATED', years(5), 'Buy'), (),
-     'SET_CDS reads SurvivalProb.UNRATED, and the mapping states no SACCR.Rating for it'),
-    (dict(ASIANS[0], Is_Digital='Yes'), (), 'SET_FX_AVERAGE is a FXDiscreteExplicitAsianOption paying '
-                                           'a digital, whose collar of CRE52.42\\(3\\) is not built')])
+     'SET_CDS reads SurvivalProb.UNRATED, and the mapping states no SACCR.Rating for it')])
 def test_a_trade_whose_exposure_the_declarations_do_not_state_is_refused_by_name(
         tmp_path, deal, drop, said):
     """A TRADE IS READ THROUGH ITS DECLARATIONS. An equity swap leg, whose type declares no
-    exposure; the four strips, each dealing its amount per row of its table (CRE52.37(4)), whose
-    fixings are not read yet; an equity forward, which does, under a mapping classing its type in
-    no asset class; a default swap on a survival curve the mapping rates nothing; and an Asian
-    paying a digital, whose collar is not built: each refuses the run by name.
+    exposure; an extendable forward, whose right to extend its strip of forwards is an option CRE52
+    states no delta for; an FX one-touch and no-touch, whose payout may be in the currency their
+    barrier prices, which no collar of a cash digital reads; an equity forward, which does declare
+    one, under a mapping classing its type in no asset class; and a default swap on a survival curve
+    the mapping rates nothing: each refuses the run by name.
 
     Killing mutations: a type declaring no exposure skipped - the leg's set valued and its EAD
-    written, nothing refused; a strip read as one trade - a `KeyError` on a field its declaration
-    leaves unstated, the TARF's and the accumulator's end and the extendable's other currency, and
-    the range accrual refused for the asset class the mapping states none of; a digital read as the
-    vanilla its strike states - the Asian's set valued.
+    written, nothing refused; a strip of no options read as its fixings - a `KeyError` on the
+    expiry its declaration leaves unstated.
     """
     mapping = mapping_file(tmp_path / 'mapping.json', drop)
     with pytest.raises(ValueError, match='SACCR: trade ' + said):
