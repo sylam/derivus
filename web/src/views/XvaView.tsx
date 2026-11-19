@@ -142,7 +142,7 @@ export function XvaView() {
         <OnStrip
           computed={<>each row its own set's last run, with its own age; the value to the desk
             {risk.data ? <> read {stampText(risk.data.as_of)}</> : ' unread'}
-            {recording && <>; collateral {collateral.data ? `on the ${marked}` : `: ${marked ?? 'unread'}`}</>}</>}
+            {recording && <>; collateral{collateral.data ? ` on the ${marked}` : `: ${marked ?? 'unread'}`}</>}</>}
           currency={currency} lagging={lagsBook(xva.clock, clock)} loading={xva.loading}
         />
         {[risk.error && `The value to the desk is not read: ${risk.error}`,
