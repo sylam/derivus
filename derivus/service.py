@@ -1712,14 +1712,16 @@ def risk_etag(document):
                          'calculation': document['Calc']['Calculation']})
 
 
-def top_level_paths(document):
-    """`{Reference: deal_path}` for the book's TOP-LEVEL deals - the trades a blotter shows a row
-    each for. A reference that is not unique maps to None rather than to one of the nodes it could
-    name, because the positional path is the identity and guessing it mis-labels a row."""
+def priced_paths(children, under=''):
+    """`{Reference: deal_path}` for the nodes `children` lists that price - the rows a valuation
+    reports under their parent, whose own path and a slash is `under`. A reference that is not
+    unique maps to None rather than to one of the nodes it could name, because the positional path
+    is the identity and guessing it mis-labels a row."""
     found = {}
-    for position, node in enumerate(job_children(document)):
-        reference = node['Instrument']['.Deal'].get('Reference')
-        found[reference] = None if reference in found else str(position)
+    for position, node in enumerate(children):
+        if node.get('Ignore') != 'True':
+            reference = node['Instrument']['.Deal'].get('Reference')
+            found[reference] = None if reference in found else under + str(position)
     return found
 
 
@@ -1919,7 +1921,9 @@ def consolidated_risk(document):
 
     `per_deal` is the frame's TOP-LEVEL rows, one per trade, so `mtm` is exactly their sum: a
     structure's legs and a set's members are inside the row their container reports, and adding
-    them again would double the book. A book holding nothing live never reaches a run.
+    them again would double the book. `in_sets` is the rows one level inside a top-level netting
+    set - each trade it holds, on the same footing and never summed. A book holding nothing live
+    never reaches a run.
 
     THE RISK IS IN QUOTE SPACE where the book's factors are built from quotes (`quote_run`):
     `quotes` is the derivative per unit of each quote as quoted, `quoted` the factors those rows
@@ -1930,26 +1934,33 @@ def consolidated_risk(document):
     run['Calc']['Calculation'] = dict(run['Calc']['Calculation'],
                                       Object='BaseValuation', Greeks='First')
     answer = {'as_of': as_of(), 'currency': run['Calc']['Calculation'].get('Currency'),
-              'mtm': 0.0, 'per_deal': [], 'greeks': [], 'quotes': [], 'quoted': [],
-              'quote_note': None}
+              'mtm': 0.0, 'per_deal': [], 'in_sets': [], 'greeks': [], 'quotes': [],
+              'quoted': [], 'quote_note': None}
     if not live_deals(job_children(run)):
         return answer
 
     out, answer['quotes'], answer['quoted'], answer['quote_note'] = quote_run(run)
     table = as_json(out['Results']['mtm'])['.DataFrame']
     column = {name: position for position, name in enumerate(table['columns'])}
-    paths = top_level_paths(document)
-    # row 0 is the grand-total row the reporter inserts; every row naming IT as its parent is a
-    # top-level deal, and anything deeper is a leg inside one of them
+    children = job_children(document)
+    paths, sets = priced_paths(children), {}
+    # row 0 is the grand-total row the reporter inserts; a row naming IT as its parent is a
+    # top-level deal, one naming a top-level set a trade the set holds - after the set's own row -
+    # and anything deeper is a leg inside one of them
     root = table['data'][0][column['Reference']] if table['data'] else None
     for row in table['data'][1:]:
-        if column.get('Parent') is None or row[column['Parent']] != root:
-            continue
-        reference = row[column['Reference']]
+        parent, reference = row[column['Parent']], row[column['Reference']]
         value = float(row[column['Value']] or 0.0)
-        answer['per_deal'].append({'reference': reference, 'deal_path': paths.get(reference),
-                                   'value': value})
-        answer['mtm'] += value
+        if parent == root:
+            at = paths.get(reference)
+            answer['per_deal'].append({'reference': reference, 'deal_path': at, 'value': value})
+            answer['mtm'] += value
+            if row[column['Object']] == 'NettingCollateralSet':
+                sets[reference] = {} if at is None else priced_paths(
+                    children[int(at)].get('Children', []), at + '/')
+        elif parent in sets:
+            answer['in_sets'].append({'reference': reference,
+                                      'deal_path': sets[parent].get(reference), 'value': value})
     gradient = out['Results'].get('Greeks_First')
     answer['greeks'] = [] if gradient is None else greek_rows(gradient)
     return answer
@@ -1969,7 +1980,8 @@ def book_risk(actor: str = None):
     on the refit kept by its hash (`quote_run`). An empty book answers zeros without running
     anything; a book that will not price answers 422 naming the cause and caches nothing.
 
-    `mtm` is the sum of `per_deal`, one row per top-level trade; `greeks` is `{factor, tenor?,
+    `mtm` is the sum of `per_deal`, one row per top-level trade, and `in_sets` the same row for
+    each trade a top-level netting set holds, inside its set's value; `greeks` is `{factor, tenor?,
     value, level, risk, per}` flattened off the gradient frame, trimmed at the last non-zero
     coordinate - `value` per unit of the factor at `level`, `risk` the same per the move `per`
     names; `quotes` is `{block, quote, value, level, risk, per}` per quote the book's factors are

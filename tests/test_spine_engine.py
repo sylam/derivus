@@ -45,6 +45,7 @@ import asyncio
 import hashlib
 import itertools
 import json
+import math
 import os
 import shutil
 import sys
@@ -1580,6 +1581,48 @@ def test_the_book_prices_every_position_at_its_net(recorded, desk):
                book_name='spine-desk')
     refused = CLIENT.get('/book/risk')
     assert refused.status_code == 422 and "FixedCashflowDeal 'CF-BARE'" in refused.json()['detail']
+
+
+def test_a_trade_a_set_holds_is_marked_inside_its_set(recorded, desk):
+    """A TRADE UNDER A SET HAS A MARK OF ITS OWN, off the run that marks the set. Under CLIENT_A:
+    250,000 rand booked whole and then less a half at a second node of the same terms, which the
+    compile ignores; 100,000 rand; and a structure of 100,000 and 50,000 rand legs. Each is a
+    two-year cashflow worth amount x 18.5 x exp(-0.04) dollars: CF-HELD 125,000 x 17.7746... =
+    2,221,825.58, CF-B 1,777,460.46 and PAIR 2,666,190.69, summing to the set's 6,665,476.73,
+    which `mtm` counts once beside CF1's 17,774,604.62. The legs are the structure's, not trades.
+
+    Killing mutations: the ignored clip counted in the path map, which reads CF-HELD's path as
+    None; and every row below the root read as a trade, which lists the structure's legs.
+    """
+    document = json.loads(desk.read_text())
+    document['Calc']['Deals']['Deals']['Children'].append(netting_set(CLIENT_SET, 'CPTY_A'))
+    desk.write_text(json.dumps(document, indent=2), newline='\n')
+    legs = [{'Instrument': {'.Deal': dict(CASHFLOW, Reference=reference, Amount=amount)}}
+            for reference, amount in (('LEG-A', 100_000.0), ('LEG-B', 50_000.0))]
+    for deal, execution, quantity in (
+            (dict(CASHFLOW, Reference='CF-HELD', Amount=250_000.0), 'EXEC-WHOLE', 1.0),
+            (dict(CASHFLOW, Reference='CF-HELD', Amount=250_000.0), 'EXEC-HALF', -0.5),
+            (dict(CASHFLOW, Reference='CF-B', Amount=100_000.0), 'EXEC-B', 1.0),
+            ({'Object': 'StructuredDeal', 'Reference': 'PAIR', 'Currency': 'ZAR',
+              'Children': legs}, 'EXEC-PAIR', 1.0)):
+        assert CLIENT.post('/book/deals', content=dump({
+            'action': 'add', 'deal': deal, 'parent_reference': CLIENT_SET, 'quantity': quantity,
+            'execution_reference': execution}), headers=JSON).json()['written'] is True
+
+    worth = SPOT * math.exp(-RATE * 2.0)
+    risk = CLIENT.get('/book/risk').json()
+    assert sorted(risk['in_sets'], key=lambda row: str(row['deal_path'])) == [
+        {'reference': 'CF-HELD', 'deal_path': '1/0', 'value': pytest.approx(125_000.0 * worth,
+                                                                              rel=1e-12)},
+        {'reference': 'CF-B', 'deal_path': '1/2', 'value': pytest.approx(100_000.0 * worth,
+                                                                           rel=1e-12)},
+        {'reference': 'PAIR', 'deal_path': '1/3', 'value': pytest.approx(150_000.0 * worth,
+                                                                           rel=1e-12)}]
+    assert risk['per_deal'] == [
+        {'reference': CLIENT_SET, 'deal_path': '1', 'value': pytest.approx(375_000.0 * worth,
+                                                                             rel=1e-12)},
+        {'reference': 'CF1', 'deal_path': '0', 'value': pytest.approx(AMOUNT * worth, rel=1e-12)}]
+    assert risk['mtm'] == pytest.approx(1_375_000.0 * worth, rel=1e-12)
 
 
 def test_a_structure_is_held_whole(recorded, desk):
