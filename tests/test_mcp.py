@@ -91,6 +91,7 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'tick_market_from_bloomberg', 'describe_structure', 'solve_structure',
                 'book_quote', 'list_quotes', 'approve_quote', 'reject_quote', 'approve_ticket',
                 'reject_ticket', 'worklist', 'declare_portfolio', 'describe_portfolios',
+                'describe_seat',
                 'calibrate_spot_model',
                 'book_risk_summary', 'xva_view', 'recalc_xva', 'book_reconcile', 'book_diary',
                 'close_check', 'book_activity', 'book_markets', 'declare_market', 'declare_close',
@@ -277,7 +278,7 @@ def test_a_booking_s_value_date_reaches_the_record_and_the_diary_announces_its_p
 
 
 def test_the_record_reads_say_so_on_a_box_that_records_nothing(book, tmp_path, monkeypatch):
-    """The five reads that need a RECORD, and a deployment that keeps none answers a 404 the tool
+    """The six reads that need a RECORD, and a deployment that keeps none answers a 404 the tool
     turns into the service's own sentence rather than an empty answer a model would read as
     agreement, or as a record holding nothing.
 
@@ -288,7 +289,7 @@ def test_the_record_reads_say_so_on_a_box_that_records_nothing(book, tmp_path, m
     for tool, arguments in ((mcp_server.book_reconcile, {}),
                             (mcp_server.close_check, {'date': '2030-01-01'}),
                             (mcp_server.book_activity, {}), (mcp_server.book_markets, {}),
-                            (mcp_server.book_positions, {})):
+                            (mcp_server.book_positions, {}), (mcp_server.describe_seat, {})):
         with pytest.raises(ToolError) as refusal:
             tool(**arguments)
         assert 'DV_SPINE_HOME' in str(refusal.value) and '404' in str(refusal.value)
@@ -306,7 +307,7 @@ def test_the_record_reads_are_read_only_and_say_what_they_read(book):
     for name, said in (('book_diary', 'determined'), ('close_check', 'legal'),
                        ('book_reconcile', 'record'), ('book_activity', 'strip'),
                        ('book_markets', 'close'), ('book_positions', 'portfolio'),
-                       ('book_files', 'content')):
+                       ('book_files', 'content'), ('describe_seat', 'nodes')):
         assert tools[name].annotations.read_only_hint is True, name
         assert said in tools[name].description, name
         assert name in mcp_server.INSTRUCTIONS, name

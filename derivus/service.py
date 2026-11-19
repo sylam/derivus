@@ -3806,6 +3806,22 @@ def book_worklist(actor: str = None):
         seat=None if sight is None else actor or spine.REQUESTER.get())
 
 
+@app.get('/book/seat', summary='What the seat asking may do, and at which nodes')
+def book_seat(actor: str = None):
+    """`{seat, verbs}` - the seat this request's acts are filed under and, for every verb a grant
+    names - `book`, `approve`, `mark` and the rest - the nodes it holds that verb at, each reaching
+    every path under it: null where nothing narrows it, a grant over `*` or no capabilities
+    document in force, and empty where it holds it nowhere. The grants fold's own answer
+    (`spine.sight`), so a control shown for a verb is one its act clears. A request naming no seat
+    is refused as each of its acts would be. 404 where no home is configured.
+    """
+    recorded()
+    seat = spine.actor(actor)
+    sight = spine.sight(seat)
+    return {'seat': seat, 'verbs': {verb: None if sight is None else sight[verb]
+                                    for verb in spine.package().vocabulary.VERBS}}
+
+
 @app.get('/book/portfolios', summary="The book's declared tree - where a position may sit")
 def book_portfolios():
     """`{portfolios}` - every node of the desk's tree the record declares, with the seat that

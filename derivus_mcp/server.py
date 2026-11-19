@@ -146,7 +146,8 @@ first one under it bringing its netting set, and its portfolio, a path under the
 declared on it (declare_portfolio, describe_portfolios), and its quantity is the position change in
 units of the deal, 1 booking it as written; book_positions reads what stands, each where it sits
 with the status its tickets read, and worklist what waits on the seat asking. The record's reads
-take the seat reading as actor: a seat that acts at one node of the book reads that node's rows."""
+take the seat reading as actor: a seat that acts at one node of the book reads that node's rows,
+and describe_seat says which verbs it holds and at which nodes."""
 
 MCP = MCPServer('derivus', instructions=INSTRUCTIONS)
 READ_ONLY = ToolAnnotations(read_only_hint=True)
@@ -1842,6 +1843,17 @@ def worklist(actor: str | None = None) -> dict:
     box that records nothing.
     """
     return service().call('GET', '/book/worklist', params=_stated(actor=actor))
+
+
+@MCP.tool(annotations=READ_ONLY)
+def describe_seat(actor: str | None = None) -> dict:
+    """What the seat asking may do on this desk, before it tries: `seat`, the seat its acts are
+    filed under, and `verbs` - for each verb a grant names (`book`, `approve`, `mark`, `settle`,
+    `confirm`, `collateral`, `document`, `validate`, `admin`) the nodes of the book's tree it
+    holds it at, a node reaching every path under it; null where it holds it everywhere, empty
+    where nowhere. A request naming no seat where grants are in force is refused, as its acts
+    would be. 404 on a box that records nothing."""
+    return service().call('GET', '/book/seat', params=_stated(actor=actor))
 
 
 @MCP.tool(annotations=READ_ONLY)

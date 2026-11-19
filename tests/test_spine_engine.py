@@ -5086,6 +5086,41 @@ def test_a_seat_reads_the_rows_under_the_nodes_it_acts_at(recorded, desk):
     assert read('/book/activity', DESK_FX)['lsn'] == head(recorded), 'the cursor stood still'
 
 
+def test_a_seat_reads_what_it_may_do_and_where(recorded, desk):
+    """WHAT A SEAT MAY DO, read before it acts. With no capabilities document every seat holds every
+    verb everywhere, null throughout, and a request naming none acts as the deployment's seat.
+    Under one, a seat granted `validate` over the book and `book` at its FX node reads exactly
+    those two and nowhere for the other seven, a second seat `approve` everywhere - and the acts
+    agree: the FX seat's booking at its node lands, and at the book's root is refused. A request
+    naming no seat is refused as each of its acts would be.
+
+    Killing mutation: the verbs read for the seat the deployment runs as rather than the one
+    asking, which hands the FX seat the deployment's `admin` and `validate` everywhere.
+    """
+    with_client(desk)
+    verbs = ('validate', 'book', 'approve', 'mark', 'document', 'settle', 'confirm', 'collateral',
+             'admin')
+
+    def seat(actor=None):
+        return CLIENT.get('/book/seat', params={} if actor is None else {'actor': actor})
+
+    assert seat(DESK_FX).json() == {'seat': DESK_FX, 'verbs': dict.fromkeys(verbs)}
+    assert seat().json() == {'seat': ACTOR, 'verbs': dict.fromkeys(verbs)}
+    entitle(recorded, [(ACTOR, 'admin', '*'), (ACTOR, 'validate', '*'), (DESK_TWO, 'approve', '*'),
+                       (DESK_FX, 'validate', 'spine-desk'), (DESK_FX, 'book', 'spine-desk/FX')])
+    assert seat(DESK_FX).json() == {'seat': DESK_FX, 'verbs': dict(
+        dict.fromkeys(verbs, []), validate=['spine-desk'], book=['spine-desk/FX'])}
+    assert seat(DESK_TWO).json() == {'seat': DESK_TWO, 'verbs': dict(dict.fromkeys(verbs, []),
+                                                                      approve=None)}
+    unnamed = seat()
+    assert (unnamed.status_code, unnamed.json()['detail']) == (
+        422, spine.UNNAMED.format(spine.SPINE_ACTOR))
+
+    assert ticketed('CF-FX', portfolio='spine-desk/FX', actor=DESK_FX).json()['written'] is True
+    root = ticketed('CF-ROOT', actor=DESK_FX)
+    assert root.status_code == 422 and 'holds no book scope' in root.json()['detail'], root.text
+
+
 def test_a_read_naming_its_seat_needs_no_deployment_seat_where_nothing_is_enforced(recorded, desk,
                                                                                    monkeypatch):
     """A READ NEVER RUNS UNDER ITS REQUESTER, and on a home declaring no capabilities document it
