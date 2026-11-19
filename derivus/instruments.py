@@ -7405,7 +7405,7 @@ class FRADeal(Deal):
         F('Interest_Rate', 'Text', default=REQUIRED, factors=['InterestRate']),
         F('Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Calendars', 'Text', default='', convention=True),
-        F('Reset_Date', 'Date', default='', convention=True),
+        F('Reset_Date', 'Date', default=REQUIRED),
         F('Effective_Date', 'Date', default=''),
         F('Maturity_Date', 'Date', default=''),
         F('Borrower_Lender', 'Text', default='Borrower', values=['Borrower', 'Lender'], side=True),
@@ -7421,8 +7421,8 @@ class FRADeal(Deal):
                       '',
                       'with $\\pm$ $+$ for a **Borrower** and $-$ for a **Lender**, $P$ **Principal**, $K$ **FRA_Rate**,',
                       '$\\alpha$ the accrual fraction in **Day_Count**, $L$ the forward on **Interest_Rate** (or',
-                      '**Known_Rate** where **Use_Known_Rate** is `Yes`) reset on **Reset_Date** (the effective date',
-                      'where blank), paid on $T$ as **Payment_Timing** pays a [coupon schedule](#coupon-schedules)\'s',
+                      '**Known_Rate** where **Use_Known_Rate** is `Yes`) reset on **Reset_Date**, paid on $T$ as',
+                      '**Payment_Timing** pays a [coupon schedule](#coupon-schedules)\'s',
                       'period: $T$ the maturity, or the effective date under `Begin` and `Discounted`, which divides',
                       'the amount by $1+L\\alpha$.'
                       ])
@@ -7435,11 +7435,7 @@ class FRADeal(Deal):
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
-        field = {
-            'Currency': utils.check_rate_name(self.field['Currency']),
-            'Reset_Date': self.field['Reset_Date'] if self.field.get('Reset_Date') else self.field['Effective_Date']
-        }
-
+        field = {'Currency': utils.check_rate_name(self.field['Currency'])}
         field['Discount_Rate'] = utils.check_rate_name(self.field['Discount_Rate'])
         field['Interest_Rate'] = utils.check_rate_name(self.field['Interest_Rate'])
 
@@ -7468,7 +7464,7 @@ class FRADeal(Deal):
                 'Margin': utils.Basis(-100.0 * self.field['FRA_Rate']),
                 # the reset fixed at Known_Rate where Use_Known_Rate says so, and states no rate where not
                 'Resets': [
-                    [field['Reset_Date'], self.field['Effective_Date'],
+                    [self.field['Reset_Date'], self.field['Effective_Date'],
                      self.field['Maturity_Date'], Accrual_fraction, self.field['Use_Known_Rate'],
                      self.field['Known_Rate'] if self.field['Use_Known_Rate'] == 'Yes' else None]
                 ]

@@ -382,7 +382,8 @@ def fra(reference, side, timing):
     """Table 1's forward rate agreement on ten million dollars from six months to a year out."""
     return {'Object': 'FRADeal', 'Reference': reference, 'Currency': 'USD', 'Discount_Rate': 'USD',
             'Interest_Rate': 'USD', 'Principal': 1e7, 'FRA_Rate': 4.0, 'Borrower_Lender': side,
-            'Payment_Timing': timing, 'Effective_Date': SIX_MONTHS, 'Maturity_Date': years(1)}
+            'Payment_Timing': timing, 'Effective_Date': SIX_MONTHS, 'Reset_Date': SIX_MONTHS,
+            'Maturity_Date': years(1)}
 
 
 #: The agreement borrowed and paid at its end, lent and paid at its start discounted; and a sold

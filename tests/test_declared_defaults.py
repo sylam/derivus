@@ -1088,9 +1088,9 @@ def test_a_document_stating_only_its_terms_prices_the_full_one_to_the_bit():
 
 #: Every term an author states that a blank once read off another field
 STATED = ('Discount_Rate', 'Pay_Discount_Rate', 'Receive_Discount_Rate', 'Forecast_Rate', 'Interest_Rate',
-          'Pay_Interest_Rate', 'Receive_Interest_Rate')
+          'Pay_Interest_Rate', 'Receive_Interest_Rate', 'Reset_Date')
 #: A deal of `BOOK` reading one of them, by the term
-UNSTATED = {'Discount_Rate': 'FXO', 'Forecast_Rate': 'CAP', 'Interest_Rate': 'SWAP'}
+UNSTATED = {'Discount_Rate': 'FXO', 'Forecast_Rate': 'CAP', 'Interest_Rate': 'SWAP', 'Reset_Date': 'FRA'}
 
 
 @pytest.mark.parametrize('key', STATED)
@@ -1116,12 +1116,12 @@ def test_validate_names_a_blank_term_on_every_type_declaring_it(key):
 @pytest.mark.parametrize('key', sorted(UNSTATED))
 def test_a_deal_leaving_a_term_out_prices_nothing(key, caplog):
     """A base valuation prices no deal leaving `key` out - an FX option its discount curve, a cap its
-    forecast curve, a swap its interest curve: its compile reads the term by name and the deal is
-    skipped on that `KeyError`, logged by name, the deposit beside it priced.
+    forecast curve, a swap its interest curve, a FRA its reset date: its compile reads the term by
+    name and the deal is skipped on that `KeyError`, logged by name, the deposit beside it priced.
 
     Killing mutations, each a fallback put back at one site: the FX option's blank discount curve
-    its currency's own (`fx_pair`), the cap's blank forecast curve its discount curve - the blank
-    priced.
+    its currency's own (`fx_pair`), the cap's blank forecast curve its discount curve, the FRA's
+    blank reset its effective date - the blank priced.
     """
     deal = next(deal for deal in BOOK if deal['Reference'] == UNSTATED[key])
     caplog.set_level(logging.ERROR)
