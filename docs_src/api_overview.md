@@ -441,8 +441,9 @@ under `collateral`, the record reading which act a transition is off its body - 
 declared `agreement` it was paid under, the one its diary row carries, which the service requires
 where the row's key is due under more than one netting set. The web client's Back Office
 workspace works `/book/worklist`, `/book/close/check` and `/book/close` under the acting seat, and
-its Paper workspace `/book/entities` and `/book/agreements`, an agreement's terms rendered off the
-`NettingCollateralSet` declaration `/schema` publishes.
+its Paper workspace `/book/entities` and `/book/agreements` - which names under
+`settlement_state` the balance and the holdings no agreement's terms state - an agreement's terms
+rendered off the `NettingCollateralSet` declaration `/schema` publishes.
 
 **The files a job names.** A job names its market data file and its calendar by path
 (`MergeMarketData.MarketDataFile`, `CalendDataFile`), and a job document standing alone runs off

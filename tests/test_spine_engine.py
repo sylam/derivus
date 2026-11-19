@@ -1115,6 +1115,34 @@ def test_a_trade_restruck_back_and_restruck_again_stands_where_the_file_has_it(r
     assert 'EXEC-R' not in [row['reference'] for row in drift['in_file_not_in_record']], drift
 
 
+def test_the_agreements_read_names_what_paper_never_states(recorded):
+    """The read the paper screen makes says which fields an agreement's terms never state - a
+    balance and a holding being settlement state - so a form offers none of them: the netting
+    set's `Opening_Balance`, and the `Amount`, `Units` and `Principal` of a collateral table's
+    rows. Each one it names is the one a declaration stating it is refused for, by name.
+
+    Killing mutation: the block left off the read, which leaves a form offering every field.
+    """
+    terms = netting_set(CLIENT_SET, 'LEI-A')['Instrument']['.Deal']
+    assert CLIENT.post('/book/entities', content=dump({'entity': 'LEI-A', 'name': 'Client A'}),
+                       headers=JSON).status_code == 200
+    read = CLIENT.get('/book/agreements').json()
+    assert read == {'agreements': [], 'settlement_state': {
+        'fields': ['Opening_Balance'], 'collateral_columns': ['Amount', 'Units', 'Principal']}}
+    named = read['settlement_state']
+    tables = {'Amount': 'Cash_Collateral', 'Units': 'Equity_Collateral',
+              'Principal': 'Bond_Collateral'}
+    stated = [(field, dict(terms, **{field: 1.0})) for field in named['fields']] + [
+        (column, dict(terms, Collateral_Assets={tables[column]: [{column: 1.0}]}))
+        for column in named['collateral_columns']]
+    for field, body in stated:
+        refused = CLIENT.post('/book/agreements', content=dump({
+            'agreement': CLIENT_SET, 'entity': 'LEI-A', 'kind': 'ISDA 2002', 'terms': body}),
+            headers=JSON)
+        assert refused.status_code == 422 and '{} is 1.0'.format(field) in refused.json()[
+            'detail'], (field, refused.text)
+
+
 def test_the_paper_is_declared_and_a_booking_names_the_agreement_it_sits_under(recorded, desk):
     """Legal's half and the desk's, through the service.
 

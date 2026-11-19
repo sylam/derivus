@@ -3469,10 +3469,13 @@ def book_agreement_declared(request: dict):
 
 @app.get('/book/agreements', summary="The record's agreements, each with its terms")
 def book_agreements():
-    """`{agreements}` - every agreement the record declares, with the entity, the kind and the
-    terms it was declared under. 404 where no home is configured."""
+    """`{agreements, settlement_state}` - every agreement the record declares, with the entity, the
+    kind and the terms it was declared under, and what terms never state (`agreement_terms`): the
+    netting set's balance `fields` and the `collateral_columns` of every `Collateral_Assets`
+    table. 404 where no home is configured."""
     recorded()
-    return {'agreements': spine.agreements()}
+    return {'agreements': spine.agreements(), 'settlement_state': {
+        'fields': list(AGREEMENT_STATE), 'collateral_columns': list(HOLDING_AMOUNTS)}}
 
 
 @app.get('/spine/frames', summary="The record's frames, verbatim - what a replica pulls")

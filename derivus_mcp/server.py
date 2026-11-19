@@ -1792,7 +1792,9 @@ def describe_agreements() -> dict:
     """The paper the book trades under: every legal entity the record declares, with the parent it
     is grouped under, and every agreement with the entity it is with, the document's kind and the
     netting-set terms its positions compile into - what the `document` seat declares with
-    `declare_legal_entity` and `declare_agreement`. 404 on a box that records nothing.
+    `declare_legal_entity` and `declare_agreement` - and `settlement_state`, the netting set's
+    fields and collateral columns no agreement's terms may state. 404 on a box that records
+    nothing.
     """
     return dict(service().call('GET', '/book/entities'),
                 **service().call('GET', '/book/agreements'))
