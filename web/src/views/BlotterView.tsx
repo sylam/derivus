@@ -1,15 +1,15 @@
 import { useMemo, useState } from 'react';
 import {
   HEADS, RECORD_HEADS, WINDOWS, baseDateOf, cellText, csvText, describe, exported, filterRows,
-  flatten, groupedRows, heldRows, inWindow, nameOf, quoted, rollingCount, rowsByPath, sizeOf,
-  sortRows, toRows, type BlotterRow, type Picked,
+  flatten, groupedRows, heldRows, holdsTrades, inWindow, nameOf, quoted, rollingCount, rowsByPath,
+  sizeOf, sortRows, toRows, type BlotterRow, type Picked,
 } from '../blotter';
 import { DealPanels } from '../components/FieldView';
 import {
-  GROUPINGS, NO_PAPER, byId, byPath, clientTree, heldColumns, portfolioTree, type Paper,
+  GROUPINGS, NO_PAPER, POSITION, byId, byPath, clientTree, heldColumns, portfolioTree, type Paper,
   type Position,
 } from '../positions';
-import { marketOf, useApp } from '../state';
+import { marketOf, openTrade, useApp } from '../state';
 import { formatNumber, type Kind } from '../tokens';
 import type { Market, Schema } from '../types';
 
@@ -42,6 +42,7 @@ export function BlotterView() {
   const grouping = recording ? state.grouping : 'book';
   const paper = state.paper.data ?? NO_PAPER;
   const heldAt = useMemo(() => byPath(paper.positions), [paper]);
+  const positions = useMemo(() => byId(paper.positions), [paper]);
   const tree = useMemo(() => (grouping !== 'book' ? groupedRows(
     grouping === 'portfolio' ? portfolioTree(paper.positions, paper.nodes) : clientTree(paper),
     rowsByPath(book), byId(paper.positions), base) : recording ? heldRows(book, heldAt) : book),
@@ -57,6 +58,9 @@ export function BlotterView() {
   const heads = recording ? [...HEADS, ...RECORD_HEADS] : HEADS;
   const heldOf = (row: BlotterRow): Position[] | null => (!recording ? null
     : row.position ? [row.position] : grouping === 'book' ? heldAt.get(row.path) ?? [] : []);
+  // the deal path a trade's row opens its page at: its own, or the node its position is held at
+  const tradeOf = (row: BlotterRow): string | undefined => (holdsTrades(row) ? undefined
+    : row.target!.startsWith(POSITION) ? positions.get(row.target!)?.deal_paths[0] : row.target!);
 
   function toggle(path: string) {
     setCollapsed((current) => {
@@ -160,6 +164,7 @@ export function BlotterView() {
                   onOpen={() => setOpened(opened === row.path ? null : row.path)}
                   onSelect={() => row.target !== null
                     && dispatch({ type: 'SELECT_DEAL', path: row.target })}
+                  trade={tradeOf(row)}
                 />
               ))}
               {rows.length === 0 && (
@@ -199,7 +204,9 @@ function Row(props: {
   row: BlotterRow; schema: Schema | null; market: Market | null; held: Position[] | null;
   entities: Paper['entities']; selected: boolean; emphasised: boolean; collapsed: boolean;
   opened: boolean; onToggle: () => void; onOpen: () => void; onSelect: () => void;
+  trade?: string;
 }) {
+  const { dispatch } = useApp();
   const { row, schema, selected, emphasised, collapsed, opened } = props;
   const size = sizeOf(row.deal, row.object, schema, row.units);
   const read = quoted(row, props.market, schema);
@@ -218,7 +225,12 @@ function Row(props: {
           >
             {row.children.length ? (collapsed ? '▸' : '▾') : ''}
           </span>
-          {nameOf(row) || <span className="hint">(no reference)</span>}
+          {props.trade !== undefined ? (
+            <button className="tradelink" title="open the trade's page"
+                    onClick={() => openTrade(dispatch, props.trade!)}>
+              {nameOf(row) || '(no reference)'}
+            </button>
+          ) : nameOf(row) || <span className="hint">(no reference)</span>}
           {row.ignored && <span className="badge">ignored</span>}
         </td>
         <td className="type" title={row.object}>{row.object}</td>

@@ -6,7 +6,8 @@ import {
   GROUPINGS, NO_PAPER, POSITION, byId, byPath, clientName, clientTree, nodeAt, portfolioTree,
   type Paper, type Position,
 } from '../positions';
-import { marketOf, useApp, written } from '../state';
+import { marketOf, openTrade, useApp, written } from '../state';
+import { tradeAt } from '../trade';
 import type { DealNode, Descriptor } from '../types';
 
 /** A tree node's id is its POSITIONAL path ('0/2/1') - the same identity the service's
@@ -50,6 +51,7 @@ export function PortfolioView() {
   const held = position ? [position] : (dealPath && byPath(paper.positions).get(dealPath)) || [];
   const selected = dealPath !== undefined ? nodeAt(children, dealPath) : undefined;
   const deal = selected?.Instrument['.Deal'];
+  const trade = dealPath !== undefined ? tradeAt(children, dealPath) : undefined;
 
   return (
     <div className="main">
@@ -78,6 +80,13 @@ export function PortfolioView() {
         />
       </div>
       <div className="panel">
+        {trade && (
+          <div className="statusrow">
+            <button className="ghost" onClick={() => openTrade(dispatch, trade.path)}>
+              open the trade page ›
+            </button>
+          </div>
+        )}
         {!deal && !held.length && <div className="placeholder">select a deal</div>}
         {held.map((row) => <Held key={`${row.agreement}/${row.portfolio}`} position={row}
                                  paper={paper} />)}

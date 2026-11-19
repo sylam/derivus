@@ -11,7 +11,7 @@ import {
   requestOf, salesNames, solvedNumbers, solving, spreadText, ticketFields, ticketLegs, verdictOf,
   type Draft, type Kept, type TicketLeg, type Verdict,
 } from '../quote';
-import { useApp } from '../state';
+import { openTrade, useApp } from '../state';
 import { formatNumber } from '../tokens';
 import type { PendingQuote, Quote, Schema, StructureType } from '../types';
 
@@ -579,6 +579,9 @@ function Acceptance({ id, pending, verdict, quoting, onVerdict, onRequote }: {
             </span>
             <button className="ghost" onClick={() => blotter(booked.deal_path)}>
               open its row in the blotter
+            </button>
+            <button className="ghost" onClick={() => openTrade(dispatch, booked.deal_path)}>
+              open the trade page ›
             </button>
           </div>
         ) : pending.accepted ? (
