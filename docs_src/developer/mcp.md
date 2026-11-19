@@ -65,6 +65,7 @@ structure takes it as `name`. **Held by**
 | `describe_calculations`, `configure_calculation`, `run_calculation` | `GET`/`POST /calculations`, `POST /calculations/run`: the desk's named calculations |
 | `solve_deal` | `POST /book/solve`: one field solved to a target, the deal ready to book |
 | `solve_structure`, `book_quote` | `POST /book/structure`, `/book/quote`: a quote filed pending; its acceptance |
+| `list_quotes` | `GET /book/quotes`: every quote given, newest first, with where each stands |
 | `approve_ticket`, `reject_ticket`, `approve_quote`, `reject_quote` | `POST /book/approve`, `/book/reject`: a second seat's verdict |
 | `worklist` | `GET /book/worklist`: what waits on the seat asking |
 | `poll_result`, `fetch_table`, `deal_values` | `GET /results/{id}[/{table}]`: status and shapes; one capped page; `{reference: value}` |

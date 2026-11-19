@@ -1342,6 +1342,17 @@ def book_quote(quote_id: str, actor: str | None = None) -> dict:
         {'quote_id': quote_id}, **_stated(actor=actor))))
 
 
+@MCP.tool(annotations=READ_ONLY)
+def list_quotes() -> dict:
+    """Every quote this desk has given, newest first, one row each - enough to pick one without
+    opening it: `quote_id`, the `structure` and the `variation` it was dealt as, the client's
+    `netting_set`, the `net` in its `currency`, when it was given (`quoted_at`) and by whom
+    (`quoted_by`), and where it stands - `accepted` and `booked` null while it is only quoted,
+    `booked.deal_path` where the trade landed once it is on the book. Whether a quote is still firm
+    is the book's `Quote Policy`, which `book_quote` reads when it is asked."""
+    return service().call('GET', '/book/quotes')
+
+
 @MCP.tool()
 def approve_ticket(ticket: str, actor: str) -> dict:
     """Sign the ticket a booking carries - the second pair of eyes a tier under four eyes wants.

@@ -89,7 +89,7 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'configure_securities',
                 'verify_securities', 'book_dependencies', 'setup_market',
                 'tick_market_from_bloomberg', 'describe_structure', 'solve_structure',
-                'book_quote', 'approve_quote', 'reject_quote', 'approve_ticket',
+                'book_quote', 'list_quotes', 'approve_quote', 'reject_quote', 'approve_ticket',
                 'reject_ticket', 'worklist', 'declare_portfolio', 'describe_portfolios',
                 'calibrate_spot_model',
                 'book_risk_summary', 'xva_view', 'recalc_xva', 'book_reconcile', 'book_diary',
@@ -839,12 +839,13 @@ def test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar(tmp_path,
     """The structures layer end to end: the market ticks off a quote block; `solve_structure`
     quotes a zero-cost collar against the live book, both legs priced and the cap solved to a zero
     net, off the structure's own declaration; the quote and its sheet land in `DV_HOME/tmp` as one
-    pending trade; `book_quote` approves it; the book marks the collar, legs and all.
+    pending trade; `book_quote` approves it; `list_quotes` reads the charged collar first, quoted
+    only, and the approved one where it landed; the book marks the collar, legs and all.
 
     `DV_HOME` is set for real - where a pending trade waits is the contract under test.
 
-    Killing mutation: `solve_structure` dropping the margin it takes, which quotes the charged
-    collar at zero cost.
+    Killing mutations: `solve_structure` dropping the margin it takes, which quotes the charged
+    collar at zero cost; `list_quotes` unregistered, which the registry gate names.
     """
     from test_service import fx_vol_quotes
     monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
@@ -906,6 +907,10 @@ def test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar(tmp_path,
 
         booked = mcp_server.book_quote(quote['quote_id'])
         assert booked['written'] is True and 'validate' not in booked
+        listed = mcp_server.list_quotes()['quotes']
+        assert [(row['quote_id'], row['booked']) for row in listed] == [
+            (charged['quote_id'], None),
+            (quote['quote_id'], {'lsn': None, 'deal_path': booked['deal_path']})]
         node = mcp_server.read_deal(booked['deal_path'])
         assert len(node['children']) == 2, 'the structure booked without its legs'
 

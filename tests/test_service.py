@@ -7565,6 +7565,33 @@ def test_a_quote_for_a_client_books_under_the_clients_netting_set(quoting_client
     assert '/' not in at_root['deal_path'], 'a quote for nobody nested under something'
 
 
+def test_the_desks_quotes_are_listed_newest_first_with_where_each_stands(quoting_client):
+    """`/book/quotes` is every pending file under the desk's tmp, one row each, newest first: a
+    collar quoted for the client by one seat and accepted, then a collar quoted for nobody by
+    another. The later reads first and quoted only; the earlier reads booked where its acceptance
+    landed it, `lsn` null on a desk that records nothing. Every cell is the pending file's own, so a
+    row says what `/book/quote/{id}` says; a sheet beside a file is not a quote.
+
+    Killing mutation: the rows sorted oldest first, which lists the accepted collar first.
+    """
+    first = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET, actor='desk-a')
+    booked = CLIENT.post('/book/quote', json={'quote_id': first['quote_id']}).json()
+    second = quote_of('ZeroCostCollar', COLLAR, actor='desk-b')
+    assert booked['written'] is True, booked
+
+    def row(quote, seat, landed):
+        filed = CLIENT.get('/book/quote/{}'.format(quote['quote_id'])).json()
+        return {'quote_id': quote['quote_id'], 'structure': 'ZeroCostCollar', 'variation': 'floor',
+                'netting_set': quote['netting_set'], 'net': quote['net'], 'currency': 'USD',
+                'quoted_at': filed['quoted_at'], 'quoted_by': seat, 'accepted': None,
+                'booked': landed}
+
+    newer, older = row(second, 'desk-b', None), row(first, 'desk-a', {
+        'lsn': None, 'deal_path': booked['deal_path']})
+    assert newer['quoted_at'] > older['quoted_at'] and older['netting_set'] == CLIENT_SET
+    assert CLIENT.get('/book/quotes').json() == {'quotes': [newer, older]}
+
+
 def test_a_quote_for_a_client_the_book_never_opened_refuses_at_the_ask(quoting_client, tmp_path):
     """A netting set nobody opened refuses while the quote is being ASKED for, naming what was asked
     for and what the book holds, in the XVA verb's own wording.

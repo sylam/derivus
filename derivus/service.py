@@ -60,6 +60,7 @@ verb on `Context`, not an endpoint that reaches inside.
 | `POST /book/files` | declare a market data file or a calendar a job names, by the bytes it holds |
 | `GET /paths` | where this workstation reads each file the served book names - the two maps `DV_HOME/paths.json` states, and per file its folder, name, path and digest, or the refusal to read it |
 | `POST /paths` | replace the workstation's two maps whole, the served book opened anew |
+| `GET /book/quotes` | every quote the desk has given, newest first - what it was, for whom, its net, when and by whom, and where it stands |
 | `GET /book/quote/{quote_id}` | the pending trade filed under a quote id - what was quoted, the deal that books it, and when |
 | `GET /book/quote/{quote_id}/sheet` | the quote sheet itself, streamed as the `.xlsx` a client is handed |
 | `GET /book/risk` | the book's CONSOLIDATED risk - one greeks run over every counterparty at once, in the quotes its factors are built from and in the factors themselves, cached on what it reads |
@@ -6719,6 +6720,27 @@ def book_quote_pending(quote_id: str):
     why the book carries what it carries, so this reads a quote given and a quote booked alike."""
     with open(pending_quote(quote_id), encoding='utf-8') as handle:
         return json.load(handle)
+
+
+@app.get('/book/quotes', summary='Every quote the desk has given, newest first')
+def book_quotes():
+    """`{quotes}` - one row per pending file under `DV_HOME/tmp`, newest first: its `quote_id`, the
+    `structure` and the `variation` it was dealt as, the client's `netting_set`, the `net` in its
+    `currency`, `quoted_at` and `quoted_by`, and where it stands - `accepted` and `booked` as the
+    acceptance wrote them, both null while it is only quoted. Whether it is still firm is the book's
+    `Quote Policy`, read by the acceptance and never here."""
+    directory, rows = quote_dir(), []
+    for name in os.listdir(directory) if os.path.isdir(directory) else ():
+        if name.endswith('.json'):
+            pending = book_quote_pending(name[:-len('.json')])
+            quoted = pending.get('quote') or {}
+            rows.append(dict(
+                quote_id=name[:-len('.json')],
+                **{key: quoted.get(key) for key in ('structure', 'variation', 'netting_set', 'net',
+                                                    'currency')},
+                **{key: pending.get(key) for key in ('quoted_at', 'quoted_by', 'accepted',
+                                                     'booked')}))
+    return {'quotes': sorted(rows, key=lambda row: row['quoted_at'] or '', reverse=True)}
 
 
 @app.get('/book/quote/{quote_id}/sheet', summary='The quote sheet, as the .xlsx a client is sent')
