@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import { NO_SEAT, failure, fillDeal, getBookActivity } from '../api';
 import {
   baseDateOf, cellText, nameOf, quoted, rowsByPath, sizeOf, toRows, type BlotterRow,
@@ -21,21 +21,17 @@ import {
 import type { ActivityRow, QuoteGiven } from '../types';
 import { Side, Value } from './BlotterView';
 import { DealEditor } from './PortfolioView';
+import { useRead } from './ClientView';
 import { TicketCard, useQuoteList, useQuotes } from './QuoteView';
 import { OnStrip } from './RiskView';
 
-/** Every row of the record, read whole where the desk keeps one and again whenever it moves - the
- * service's own sentence where the read is refused - and null until it lands. */
-function useRecordRows(recording: boolean, at: string | null) {
-  const [rows, setRows] = useState<ActivityRow[] | string | null>(null);
-  useEffect(() => {
-    if (!recording) return;
-    let live = true;
-    wholeRecord(getBookActivity).then((read) => { if (live) setRows(read); },
-                                      (error) => { if (live) setRows(failure(error).error); });
-    return () => { live = false; };
-  }, [recording, at]);
-  return rows;
+/** One trade's rows on the record, newest first, asked for by its path where the desk keeps one
+ * and again whenever the record moves - the service's own sentence where the read is refused -
+ * and null until the read of this path lands. */
+function useHistory(path: string | undefined, recording: boolean, at: string | null) {
+  const read = useRead(recording && path !== undefined ? async () => ({ path, rows: historyOf(
+    await wholeRecord((since) => getBookActivity(since, path))) }) : null, [path, recording, at]);
+  return read.error ?? (read.data && read.data.path === path ? read.data.rows : null);
 }
 
 /** The way back to the tab a page was opened from, where it was opened from one. */
@@ -64,7 +60,7 @@ export function TradeView() {
   const trade = picked === undefined ? undefined : tradeAt(children, picked);
   const row = trade && rows.get(trade.path);
   const recording = state.source?.kind === 'book' && state.record.spine !== null;
-  const record = useRecordRows(recording, pinnedAt(state.record.spine));
+  const history = useHistory(trade?.path, recording, pinnedAt(state.record.spine));
   const paper = state.paper.data ?? NO_PAPER;
   const held = (trade && byPath(paper.positions).get(trade.path)) || [];
   const units = netOf(held);
@@ -77,8 +73,6 @@ export function TradeView() {
                   + 'node in the portfolio or a booked quote.'} />
     );
   }
-  const history = typeof record === 'string' || record === null ? record
-    : historyOf(record, trade.path);
   const quote = listed.data ? quoteAt(listed.data.quotes, trade.path) ?? null : undefined;
 
   return (

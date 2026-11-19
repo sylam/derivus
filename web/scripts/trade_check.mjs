@@ -105,18 +105,18 @@ check('a full last page asks once more and stops on the empty one',
       'a full page read as the end, so a record of exactly a page\'s rows hides the next event',
       exact.asked, [0, 200]);
 
+// one trade's rows, oldest first, as `GET /book/activity?deal_path=` pages them
 const ROWS = [
   { lsn: 23, event_type: 'approval', by: 'tier desk-auto', deal_path: '0/0' },
   { lsn: 24, event_type: 'fill', by: 'sales-1', deal_path: '0/0' },
-  { lsn: 25, event_type: 'fill', by: 'sales-1', deal_path: '0/1' },
   { lsn: 31, event_type: 'amendment', by: 'sales-2', deal_path: '0/0' },
   { lsn: 33, event_type: 'fill', by: 'sales-2', deal_path: '0/0' },
-  { lsn: 34, event_type: 'quote_filed', by: 'sales-1', deal_path: null },
 ];
-const history = trade.historyOf(ROWS, '0/0');
-check('a trade\'s history is every row opening it, newest first',
-      'the rows left in the record\'s order, so the oldest act reads as the latest',
-      history.map((row) => row.lsn), [33, 31, 24, 23]);
+const history = trade.historyOf(ROWS);
+check('a trade\'s history is its rows newest first, the read it came from left as it was',
+      'the rows left in the record\'s order, so the oldest act reads as the latest; or sorted in '
+        + 'place, which reorders the page the next read merges onto',
+      [history.map((row) => row.lsn), ROWS.map((row) => row.lsn)], [[33, 31, 24, 23], [23, 24, 31, 33]]);
 check('who booked it is its first fill on the record, never a later clip or the restrike',
       'the newest fill taken, naming the seat that unwound it as the one that booked it',
       trade.bookedBy(history)?.lsn, 24);

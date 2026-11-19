@@ -151,9 +151,11 @@ export const getBookXva = () => call<BookXva>('GET', '/book/xva');
 // asked for when the counts say there is something and never on the poll's own beat
 export const getBookStatus = () => call<BookStatus>('GET', '/book/status');
 // an EMPTY cursor is no `since` at all - the newest page, which is a strip's first paint - and
-// the `lsn` a page answers is the cursor the next one is asked with
-export const getBookActivity = (since: number | '') =>
-  call<ActivityPage>('GET', `/book/activity?since=${since}`);
+// the `lsn` a page answers is the cursor the next one is asked with; a deal path asks for one
+// trade's rows alone, through its restrikes
+export const getBookActivity = (since: number | '', dealPath?: string) =>
+  call<ActivityPage>('GET', `/book/activity?since=${since}${
+    dealPath === undefined ? '' : `&deal_path=${encodeURIComponent(dealPath)}`}`);
 // the doorbell is the one endpoint that is a STREAM, so it is a path an `EventSource` opens
 // rather than a call: a beat per head move, carrying a position and nothing else
 export const DOORBELL = '/spine/doorbell';

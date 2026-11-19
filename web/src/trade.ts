@@ -44,8 +44,9 @@ export function markOf(marks: DealMark[], path: string): { own?: DealMark; insid
            inside: top === path ? undefined : marks.find((row) => row.deal_path === top) };
 }
 
-/** Every row of the record, read a page at a time from its first event: each page asked from the
- * cursor the one before answered, until one comes back short of `size`. */
+/** Every row a read of the record answers - the whole record, or one trade's rows - a page at a
+ * time from its first event: each page asked from the cursor the one before answered, until one
+ * comes back short of `size`. */
 export async function wholeRecord(read: (since: number) => Promise<ActivityPage>,
                                   size = 200): Promise<ActivityRow[]> {
   const rows: ActivityRow[] = [];
@@ -57,9 +58,9 @@ export async function wholeRecord(read: (since: number) => Promise<ActivityPage>
   }
 }
 
-/** What happened to the trade at `path`, newest first: every row of the record that opens it. */
-export const historyOf = (rows: ActivityRow[], path: string): ActivityRow[] =>
-  rows.filter((row) => row.deal_path === path).sort((a, b) => b.lsn - a.lsn);
+/** What happened to a trade, newest first, off the rows the record answers for it. */
+export const historyOf = (rows: ActivityRow[]): ActivityRow[] =>
+  [...rows].sort((a, b) => b.lsn - a.lsn);
 
 /** A restrike's moved fields as the deal's terms read them: each in its declared words - its name
  * where the description is a paragraph, as the terms panel labels it - beside its declaration, and
