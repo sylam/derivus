@@ -15,8 +15,7 @@ import {
   ungrouped,
 } from './tokens';
 import type {
-  BookRisk, BookXva, DealMark, DealNode, Descriptor, GreekRow, JobDoc, Market, Schema, TablePage,
-  XvaSet,
+  BookRisk, BookXva, DealMark, DealNode, Descriptor, GreekRow, JobDoc, Market, Schema, XvaSet,
 } from './types';
 import { axisNames } from './vols';
 
@@ -427,21 +426,13 @@ const EXPOSURE: [RegExp, (found: RegExpExecArray) => string][] = [
 /** The largest number of a profile's column and the day it falls on. */
 export type Peak = { value: number; day: string };
 
-/** How large a run's exposure gets, off its `exposure_profile`: the peak of its expected exposure
- * and of its first PFE column, each with its day, and the percentile that column names. */
-export function peaks(page: TablePage): { ee?: Peak; pfe?: Peak & { quantile: number } } {
-  const peak = (column: number): Peak | undefined => page.data.reduce<Peak | undefined>(
-    (best, row, at) => {
-      const value = (row as number[])[column];
-      return best && best.value >= value ? best : { value, day: label(page.index[at]) };
-    }, undefined);
-  const names = page.columns.map(String);
-  const pfe = names.findIndex((name) => PFE.test(name));
-  const ee = names.indexOf('EE');
-  return {
-    ...(ee < 0 ? {} : { ee: peak(ee) }),
-    ...(pfe < 0 ? {} : { pfe: { ...peak(pfe)!, quantile: Number(PFE.exec(names[pfe])![1]) } }),
-  };
+/** How large a run's exposure gets, off the peaks its row keeps: its expected exposure's and each
+ * PFE column's, with its day, and the percentile that column names. */
+export function peaks(held: XvaSet['peaks']): { ee?: Peak; pfe: (Peak & { quantile: number })[] } {
+  return { ee: held?.EE, pfe: Object.entries(held ?? {}).flatMap(([name, peak]) => {
+    const found = PFE.exec(name);
+    return found ? [{ ...peak, quantile: Number(found[1]) }] : [];
+  }) };
 }
 
 /** The sets under `nodes` whose declaration reads collateral on: what their exposure is net of. */

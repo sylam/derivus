@@ -9,7 +9,7 @@ const MAX_SERIES = 12;
 /** A date-indexed frame - an exposure profile, an mtm path - as one line per column with a zoom
  * on the date axis. Wide frames (a scenario cube) show the first MAX_SERIES columns and say so;
  * the table below the chart carries the page. */
-export function TimeSeriesChart({ page }: { page: TablePage }) {
+export function TimeSeriesChart({ page }: { page: Pick<TablePage, 'columns' | 'index' | 'data'> }) {
   const clipped = page.columns.length > MAX_SERIES;
 
   const option = useMemo(() => {

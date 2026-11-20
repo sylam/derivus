@@ -220,7 +220,8 @@ const run = (reference, deal_path, extra = {}) => ({
   reference, deal_path, counterparty: 'KES', collateralized: false, note: null, status: 'done',
   cva: 10, fva: 1, currency: 'USD', as_of: '2026-11-19T22:27:28.743+02:00', result_id: reference,
   error: null, recalc: null, ...extra });
-const RUNS = [run('ISDA-KES', '0'), run('CSA-KES', '1/0', { status: 'never run', as_of: null }),
+const RUNS = [run('ISDA-KES', '0', { current: false }),
+              run('CSA-KES', '1/0', { status: 'never run', as_of: null }),
               run('KES-OLD', '2', { status: 'failed', cva: null, fva: null,
                                      error: 'Cannot find SurvivalProb.KES' }),
               run('KES-GONE', null, { note: 'left the book', status: 'failed', cva: null, error: 'boom' }), run('OFF-1', '3', { counterparty: 'OFF' })];
@@ -230,16 +231,15 @@ const CREDIT = {
   sets: RUNS, rows: CREDIT_ROWS, agreements: KES_PAPER,
   positions: [position('0/0', 1), position('0/2', 2, { pending: 2, status: 'pending' }),
               position('1/0/0', 1, { agreement: 'CSA-KES' })],
-  record: [...RECORD, row(40, '2026-11-19T21:00:00Z', 'KES-OLD')],
   marks: [{ reference: 'ISDA-KES', deal_path: '0', value: 1000 },
                           { reference: 'DESK', deal_path: '1', value: 1500 },
                           { reference: 'KES-OLD', deal_path: '2', value: -200 }],
   calls: [{ agreement: 'CSA-KES', currency: 'EUR', balance: 400, fx: { EUR: 1, USD: 0.8 } }],
 };
 const lined = (lines) => lines.map((line) => [line.reference, line.paper, line.collateralised,
-  line.trades, line.pending, line.value, line.call?.agreement ?? null, line.moved]);
+  line.trades, line.pending, line.value, line.call?.agreement ?? null]);
 const PLAIN = { ...CREDIT, agreements: client.agreementsOf('KES', null, CREDIT_DOC), positions: null,
-                record: null, calls: null };
+                calls: null };
 check("a client's lines are every set naming it, under its own agreement where one is in force, then "
       + 'each agreement nothing is booked under, worth nothing; on a desk keeping no record each set '
       + 'its own agreement, its trades as the file writes them',
@@ -248,15 +248,15 @@ check("a client's lines are every set naming it, under its own agreement where o
       + 'read through the record, which counts its trades as none; an agreement nothing is booked '
       + "under read as unvalued, which blanks the client's total; or another client's set taken",
       [lined(client.creditLines('KES', CREDIT, SCHEMA)), lined(client.creditLines('KES', PLAIN, SCHEMA))],
-      [[['ISDA-KES', 'ISDA 2002', false, 2, 1, 1000, null, 1],
-        ['CSA-KES', 'ISDA 2002 with CSA', true, 1, 0, null, 'CSA-KES', 0],
-        ['KES-OLD', null, false, 1, 0, -200, null, 1],
-        ['KES-GONE', null, false, 0, 0, null, null, 0],
-        ['ISDA-NEW-KES', 'ISDA 2002', false, 0, 0, 0, null, null]],
-       [['ISDA-KES', 'its own terms', false, 3, 0, 1000, null, null],
-        ['CSA-KES', 'its own terms', true, 1, 0, null, null, null],
-        ['KES-OLD', 'its own terms', false, 1, 0, -200, null, null],
-        ['KES-GONE', null, false, 0, 0, null, null, null]]]);
+      [[['ISDA-KES', 'ISDA 2002', false, 2, 1, 1000, null],
+        ['CSA-KES', 'ISDA 2002 with CSA', true, 1, 0, null, 'CSA-KES'],
+        ['KES-OLD', null, false, 1, 0, -200, null],
+        ['KES-GONE', null, false, 0, 0, null, null],
+        ['ISDA-NEW-KES', 'ISDA 2002', false, 0, 0, 0, null]],
+       [['ISDA-KES', 'its own terms', false, 3, 0, 1000, null],
+        ['CSA-KES', 'its own terms', true, 1, 0, null, null],
+        ['KES-OLD', 'its own terms', false, 1, 0, -200, null],
+        ['KES-GONE', null, false, 0, 0, null, null]]]);
 
 const after = (value, collateralised, balance) => client.exposureAfter({
   value, collateralised, call: balance === undefined ? null
@@ -327,7 +327,19 @@ check("what is wrong under a client's sets, worst first: a failed run, trades no
        client.wrongWith(client.creditLines('KES', PLAIN, SCHEMA)).map((wrong) => [wrong.kind, wrong.reference])],
       [[['failed', 'KES-OLD'], ['unpapered', 'KES-OLD'], ['stale', 'ISDA-KES'], ['pending', 'ISDA-KES'],
         ['unrun', 'CSA-KES']],
-       [['failed', 'KES-OLD'], ['unrun', 'CSA-KES']]]);
+       [['failed', 'KES-OLD'], ['stale', 'ISDA-KES'], ['unrun', 'CSA-KES']]]);
+
+const judged = (current, status = 'done') => client.wrongWith([{ reference: 'S', paper: 'ISDA',
+  run: { ...RUNS[0], current, status }, trades: 1, pending: 0 }]).map((wrong) => wrong.text);
+check("a done run is older than the book where its own row says a recalc now would not price what "
+        + 'it priced, on either desk, and the record\'s rows under it since are a detail of that',
+      "a run whose row could not be judged, or says it is current, called older than the book; a "
+        + "failed run's flagged twice; or the record's count read as the verdict",
+      [judged(false), judged(null), judged(true), judged(false, 'failed').length,
+       client.staleText(3), client.staleText(0)],
+      [['a recalc now would not price what its run priced'], [], [], 1,
+       'a recalc now would not price what its run priced: 3 events booked, amended or signed under '
+         + 'it since', 'a recalc now would not price what its run priced']);
 
 check('clients with something to act on come first, then the largest exposure after collateral, an '
       + 'unread one last, then by name',
@@ -337,7 +349,7 @@ check('clients with something to act on come first, then the largest exposure af
                           { name: 'E', wrong: [], after: 10 }]).map((row) => row.name),
       ['C', 'D', 'B', 'E', 'A']);
 
-console.log(`\n${ran} checks over 17 functions, ${missed.length} missed`);
+console.log(`\n${ran} checks over 18 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

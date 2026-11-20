@@ -207,22 +207,21 @@ export function since(set: XvaSet, rows: ActivityRow[]): ActivityRow[] {
 // ---- every client as a credit officer reads it ------------------------------------------------
 
 /** One netting set a client trades under: where the book holds it, the paper it is under - its
- * agreement's kind, null where none is in force - and whether its terms collateralise, its last run, its trades and those
- * waiting on a second seat, its value to the desk now in the risk's currency, its call on the
- * marked close, and the record's rows under it since its run - null where no record tells. */
+ * agreement's kind, null where none is in force - and whether its terms collateralise, its last
+ * run, its trades and those waiting on a second seat, its value to the desk now in the risk's
+ * currency and its call on the marked close. */
 export type CreditLine = {
   reference: string; path: string | null; paper: string | null; collateralised: boolean;
   run: XvaSet | null; trades: number; pending: number; value: number | null;
-  call: CollateralCall | null; moved: number | null;
+  call: CollateralCall | null;
 };
 
 /** What the lines are read off: the projection's sets, the client's agreements (`agreementsOf`),
- * the file's rows, and - each null where it is not read - the record's positions and rows, the
- * risk's marks and the calls on the marked close. */
+ * the file's rows, and - each null where it is not read - the record's positions, the risk's marks
+ * and the calls on the marked close. */
 export type CreditReads = {
   sets: XvaSet[]; agreements: Agreement[]; rows: Map<string, BlotterRow>;
-  positions: Position[] | null; record: ActivityRow[] | null; marks: DealMark[] | null;
-  calls: CollateralCall[] | null;
+  positions: Position[] | null; marks: DealMark[] | null; calls: CollateralCall[] | null;
 };
 
 /** A client's lines: a set the book holds or held naming it, under its own agreement where one is
@@ -243,7 +242,6 @@ export function creditLines(id: string, reads: CreditReads, schema: Schema): Cre
       value: path === null ? (run ? null : 0)
         : reads.marks && (markOf(reads.marks, path).own?.value ?? null),
       call: reads.calls?.find((call) => call.agreement === reference) ?? null,
-      moved: run && reads.record && since(run, reads.record).length,
     };
   };
   return [...runs.map((run) => line(run.reference, run)),
@@ -313,6 +311,12 @@ export type Wrong = { kind: keyof typeof WRONG; reference: string; text: string;
 
 const RECALC = 'a recalc through the MCP verb recalc_xva';
 
+/** Why a set's run is older than the book, its row's `current` false - with `moved`, the record's
+ * rows under the set since its run, where they are read. */
+export const staleText = (moved: number | null): string => 'a recalc now would not price what '
+  + `its run priced${moved ? `: ${plural(moved, 'event')} booked, amended or signed under it since`
+    : ''}`;
+
 /** Who puts a failed run right, off the factor the engine could not find: a credit curve whoever
  * marks states, any other factor the market's owner adds. */
 export function ownerOf(error: string | null): string {
@@ -322,19 +326,19 @@ export function ownerOf(error: string | null): string {
       : `a market factor is missing: the market's owner adds ${factor}`;
 }
 
-/** What is wrong under a client's lines, worst first - a set that has left the book reads its last
- * run and asks for nothing. */
+/** What is wrong under a client's lines, worst first - a done run older than the book by its own
+ * row's word; a set that has left the book reads its last run and asks for nothing. */
 export function wrongWith(lines: CreditLine[]): Wrong[] {
   const order = Object.keys(WRONG);
   return lines.filter((line) => !line.run?.note).flatMap(({
-    reference, paper, run, trades, pending, moved }) => [
+    reference, paper, run, trades, pending }) => [
     run?.status === 'failed' && { kind: 'failed' as const, reference,
       text: run.error ?? 'its last run failed', who: ownerOf(run.error) },
     trades > 0 && paper === null && { kind: 'unpapered' as const, reference,
       who: 'legal declares the agreement on Paper',
       text: `${plural(trades, 'trade')} under ${reference}, which no agreement in force covers` },
-    !!moved && run?.status === 'done' && { kind: 'stale' as const, reference, who: RECALC,
-      text: `${plural(moved, 'event')} booked, amended or signed under it since its run` },
+    run?.status === 'done' && run.current === false && { kind: 'stale' as const, reference,
+      who: RECALC, text: staleText(null) },
     pending > 0 && { kind: 'pending' as const, reference, who: 'another seat signs on the Back Office',
       text: `${plural(pending, 'trade')} under it waiting on a second seat` },
     trades > 0 && (!run || run.status === 'never run') && {
