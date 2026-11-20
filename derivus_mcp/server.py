@@ -490,7 +490,9 @@ def desk_status() -> dict:
     """START HERE. What this desk is set up with, in one call - what every other verb has to work
     with, and how old each piece of it is.
 
-    The book's `base_date` (the day it is valued as of), `base_currency` and `calculation`; how
+    The book's `base_date` (the day its MARKET is dated, what its curves roll off), `base_currency`
+    and `calculation`, whose `Base_Date` is the day the book is VALUED as of - the two days differ
+    wherever the book states them apart, and `set_base_date` moves both; how
     many `deals` it holds - a structure one with its legs, a netting set none - and the
     `netting_sets` a client's trade can be booked under; `curves`,
     one per bootstrapped block, with the knots it solved on, the `interpolation` it is built under,

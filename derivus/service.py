@@ -5289,7 +5289,9 @@ def book_status():
     """What this desk is set up with, composed from the readers beside it - the first call a client
     makes, and the one that says what every other verb has to work with.
 
-    The book's `base_date`, `base_currency` and calculation - which names the inner path count a
+    The book's `base_date` - its MARKET's day, `System Parameters.Base_Date`, what its curves roll
+    off - its `base_currency`, and its calculation, whose `Base_Date` is the day the book is VALUED
+    as of, the other wherever the book states the two apart, and which names the inner path count a
     simulated deal is priced on and, where the book states fewer than the declaration, says so with
     the remedy; how many deals it holds - a structure one with its legs, a netting set none, as
     `file_positions` reads the file's trades - and which netting sets; each curve with the knots
@@ -5317,6 +5319,7 @@ def book_status():
         # few for a simulated deal is NAMED here with the remedy rather than healed behind the desk
         'calculation': {'Object': calculation.get('Object'),
                         'Currency': calculation.get('Currency'),
+                        'Base_Date': read_stamp(calculation['Base_Date']).isoformat(),
                         'paths': calculation.get('MCMC_Simulations') or structures.declared_paths(),
                         'paths_note': structures.thin_paths(calculation)},
         'deals': sum(map(len, file_positions(document, ()).values())),

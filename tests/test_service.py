@@ -1628,6 +1628,34 @@ def test_the_status_verb_says_what_the_desk_is_set_up_with(book, tmp_path, monke
         'knots': [row['tenor'] for row in CURVE_ROWS[:-1]], 'held_out': ['10Y']}]
 
 
+def test_the_status_says_the_market_s_day_and_the_day_the_book_is_valued_as_of(tmp_path,
+                                                                               monkeypatch):
+    """A BOOK CARRIES TWO DAYS AND THE STATUS SAYS BOTH. A book whose market is dated 28 June 2024
+    and whose calculation values it as of 1 July answers `base_date` 2024-06-28, the market's, and
+    `calculation.Base_Date` 2024-07-01; moved by the date verb to 30 September, it answers that day
+    for both.
+
+    Killing mutation: the calculation's day read off the market's, which answers 2024-06-28 for a
+    book valued as of 1 July.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(json.loads(dump(job(Base_Date=pd.Timestamp('2024-07-01')))),
+                               indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+
+    def days():
+        status = CLIENT.get('/book/status').json()
+        return status['base_date'], status['calculation']['Base_Date']
+
+    try:
+        assert days() == ('2024-06-28', '2024-07-01')
+        assert CLIENT.post('/book/date', json={'base_date': '2024-09-30'}).json()['written']
+        assert days() == ('2024-09-30', '2024-09-30')
+    finally:
+        service.BOOK = None
+
+
 def test_the_status_counts_the_trades_a_book_holds(tmp_path, monkeypatch):
     """`deals` is the trades the file holds: the root's cashflow, and a client's structure of two
     legs counted once with its legs - six nodes, one of them an empty set, two trades by hand.
