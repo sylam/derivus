@@ -2535,7 +2535,7 @@ def sighted(document, sight, verb=None, rows=None):
     held = {row['instrument'] for row in rows}
     seen = {row['instrument'] for row in spine.visible(rows, sight, verb=verb)}
     legs = PnL.held_legs(job_children(document), held)
-    book = bool(spine.visible([{'portfolio': book_name(document)}], sight, verb=verb))
+    book = spine.reaches(sight, book_name(document), verb)
     return lambda instrument: legs.get(instrument, instrument) in seen or (
         book and legs.get(instrument, instrument) not in held)
 
@@ -3836,7 +3836,7 @@ def book_worklist(actor: str = None):
             for close in {close['date']: close for close in closes}.values()
             if close['date'] >= max(marks, default='')
             and close['values_hash'] != marks.get(close['date'], {}).get('values_hash')
-            and spine.visible([{'portfolio': book}], sight, verb=vocabulary.MARK)],
+            and spine.reaches(sight, book, vocabulary.MARK)],
         'rejected': ticketed(demands['fill'], 'rejected', 'was rejected and still stands', ticket,
                              lambda position, entry, at: entry['status'] == 'rejected'
                              and position['quantity'])}

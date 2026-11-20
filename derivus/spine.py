@@ -505,17 +505,20 @@ def demands():
     return folded(read)
 
 
-def visible(rows, sight, key='portfolio', verb=None):
-    """The `rows` a seat whose `sight` this is sees: every one where nothing narrows it, else those
-    whose `key` sits at or under a node it holds `verb` at - any verb where none is named, a seat
-    that may act at a node seeing the rows it acts on. PRESENTATION while classification is
-    dormant: one class key opens every body, so a seat holding a `read` row reads the frames
-    whole."""
+def reaches(sight, node=None, verb=None):
+    """Whether a seat whose `sight` this is holds `verb` - any verb where none is named - at `node`
+    or a node above it, and with no node whether it holds it everywhere: a seat nothing narrows
+    reaches every node, and only it reaches a row sitting nowhere."""
     held = None if sight is None else [sight[verb]] if verb else list(sight.values())
-    if held is None or None in held:
-        return rows
-    return [row for row in rows if row.get(key) is not None and any(
-        under(row[key], node) for nodes in held for node in nodes)]
+    return held is None or None in held or node is not None and any(
+        under(node, at) for nodes in held for at in nodes)
+
+
+def visible(rows, sight, key='portfolio', verb=None):
+    """The `rows` whose `key` a seat whose `sight` this is `reaches` under `verb`, a seat that may
+    act at a node seeing the rows it acts on. PRESENTATION while classification is dormant: one
+    class key opens every body, so a seat holding a `read` row reads the frames whole."""
+    return [row for row in rows if reaches(sight, row.get(key), verb)]
 
 
 def pin():
@@ -2053,7 +2056,7 @@ class PnL:
         return ((portfolio is None or under(row['portfolio'], portfolio))
                 and (agreement is None or row['agreement'] == agreement)
                 and (clients is None or row.get('counterparty') in clients)
-                and bool(visible([row], sight)))
+                and reaches(sight, row['portfolio']))
 
     @staticmethod
     def rates(values, reporting, base):
@@ -2682,8 +2685,7 @@ class Collateral:
         every one where nothing narrows the seat, one nothing is held under included
         (`spine.visible`)."""
         held = {row['agreement'] for row in visible(positions, sight, verb=verb) if row['quantity']}
-        # a row sitting nowhere is seen only where nothing narrows the seat
-        everywhere = bool(visible([{}], sight, verb=verb))
+        everywhere = reaches(sight, verb=verb)
         return [row for row in agreements if everywhere or row['agreement'] in held]
 
     @classmethod
