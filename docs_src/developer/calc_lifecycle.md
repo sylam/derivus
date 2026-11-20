@@ -240,7 +240,8 @@ period's volume at its price multiplier (`FloatingEnergyDeal`), its side the sig
 receives, and one its compile prices as caplets or floorlets a row per optionlet whose rate is still to be
 known (`SACCR.caplets`); a declared trade's end is the last day `schema.tenor_fields` names. Every
 row's M is its trade's last day (`SACCR.last_day`, CRE52.31): the latest day the trade's compile
-revalues it on, or a package's whose own compile reaches none the latest its children reach; a
+revalues it on, or, a deal holding children it does not settle in their place, the latest day they
+reach, its own terms unread; a
 component its own `end`, and a trade's start where the `(field, value)` of `runs` does not hold, a
 trade settling its cash there (a swaption settled in cash, an FRA paid at its start). A trade's asset class is
 the `Asset_Class` the `Mapping`'s `SACCR` section states for its type, a credit entity's rating

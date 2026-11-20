@@ -256,7 +256,8 @@ Grouped by where a validator meets them.
   their sum, each leg on its own `Buy_Sell`, and its own terms are not read: a document stating
   `Sell` on the cap and `Buy` on every leg beneath it, as a legacy export writes a sold cap, is
   valued as bought, and its legs are what to correct. SA-CCR reads it as its value does, a cap or
-  floor being its caplets or floorlets (CRE52.43), each long where its value is. A caplet's T is
+  floor being its caplets or floorlets (CRE52.43), each long where its value is, and its M the latest
+  day its legs reach, its own dates unread as its side is. A caplet's T is
   the day its rate is known, its last fixing, where its pricer's Black time runs to its first; a
   period capped fixing by fixing (`Pre_Aggregation`) is read as one caplet on the period's rate. A
   leg paying digital optionlets refuses the run by name, CRE52.42(3)'s collar not built.

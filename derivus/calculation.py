@@ -5404,7 +5404,8 @@ class SACCR(NettingSetCalculation):
         'last fixing, $\\delta$ CRE52.40\'s for a call on a caplet and a put on a floorlet at $P$, the rate',
         'its resets fold to off the forecast curve, averaged or compounded as its pricer folds them, and',
         '$K$ its strike, long where its value is: a cap or floor over legs is valued as its legs, each',
-        'on its own side, its own side unread, and is read so; $M$ the trade\'s last day. A period whose',
+        'on its own side, its own side and dates unread, and is read so; $M$ the trade\'s last day, a',
+        'cap\'s over legs their latest. A period whose',
         'rate is fixed reads none, its value in $V$ alone. A strip, a type dealing its amount at every',
         'row of a table, is its fixings',
         '(CRE52.43): a row per leg it declares at each row still to fix, $T$ the day it fixes, its',
@@ -5479,7 +5480,8 @@ class SACCR(NettingSetCalculation):
         'touch\'s delta: a convention); the',
         'maturity factor (CRE52.48, CRE52.52), $\\sqrt{\\min(M,1)}$ with $M$ the last day the trade is',
         'active (CRE52.31), one $M$ for every row of a trade: the latest day its compile revalues it on',
-        'or, a package\'s whose own compile reaches none, the latest its children reach, a forward of an',
+        'or, a deal\'s holding children it does not settle in their place, the latest day they reach, its',
+        'own terms unread, a forward of an',
         'FX swap its own, and its start $S$ where it settles its cash there, as a swaption settled in',
         'cash and an FRA',
         'paid at its start do (CRE52.31-52.32 Table 1 and its FAQ2), floored at ten business days, or',
@@ -5818,11 +5820,13 @@ class SACCR(NettingSetCalculation):
                           self.years(maturity), mpor)
 
     def last_day(self, node):
-        """The last day the trade `node` may be active (52.31): the latest its compile revalues it on, a
-        trade holding children whose own compile reaches none the latest its children reach."""
+        """The last day the trade `node` may be active (52.31): a deal holding children it does not
+        settle in their place the latest they reach, its own terms unread, else the latest its compile
+        revalues it on."""
+        if node.get('Children') and not node['Instrument'].settles_children:
+            return max(filter(None, map(self.last_day, node['Children'])), default=None)
         built = self.built.get(node['Instrument'])
-        dates = built.Instrument.get_reval_dates() if built else ()
-        return max(dates) if dates else max(filter(None, map(self.last_day, node.get('Children') or [])), default=None)
+        return max(built.Instrument.get_reval_dates() if built else (), default=None)
 
     def entry(self, asset, hedging, subclass, bucket, notional, delta, maturity, mpor):
         """A row of the trades frame: its MF sqrt(min(M, 1)), `maturity` M floored at ten business

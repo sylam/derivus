@@ -1748,34 +1748,34 @@ def test_a_cap_or_a_floor_stated_by_its_terms_reads_the_optionlet_it_compiles(wo
 def test_every_row_of_a_trade_matures_on_the_trades_last_day(world):
     """CRE52.31 AND CRE52.48: M IS THE TRADE'S. A package holding a cap at 4.5% on a million over the
     quarter from three months out, the same leg uncapped and a leg paid on a million quarterly for
-    nine months, its own compile reaching no day, ends on the latest day its children reach, the
-    paid leg's last payment nine months out: every row's M is 270/360 = 0.75 years of 30/360 and its
-    maturity factor 0.75^0.5 = 0.866025, the capped and the uncapped leg's own half year unread. The
-    caplet on d 1,000,000 (e^(-0.0125) - e^(-0.025)) / 0.05 = 245,357.77 in bucket 1 is a call at
-    4.5% on P (e^(0.04 x 91/365) - 1) / (91/365) = 4.0200117% known in a quarter, 0.25 years, d1
-    -0.326170 and delta 0.372148; the uncapped leg +1 on the same d and the paid leg -1 on 1,000,000
-    (1 - e^(-0.0375)) / 0.05 = 736,111.65: the add-on 0.5% of 0.866025 |245,357.77 x 1.372148 -
-    736,111.65|, 1,729.65. Booked under a cap whose own terms run two years out, the cap's compile
-    reaches that day, so every row's maturity factor is one and the add-on 0.5% of |245,357.77 x
-    1.372148 - 736,111.65|, 1,997.22: the uncapped leg no longer reads its own half year, at
-    (1/2)^0.5, beside its capped twin at one.
+    nine months ends on the latest day its children reach, the paid leg's last payment nine months
+    out; booked under a cap whose own terms run two years out it ends there too, the cap there to
+    imply its legs and its own terms unread. Under either every row's M is 270/360 = 0.75 years of
+    30/360 and its maturity factor 0.75^0.5 = 0.866025, the capped and the uncapped leg's own half
+    year unread. The caplet on d 1,000,000 (e^(-0.0125) - e^(-0.025)) / 0.05 = 245,357.77 in bucket
+    1 is a call at 4.5% on P (e^(0.04 x 91/365) - 1) / (91/365) = 4.0200117% known in a quarter,
+    0.25 years, d1 -0.326170 and delta 0.372148; the uncapped leg +1 on the same d and the paid leg
+    -1 on 1,000,000 (1 - e^(-0.0375)) / 0.05 = 736,111.65: the add-on 0.5% of 0.866025 |245,357.77 x
+    1.372148 - 736,111.65|, 1,729.65, the two holders' rows the same to the bit.
 
-    Killing mutations: M read per child, each its own last day - the caplet and the uncapped leg at
-    (1/2)^0.5 under the package and under the cap, each add-on 1,997.16; a package's children
-    unread for its last day - the run fails, a `TypeError` on the package's M of none.
+    Killing mutations: the parent's own last day read where it has children - the cap's rows at
+    one, its add-on 1,997.22; M read per child, each its own last day - the caplet and the uncapped
+    leg at (1/2)^0.5 under either holder, each add-on 1,997.16.
     """
     _, output = world
     found, mf = netting_sets(output), math.sqrt(0.75)
     adjusted = [1e6 * supervisory_duration(0.25, 0.5)] * 2 + [1e6 * supervisory_duration(0.0, 0.75)]
     delta = black_delta(math.expm1(0.04 * 91 / 365) / (91 / 365), 0.045, 0.5, 0.25, True)
-    for name, factor in (('TRADE_PACKAGE', mf), ('TRADE_CAP', 1.0)):
+    for name in ('TRADE_PACKAGE', 'TRADE_CAP'):
         rows = trades(output, name)
         assert list(rows['Component']) == [name + '_CAPPED 2025-07-15', name + '_FLOAT', name + '_LONG'], rows
-        assert rows['MaturityFactor'].tolist() == pytest.approx([factor] * 3, rel=1e-15), rows
+        assert rows['MaturityFactor'].tolist() == pytest.approx([mf] * 3, rel=1e-15), rows
         assert rows['AdjustedNotional'].tolist() == pytest.approx(adjusted, rel=1e-14), rows
         assert rows['Delta'].tolist() == pytest.approx([delta, 1.0, -1.0], rel=1e-12), rows
-        assert found.loc[name, 'AddOn_IR'] == pytest.approx(0.005 * factor * abs(
+        assert found.loc[name, 'AddOn_IR'] == pytest.approx(0.005 * mf * abs(
             adjusted[0] * (1.0 + delta) - adjusted[2]), rel=1e-12), found.loc[name]
+    columns = ['AdjustedNotional', 'Delta', 'MaturityFactor', 'EffectiveNotional']
+    assert (trades(output, 'TRADE_CAP')[columns].to_numpy() == trades(output, 'TRADE_PACKAGE')[columns].to_numpy()).all()
 
 
 EQUITY_LEG = {'Object': 'EquitySwapLeg', 'Reference': 'LEG', 'Currency': 'USD',
