@@ -442,8 +442,7 @@ class ComputeExecutor:
         """
         # before this lock and never under it: `finish` takes this one and then the record's
         # writer, so a refusal appending its denial from inside would close the cycle
-        if spine.configured():
-            spine.admit(job.lane, job.actor, job.book)
+        spine.admit(job.lane, job.actor, job.book)
         with self.lock:
             if job.result_id not in self.results:
                 self.results[job.result_id] = {'status': 'queued'}
@@ -2026,9 +2025,8 @@ def book_risk(actor: str = None):
     """
     live = live_book()
     document = priced(live.read()[0], 'BaseValuation')
-    if spine.configured():
-        # before the cache: a warm answer served to a seat the cold one refuses is no admission
-        spine.admit(spine.CURIOSITY, actor, book_name(document))
+    # before the cache: a warm answer served to a seat the cold one refuses is no admission
+    spine.admit(spine.CURIOSITY, actor, book_name(document))
     etag = risk_etag(document)
     answer = live.risk_cache.get(etag)
     if answer is None:
@@ -2381,8 +2379,7 @@ def diary_of(document, actor):
     refuses would make the settlement file a desk instructs payments from a function of who asked
     first. The miss therefore asks twice, which is one fold against the compile it is guarding.
     """
-    if spine.configured():
-        spine.admit(spine.TELEMETRY, actor, book_name(document))
+    spine.admit(spine.TELEMETRY, actor, book_name(document))
     etag = diary_etag(document)
     result_id = content_hash({'diary': etag})
     if etag not in BOOK_DIARY_CACHE:
