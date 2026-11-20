@@ -5736,11 +5736,8 @@ class SACCR(NettingSetCalculation):
                 for row in self.read(node, mpor)]
 
     def read(self, node, mpor):
-        """The rows `node` reads: its type's declaration's, none where that states its amounts fixed
-        today, its optionlets' where its compile prices caplets or floorlets (`caplets`), its
-        fixings' where it deals its amount `per` row of a table (`strip`); a package's, a type with
-        children declaring none or pricing optionlets that neither settles in their place nor is a
-        netting set, its children's (`package`)."""
+        """The rows `node` reads: its type's declaration's (`row`), its optionlets' (`caplets`), its
+        fixings' (`strip`) or, a package, its children's (`package`)."""
         deal = node['Instrument']
         kind = deal.field['Object']
         terms, optionlets = schema.EXPOSURES.get(kind), self.optionlets(deal)
@@ -5761,11 +5758,8 @@ class SACCR(NettingSetCalculation):
                 if deal.field[part.end] >= self.valuation['Base_Date'] for row in self.row(deal, part, mpor)]
 
     def package(self, node, mpor):
-        """A package's rows, each child's its own as the child its `Component` (52.42(4)), one its
-        compile left out none: a fixed leg and a floating one a swap the floating leg carries; legs
-        paying two currencies one FX trade (`crossed`); and two floating legs of a currency, one
-        received and one paid on another index, one basis trade (52.46), long the index it receives
-        in a hedging set of the pair, at half the factor (52.73)."""
+        """A package's rows: each child's its own, legs paying two currencies one FX row (`crossed`)
+        and two floating legs of a currency on two indices one basis row (52.46)."""
         children = [child for child in node['Children'] if child['Instrument'] in self.held]
         rows = [[dict(row, Component=row.get('Component') or child['Instrument'].field.get('Reference'))
                  for row in self.read(child, mpor)] for child in children]
@@ -5800,11 +5794,7 @@ class SACCR(NettingSetCalculation):
                 child['Instrument'].field[terms.amount], dict)) and not self.optionlets(child['Instrument'])]
 
     def crossed(self, legs, mpor):
-        """The one FX row of `legs` paying two currencies, a cross-currency swap (52.35; footnote 11
-        to 52.46: two floating legs no basis): each leg's largest notional still to pay, a convention,
-        crossed, the larger where both are foreign, long the currency it receives; M its last pay
-        day, or a leg's next reset where its compile resets its notional on the pair (52.37(5)), a
-        notional that leg states in the other currency."""
+        """The one FX row of `legs` paying two currencies, a cross-currency swap (52.35)."""
         found = []
         for _, deal, terms in legs:
             schedule = self.schedule(deal)
@@ -5856,12 +5846,7 @@ class SACCR(NettingSetCalculation):
 
     def caplets(self, deal, terms, mpor):
         """A row per optionlet of `deal`'s schedule whose rate is still to be known (52.43), its
-        `Component` the deal and its period's end: a call on that rate for a caplet and a put for a
-        floorlet, P its resets off the forecast curve as the pricer folds them, averaged under
-        `None` and else compounded, a fixed one at its value, K its strike, long where its notional
-        is received (52.40); S and E its period's start and end, T the day its rate is known, its
-        last reset's; d its notional crossed times SD (52.34) in its currency's bucket by E (52.57),
-        M the trade's last day. One whose rate is fixed reads none, its value V's alone (52.10)."""
+        `Component` the deal and its period's end."""
         compiled, cash, reference = self.held[deal], self.schedule(deal), deal.field.get('Reference')
         if compiled.get('Digital_Payoff_Rate') is not None:
             raise ValueError('SACCR: trade {} is a {} paying a digital on its rate, whose collar of CRE52.42(3) is '
@@ -5897,11 +5882,8 @@ class SACCR(NettingSetCalculation):
         return rows
 
     def strip(self, deal, parts, mpor):
-        """A strip's fixings (52.43): its `parts`' rows at each row of the table they deal their
-        amount `per` whose first cell, the day it fixes and T, is still to come, one fixed reading
-        none, its value V's alone; `Component` the deal, that day and the field its part differs
-        from the others' in, its strike or else its amount. A strip of no options, and one accruing on
-        the reciprocal of its pair (`InvertedTarget`), refuse by name."""
+        """A strip's rows (52.43): its `parts`' at each of its fixings still to come, `Component` the
+        deal, that day and the field its part differs in."""
         fields, reference = deal.field, deal.field.get('Reference')
         if not parts[0].strike:
             raise ValueError('SACCR: trade {} is a {}, whose extension is an option on a strip of forwards CRE52 '
@@ -5916,12 +5898,7 @@ class SACCR(NettingSetCalculation):
 
     def row(self, deal, terms, mpor, expiry=None):
         """`deal`'s rows off its declaration `terms` (`entry`), an option's T its `expiry` where
-        stated, a strip's fixing, else its declared one. A digital paying Q at strike K reads, paid
-        in cash, one row, the collar of 52.42(3): a bought and a sold option of its kind at 0.95K and
-        1.05K, each on Q / (0.1K) units, its delta theirs less, |D| at most Q crossed over SF; paid
-        in units, two, the vanilla on them, sold for a put, and the cash digital of them at K
-        (52.42(4)), named by the deal. Its expiry behind the base date, the cash it pays is known and
-        reads no row, its value V's alone."""
+        stated, a strip's fixing, else its declared one; a digital's its collar (52.42(3))."""
         fields, reference = deal.field, deal.field.get('Reference')
         asset, paid = self.asset(deal), terms.pays(fields)
         if isinstance(fields[terms.amount], dict):
