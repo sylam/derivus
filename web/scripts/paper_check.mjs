@@ -7,36 +7,13 @@
 //
 //   node web/scripts/paper_check.mjs         # exits 1 on a miss
 
-import { fileURLToPath } from 'node:url';
-import { build } from 'esbuild';
+import { check, done, load, node, support } from './check.mjs';
 
-async function bundled(module) {
-  const out = await build({
-    entryPoints: [fileURLToPath(new URL(`../src/${module}`, import.meta.url))],
-    bundle: true, format: 'esm', write: false, logLevel: 'silent',
-  });
-  return import('data:text/javascript;base64,' + Buffer.from(out.outputFiles[0].text).toString('base64'));
-}
-const tokens = await bundled('tokens.ts');
-const { standing } = await bundled('state.ts');
-
-let ran = 0;
-const missed = [];
-
-function check(name, kills, got, want) {
-  ran += 1;
-  const same = JSON.stringify(got) === JSON.stringify(want);
-  if (!same) missed.push(name);
-  console.log(`${same ? 'ok  ' : 'MISS'}  ${name}\n      kills: ${kills}`);
-  if (!same) {
-    console.log(`      got   ${JSON.stringify(got)}`);
-    console.log(`      want  ${JSON.stringify(want)}`);
-  }
-}
+const tokens = await load('tokens');
+const { standing } = await load('state');
 
 // ---- the declaration, trimmed to what the rules turn on ------------------------------------------
 
-const support = (rows) => ({ '.CreditSupportList': rows });
 const field = (widget, value, extra = {}) => ({ widget, description: '', value, ...extra });
 const TERMS = {
   Agreement_Currency: field('Text', '', { convention: true }),
@@ -134,7 +111,6 @@ check('a restatement names each term it moves, a container by the term inside it
         'Credit_Support_Amounts.Minimum_Received', 'Liquidation_Period', 'Reference'],
        []]);
 
-const node = (deal, children) => ({ Instrument: { '.Deal': deal }, ...(children ? { Children: children } : {}) });
 const DOC = { Calc: { Deals: { Deals: { Children: [
   node({ Object: 'FXForwardDeal', Reference: 'CSA-2' }),
   node(ISDA, [node({ Object: 'FXForwardDeal', Reference: 'FWD-1' })]),
@@ -153,8 +129,4 @@ check('an agreement stands where the book holds a set of its type under its id, 
       [{ path: '1', moved: [] }, { path: '2/0', moved: ['Netted'] }, { path: null, moved: [] },
        { path: null, moved: [] }]);
 
-console.log(`\n${ran} checks over 7 functions, ${missed.length} missed`);
-if (missed.length) {
-  console.log(missed.map((name) => `  ${name}`).join('\n'));
-  process.exit(1);
-}
+done();

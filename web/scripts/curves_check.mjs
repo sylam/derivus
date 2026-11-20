@@ -9,15 +9,9 @@
 // the price factor store the solve writes into. The module is bundled rather than transformed,
 // because it reads the wire tokens through `src/tokens.ts` rather than spelling them twice.
 
-import { fileURLToPath } from 'node:url';
-import { build } from 'esbuild';
+import { check, done, load } from './check.mjs';
 
-const bundled = await build({
-  entryPoints: [fileURLToPath(new URL('../src/curves.ts', import.meta.url))],
-  bundle: true, format: 'esm', write: false, logLevel: 'silent',
-});
-const curves = await import('data:text/javascript;base64,' +
-  Buffer.from(bundled.outputFiles[0].text).toString('base64'));
+const curves = await load('curves');
 
 // ---- the service's shapes ------------------------------------------------------------------------
 
@@ -77,20 +71,6 @@ const FACTORS = {
 };
 
 // ---- the checks ---------------------------------------------------------------------------------
-
-let ran = 0;
-const missed = [];
-
-function check(name, kills, got, want) {
-  ran += 1;
-  const same = JSON.stringify(got) === JSON.stringify(want);
-  if (!same) missed.push(name);
-  console.log(`${same ? 'ok  ' : 'MISS'}  ${name}\n      kills: ${kills}`);
-  if (!same) {
-    console.log(`      got   ${JSON.stringify(got)}`);
-    console.log(`      want  ${JSON.stringify(want)}`);
-  }
-}
 
 const seededRows = [
   { tenor: '3M', security: 'JIBA3M Index', quote: null, use: 'Yes' },
@@ -321,8 +301,4 @@ check('solvedFactor answers nothing for a curve the store has not solved',
       'a fallback to the first entry, which shows one curve\'s knots under another\'s name',
       curves.solvedFactor(FACTORS, 'USD'), null);
 
-console.log(`\n${ran} checks over 8 functions, ${missed.length} missed`);
-if (missed.length) {
-  console.log(missed.map((name) => `  ${name}`).join('\n'));
-  process.exit(1);
-}
+done();

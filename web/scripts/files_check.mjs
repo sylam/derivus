@@ -9,15 +9,9 @@
 // a job written on another system that names a market data file in a folder this box maps and a
 // calendar in one it does not.
 
-import { fileURLToPath } from 'node:url';
-import { build } from 'esbuild';
+import { check, done, load } from './check.mjs';
 
-const bundled = await build({
-  entryPoints: [fileURLToPath(new URL('../src/files.ts', import.meta.url))],
-  bundle: true, format: 'esm', write: false, logLevel: 'silent',
-});
-const files = await import('data:text/javascript;base64,' +
-  Buffer.from(bundled.outputFiles[0].text).toString('base64'));
+const files = await load('files');
 
 // ---- the service's answer -----------------------------------------------------------------------
 
@@ -47,20 +41,6 @@ const ONE_FOLDER = {
 };
 
 // ---- the checks ---------------------------------------------------------------------------------
-
-let ran = 0;
-const missed = [];
-
-function check(name, kills, got, want) {
-  ran += 1;
-  const same = JSON.stringify(got) === JSON.stringify(want);
-  if (!same) missed.push(name);
-  console.log(`${same ? 'ok  ' : 'MISS'}  ${name}\n      kills: ${kills}`);
-  if (!same) {
-    console.log(`      got   ${JSON.stringify(got)}`);
-    console.log(`      want  ${JSON.stringify(want)}`);
-  }
-}
 
 const pairs = (rows) => rows.map((row) => [row.written, row.here]);
 
@@ -118,8 +98,4 @@ check('an edit leaves the answer it was made from as it was',
       'the map edited in place, which changes the paths on screen before the service has answered',
       JSON.stringify(PATHS), HELD);
 
-console.log(`\n${ran} checks over 2 functions, ${missed.length} missed`);
-if (missed.length) {
-  console.log(missed.map((name) => `  ${name}`).join('\n'));
-  process.exit(1);
-}
+done();

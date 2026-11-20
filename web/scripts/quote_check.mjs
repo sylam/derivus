@@ -9,29 +9,9 @@
 // collar quoted on ZARUSD - a pair the book's surface quotes the other way round - and a range
 // accrual with one tier cell left to the solve.
 
-import { fileURLToPath } from 'node:url';
-import { build } from 'esbuild';
+import { check, done, load } from './check.mjs';
 
-const bundled = await build({
-  entryPoints: [fileURLToPath(new URL('../src/quote.ts', import.meta.url))],
-  bundle: true, format: 'esm', write: false, logLevel: 'silent',
-});
-const quote = await import('data:text/javascript;base64,' +
-  Buffer.from(bundled.outputFiles[0].text).toString('base64'));
-
-let ran = 0;
-const missed = [];
-
-function check(name, kills, got, want) {
-  ran += 1;
-  const same = JSON.stringify(got) === JSON.stringify(want);
-  if (!same) missed.push(name);
-  console.log(`${same ? 'ok  ' : 'MISS'}  ${name}\n      kills: ${kills}`);
-  if (!same) {
-    console.log(`      got   ${JSON.stringify(got)}`);
-    console.log(`      want  ${JSON.stringify(want)}`);
-  }
-}
+const quote = await load('quote');
 
 const required = (widget, description) => ({ widget, description, value: '', required: true });
 const SHARED = {
@@ -386,8 +366,4 @@ check('a booked quote lands where the file holds its trade now: the trade under 
        quote.landedAt(QUOTED_BOOK, { lsn: 1, deal_path: '0', reference: 'ISDA-K' })],
       ['1', undefined, '0/0', undefined]);
 
-console.log(`\n${ran} checks over 21 functions, ${missed.length} missed`);
-if (missed.length) {
-  console.log(missed.map((name) => `  ${name}`).join('\n'));
-  process.exit(1);
-}
+done();

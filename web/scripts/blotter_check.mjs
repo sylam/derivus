@@ -7,15 +7,9 @@
 // The declarations are the service's own `GET /schema` answer, trimmed to the sections and fields
 // a check turns on: `sized`, `side` and `settles` exactly as `F.descriptor` publishes them.
 
-import { fileURLToPath } from 'node:url';
-import { build } from 'esbuild';
+import { check, done, load, node } from './check.mjs';
 
-const bundled = await build({
-  entryPoints: [fileURLToPath(new URL('../src/blotter.ts', import.meta.url))],
-  bundle: true, format: 'esm', write: false, logLevel: 'silent',
-});
-const blotter = await import('data:text/javascript;base64,' +
-  Buffer.from(bundled.outputFiles[0].text).toString('base64'));
+const blotter = await load('blotter');
 
 // ---- the declarations ---------------------------------------------------------------------------
 
@@ -81,20 +75,6 @@ const SCHEMA = { Instrument: {
 } };
 
 // ---- the checks ---------------------------------------------------------------------------------
-
-let ran = 0;
-const missed = [];
-
-function check(name, kills, got, want) {
-  ran += 1;
-  const same = JSON.stringify(got) === JSON.stringify(want);
-  if (!same) missed.push(name);
-  console.log(`${same ? 'ok  ' : 'MISS'}  ${name}\n      kills: ${kills}`);
-  if (!same) {
-    console.log(`      got   ${JSON.stringify(got)}`);
-    console.log(`      want  ${JSON.stringify(want)}`);
-  }
-}
 
 /** A row's size as a reader sees it: [side, what the amount is of, the amount]. */
 const read = (object, deal, schema = SCHEMA) => {
@@ -191,8 +171,6 @@ const XPT = { Object: 'CommodityBarrierOption', Currency: 'USD', Reference_Type:
               Buy_Sell: 'Sell', Option_Type: 'Call', Strike_Price: 1050, Units: 500,
               Barrier_Type: 'Up_And_Out', Barrier_Price: 1250 };
 
-const node = (deal, children) => (
-  { Instrument: { '.Deal': deal }, ...(children && { Children: children }) });
 const rowOf = (deal, children) => blotter.toRows([node(deal, children)], ['StructuredDeal'],
                                                  '2026-11-16')[0];
 /** A row as a reader sees it - [on, sense, strike, barrier, terms] - numbers as cells print them. */
@@ -393,8 +371,4 @@ check('a Percent or a Basis is its number behind the cell, and its unit on it',
        [{ '.Percent': 5 }, { '.Basis': 12.5 }].map((value) => blotter.cellText(value))],
       [[5, 12.5], ['5 %', '12.5 bp']]);
 
-console.log(`\n${ran} checks over 13 functions, ${missed.length} missed`);
-if (missed.length) {
-  console.log(missed.map((name) => `  ${name}`).join('\n'));
-  process.exit(1);
-}
+done();

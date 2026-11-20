@@ -7,16 +7,10 @@
 // them. With none, only the synthetic arity-4 space below runs.
 
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { build } from 'esbuild';
+import { check, done, load } from './check.mjs';
 
-const bundled = await build({
-  stdin: { contents: "export * from './vols'; export { tenorLabel } from './tokens';",
-           resolveDir: fileURLToPath(new URL('../src', import.meta.url)), loader: 'ts' },
-  bundle: true, format: 'esm', write: false, logLevel: 'silent',
-});
-const vols = await import('data:text/javascript;base64,' +
-  Buffer.from(bundled.outputFiles[0].text).toString('base64'));
+const vols = await load('vols');
+const { tenorLabel } = await load('tokens');
 
 function read(title, description, data) {
   const arity = data[0].length;
@@ -35,7 +29,7 @@ function read(title, description, data) {
     console.log(`   mesh ${grid.expiries.length}x${grid.xs.length}, ${grid.filled} of ` +
       `${grid.expiries.length * grid.xs.length} cells filled between nodes`);
     console.log(`   term structure at ${axes[0]} ${x}: ` + vols.termStructure(shaped, x)
-      .map(([e, v]) => `${vols.tenorLabel(e)} ${(v * 100).toFixed(3)}%`).join('  '));
+      .map(([e, v]) => `${tenorLabel(e)} ${(v * 100).toFixed(3)}%`).join('  '));
   }
 }
 
@@ -57,13 +51,6 @@ if (file) {
 read('synthetic Space', '(moneyness, expiry, tenor, volatility) quads', SPACE);
 
 // --- a normal vol reads in basis points. Each check names the MUTATION it kills.
-let missed = 0;
-function check(name, kills, got, want) {
-  const same = JSON.stringify(got) === JSON.stringify(want);
-  missed += same ? 0 : 1;
-  console.log(`\n${same ? 'ok  ' : 'MISS'}  ${name}\n      kills: ${kills}`);
-  if (!same) console.log(`      got   ${JSON.stringify(got)}\n      want  ${JSON.stringify(want)}`);
-}
 const DECLARED = { Distribution_Type: { widget: 'Dropdown', value: 'Lognormal' } };
 check('a surface quoting normal vols reads in basis points, a lognormal one in percent',
       'every vol read per unit as a percent, a normal 0.85% where a desk quotes 85bp; the block\'s '
@@ -71,4 +58,4 @@ check('a surface quoting normal vols reads in basis points, a lognormal one in p
       [[DECLARED, { Distribution_Type: 'Normal' }], [DECLARED, {}], [undefined, {}]]
         .map(([fields, values]) => vols.volText(0.0085, vols.quotesNormal(fields, values))),
       ['85 bp', '0.85 %', '0.85 %']);
-if (missed) process.exit(1);
+done();

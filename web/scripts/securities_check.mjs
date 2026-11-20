@@ -9,15 +9,9 @@
 // The module is bundled rather than transformed, because it reads `src/tokens.ts` rather than
 // spelling an object test twice.
 
-import { fileURLToPath } from 'node:url';
-import { build } from 'esbuild';
+import { check, done, load } from './check.mjs';
 
-const bundled = await build({
-  entryPoints: [fileURLToPath(new URL('../src/securities.ts', import.meta.url))],
-  bundle: true, format: 'esm', write: false, logLevel: 'silent',
-});
-const securities = await import('data:text/javascript;base64,' +
-  Buffer.from(bundled.outputFiles[0].text).toString('base64'));
+const securities = await load('securities');
 
 // ---- the service's shapes -----------------------------------------------------------------------
 
@@ -69,20 +63,6 @@ const USED = [
 ];
 
 // ---- the checks ---------------------------------------------------------------------------------
-
-let ran = 0;
-const missed = [];
-
-function check(name, kills, got, want) {
-  ran += 1;
-  const same = JSON.stringify(got) === JSON.stringify(want);
-  if (!same) missed.push(name);
-  console.log(`${same ? 'ok  ' : 'MISS'}  ${name}\n      kills: ${kills}`);
-  if (!same) {
-    console.log(`      got   ${JSON.stringify(got)}`);
-    console.log(`      want  ${JSON.stringify(want)}`);
-  }
-}
 
 // --- setAt
 const standing = JSON.stringify(ZAR);
@@ -238,8 +218,4 @@ check('rejectedRows is the ledger in ticker order, carrying the terminal\'s own 
        { security: 'SASW5 BGN Curncy', verdict: 'dead', name: 'ZAR SWAP QTR (VS 3M) 5Y',
          last_update: '2007-03-26', error: '' }]);
 
-console.log(`\n${ran} checks over 9 functions, ${missed.length} missed`);
-if (missed.length) {
-  console.log(missed.map((name) => `  ${name}`).join('\n'));
-  process.exit(1);
-}
+done();

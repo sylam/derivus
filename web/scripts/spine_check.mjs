@@ -14,15 +14,9 @@
 // on. The module is bundled rather than transformed, because it reads `src/desk.ts` rather than
 // spelling a plural twice.
 
-import { fileURLToPath } from 'node:url';
-import { build } from 'esbuild';
+import { check, done, load } from './check.mjs';
 
-const bundled = await build({
-  entryPoints: [fileURLToPath(new URL('../src/spine.ts', import.meta.url))],
-  bundle: true, format: 'esm', write: false, logLevel: 'silent',
-});
-const spine = await import('data:text/javascript;base64,' +
-  Buffer.from(bundled.outputFiles[0].text).toString('base64'));
+const spine = await load('spine');
 
 // ---- the service's shapes ------------------------------------------------------------------------
 
@@ -82,20 +76,6 @@ const OFF_PAPER = { ...CLEAN, terms_mismatch: [
 const DELETED = { ...CLEAN, in_record_not_in_file: [RECORD_ONLY[0]] };
 
 // ---- the checks ---------------------------------------------------------------------------------
-
-let ran = 0;
-const missed = [];
-
-function check(name, kills, got, want) {
-  ran += 1;
-  const same = JSON.stringify(got) === JSON.stringify(want);
-  if (!same) missed.push(name);
-  console.log(`${same ? 'ok  ' : 'MISS'}  ${name}\n      kills: ${kills}`);
-  if (!same) {
-    console.log(`      got   ${JSON.stringify(got)}`);
-    console.log(`      want  ${JSON.stringify(want)}`);
-  }
-}
 
 const lsns = (rows) => rows.map((entry) => entry.lsn);
 
@@ -394,8 +374,4 @@ check("the desk's own book is asked every beat whether it moved, a document open
        spine.polled({ kind: 'local', name: 'job.json' }), spine.polled(null)],
       [true, false, false, false]);
 
-console.log(`\n${ran} checks over 15 functions, ${missed.length} missed`);
-if (missed.length) {
-  console.log(missed.map((name) => `  ${name}`).join('\n'));
-  process.exit(1);
-}
+done();

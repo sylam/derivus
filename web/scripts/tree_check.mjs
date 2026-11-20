@@ -9,15 +9,9 @@
 // model blocks - the case the folders exist for - and the Portfolio screen's deal tree, whose ids
 // are positions.
 
-import { fileURLToPath } from 'node:url';
-import { build } from 'esbuild';
+import { check, done, load } from './check.mjs';
 
-const bundled = await build({
-  entryPoints: [fileURLToPath(new URL('../src/tree.ts', import.meta.url))],
-  bundle: true, format: 'esm', write: false, logLevel: 'silent',
-});
-const tree = await import('data:text/javascript;base64,' +
-  Buffer.from(bundled.outputFiles[0].text).toString('base64'));
+const tree = await load('tree');
 
 // ---- the pages -----------------------------------------------------------------------------------
 
@@ -41,20 +35,6 @@ const DEALS = [
 ];
 
 // ---- the checks ---------------------------------------------------------------------------------
-
-let ran = 0;
-const missed = [];
-
-function check(name, kills, got, want) {
-  ran += 1;
-  const same = JSON.stringify(got) === JSON.stringify(want);
-  if (!same) missed.push(name);
-  console.log(`${same ? 'ok  ' : 'MISS'}  ${name}\n      kills: ${kills}`);
-  if (!same) {
-    console.log(`      got   ${JSON.stringify(got)}`);
-    console.log(`      want  ${JSON.stringify(want)}`);
-  }
-}
 
 const shape = (nodes) => nodes.map((node) => [node.id, node.children?.length ?? null]);
 
@@ -146,8 +126,4 @@ check('a screen opens on its first page, inside the first folder',
        tree.firstItem([])],
       ['InterestRatePrices.USD', 'a new curve', null]);
 
-console.log(`\n${ran} checks over 6 functions, ${missed.length} missed`);
-if (missed.length) {
-  console.log(missed.map((name) => `  ${name}`).join('\n'));
-  process.exit(1);
-}
+done();

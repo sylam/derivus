@@ -10,20 +10,11 @@
 // the file lost, a client grouped under a parent legal never declared, an agreement nothing is
 // booked under, and a parent chain that loops.
 
-import { fileURLToPath } from 'node:url';
-import { build } from 'esbuild';
+import { check, done, load } from './check.mjs';
 
-const bundled = await build({
-  stdin: {
-    contents: "export * from './positions'; export * as blotter from './blotter';"
-      + " export * as tree from './tree';",
-    resolveDir: fileURLToPath(new URL('../src', import.meta.url)), loader: 'ts',
-  },
-  bundle: true, format: 'esm', write: false, logLevel: 'silent',
-});
-const positions = await import('data:text/javascript;base64,' +
-  Buffer.from(bundled.outputFiles[0].text).toString('base64'));
-const { blotter, tree } = positions;
+const positions = await load('positions');
+const blotter = await load('blotter');
+const tree = await load('tree');
 
 // ---- the record -----------------------------------------------------------------------------------
 
@@ -54,20 +45,6 @@ const PAPER = {
 };
 
 // ---- the checks ---------------------------------------------------------------------------------
-
-let ran = 0;
-const missed = [];
-
-function check(name, kills, got, want) {
-  ran += 1;
-  const same = JSON.stringify(got) === JSON.stringify(want);
-  if (!same) missed.push(name);
-  console.log(`${same ? 'ok  ' : 'MISS'}  ${name}\n      kills: ${kills}`);
-  if (!same) {
-    console.log(`      got   ${JSON.stringify(got)}`);
-    console.log(`      want  ${JSON.stringify(want)}`);
-  }
-}
 
 /** A tree as nested `[label, hint | children]` - what a reader sees, in the order it is shown. */
 const seen = (nodes) => nodes.map((node) => (node.group
@@ -233,8 +210,4 @@ check('a closed trade rolls off nobody\'s window',
         + 'no longer holds',
       blotter.rollingCount(ROLLING, 60), 1);
 
-console.log(`\n${ran} checks over 12 functions, ${missed.length} missed`);
-if (missed.length) {
-  console.log(missed.map((name) => `  ${name}`).join('\n'));
-  process.exit(1);
-}
+done();

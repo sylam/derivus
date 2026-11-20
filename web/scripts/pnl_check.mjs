@@ -4,30 +4,9 @@
 //
 //   node web/scripts/pnl_check.mjs          # exits 1 on a miss
 
-import { fileURLToPath } from 'node:url';
-import { build } from 'esbuild';
+import { check, done, load } from './check.mjs';
 
-const bundled = await build({
-  stdin: { contents: "export * from './pnl';",
-           resolveDir: fileURLToPath(new URL('../src', import.meta.url)), loader: 'ts' },
-  bundle: true, format: 'esm', write: false, logLevel: 'silent',
-});
-const pnl = await import('data:text/javascript;base64,' +
-  Buffer.from(bundled.outputFiles[0].text).toString('base64'));
-
-let ran = 0;
-const missed = [];
-
-function check(name, kills, got, want) {
-  ran += 1;
-  const same = JSON.stringify(got) === JSON.stringify(want);
-  if (!same) missed.push(name);
-  console.log(`${same ? 'ok  ' : 'MISS'}  ${name}\n      kills: ${kills}`);
-  if (!same) {
-    console.log(`      got   ${JSON.stringify(got)}`);
-    console.log(`      want  ${JSON.stringify(want)}`);
-  }
-}
+const pnl = await load('pnl');
 
 const moved = (named) => ({ delta: 2, start: 1, end: 1.5, move: 0.5, pnl: 1, ...named });
 
@@ -79,8 +58,4 @@ check('a position reads by the reference it was booked under, else by its addres
        pnl.positionLabel({ instrument: 'b'.repeat(64), reference: null })],
       ['CF-A', `${'b'.repeat(12)}…`]);
 
-console.log(`\n${ran} checks over 6 functions, ${missed.length} missed`);
-if (missed.length) {
-  console.log(missed.map((name) => `  ${name}`).join('\n'));
-  process.exit(1);
-}
+done();

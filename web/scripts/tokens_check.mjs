@@ -7,8 +7,7 @@
 // The machine is set to German before the module loads, so a format that follows the machine's
 // locale reads `1.060,56` here, whatever this box is set to.
 
-import { fileURLToPath } from 'node:url';
-import { build } from 'esbuild';
+import { check, done, load } from './check.mjs';
 
 const Native = Intl.NumberFormat;
 Intl.NumberFormat = function (locales, options) { return new Native(locales ?? 'de-DE', options); };
@@ -16,27 +15,8 @@ Number.prototype.toLocaleString = function (locales, options) {
   return new Native(locales ?? 'de-DE', options).format(this);
 };
 
-const bundled = await build({
-  entryPoints: [fileURLToPath(new URL('../src/tokens.ts', import.meta.url))],
-  bundle: true, format: 'esm', write: false, logLevel: 'silent',
-});
-const tokens = await import('data:text/javascript;base64,' +
-  Buffer.from(bundled.outputFiles[0].text).toString('base64'));
+const tokens = await load('tokens');
 const { formatNumber: f } = tokens;
-
-let ran = 0;
-const missed = [];
-
-function check(name, kills, got, want) {
-  ran += 1;
-  const same = JSON.stringify(got) === JSON.stringify(want);
-  if (!same) missed.push(name);
-  console.log(`${same ? 'ok  ' : 'MISS'}  ${name}\n      kills: ${kills}`);
-  if (!same) {
-    console.log(`      got   ${JSON.stringify(got)}`);
-    console.log(`      want  ${JSON.stringify(want)}`);
-  }
-}
 
 check('a number reads with a decimal point and commas between thousands on any machine',
       "the machine's locale read, which prints `1 060,555542` on one desk and `1.060,56` here",
@@ -100,8 +80,4 @@ check("a declared field's number is money where the declaration sizes the instru
        tokens.kindOf({ widget: 'Float', description: '', value: 0 })],
       ['money', 'percent', 'plain']);
 
-console.log(`\n${ran} checks over 7 functions, ${missed.length} missed`);
-if (missed.length) {
-  console.log(missed.map((name) => `  ${name}`).join('\n'));
-  process.exit(1);
-}
+done();

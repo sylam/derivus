@@ -8,22 +8,11 @@
 // surface they build too, and a spot nothing quotes. The last check is what a named calculation
 // shows for a dial it does not state.
 
-import { fileURLToPath } from 'node:url';
-import { build } from 'esbuild';
+import { check, done, load } from './check.mjs';
 
-const bundled = await build({
-  entryPoints: [fileURLToPath(new URL('../src/desk.ts', import.meta.url))],
-  bundle: true, format: 'esm', write: false, logLevel: 'silent',
-});
-const desk = await import('data:text/javascript;base64,' +
-  Buffer.from(bundled.outputFiles[0].text).toString('base64'));
+const desk = await load('desk');
 // the store, for what a run says about the book it ran on
-const stored = await build({
-  entryPoints: [fileURLToPath(new URL('../src/state.ts', import.meta.url))],
-  bundle: true, format: 'esm', write: false, logLevel: 'silent',
-});
-const state = await import('data:text/javascript;base64,' +
-  Buffer.from(stored.outputFiles[0].text).toString('base64'));
+const state = await load('state');
 
 const RISK = {
   as_of: '2026-09-24T12:00:00.000', etag: 'e', currency: 'USD', mtm: 1.0, per_deal: [],
@@ -42,20 +31,6 @@ const RISK = {
   quoted: ['FXVol.USD.ZAR', 'InterestRate.USD'],
   quote_note: null,
 };
-
-let ran = 0;
-const missed = [];
-
-function check(name, kills, got, want) {
-  ran += 1;
-  const same = JSON.stringify(got) === JSON.stringify(want);
-  if (!same) missed.push(name);
-  console.log(`${same ? 'ok  ' : 'MISS'}  ${name}\n      kills: ${kills}`);
-  if (!same) {
-    console.log(`      got   ${JSON.stringify(got)}`);
-    console.log(`      want  ${JSON.stringify(want)}`);
-  }
-}
 
 check("the quote reading is every quote the book moves with, in its block's order, then what "
       + 'nothing quotes',
@@ -473,10 +448,7 @@ check('nothing is held back off a desk that records, before the grants of the se
       [null, null, null, null, null, NO_SEAT]);
 // --- every write of the market or its set-up names the seat: the requests a fetch stub catches,
 // so nothing leaves this process - no tick, no verification and no set-up is ever sent
-const api = await import('data:text/javascript;base64,' + Buffer.from((await build({
-  entryPoints: [fileURLToPath(new URL('../src/api.ts', import.meta.url))],
-  bundle: true, format: 'esm', write: false, logLevel: 'silent',
-})).outputFiles[0].text).toString('base64'));
+const api = await load('api');
 const caught = [];
 globalThis.fetch = async (url, options) => {
   caught.push([url, JSON.parse(options.body ?? 'null')?.actor ?? null]);
@@ -548,8 +520,4 @@ check("a run's peaks are its row's: the expected exposure's and each PFE column'
          pfe: [{ value: 9, day: '2027-02-16', quantile: 97.5 },
                { value: 12, day: '2027-02-16', quantile: 99 }] }, { pfe: [] }, { pfe: [] }]);
 
-console.log(`\n${ran} checks over 45 functions, ${missed.length} missed`);
-if (missed.length) {
-  console.log(missed.map((name) => `  ${name}`).join('\n'));
-  process.exit(1);
-}
+done();

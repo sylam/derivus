@@ -10,38 +10,13 @@
 // The book is a client's netting set holding an option and a two-legged collar, and a forward at
 // the book's root; the record is a fake reader paging rows as `GET /book/activity` does.
 
-import { fileURLToPath } from 'node:url';
-import { build } from 'esbuild';
+import { check, done, load, node } from './check.mjs';
 
-const load = async (module) => {
-  const bundled = await build({
-    entryPoints: [fileURLToPath(new URL(`../src/${module}`, import.meta.url))],
-    bundle: true, format: 'esm', write: false, logLevel: 'silent',
-  });
-  return import('data:text/javascript;base64,' +
-    Buffer.from(bundled.outputFiles[0].text).toString('base64'));
-};
-const trade = await load('trade.ts');
-const blotter = await load('blotter.ts');
-const state = await load('state.ts');
-
-let ran = 0;
-const missed = [];
-
-function check(name, kills, got, want) {
-  ran += 1;
-  const same = JSON.stringify(got) === JSON.stringify(want);
-  if (!same) missed.push(name);
-  console.log(`${same ? 'ok  ' : 'MISS'}  ${name}\n      kills: ${kills}`);
-  if (!same) {
-    console.log(`      got   ${JSON.stringify(got)}`);
-    console.log(`      want  ${JSON.stringify(want)}`);
-  }
-}
+const trade = await load('trade');
+const blotter = await load('blotter');
+const state = await load('state');
 
 const ts = (day) => ({ '.Timestamp': day });
-const node = (deal, children) => ({ Instrument: { '.Deal': deal },
-                                   ...(children ? { Children: children } : {}) });
 const leg = (role, type, buy, strike, amount = 1000000) => node({
   Object: 'FXOptionDeal', Reference: `COLLAR_${role}`, Structure_Reference: 'COLLAR',
   Currency: 'ZAR', Underlying_Currency: 'USD', Underlying_Amount: amount, Option_Type: type,
@@ -336,8 +311,4 @@ check('a seat signs only a ticket its worklist lists that it did not book; no se
       ['No seat is set', 'Booked by this seat', 'Booked by this seat', null,
        'This seat does not sign it']);
 
-console.log(`\n${ran} checks over 19 functions, ${missed.length} missed`);
-if (missed.length) {
-  console.log(missed.map((name) => `  ${name}`).join('\n'));
-  process.exit(1);
-}
+done();
