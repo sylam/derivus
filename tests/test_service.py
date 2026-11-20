@@ -6607,6 +6607,43 @@ def test_a_recalc_s_id_is_kept_by_the_book_its_record_and_its_files(recorded, tm
         service.BOOK = None
 
 
+def test_a_read_serves_its_rows_where_current_cannot_be_worked_out(recorded, tmp_path):
+    """A READ NEVER REFUSES FOR `current`. Recalced, then one ounce of gold held under NS_COL, which
+    the book carries no spot for: the book will not price as a recalc prices it, so `/book/xva`
+    serves both rows exactly as before but for `current`, null on each, beside
+    `current_unknown`, the record's own sentence; a row whose set left the book still reads false,
+    which needs no plan; and `/book/status` reads the rows too. Before the gold the same read says
+    nothing is unknown.
+
+    Killing mutation: the record's refusal let through, which answers both reads with its 422.
+    """
+    book, _ = collateral_desk(tmp_path)
+    try:
+        recalc()
+        projection = json.loads((tmp_path / 'xva.json').read_text())
+        projection['sets']['NS_OLD'] = {'status': 'done', 'cva': 1.0, 'result_id': 'f' * 64}
+        (tmp_path / 'xva.json').write_text(json.dumps(projection), newline='\n')
+        before = CLIENT.get('/book/xva').json()
+        assert before['current_unknown'] is None
+
+        held_under('NS_COL', 'XAU', 1.0)
+        after = CLIENT.get('/book/xva')
+        assert after.status_code == 200, after.text
+        assert after.json()['current_unknown'] == (
+            "the record holds XAU as collateral under 'NS_COL' and this book carries no spot for "
+            "it into USD, its Balance_Currency: a balance in an asset the book carries no spot for "
+            "is a market the book lacks; install the spot")
+        assert [dict(row, current=None) if row['reference'] != 'NS_OLD' else row
+                for row in before['sets']] == after.json()['sets']
+        assert [row['current'] for row in after.json()['sets']] == [None, None, False]
+        status = CLIENT.get('/book/status')
+        assert status.status_code == 200, status.text
+        assert [(row['reference'], row['status']) for row in status.json()['xva']] == [
+            ('NS_A', 'done'), ('NS_COL', 'done'), ('NS_OLD', 'done')]
+    finally:
+        service.BOOK = None
+
+
 def test_the_cva_column_reads_the_same_whether_or_not_fva_ran(desk_xva):
     """One run serving both adjustments must not make the credit one a different number.
 

@@ -1524,7 +1524,11 @@ def xva_view() -> dict:
     `done`, `failed` (with the engine's own wording in `error` - a counterparty with no survival
     curve lands here) or `never run`. A set the book no longer holds is still reported, with a
     `note` saying so and no `deal_path`; a recalc still in flight rides under `recalc`. `currency`
-    is the one the row's run reported in, null on a row filed before it was kept.
+    is the one the row's run reported in, null on a row filed before it was kept. `current` says
+    whether `recalc_xva` now would be the row's own run - false for a set the book no longer holds,
+    null for one never run, and null on every set where the book will not price as a recalc does,
+    `current_unknown` then saying why. `peaks` are the run's largest `EE` and `PFE_<percentile>`,
+    each `{value, day}`, and `profile` its exposure table.
     """
     return service().call('GET', '/book/xva')
 

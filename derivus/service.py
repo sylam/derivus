@@ -4412,17 +4412,21 @@ class IncrementJob:
 
 
 def recalc_ids(live, document, etag):
-    """`{reference: id}` - the result id a recalc of each netting set of the book would file now.
-    Kept on the book by what they are worked out from - its text, the record's head and the
-    digests of the files it names - so a read with nothing moved works nothing out."""
+    """`({reference: id}, None)` - the result id a recalc of each netting set of the book would
+    file now - or `(None, why)`, the record's own sentence, where the book will not price as a
+    recalc prices it. Kept on the book by what they are worked out from - its text, the record's
+    head and the digests of the files it names - so a read with nothing moved works nothing out."""
     files = content_hash(Context().files(document))
     key = (etag, spine.folded(lambda log: log.head()[0]) if spine.configured() else None, files)
     kept = live.recalcs.get(key)
     if kept is None:
-        pricing = priced(document, 'CreditMonteCarlo')
-        kept = live.recalcs.put(key, {
+        try:
+            pricing = priced(document, 'CreditMonteCarlo')
+        except spine.SpineRefused as refused:
+            return live.recalcs.put(key, (None, str(refused)))
+        kept = live.recalcs.put(key, ({
             node['Instrument']['.Deal'].get('Reference'): content_hash(
-                xva_stamp(pricing, node, files)[2]) for _, node in netting_sets(pricing)})
+                xva_stamp(pricing, node, files)[2]) for _, node in netting_sets(pricing)}, None))
     return kept
 
 
@@ -4475,7 +4479,9 @@ def book_xva_view():
     recalc means - so the view never blocks, never runs a CMC, and never hides a number's age.
     `currency` is the one the row's own run reported in, and `current` whether a recalc now would
     be the row's own run: the result id it would file the set under (`recalc_ids`) against the
-    row's - false for a set the book no longer holds, null for one never run.
+    row's - false for a set the book no longer holds, null for one never run. Where the book will
+    not price as a recalc prices it, the rows are served all the same, `current` null on each set
+    it holds, and `current_unknown` is the record's sentence saying why; null otherwise.
 
     What a credit officer reads off a run's profile is kept on its row: `peaks` the largest `EE`
     and each `PFE_<percentile>` with the day each falls, `{value, day}`, and `profile` the table
@@ -4484,7 +4490,7 @@ def book_xva_view():
     live = live_book()
     document, etag = live.read()
     rows = read_projection().get('sets') or {}
-    ids = recalc_ids(live, document, etag)
+    ids, unknown = recalc_ids(live, document, etag)
     entries, seen = [], set()
     for deal_path, node in netting_sets(document):
         deal = node['Instrument']['.Deal']
@@ -4495,12 +4501,12 @@ def book_xva_view():
         entries.append(projection_entry(
             row, reference=reference, deal_path=deal_path, counterparty=counterparty,
             collateralized=collateralized,
-            current=row['result_id'] == ids[reference] if row else None))
+            current=row['result_id'] == ids[reference] if row and ids is not None else None))
     for reference in sorted(set(rows) - seen):
         entries.append(projection_entry(rows[reference], reference=reference, current=False, note=(
             'no NettingCollateralSet called {!r} is in the book any more - this row is the last '
             'run of a set that has since left it'.format(reference))))
-    return {'as_of': as_of(), 'path': xva_path(), 'sets': entries}
+    return {'as_of': as_of(), 'path': xva_path(), 'sets': entries, 'current_unknown': unknown}
 
 
 #: What the bootstrap has to say for itself: `Config.bootstrap` reports a family that could not run
