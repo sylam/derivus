@@ -73,7 +73,8 @@ export function TradeView() {
                   + 'node in the portfolio or a booked quote.'} />
     );
   }
-  const quote = listed.data ? quoteAt(listed.data.quotes, trade.path) ?? null : undefined;
+  const quote = listed.data ? quoteAt(listed.data.quotes, trade.path, row.reference) ?? null
+    : undefined;
 
   return (
     <div className="main">

@@ -121,10 +121,10 @@ function Tickets({ worklist }: { worklist: Worklist }) {
   const elsewhere = waitingElsewhere(positions, worklist.pending);
   const executions = new Map(positions.flatMap((position) => position.tickets)
     .map((ticket) => [ticket.ticket, ticket.execution_reference]));
-  // each ticket's quote is the one that landed at its trade, read whole for its margin and spread
+  // each ticket's quote is the one that booked its trade, read whole for its margin and spread
   const desk = useQuoteList();
   const given = (row: WorkRow) => (desk.data && row.deal_path
-    ? quoteAt(desk.data.quotes, row.deal_path) : undefined);
+    ? quoteAt(desk.data.quotes, row.deal_path, row.reference) : undefined);
   const quotes = useQuotes([...new Set([...worklist.pending, ...elsewhere]
     .flatMap((row) => given(row)?.quote_id ?? []))]);
   const own = worklist.pending.filter((row) => row.booker === worklist.seat).length;

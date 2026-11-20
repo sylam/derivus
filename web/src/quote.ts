@@ -278,9 +278,29 @@ export function standsAt(row: Pick<QuoteGiven, 'quoted_at' | 'accepted' | 'booke
   return { word: until !== undefined && Date.parse(until) >= now ? 'firm' : 'lapsed', until };
 }
 
-/** The quote a trade was booked from: the one that landed at its deal path. */
-export const quoteAt = (rows: QuoteGiven[], path: string): QuoteGiven | undefined =>
-  rows.find((row) => row.booked?.deal_path === path);
+/** Whether a quote's booking is the trade at `path` under `reference`: by the reference the booking
+ * names, which a node deleted ahead of the trade does not move - the trade now at its path under
+ * another reference being none of its - and by the path only where it names none. */
+const tied = (booked: NonNullable<QuoteGiven['booked']>, path: string, reference: unknown) =>
+  (booked.reference ? booked.reference === reference : booked.deal_path === path);
+
+/** The quote a trade was booked from: the one whose booking is the trade (`tied`). */
+export const quoteAt = (rows: QuoteGiven[], path: string, reference: unknown) =>
+  rows.find((row) => row.booked && tied(row.booked, path, reference));
+
+/** Where a booked quote's trade stands in the file now: the first trade `tied` to it in the file's
+ * order - none where the file holds it no more. */
+export function landedAt(nodes: DealNode[], booked: NonNullable<QuoteGiven['booked']>,
+                         at = ''): string | undefined {
+  for (const [position, node] of nodes.entries()) {
+    const path = `${at}${position}`;
+    const deal = node.Instrument['.Deal'];
+    const found = deal.Object === SET ? landedAt(node.Children ?? [], booked, `${path}/`)
+      : tied(booked, path, deal.Reference) ? path : undefined;
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
 
 /** A re-quote made here and the quote it re-quotes, which the service does not link. */
 export type Kept = { id: string; from: string };

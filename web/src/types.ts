@@ -120,9 +120,12 @@ export type PendingQuote = {
 };
 
 /** One row of `GET /book/quotes`, newest first: what was quoted, for whom, its net, who quoted it
- * and when, and - once the acceptance wrote them - `accepted` and where it was `booked`. */
+ * and when, and - once the acceptance wrote them - `accepted` and where it was `booked`, beside the
+ * `reference` of the trade it booked. */
 export type QuoteGiven = Pick<Quote, 'quote_id' | 'structure' | 'variation' | 'netting_set' | 'net'
-  | 'currency'> & Pick<PendingQuote, 'quoted_at' | 'quoted_by' | 'accepted' | 'booked'>;
+  | 'currency'> & Pick<PendingQuote, 'quoted_at' | 'quoted_by' | 'accepted'> & {
+  booked?: { lsn: number | null; deal_path: string; reference?: string | null } | null;
+};
 
 /** What `POST /book/quote` answers short of a 422 - and a booking, a restrike or an unwind through
  * `POST /book/deals`: a booking, a refusal in words, or the quote already booked; on a desk keeping

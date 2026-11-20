@@ -356,15 +356,34 @@ check('a quote stands booked, accepted, firm until its window closes, past it, o
        { word: 'quoted' }]);
 
 const LISTED = [given({ quote_id: 'q3' }), given({ quote_id: 'q2', booked: { lsn: 30, deal_path: '0/20' } }),
-                given({ quote_id: 'q1', booked: { lsn: null, deal_path: '0/2' } })];
-check('a trade\'s quote is the one that landed at its deal path, and none landed elsewhere is it',
-      'a path matched by its start, so the trade at 0/2 takes the quote booked at 0/20; or the first '
-        + 'quote of the list taken for any trade',
-      [quote.quoteAt(LISTED, '0/2')?.quote_id, quote.quoteAt(LISTED, '0/20')?.quote_id,
-       quote.quoteAt(LISTED, '1/0')],
-      ['q1', 'q2', undefined]);
+                given({ quote_id: 'q1', booked: { lsn: null, deal_path: '0/2' } }),
+                given({ quote_id: 'q4', booked: { lsn: 41, deal_path: '2', reference: 'COLLAR-A' } }),
+                given({ quote_id: 'q5', booked: { lsn: 42, deal_path: '3', reference: 'COLLAR-B' } })];
+check('a trade\'s quote is the one whose booking names its reference, wherever the file now holds '
+        + 'it, and the one that landed at its path only where the booking names none',
+      'a path matched by its start, so the trade at 0/2 takes the quote booked at 0/20; the first '
+        + 'quote of the list taken for any trade; or the path trusted over the reference, which '
+        + 'gives COLLAR-B, moved to 2 by a deletion ahead of it, the quote of COLLAR-A it replaced',
+      [quote.quoteAt(LISTED, '0/2', 'X')?.quote_id, quote.quoteAt(LISTED, '0/20', 'X')?.quote_id,
+       quote.quoteAt(LISTED, '1/0', 'X'), quote.quoteAt(LISTED, '2', 'COLLAR-B')?.quote_id,
+       quote.quoteAt(LISTED, '3', 'COLLAR-C')],
+      ['q1', 'q2', undefined, 'q5', undefined]);
 
-console.log(`\n${ran} checks over 20 functions, ${missed.length} missed`);
+const QUOTED_BOOK = [{ Instrument: { '.Deal': { Object: 'NettingCollateralSet', Reference: 'ISDA-K' } },
+  Children: [{ Instrument: { '.Deal': { Object: 'FXOptionDeal', Reference: 'CALL' } } }] },
+  { Instrument: { '.Deal': { Object: 'StructuredDeal', Reference: 'COLLAR-B' } }, Children: [
+    { Instrument: { '.Deal': { Object: 'FXOptionDeal', Reference: 'COLLAR-A' } } }] }];
+check('a booked quote lands where the file holds its trade now: the trade under its reference, a '
+        + 'leg never, nothing where the file lost it, and its path only where it names none',
+      'the booked path read as the trade, which opens COLLAR-B for the quote that booked the '
+        + 'deleted COLLAR-A; a leg naming the reference taken for the trade; or a netting set '
+        + 'taken for its trades',
+      [quote.landedAt(QUOTED_BOOK, LISTED[4].booked), quote.landedAt(QUOTED_BOOK, LISTED[3].booked),
+       quote.landedAt(QUOTED_BOOK, { lsn: 1, deal_path: '0/0' }),
+       quote.landedAt(QUOTED_BOOK, { lsn: 1, deal_path: '0', reference: 'ISDA-K' })],
+      ['1', undefined, '0/0', undefined]);
+
+console.log(`\n${ran} checks over 21 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

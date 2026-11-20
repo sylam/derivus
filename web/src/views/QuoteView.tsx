@@ -9,9 +9,9 @@ import { Navigator } from '../components/Navigator';
 import { stampText } from '../desk';
 import { NO_PAPER, nodeAt } from '../positions';
 import {
-  clientText, clients, directions, draftOf, firmSeconds, firmText, keep, onMarketAxis, requestOf,
-  salesNames, solvedNumbers, solving, spreadText, standsAt, ticketFields, ticketLegs, verdictOf,
-  type Draft, type Kept, type TicketLeg, type Verdict,
+  clientText, clients, directions, draftOf, firmSeconds, firmText, keep, landedAt, onMarketAxis,
+  requestOf, salesNames, solvedNumbers, solving, spreadText, standsAt, ticketFields, ticketLegs,
+  verdictOf, type Draft, type Kept, type TicketLeg, type Verdict,
 } from '../quote';
 import { clockOf, heldBack, openTrade, useApp } from '../state';
 import { formatNumber } from '../tokens';
@@ -136,27 +136,31 @@ export function QuoteView() {
 const CHIP: Record<string, string> = { booked: 'done', firm: 'running', lapsed: 'error' };
 
 /** Where a quote stands as its row says it: a word, the time its window closes or closed, and
- * where a booked one landed - the trade there opening its page. */
+ * the trade a booked one booked - where the file holds it now, opening its page. */
 function Stands({ row, window, now }: { row: QuoteGiven; window: number | null; now: number }) {
   const { state, dispatch } = useApp();
   const { word, until } = standsAt(row, window, now);
-  const landed = row.booked && nodeAt(state.doc?.Calc.Deals?.Deals?.Children ?? [],
-                                      row.booked.deal_path)?.Instrument['.Deal'].Reference;
+  const children = state.doc?.Calc.Deals?.Deals?.Children ?? [];
+  const at = row.booked ? landedAt(children, row.booked) : undefined;
+  const named = row.booked && (row.booked.reference ?? (at === undefined
+    ? row.booked.deal_path : nodeAt(children, at)?.Instrument['.Deal'].Reference));
   return (
     <>
       <span className={`chip ${CHIP[word] ?? ''}`}>{STANDS[word]}</span>
       {until && (
         <span className="hint"> {word === 'firm' ? 'until' : 'since'} {stampText(until)}</span>
       )}
-      {row.booked && (
+      {row.booked && (at === undefined ? (
+        <span className="hint"> {String(named)}, which the book file holds no more</span>
+      ) : (
         <button className="tradelink" title="open the trade's page"
                 onClick={(event) => {
                   event.stopPropagation();
-                  openTrade(dispatch, row.booked!.deal_path);
+                  openTrade(dispatch, at);
                 }}>
-          {' '}{String(landed ?? row.booked.deal_path)} ›
+          {' '}{String(named ?? at)} ›
         </button>
-      )}
+      ))}
     </>
   );
 }
