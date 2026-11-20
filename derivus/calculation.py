@@ -5540,7 +5540,7 @@ class SACCR(NettingSetCalculation):
         """The block and the book read as every calculation over netting sets reads them, and the
         `Parameters` file's numbers, refused by name where one CRE52 reads is missing or
         malformed."""
-        parameters = super(SACCR, self).setup(params)
+        parameters, self.year_of = super(SACCR, self).setup(params), {}
         try:
             self.alpha, self.floor = float(parameters['alpha']), float(parameters['multiplier_floor'])
             self.supervisory = {(asset, subclass): {key: float(row[key] or 0.0) for key in (
@@ -5578,10 +5578,12 @@ class SACCR(NettingSetCalculation):
 
     def years(self, day):
         """`day`, a date or the float days from the base date a compile counts, in years of 30/360
-        from the base date, nothing once it has passed."""
-        base = self.valuation['Base_Date']
-        days = int(day) if isinstance(day, float) else (day - base).days
-        return max(utils.DayCount.accrual(base, days, utils.DayCount.ACT30_360), 0.0)
+        from the base date, nothing once it has passed, kept per day on the run (`year_of`)."""
+        if day not in self.year_of:
+            base = self.valuation['Base_Date']
+            days = int(day) if isinstance(day, float) else (day - base).days
+            self.year_of[day] = max(utils.DayCount.accrual(base, days, utils.DayCount.ACT30_360), 0.0)
+        return self.year_of[day]
 
     def fx(self, currency):
         """What one unit of `currency` is worth in the calculation currency at the base date, off
