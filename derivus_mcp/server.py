@@ -1624,7 +1624,8 @@ def close_check(date: str) -> dict:
 
 @MCP.tool(annotations=READ_ONLY)
 def book_activity(since: int | None = None, limit: int = 200,
-                  actor: str | None = None, deal_path: str | None = None) -> dict:
+                  actor: str | None = None, deal_path: str | None = None,
+                  agreement: str | None = None, entity: str | None = None) -> dict:
     """The record's own strip: one line per event - where it sits, when it was recorded and when
     it is TRUE, who said it, and the sentence for what it was: `summary` names the trade and
     client, agreement or entity it is about, `by` is who did it (the seat refused on a refusal,
@@ -1639,10 +1640,12 @@ def book_activity(since: int | None = None, limit: int = 200,
     is the head. The strip opens no body, so it reads EVERY type - including one this hub has no
     sentence for, which renders its own name rather than dropping out of the sequence. `actor` is
     the seat reading. `deal_path` reads one trade's rows alone, through its restrikes - the path
-    `book_positions` gives. 404 on a box that records nothing.
+    `book_positions` gives - and `agreement` or `entity` the rows that name that agreement or that
+    legal entity, a client's history, paged the same way. 404 on a box that records nothing.
     """
     return service().call('GET', '/book/activity', params=dict(
-        _stated(since=since, actor=actor, deal_path=deal_path), limit=limit))
+        _stated(since=since, actor=actor, deal_path=deal_path, agreement=agreement,
+                entity=entity), limit=limit))
 
 
 @MCP.tool(annotations=READ_ONLY)

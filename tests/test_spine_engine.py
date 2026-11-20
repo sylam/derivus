@@ -3461,6 +3461,47 @@ def test_one_trade_s_history_is_asked_by_its_path_through_its_restrikes(recorded
                                                           'rows': trade[-1:]}
 
 
+def test_a_client_s_history_is_asked_by_its_agreement_or_its_entity(recorded, desk):
+    """A CLIENT'S HISTORY, ASKED BY CLIENT. Two clients, each an entity and an agreement, declared
+    A then B - LSNs 5 to 8 after genesis's four - and trades booked A, B, A at 9, 10 and 11. Asked
+    by agreement A, the strip answers the rows opening it, exactly as the whole strip tells them:
+    its declaration and its two trades, none of B's; a page of two from genesis and the next from
+    its cursor walk those three in turn, and the newest page's cursor is the head. Asked by entity
+    A, it answers the entity's declaration and its agreement's; asked by both, the one row opening
+    each.
+
+    Killing mutation: `agreement` and `entity` not read, which answers every row of the record,
+    the other client's among them.
+    """
+    with_client(desk)
+    document = json.loads(desk.read_text())
+    document['Calc']['Deals']['Deals']['Children'].append(netting_set('CLIENT_B', 'CPTY_B'))
+    desk.write_text(json.dumps(document, indent=2), newline='\n')
+    for client, entity, name in ((CLIENT_SET, 'CPTY_A', 'Client A Ltd'),
+                                 ('CLIENT_B', 'CPTY_B', 'Client B Ltd')):
+        terms = netting_set(client, entity)['Instrument']['.Deal']
+        for path, body in (('/book/entities', {'entity': entity, 'name': name}),
+                           ('/book/agreements', {'agreement': client, 'entity': entity,
+                                                 'kind': 'ISDA 2002', 'terms': terms})):
+            assert CLIENT.post(path, content=dump(body), headers=JSON).status_code == 200
+    for execution, client in (('EXEC-A1', CLIENT_SET), ('EXEC-B1', 'CLIENT_B'),
+                              ('EXEC-A2', CLIENT_SET)):
+        assert ticketed(execution, parent_reference=client).json()['written'] is True
+
+    whole = strip()['rows']
+    client = [row for row in whole if row['agreement'] == CLIENT_SET]
+    assert [(row['lsn'], row['event_type']) for row in client] == [
+        (6, 'agreement_declared'), (9, 'fill'), (11, 'fill')]
+    asked = strip(agreement=CLIENT_SET)
+    assert (asked['rows'], asked['lsn']) == (client, head(recorded))
+    first = strip(agreement=CLIENT_SET, since=0, limit=2)
+    assert (first['rows'], first['lsn']) == (client[:2], 9)
+    assert strip(agreement=CLIENT_SET, since=9, limit=2) == {'lsn': 11, 'rows': client[2:]}
+    assert [(row['lsn'], row['event_type']) for row in strip(entity='CPTY_A')['rows']] == [
+        (5, 'entity_declared'), (6, 'agreement_declared')]
+    assert strip(entity='CPTY_A', agreement=CLIENT_SET)['rows'] == client[:1]
+
+
 def test_the_worklist_names_each_ticket_and_the_seat_it_waits_on(recorded, desk):
     """ONE ANSWER FOR WHAT WAITS ON A SEAT. A ticket under four eyes waits on the seat that may sign
     it, named as a trade - its reference, path, client and agreement, its booker, its tier, the
