@@ -1494,6 +1494,32 @@ def test_a_status_poll_is_answered_anew_once_the_record_moves_and_the_paper_has_
     assert paper() == head(recorded) == started + 3
 
 
+def test_a_risk_poll_with_nothing_moved_is_a_lookup_and_a_frame_that_moves_no_number_runs_nothing(
+        recorded, desk):
+    """`/book/risk` is kept at two levels. The first is the poll's key, read before anything is
+    compiled or hashed: a second poll is answered what the first kept under it. A frame landing
+    moves that key, so the book is compiled again; an entity declared moves nothing a risk run
+    reads, so the compile hashes as it did and the answer kept under that hash is served - the
+    same object, not a second run - and kept under the new key.
+
+    Killing mutations: the answer never kept under the poll's key, where the lookup finds none;
+    the second level dropped, where the declaration is a second run and a new object.
+    """
+    def key():
+        return service.poll_key(service.BOOK)
+
+    risk = CLIENT.get('/book/risk').json()
+    ran = service.BOOK.risk_cache.get(risk['etag'])
+    assert service.BOOK.polls.get(('risk',) + key()) == risk == CLIENT.get('/book/risk').json()
+    standing = key()
+    CLIENT.post('/book/entities', content=dump({'entity': 'LEI-A', 'name': 'Client A'}),
+                headers=JSON)
+    assert key() != standing and service.BOOK.polls.get(('risk',) + key()) is None
+    again = CLIENT.get('/book/risk').json()
+    assert again == risk and service.BOOK.risk_cache.get(again['etag']) is ran
+    assert service.BOOK.polls.get(('risk',) + key()) == risk
+
+
 def test_a_position_is_read_where_it_sits_and_where_the_file_holds_it(recorded, desk):
     """`/book/positions` is the fold at the head joined to the FILE: every position standing under
     its agreement and portfolio, beside the nodes carrying its instrument under that agreement's
@@ -5048,6 +5074,8 @@ def test_the_consolidated_risk_and_the_explain_ask_the_queue_s_question(recorded
 
     warm = risk(actor=ACTOR)
     assert warm.status_code == 200, warm.text
+    assert service.BOOK.polls.get(('risk',) + service.poll_key(service.BOOK)) == warm.json(), (
+        'the poll kept nothing a stranger could be served')
     for again in (risk(actor=STRANGER), explained(actor=STRANGER, end='2024-06-28'),
                   CLIENT.get('/book/pnl', params=dict(actor=STRANGER))):
         assert again.status_code == 422 and STRANGER in again.json()['detail'], again.text

@@ -2092,9 +2092,11 @@ def book_risk(actor: str = None):
     nothing to slice by; the per-set reading is `/book/xva`.
 
     Under a home the seat `actor` is asked the queue's question for a what-if first - `validate`
-    over the book or a node under it - and a refusal is a 422 in the record's own words. Computed
-    on a MISS and kept on the live `Book` under `etag`, a hash of everything the run reads, so a
-    blotter polls this on the same beat it polls `/book`; a miss over a market already read values
+    over the book or a node under it - and a refusal is a 422 in the record's own words. Kept on
+    the live `Book` twice: under the poll's key (`polled`), so a poll with nothing moved compiles
+    and hashes nothing, and under `etag`, a hash of everything the run reads, so a frame or an
+    edit that moves none of it runs nothing. A blotter polls this on the same beat it polls
+    `/book`; a miss over a market already read values
     on the refit kept by its hash (`quote_run`). An empty book answers zeros without running
     anything; a book that will not price answers 422 naming the cause and caches nothing.
 
@@ -2107,18 +2109,22 @@ def book_risk(actor: str = None):
     and `quote_note` names each block read on its factors instead, and why.
     """
     live = live_book()
-    document = priced(live.read()[0], 'BaseValuation')
     # before the cache: a warm answer served to a seat the cold one refuses is no admission
-    spine.admit(spine.CURIOSITY, actor, book_name(document))
-    etag = risk_etag(document)
-    answer = live.risk_cache.get(etag)
-    if answer is None:
-        try:
-            answer = live.risk_cache.put(etag, consolidated_risk(document))
-        except Exception as error:
-            raise HTTPException(422, 'the book will not price a consolidated risk run: {}'.format(
-                error))
-    return dict(answer, etag=etag)
+    spine.admit(spine.CURIOSITY, actor, live.named()[1])
+
+    def risk(document, _):
+        document = priced(document, 'BaseValuation')
+        etag = risk_etag(document)
+        answer = live.risk_cache.get(etag)
+        if answer is None:
+            try:
+                answer = live.risk_cache.put(etag, consolidated_risk(document))
+            except Exception as error:
+                raise HTTPException(422, 'the book will not price a consolidated risk run: {}'
+                                    .format(error))
+        return dict(answer, etag=etag)
+
+    return polled(live, 'risk', risk)
 
 
 # ------------------------------------------------------------------------------------------------
