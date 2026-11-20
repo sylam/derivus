@@ -85,8 +85,8 @@ LANES = (TELEMETRY, CURIOSITY, STANDING)
 #: What the standing lane MINTS, respelled beside the lanes for the same reason: a standing job the
 #: queue turns away is recorded as a refusal of this type.
 STANDING_TYPE = 'run_completed'
-#: The two verbs checked off the log, respelled so an unconfigured box never imports the spine.
-MARK, VALIDATE = 'mark', 'validate'
+#: The verbs checked off the log, respelled so an unconfigured box never imports the spine.
+BOOK, MARK, SETTLE, VALIDATE = 'book', 'mark', 'settle', 'validate'
 
 #: The processes a market is designated for - `derivus_spine.policy.DESIGNATED_PROCESSES`,
 #: respelled here so the service can name them without paying for the spine import: the one a
@@ -1243,6 +1243,20 @@ def entities(lsn=None):
     """Every legal entity the record declares at `lsn`: its name and the parent it is grouped
     under."""
     return _rows('entities', lsn)
+
+
+def holder_of(address, book, folds=None):
+    """The deepest portfolio node holding `address` under `book`, or None if unrecorded."""
+    if not configured():
+        return None
+    spine = package()
+
+    def read(log):
+        held = _state(log, spine.projections.PROJECTORS['positions'], folds=folds)
+        nodes = spine.capability.holders(held, address, book)
+        return spine.capability.deepest(nodes) if nodes else None
+
+    return folded(read)
 
 
 def agreements(lsn=None):

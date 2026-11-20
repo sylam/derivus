@@ -1551,7 +1551,7 @@ def test_a_close_is_declared_only_on_a_day_the_check_calls_legal(recorded, tmp_p
     stranger = CLIENT.post('/book/close', json={'actor': 'subject-nobody-at-all'})
     assert stranger.status_code == 422, stranger.text
     said = stranger.json()['detail']
-    assert 'subject-nobody-at-all' in said and 'validate' in said, said
+    assert 'subject-nobody-at-all' in said and 'mark' in said, said
     assert not service.BOOK.diaries.entries, 'the box compiled a diary for a close it then refused'
 
 
@@ -1631,7 +1631,9 @@ def test_the_settlement_file_is_struck_on_the_market_the_record_designates(recor
     log = SpineLog(recorded)
     try:
         blob = log.store.put(capability.canonical_document(
-            {'grants': [{'subject': other, 'verb': 'validate', 'book': 'diary-desk'}], 'read': []}))
+            {'grants': [{'subject': other, 'verb': 'settle', 'book': 'diary-desk'},
+                        {'subject': ACTOR, 'verb': 'validate', 'book': 'diary-desk'}],
+             'read': []}))
         log.append('policy_declared', {'policy': capability.CAPABILITIES_POLICY, 'blob': blob},
                    actor=ACTOR, blob_refs=(blob,))
     finally:

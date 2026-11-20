@@ -198,7 +198,7 @@ def book_a_deleted_trade_a_hundredfold(table, out):
     books it again a hundred times over under its own execution reference: a trade is taken once,
     so the second booking is refused naming what moved, and the trade as it was is taken back."""
     trader = seat('RATES', 'trader')
-    deleted = binding.delete_deal(roles.path_of('DEP-1'), reference='DEP-1')
+    deleted = binding.delete_deal(roles.path_of('DEP-1'), reference='DEP-1', actor=trader)
     table.did(trader, 'delete_deal DEP-1', deleted=deleted.get('deleted'))
     answer = roles.refused(lambda: roles.book(table, 'DEP-1', quantity=100.0))
     table.did(trader, 'book_deal DEP-1 x100 under its own reference', refused=answer)

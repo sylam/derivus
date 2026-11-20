@@ -351,8 +351,8 @@ EVENT_VERB = {
     # approve: the second pair of eyes, and the only verb whose refusal is also a decision.
     'approval': APPROVE,
     'rejection': APPROVE,
-    'result_pinned': APPROVE,           # a tuple the hub did not witness, given standing
     # mark: what the market is said to be - the verb mismark monitoring watches.
+    'result_pinned': MARK,              # a tuple the hub did not witness, given standing
     'market_declared': MARK,
     'official_close_declared': MARK,
     'fixing_observed': MARK,

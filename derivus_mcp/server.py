@@ -663,15 +663,16 @@ def amend_deal(deal_path: str, fields: dict, reference: str | None = None,
 
 
 @MCP.tool()
-def delete_deal(deal_path: str, reference: str | None = None) -> dict:
+def delete_deal(deal_path: str, reference: str | None = None,
+                actor: str | None = None) -> dict:
     """Remove the deal at `deal_path` from the live book, its children with it. The write is
     atomic and every other client sees it on its next read. `reference` names the deal you read at
     that path, so a path another host's booking has moved refuses rather than deleting whoever
-    sits there now - always pass it when other hosts share the book. A delete RECORDS NOTHING and
-    takes no seat: what ends a trade is an election, an expiry or a settlement, never a row leaving
-    a cache."""
+    sits there now - always pass it when other hosts share the book. On a recording desk, demands
+    `book` over the book (`actor`)."""
     return service().call('POST', '/book/deals', json=dict(
-        {'action': 'delete', 'deal_path': deal_path}, **_stated(reference=reference)))
+        {'action': 'delete', 'deal_path': deal_path},
+        **_stated(reference=reference, actor=actor)))
 
 
 # --------------------------------------------------------------------------- pricing

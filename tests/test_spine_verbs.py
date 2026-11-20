@@ -538,7 +538,7 @@ def test_every_verb_refuses_an_unscoped_actor_and_records_the_refusal(tmp_path):
             book=BOOK)),
         ('portfolio_declared', 'admin', lambda: verbs.declare_portfolio(
             log, STRANGER, BOOK + '/Options')),
-        ('result_pinned', 'approve', lambda: verbs.pin_result(
+        ('result_pinned', 'mark', lambda: verbs.pin_result(
             log, STRANGER, claim(), JOB, VALUES, RESULT, executor_of(RESULT, seen=ran),
             book=BOOK)),
     )
@@ -1592,7 +1592,7 @@ def test_the_vocabulary_grew_three_types_and_changed_none():
         'capability_denied', 'run_completed', 'snapshot_registered'}
 
     assert EVENT_VERB['run_completed'] == 'writer' and EVENT_VERB['quote_filed'] == 'book'
-    assert EVENT_VERB['result_pinned'] == 'approve'
+    assert EVENT_VERB['result_pinned'] == 'mark'
     assert BLOB_FIELDS['run_completed'] == ('job', 'result', 'values_hash')
     assert BLOB_FIELDS['result_pinned'] == ('job', 'result', 'values_hash', 'tolerance_policy')
     assert BLOB_FIELDS['quote_filed'] == ('values_hash',)

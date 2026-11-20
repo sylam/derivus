@@ -1489,6 +1489,11 @@ def book_deals(request: dict):
     def edit(document, etag):
         if action == 'delete':
             expected_reference(document, request)
+            target = deal_at(document, request['deal_path'])
+            scope = spine.holder_of(spine.instrument_address(target), book_name(document),
+                                    folds=folds())
+            spine.entitled(spine.BOOK, request.get('actor'), scope or book_name(document),
+                           'delete', 'nothing is deleted', anywhere=scope is None)
             removed = remove_deal(document, request['deal_path'])
             return True, {'written': True,
                           'deleted': removed['Instrument']['.Deal'].get('Reference')}
@@ -2927,11 +2932,12 @@ def file_paths():
 
 @app.post('/paths', summary='Replace where this workstation reads the files a job names')
 def file_paths_mapped(request: dict):
-    """`{path_transform, file_transform}` - both of the workstation's maps replaced whole in the
-    home's `paths.json`, which every context built after reads, and the served book opened anew,
-    every cache of a book being a reading of the files it names. A job's own paths are never
-    rewritten. Answers what `GET /paths` then answers."""
+    """`{path_transform, file_transform, actor?}` - both of the workstation's maps replaced whole
+    in the home's `paths.json`, which every context built after reads, and the served book opened
+    anew, every cache of a book being a reading of the files it names. A job's own paths are never
+    rewritten. Demands `mark` on a recording desk. Answers what `GET /paths` then answers."""
     global BOOK
+    marking(request, 'paths')
     write_desk_file(PATHS_FILE, {'path_transform': request['path_transform'],
                                  'file_transform': request['file_transform']})
     if BOOK is not None:
@@ -3956,12 +3962,13 @@ def book_close(request: dict):
     never unseats a later day's. 404 where no home is configured.
     """
     document, _ = recording().read()
+    spine.entitled(spine.MARK, request.get('actor'), None, 'official_close_declared',
+                   'no close is declared')
     # both defaults are CONVENTIONS, so only an omitted key takes one: a date or a market that
     # names nothing is a value to refuse, and an empty day is one a string compare calls legal
     market = OFFICIAL_MARKET if request.get('market') is None else request['market']
     day = spine.base_day(document) if request.get('date') is None else read_day(request['date'])
-    verdict = close_verdict(announced(document, diary_of(document, request.get('actor'))['rows']),
-                            day)
+    verdict = close_verdict(announced(document, hub_diary(document)['rows']), day)
     if not verdict['legal']:
         raise HTTPException(422, 'a close on {} is not legal here and nothing is declared - it '
                                  'waits on {}. A close does not pass over a payment nobody '
@@ -4006,13 +4013,15 @@ def book_settlements(request: dict):
     configured.
     """
     document, _ = recording().read()
+    spine.entitled(spine.SETTLE, request.get('actor'), book_name(document), 'settlement_export',
+                   'no settlement file is struck')
     if request.get('due_before') is None:
         raise HTTPException(422, 'a settlement file is struck FOR a day, so due_before has no '
                                  'default: post it as YYYY-MM-DD - a file carrying every payment '
                                  'the book will ever make would instruct the whole book')
     day = read_day(request['due_before'])
     market = spine.designated_market(spine.SETTLEMENT_EXPORT)
-    rows = announced(document, diary_of(document, request.get('actor'))['rows'])
+    rows = announced(document, hub_diary(document)['rows'])
     try:
         exported = export_settlements(rows, market['values_hash'], day)
     except ValueError as error:
@@ -5897,7 +5906,8 @@ def submit_verify(scope, actor=None):
     # a verification is an ACT against the terminal rather than a function of the files, so the
     # submission clock names it: two verifications of one scope are two trips
     result_id = content_hash({'securities': scope, 'at': time.perf_counter()})
-    return queued(Job(result_id, VerifyJob(scope, result_id), {}, spine.TELEMETRY, actor=actor))
+    return queued(Job(result_id, VerifyJob(scope, result_id), {}, spine.TELEMETRY, actor=actor,
+                      book=None if BOOK is None else book_name(BOOK.read()[0])))
 
 
 @app.post('/book/securities/verify', summary='Re-verify the ticker vocabulary against the terminal')
@@ -6836,6 +6846,7 @@ class Metronome:
                 self.succeeded(settled)
             else:
                 self.failed(cause)
+        marking({'actor': spine.hub()}, 'bloomberg_tick')
         self.pending = submit_bloomberg(self.scope, routine=True)['result_id']
 
     def run(self):

@@ -2615,7 +2615,8 @@ def test_a_home_written_before_the_seats_retired_still_books_exports_marks_and_v
     try:
         drafted = log.store.put(canonical_bytes({'grants': [
             {'subject': ACTOR, 'verb': verb, 'book': '*'} for verb in (
-                'admin', 'book', 'draft', 'validate', 'approve', 'mark', 'document')], 'read': []}))
+                'admin', 'book', 'draft', 'validate', 'approve', 'mark', 'document',
+                'settle')], 'read': []}))
         log.accept(forged(log, 'policy_declared', {'policy': CAPABILITIES_POLICY,
                                                    'blob': drafted}, ACTOR))
         seated = log.store.put(canonical_bytes({
@@ -5000,7 +5001,7 @@ def test_the_tick_and_the_verification_queue_under_the_seat_that_asked(recorded,
     Killing mutations: the helper ignoring its `actor`, which queues the stranger's verification
     under the hub; and the verb passing the hub's seat, which admits the stranger's tick.
     """
-    entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate')]
+    entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate', 'mark')]
             + [(STRANGER, 'mark', '*')])
     service.EXECUTOR.queue.join()
     before = dict(service.EXECUTOR.results)
@@ -5011,8 +5012,8 @@ def test_the_tick_and_the_verification_queue_under_the_seat_that_asked(recorded,
             spine.SpineRefused, service.submit_verify, {}, actor=STRANGER).value)):
         assert STRANGER in said and 'validate' in said, said
     assert [row[2] for row in facts(recorded, 'capability_denied')] == [
-        {'subject': STRANGER, 'verb': 'validate', 'book': book, 'attempted_type': spine.TELEMETRY}
-        for book in ('spine-desk', '*')]
+        {'subject': STRANGER, 'verb': 'validate', 'book': 'spine-desk',
+         'attempted_type': spine.TELEMETRY}]
     unnamed = CLIENT.post('/book/bloomberg', content=dump({}), headers=JSON)
     assert unnamed.status_code == 422 and 'no actor for this act' in unnamed.json()['detail']
     assert 'no actor for this act' in str(
@@ -5474,4 +5475,81 @@ def test_compiled_job_with_no_observing_deal_skips_observations(recorded, desk):
     strict_job = spine.compiled_job(document, strict=True, folds=service.folds())
     loose_job = spine.compiled_job(document, strict=False, folds=service.folds())
     assert derivus.content_hash(strict_job) == derivus.content_hash(loose_job)
+
+
+def test_verb_gates_on_delete_paths_close_settlements_and_metronome(recorded, desk):
+    """Completeness of the 9-verb gates:
+    - delete demands `book` over the book;
+    - POST /paths demands `mark`;
+    - POST /book/close demands `mark` alone (not `validate`);
+    - POST /book/settlements demands `settle` alone (not `validate`);
+    - Metronome.beat demands `mark` of the hub.
+
+    Killing mutations: dropping any one gate allows an unentitled seat (or a validate-only seat)
+    to mutate the book, redirect paths, declare a close, strike payments, or submit a tick.
+    """
+    with_client(desk)
+    # Seed one deal to delete and designate a market for settlement export.
+    booked = CLIENT.post('/book/deals', content=dump({
+        'action': 'add', 'deal': dict(CASHFLOW, Reference='DEL-1', Amount=50_000.0),
+        'parent_reference': CLIENT_SET, 'quantity': 1.0, 'execution_reference': 'DEL-1'}),
+        headers=JSON)
+    assert booked.json()['written'] is True, booked.text
+    deal_path = booked.json()['deal_path']
+
+    declared = CLIENT.post('/book/markets', json={'name': 'official', 'actor': ACTOR})
+    assert declared.status_code == 200, declared.text
+    with spine.writing() as log:
+        spine.package().policy.declare(
+            log, ACTOR, spine.package().policy.TIERS_POLICY,
+            {'designations': {spine.SETTLEMENT_EXPORT: 'official'},
+             'tiers': [{'name': 'all', 'four_eyes': False}]})
+
+    viewer, marker, settler, booker = 's-val', 's-mark', 's-settle', 's-book'
+    entitle(recorded, [
+        (ACTOR, 'admin', '*'),
+        (ACTOR, 'validate', '*'),
+        (viewer, 'validate', '*'),
+        (marker, 'mark', '*'),
+        (settler, 'settle', '*'),
+        (booker, 'book', '*'),
+    ])
+
+    # 1. delete asks `book`
+    refused_del = CLIENT.post('/book/deals', json={
+        'action': 'delete', 'deal_path': deal_path, 'actor': viewer})
+    assert refused_del.status_code == 422 and 'book' in refused_del.json()['detail']
+    ok_del = CLIENT.post('/book/deals', json={
+        'action': 'delete', 'deal_path': deal_path, 'actor': booker})
+    assert ok_del.status_code == 200 and ok_del.json()['written'] is True
+
+    # 2. POST /paths asks `mark`
+    refused_paths = CLIENT.post('/paths', json={
+        'path_transform': {}, 'file_transform': {}, 'actor': viewer})
+    assert refused_paths.status_code == 422 and 'mark' in refused_paths.json()['detail']
+    ok_paths = CLIENT.post('/paths', json={
+        'path_transform': {}, 'file_transform': {}, 'actor': marker})
+    assert ok_paths.status_code == 200
+
+    # 3. POST /book/close asks `mark` alone (a mark-only seat without `validate` succeeds;
+    #    a validate-only seat is refused)
+    refused_close = CLIENT.post('/book/close', json={'date': '2024-06-28', 'actor': viewer})
+    assert refused_close.status_code == 422 and 'mark' in refused_close.json()['detail']
+    ok_close = CLIENT.post('/book/close', json={'date': '2024-06-28', 'actor': marker})
+    assert ok_close.status_code == 200, ok_close.text
+
+    # 4. POST /book/settlements asks `settle` alone (a settle-only seat without `validate`
+    #    succeeds; a validate-only seat is refused)
+    refused_exp = CLIENT.post('/book/settlements', json={
+        'due_before': '2024-06-28', 'actor': viewer})
+    assert refused_exp.status_code == 422 and 'settle' in refused_exp.json()['detail']
+    ok_exp = CLIENT.post('/book/settlements', json={
+        'due_before': '2024-06-28', 'actor': settler})
+    assert ok_exp.status_code == 200, ok_exp.text
+
+    # 5. Metronome.beat asks `mark` of the hub (ACTOR holds admin+validate, not mark)
+    metronome = service.Metronome(60.0)
+    with pytest.raises(spine.SpineRefused, match='mark'):
+        metronome.beat()
+
 
