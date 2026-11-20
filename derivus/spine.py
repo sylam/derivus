@@ -1690,10 +1690,10 @@ def admit(lane, actor_name=None, book=None):
     of a book being admitted to price the book.
 
     Enforcement activates BY DECLARATION, as it does at the writer: with no home configured, or no
-    capabilities document in force, every job is admitted and this box is the single-user instrument it was. Under one, an
-    unnamed actor is refused by name - a job nobody signed for is one the record could not attribute
-    - and a refused seat lands its `capability_denied` in the writer's voice before the raise, a
-    repeat coalescing onto the LSN it already has.
+    capabilities document in force, every job is admitted and this box is the single-user
+    instrument it was. Under one, an unnamed actor is refused by name - a job nobody signed for is
+    one the record could not attribute - and a refused seat lands its `capability_denied` in the
+    writer's voice before the raise, a repeat coalescing onto the LSN it already has.
     """
     if not configured():
         return

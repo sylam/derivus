@@ -3225,8 +3225,9 @@ def live_marks(document, book, since):
     job = PnL.marks_job(document, PnL.held_terms(document, wanted, spine.stored))
     context = load(spine.compiled_job(job, strict=False, folds=folds()))
     _, out = utils.run_whole(context.run_job)
-    return {'day': spine.base_day(document), 'lsn': spine.pin()['lsn'], 'units': PnL.unit_marks(as_json(out['Results'])),
-        'values': context.market_patch(), 'live': True}
+    return {'day': spine.base_day(document), 'lsn': spine.pin()['lsn'],
+            'units': PnL.unit_marks(as_json(out['Results'])),
+            'values': context.market_patch(), 'live': True}
 
 
 def explaining(first, last, document):
@@ -4199,12 +4200,12 @@ class XvaJob:
         Both adjustment columns, `peaks` and `profile` (`exposure`) are in the BASE dict as nulls,
         so a row is never filed missing one: a failure path states its error and nothing else, and
         every row the file carries has the same keys whatever happened to it."""
-        return dict(dict(dict.fromkeys(XVA_COLUMNS), counterparty=self.counterparty,
-                         collateralized=self.collateralized, profile=None, as_of=as_of(),
-                         currency=self.document['Calc']['Calculation'].get('Currency'),
-                         result_id=self.result_id,
-                         **{key: self.stamp[key] for key in XVA_COLUMNS if key in self.stamp}),
-                    **fields)
+        row = dict.fromkeys(XVA_COLUMNS + ('profile',))
+        row.update({key: self.stamp[key] for key in XVA_COLUMNS if key in self.stamp},
+                   counterparty=self.counterparty, collateralized=self.collateralized,
+                   currency=self.document['Calc']['Calculation'].get('Currency'),
+                   result_id=self.result_id, as_of=as_of())
+        return dict(row, **fields)
 
     @staticmethod
     def adjustments(results, stored=False):
