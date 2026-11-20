@@ -6534,6 +6534,17 @@ def answered(**body):
     return result['stats']['Increment']
 
 
+def record_head(home):
+    """The record's head LSN, read on a handle of its own."""
+    from derivus_spine import SpineLog
+
+    log = SpineLog(home)
+    try:
+        return log.head()[0]
+    finally:
+        log.close()
+
+
 def test_both_runs_of_an_increment_draw_one_grid_on_one_factor_list(desk_xva):
     """SAME PATHS. A credit Monte Carlo draws its normals in one block shaped by the factors it
     simulates and the days it simulates on, so a candidate settling on a day NS_A's own call never
@@ -6720,6 +6731,46 @@ def test_a_quotes_increment_is_the_increment_of_what_its_acceptance_books(credit
     assert (row['cva'], row['fva']) == (answer['cva']['with'], answer['fva']['with']), row
 
 
+def test_a_quotes_increment_prices_on_the_spot_model_the_quote_pinned(credit_client):
+    """An accumulator quoted on a book carrying a LogVar2FJ fit for the rand pins that model on its
+    leg, and the acceptance books the pin with the trade. The increment asked by quote id prices
+    the leg on the pinned model: once accepted, the set's recalc reads its 'with' CVA and FVA to
+    the bit. The same mirror asked as a plain deal prices on the book's standing model.
+
+    THE TWO MUST DIFFER BY FAR MORE THAN ROUNDING. The fit's forward variance `Xi_Curve` is written
+    at four times what it fitted (0.0207 rising to 0.0244), so the pinned law runs at about twice
+    the vol the standing model reads off the surface. The strip knocks out 10% above spot over
+    three months, ln 1.10 / (sigma sqrt 0.25) standard deviations away: 1.32 at 14.4%, 0.66 at
+    28.8%, a knock-out probability of 2 N(-1.32) = 0.19 against 2 N(-0.66) = 0.51, so what the
+    strip accrues and the exposure it carries move by tens of percent: 904 against 628 measured,
+    on a rounding bound of 0.17. The test holds the gap above a hundred times that bound.
+
+    Killing mutation: the quote's model pin dropped from the increment, which prices the standing
+    model's 628 where the recalc reads 904.
+    """
+    document = json.loads(credit_client.read_text())
+    fitted = json.loads(dump(CALIBRATED))
+    fitted['Xi_Curve'] = json.loads(dump(utils.Curve([], [
+        [tenor, 4.0 * xi] for tenor, xi in CALIBRATED['Xi_Curve'].array])))
+    document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'][
+        'LogVar2FJModelParameters.ZAR'] = fitted
+    credit_client.write_text(json.dumps(document, indent=2), newline='\n')
+    service.BOOK = service.Book(str(credit_client))
+
+    quote = quote_of('Accumulator', ACCUMULATOR, netting_set=CLIENT_SET)
+    assert quote['valuation_configuration'] == {'FXAccumulatorOptionDeal': {'SpotModel': 'LogVar2FJ'}}
+    pending = CLIENT.get('/book/quote/{}'.format(quote['quote_id'])).json()
+    pinned = answered(quote_id=quote['quote_id'])
+    standing = answered(deal=structures.mirror(pending['deal']), parent_reference=CLIENT_SET)
+    gap = abs(pinned['cva']['with'] - standing['cva']['with'])
+    assert gap > 100.0 * rounding(pinned['paths']) * magnitude(pinned, 'cva'), (pinned, standing)
+
+    assert CLIENT.post('/book/quote', json={'quote_id': quote['quote_id']}).json()['written']
+    recalc([CLIENT_SET])
+    row = xva_rows()[CLIENT_SET]
+    assert (row['cva'], row['fva']) == (pinned['cva']['with'], pinned['fva']['with']), row
+
+
 #: An outright the desk deals by hand: a million dollars bought for their rand at today's rate.
 OUTRIGHT = {'Object': 'FXForwardDeal', 'Reference': 'FWD_C', 'Buy_Currency': 'USD',
             'Buy_Amount': AMOUNT, 'Buy_Discount_Rate': 'USD', 'Sell_Currency': 'ZAR',
@@ -6778,21 +6829,11 @@ def test_an_increment_refuses_as_the_recalc_and_the_booking_refuse_and_writes_no
     Killing mutation: the set check dropped from `xva_pair`, which answers a candidate at the root
     with a 500.
     """
-    from derivus_spine import SpineLog
-
     path = xva_book(tmp_path, [
         netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')]),
         netting_set('NS_GHOST', 'GHOST', [dict(VANILLA, Reference='OPT_G')])])
-
-    def head():
-        log = SpineLog(recorded)
-        try:
-            return log.head()[0]
-        finally:
-            log.close()
-
     try:
-        before, lsn = path.read_bytes(), head()
+        before, lsn = path.read_bytes(), record_head(recorded)
         nothing = CLIENT.post('/book/price', content=dump(
             {'parent_reference': 'NS_A', 'xva_increment': True}), headers=JSON)
         root = CLIENT.post('/book/price', content=dump(
@@ -6814,10 +6855,87 @@ def test_an_increment_refuses_as_the_recalc_and_the_booking_refuse_and_writes_no
         assert absent.json()['detail'] == 'no market data for InterestRate.USD-SWAP'
         assert ghost['status'] == 'error' and 'GHOST' in ghost['error'], ghost
         assert standing['status'] == 'done', standing.get('error')
-        assert (path.read_bytes(), head()) == (before, lsn)
+        assert (path.read_bytes(), record_head(recorded)) == (before, lsn)
         assert not (tmp_path / 'xva.json').exists(), 'an increment filed a projection row'
     finally:
         service.BOOK = None
+
+
+def declared(entity, agreement, terms):
+    """The client and its agreement on the record, under the seat the desk runs as."""
+    for route, body in (('/book/entities', {'entity': entity, 'name': entity}),
+                        ('/book/agreements', {'agreement': agreement, 'entity': entity,
+                                              'kind': 'ISDA 2002', 'terms': terms})):
+        answer = CLIENT.post(route, content=dump(body), headers=JSON)
+        assert answer.status_code == 200, answer.json()
+
+
+def test_a_candidate_under_a_declared_agreement_brings_its_set(recorded, tmp_path):
+    """On a recording desk a client's agreement is declared and nothing is booked under it, so the
+    book file carries no set by its name. A what-if and an increment under it each bring the set
+    out of the agreement's terms, as the first booking under it would: the what-if values the set
+    holding the call at the call's own value, and the increment answers for that set. Neither moves
+    the book's bytes or the record's head.
+
+    Killing mutation: the declared set left unbrought, which refuses both - no deal carries the
+    agreement's Reference.
+    """
+    path = xva_book(tmp_path, [netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')])])
+    try:
+        declared('CPTY_A', 'NS_NEW', json.loads(dump(netting_set(
+            'NS_NEW', 'CPTY_A', [], funding_rate='FUND')))['Instrument']['.Deal'])
+        before, lsn = path.read_bytes(), record_head(recorded)
+        whatif = CLIENT.post('/book/price', content=dump(
+            {'deal': SHORT_CALL, 'parent_reference': 'NS_NEW'}), headers=JSON)
+        assert whatif.status_code == 200, whatif.json()
+        service.EXECUTOR.queue.join()
+        values = mtm(whatif.json()['result_id'])
+        answer = answered(deal=SHORT_CALL, parent_reference='NS_NEW')
+
+        assert values['NS_NEW'] == values['OPT_C'] > 0.0, values
+        assert answer['netting_set'] == 'NS_NEW' and answer['cva']['increment'] > 0.0, answer
+        assert (path.read_bytes(), record_head(recorded)) == (before, lsn)
+    finally:
+        service.BOOK = None
+
+
+#: Out of reach: no threshold or minimum transfer a set's value can cross.
+UNCALLED = {'.CreditSupportList': [[0.0, 1e12]]}
+
+
+def test_an_increment_reads_the_collateral_its_set_holds(recorded, tmp_path):
+    """On a recording desk a collateralised set holds 5,000 dollars its client posted, and its
+    thresholds and minimums are out of reach, so no call moves that balance through the run. The
+    run without the trade holds the set's call, the candidate - the same call under another name -
+    and the candidate's mirror: the copy and the mirror are worth +V and -V on every path, so the
+    set is worth (V + V) - V = V exactly, on the set's own days and draws. That run IS the set's
+    recalc, to the bit, and the recalc reads the balance the record holds.
+
+    Killing mutation: the increment priced as what its overrides name - a base valuation here,
+    which writes no balance - so its runs open holding nothing, the run without the trade reading
+    a CVA of 117.46 against the recalc's 74.22.
+    """
+    terms = dict(netting_set('CSA_A', 'CPTY_A', [], funding_rate='FUND')['Instrument']['.Deal'],
+                 Collateralized='True')
+    terms['Credit_Support_Amounts'] = dict(
+        terms['Credit_Support_Amounts'], Received_Threshold=UNCALLED, Minimum_Received=UNCALLED,
+        Minimum_Posted=UNCALLED, Posted_Threshold={'.CreditSupportList': [[0.0, -1e12]]})
+    xva_book(tmp_path, [{'Instrument': {'.Deal': terms}, 'Children': [
+        {'Instrument': {'.Deal': dict(VANILLA, Reference='OPT_A')}}]}])
+    try:
+        declared('CPTY_A', 'CSA_A', json.loads(dump(terms)))
+        moved = CLIENT.post('/book/transition', content=dump({
+            'subject': 'CSA_A', 'status': 'settled', 'amount': 5_000.0, 'asset': 'USD',
+            'kind': 'collateral', 'reference': 'COLL-1', 'value_date': '2024-06-28'}), headers=JSON)
+        assert moved.status_code == 200, moved.json()
+        recalc(['CSA_A'])
+        row = xva_rows()['CSA_A']
+        answer = answered(deal=dict(VANILLA, Reference='OPT_A2'), parent_reference='CSA_A')
+    finally:
+        service.BOOK = None
+    assert row['status'] == 'done', row['error']
+    assert (answer['cva']['without'], answer['fva']['without']) == (row['cva'], row['fva']), (
+        answer, row)
 
 
 # --------------------------------------------------------------------------------------------

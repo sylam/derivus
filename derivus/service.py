@@ -1091,6 +1091,19 @@ def deal_edit(document, deal, parent_reference=None, baseline=None):
     return deal_verdict(document, deal_references(node), deal_path, baseline)
 
 
+def quote_edit(document, pending, baseline):
+    """`deal_edit` for a quote's trade as its acceptance books it: the mirror of the pending deal
+    under the quote's netting set, the spot model it pinned merged in the same write."""
+    quoted = pending['quote']
+    written, outcome = deal_edit(document, structures.mirror(pending['deal']),
+                                 quoted.get('netting_set'), baseline)
+    models = quoted.get('valuation_configuration')
+    if written and models:
+        structures.pin_models(document, pending['deal'], models)
+        outcome = dict(outcome, valuation_configuration=models)
+    return written, outcome
+
+
 # ------------------------------------------------------------------------------------------------
 # The book file's writers, under a spine. Every function below answers `{}` where no home is
 # configured, which is what makes the edge bit-identical without one.
@@ -1586,8 +1599,7 @@ def book_price(request: dict):
     same what-if twice is one run.
 
     `quote_id` names the candidate as a quote's pending trade, priced as its acceptance would book
-    it: the mirror of its deal (`structures.mirror`) under the netting set the quote names, the
-    spot model it pinned merged.
+    it (`quote_edit`).
 
     `xva_increment: true` asks what the candidate does to the CVA, FVA and peak exposure of the
     netting set it goes into, as the difference of that set's credit Monte Carlo with the candidate
@@ -1602,34 +1614,29 @@ def book_price(request: dict):
     mints nothing whether or not a spine home is configured. A candidate that becomes a trade is
     quoted through `/book/structure` and booked through `/book/quote`."""
     document, etag = live_book().read()
-    deal, parent, models = request.get('deal'), request.get('parent_reference'), None
-    if request.get('quote_id'):
-        pending = book_quote_pending(request['quote_id'])
-        quoted = pending['quote']
-        deal, parent = structures.mirror(pending['deal']), quoted.get('netting_set')
-        models = quoted.get('valuation_configuration')
-    baseline = live_book().baseline(document, etag) if deal is not None else None
+    pending = book_quote_pending(request['quote_id']) if request.get('quote_id') else None
+    parent = pending['quote'].get('netting_set') if pending else request.get('parent_reference')
+    candidate = pending is not None or request.get('deal') is not None
+    baseline = live_book().baseline(document, etag) if candidate else None
     overrides, increment = request.get('calculation_overrides') or {}, request.get('xva_increment')
     document = priced(document, 'CreditMonteCarlo' if increment else overrides.get('Object'))
     deal_path = None
     try:
-        if deal is not None:
+        if candidate:
             materialised(document, parent)
-            written, outcome = deal_edit(document, deal, parent, baseline)
+            written, outcome = quote_edit(document, pending, baseline) if pending else deal_edit(
+                document, request['deal'], parent, baseline)
             if not written:
                 raise HTTPException(422, '; '.join(outcome['refused']))
             deal_path = outcome['deal_path']
-        if models:
-            structures.pin_models(document, pending['deal'], models)
         with_overrides(document, overrides)
         jobs, terms = xva_pair(document, deal_path) if increment else ([document], None)
     except ValueError as error:
         raise HTTPException(422, str(error))
     contexts = [load(job) for job in jobs]
-    replayed = [replay(context) for context in contexts]
-    run, stamp = contexts[0], replayed[0]
+    run, stamp = contexts[0], replay(contexts[0])
     if increment:
-        run, stamp = IncrementJob(contexts, terms), dict(zip(('with', 'without'), replayed))
+        run, stamp = IncrementJob(contexts, terms), {'with': stamp, 'without': replay(contexts[1])}
     submitted = Job(content_hash(stamp), run, stamp, spine.CURIOSITY, actor=request.get('actor'),
                     book=book_name(document))
     calculation = contexts[0].current_cfg.deals['Calculation']
@@ -4311,7 +4318,8 @@ def xva_pair(document, deal_path):
             'none - name its client\'s set as the `parent_reference`: the book carries {}'.format(
                 ', '.join(structures.netting_set_references(document)) or 'none'))
     path, node = found[-1]
-    without = deepcopy(document)
+    # only the deal tree differs: the market is shared, `xva_document` copying before it writes
+    without = dict(document, Calc=dict(document['Calc'], Deals=deepcopy(document['Calc']['Deals'])))
     deal_at(without, deal_path.rsplit('/', 1)[0])['Children'].append(
         spine.scaled(deal_at(without, deal_path), -1))
     counterparty = set_terms(node['Instrument']['.Deal'])[0]
@@ -7494,14 +7502,10 @@ def book_quote(request: dict):
         materialised(book, parent)
         # a declared window not refused above holds the quote firm
         verdict = check_pins(pending, book, quote_id, policy is not None)
-        # no _validated: pin_models edits the book after the verdict, so the verdict is not its
-        written, outcome = deal_edit(book, structures.mirror(pending['deal']), parent, baseline)
+        # no _validated: the model pin edits the book after the verdict, so the verdict is not its
+        written, outcome = quote_edit(book, pending, baseline)
         if not written:
             return False, outcome
-        # the model rides the SAME write as the deal - never a second one that could half-land
-        if models:
-            structures.pin_models(book, pending['deal'], models)
-            outcome = dict(outcome, valuation_configuration=models)
         if verdict is None:
             filled = spine_fill(book, outcome['deal_path'], MIRROR_AS_WRITTEN, quote_id,
                                 request.get('actor'), price=mirror_price(pending['quote']))
