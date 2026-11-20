@@ -1655,8 +1655,7 @@ def netting_set_references(document):
     be booked under. A set nested inside another container is still a set, so the whole tree is
     walked rather than the top level."""
     return sorted(node['Instrument']['.Deal'].get('Reference')
-                  for _, node in schema.walk_job_deals(document)
-                  if node['Instrument']['.Deal'].get('Object') == 'NettingCollateralSet')
+                  for _, node in schema.netting_sets(document))
 
 
 def check_netting_set(document, reference):

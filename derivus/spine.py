@@ -58,7 +58,7 @@ from ._version import __version__
 from .calculation import BaseValuation, Diary, calculation_class
 from . import schema
 from .schema import (declared_fields, flipped, index_named, instrument_of, job_children, mapping,
-                     tables_of, walk_job_deals, without_clocks)
+                     netting_sets, tables_of, walk_job_deals, without_clocks)
 from .config import Config, as_json
 from .structures import base_currency, market_of
 
@@ -612,10 +612,8 @@ def compiled_job(document, lsn=None, strict=True, runs=None, folds=None):
         return document
     filled = deepcopy(document)
     _hold(filled, held)
-    for _, node in walk_job_deals(filled):
+    for _, node in netting_sets(filled):
         deal = node['Instrument']['.Deal']
-        if deal.get('Object') != 'NettingCollateralSet':
-            continue
         if deal.get('Reference') in papers:
             node['Instrument']['.Deal'] = deal = _papered(deal, papers[deal['Reference']])
         if deal.get('Reference') in balances:
@@ -664,8 +662,7 @@ def _balances(document, papers, lsn=None, folds=None):
     exists. A set holding an asset those spots cannot cross REFUSES by name, a plan and a read
     alike: the book lacks that market, and nothing is valued on a zero."""
     sets = {deal.get('Reference'): papers.get(deal.get('Reference'), deal) for deal in (
-        node['Instrument']['.Deal'] for _, node in walk_job_deals(document))
-        if deal.get('Object') == 'NettingCollateralSet'}
+        node['Instrument']['.Deal'] for _, node in netting_sets(document))}
     sets = {agreement: terms for agreement, terms in sets.items()
             if terms.get('Collateralized') == 'True'}
     if not sets:
@@ -710,8 +707,7 @@ def paper(block):
 def _papers(document, lsn=None):
     """`{agreement: paper}` - the terms declared at `lsn` for each netting set of `document`
     materialising an agreement whose paper is not those terms; folded only where a set is."""
-    sets = [node['Instrument']['.Deal'] for _, node in walk_job_deals(document)
-            if node['Instrument']['.Deal'].get('Object') == 'NettingCollateralSet']
+    sets = [node['Instrument']['.Deal'] for _, node in netting_sets(document)]
     declared = {row['agreement']: paper(row['terms']) for row in agreements(lsn)} if sets else {}
     return {deal['Reference']: declared[deal['Reference']] for deal in sets
             if deal.get('Reference') in declared and paper(deal) != declared[deal['Reference']]}

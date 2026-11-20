@@ -1341,6 +1341,13 @@ def walk_job_deals(children, descend=None):
     return walk(job_children(children) if isinstance(children, dict) else children, descend)
 
 
+def netting_sets(document):
+    """`[(deal_path, node)]` for every `NettingCollateralSet` a wire-form job carries, in book
+    order, however deep a container nests it."""
+    return [(deal_path, node) for deal_path, node in walk_job_deals(document)
+            if node['Instrument']['.Deal'].get('Object') == 'NettingCollateralSet']
+
+
 def leaves(nodes):
     """Every node under `nodes` with no children of its own, a node with none being its own."""
     return (node for _, node in walk(nodes) if not node.get('Children'))

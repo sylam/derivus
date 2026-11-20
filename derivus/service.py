@@ -122,10 +122,10 @@ from . import (PATHS_FILE, Context, bootstrappers, content_hash, dv_home, instru
                solve_deal_field, spine, structures, utils)
 from .schema import (EXPOSURES, PRICES_KEY, mapping, deal_at, declared_block,
                      declared_defaults, declared_factors, declared_fields, declared_settlements,
-                     instrument_of, job_children, live_deals, quote_plan, quote_stamps, remove_deal,
-                     settlement_days, sniff_indent, splice_deal, stated_messages, tables_of,
-                     tenor_fields, update_market_quote, validate_instrument, value_message,
-                     walk_job_deals)
+                     instrument_of, job_children, live_deals, netting_sets, quote_plan,
+                     quote_stamps, remove_deal, settlement_days, sniff_indent, splice_deal,
+                     stated_messages, tables_of, tenor_fields, update_market_quote,
+                     validate_instrument, value_message, walk_job_deals)
 from ._version import __version__
 from .config import Config, ModelParams, as_json, decode_wire, family_entries
 from .instruments import construct_instrument
@@ -4078,15 +4078,6 @@ def write_row(reference, row):
             handle.write(text)
         os.replace(temporary, xva_path())
     return row
-
-
-def netting_sets(document):
-    """`[(deal_path, node)]` for every `NettingCollateralSet` the book carries, in book order -
-    the XVA view's instruments. A set nested inside another container is still a set, so the whole
-    tree is walked rather than the top level."""
-    return [(deal_path, node)
-            for deal_path, node in walk_job_deals(document)
-            if node['Instrument']['.Deal'].get('Object') == 'NettingCollateralSet']
 
 
 def set_terms(deal):
