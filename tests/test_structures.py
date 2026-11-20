@@ -2423,17 +2423,19 @@ def test_a_tarf_on_a_fitted_pair_stops_riding_gbm(accrual_book):
         17.379426406278363, rel=1e-9), 'the orientation that already joined moved'
 
 
-def test_reporting_currency_reads_calculation_before_loading_the_market(book):
-    """`structures.reporting_currency` answers `Calculation.Currency` without loading the market
-    file, and falls back to the market's base currency only where `Calculation.Currency` is absent.
+def test_a_book_stating_its_currency_reports_in_it_without_its_market_being_read(book):
+    """THE REPORTING CURRENCY IS THE CALCULATION'S, AND THE MARKET'S BASE WHERE IT STATES NONE. A
+    book stating `Calculation.Currency` reports in it with no market read - one naming a market
+    file that is not there answers all the same - and a book stating none reports in its market's
+    base currency.
 
     Its second argument means one thing, the loader of the document's market: asked of the document
     where it states no currency, and of nothing where it states one.
 
-    Killing mutation: eagerly loading the market before checking `Calculation.Currency` (fails with
-    FileNotFoundError on the stated-currency arm), dropping the `base_currency` fallback (fails
-    on the unstated-currency arm), or loading with `market_of` whatever loader is handed (the
-    unstated arm over the missing file raises FileNotFoundError instead of answering GBP).
+    Killing mutations: the market loaded before `Calculation.Currency` is asked, which fails the
+    book whose market file is missing; the fall back to the market's base dropped, which answers
+    no currency for the book stating none; and the market loaded by `market_of` whatever loader
+    is handed, which fails the book stating none over its missing file.
     """
     stated = copy.deepcopy(book)
     stated['Calc']['Calculation']['Currency'] = 'ZAR'
@@ -2448,7 +2450,6 @@ def test_reporting_currency_reads_calculation_before_loading_the_market(book):
     unstated['Calc']['MergeMarketData'] = {'MarketDataFile': 'missing_market_file.json'}
     assert structures.reporting_currency(unstated, lambda document: asked.append(document) or {
         'System Parameters': {'Base_Currency': 'GBP'}}) == 'GBP' and asked == [unstated]
-
 
 @pytest.mark.card
 def test_the_accumulator_solves_one_strike_from_either_axis_under_the_model(accrual_book):

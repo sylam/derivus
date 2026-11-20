@@ -2645,13 +2645,15 @@ def test_the_advanced_fold_answers_the_position_it_is_asked_for(recorded, quotin
     It ADVANCES, so a verdict filed after the pair was taken is in the next answer. It is BOUNDED at
     the position it answers, so a frame appended between two asks is not applied twice - a
     duplicated verdict list that `standing_approval`'s `max` would hide. A pair AHEAD of the
-    position asked for refolds from genesis rather than refusing, since a fold walks forward. And a
-    history that is not the one the pair was taken on drops it: the key is the GENESIS event hash,
-    so a home re-minted where the last one stood is a different record.
+    position asked for refolds from genesis rather than refusing, since a fold walks forward, and
+    stays where it stands, so the next ask at the head pays for nothing twice. And a history that
+    is not the one the pair was taken on drops it: the key is the GENESIS event hash, so a home
+    re-minted where the last one stood is a different record.
 
     Killing mutations: the fold unbounded while the pair is stamped at the position asked for; a
-    pair ahead of that position used as a seed; the genesis check dropped, which answers another
-    history with this one's verdicts. The key taken off the path is the re-minted home's gate.
+    pair ahead of that position used as a seed; the pair moved back to a position asked behind it;
+    the genesis check dropped, which answers another history with this one's verdicts. The key
+    taken off the path is the re-minted home's gate.
     """
     projections = spine.package().projections
     decisions = projections.PROJECTORS['decisions']
@@ -2672,6 +2674,7 @@ def test_the_advanced_fold_answers_the_position_it_is_asked_for(recorded, quotin
 
     # a position BEHIND the pair is a fold from genesis, and the pair is left where it was
     assert other not in verdicts_at(signed['lsn'] - 1)
+    assert service.folds()[decisions.name]['lsn'] == signed['lsn'], 'the held pair moved back'
     assert [row['lsn'] for row in verdicts_at()[other]] == [signed['lsn']]
 
     # another history answers its own, and is not this one's - filed to the pair's own position,
@@ -5640,136 +5643,216 @@ def test_a_bearer_token_names_the_seat_and_nothing_else_does(recorded, desk, tmp
 
 def test_a_read_advances_its_folds_across_bookings_and_homes(recorded, desk, tmp_path,
                                                              monkeypatch):
-    """A GET read advances the served book's folds and sees every booking immediately; a second
-    book or home served in the same process never reads the first's folds, and a historical read
-    does not regress the held head.
+    """A READ ADVANCES THE SERVED BOOK'S FOLDS, AND THEY ARE ONE HOME'S. Each booking is in the
+    next `GET /book/positions`; and a second home served in the same process, its head past where
+    the first's pairs stand, answers its own positions - none - and never the first's.
 
-    Killing mutations: Book.folds never advancing past its first read - the second booking is
-    absent from `/book/positions`; folds shared across homes without checking genesis - the second
-    home answers the first's positions; historical read regressing Book.folds head.
+    Killing mutations, both in `spine.advancing`: a held pair answered whatever position is asked,
+    which leaves a booking out of the read after it; and the pair's genesis never compared with
+    the log's, which seeds the second home's fold with the first home's positions.
     """
     with_client(desk)
-    first = CLIENT.post('/book/deals', content=dump({
-        'action': 'add', 'deal': dict(CASHFLOW, Reference='FOLD-1', Amount=100_000.0),
-        'parent_reference': CLIENT_SET, 'quantity': 1.0, 'execution_reference': 'FOLD-1'}),
-        headers=JSON)
-    assert first.json()['written'] is True, first.text
-    seen_one = CLIENT.get('/book/positions').json()
-    assert len(seen_one['positions']) == 1
-    first_lsn = first.json()['recorded']['lsn']
+    for count, execution in enumerate(('FOLD-1', 'FOLD-2'), 1):
+        assert ticketed(execution).json()['written'] is True
+        assert len(CLIENT.get('/book/positions').json()['positions']) == count
 
-    second = CLIENT.post('/book/deals', content=dump({
-        'action': 'add', 'deal': dict(CASHFLOW, Reference='FOLD-2', Amount=200_000.0),
-        'parent_reference': CLIENT_SET, 'quantity': 1.0, 'execution_reference': 'FOLD-2'}),
-        headers=JSON)
-    assert second.json()['written'] is True, second.text
-    seen_two = CLIENT.get('/book/positions').json()
-    assert len(seen_two['positions']) == 2
-    second_lsn = second.json()['recorded']['lsn']
-
-    # A historical read must not regress the held head in Book.folds.
-    assert CLIENT.get('/book/diary', params={'lsn': first_lsn}).status_code == 200
-    assert service.BOOK.folds['positions']['lsn'] >= second_lsn
-    assert len(CLIENT.get('/book/positions').json()['positions']) == 2
-
-    # A fresh home in the same process starts clean, never seeing the first home's positions.
     other = tmp_path / 'other_home'
-    spine.package().genesis.init_home(str(other), ACTOR)
+    init_home(other, ACTOR)
     monkeypatch.setenv('DV_SPINE_HOME', str(other))
+    for node in range(head(recorded)):
+        spine.declare_portfolio('other-desk/n{}'.format(node))
+    assert head(other) > head(recorded), 'the second home never passed the first\'s pairs'
     assert CLIENT.get('/book/positions').json()['positions'] == []
 
 
-def test_compiled_job_with_no_observing_deal_skips_observations(recorded, desk):
-    """A book holding no deal that declares an observation compiles identically whether strict or
-    not, even when the record holds prints for an index no fixings policy orders.
+def test_a_print_no_deal_observes_is_nothing_to_the_plan(recorded, desk):
+    """A PLAN ANSWERS FOR THE INDICES ITS DEALS OBSERVE AND NO OTHERS. Under a `fixings` policy
+    ordering another index, a print of one it does not order, on a book holding a position and no
+    deal that declares an observation, is nothing to the compile: `/prepare` names the plan it
+    named before the print.
 
-    Killing mutation: compiling with `indices=None` (or folding every print when nothing observes)
-    - strict compilation refuses the undeclared print's index.
+    Killing mutation: the plan's compile asking for every print the record holds where its deals
+    name no index (`fixings(lsn, indices=None)`), which refuses the plan over the index nobody
+    ordered.
     """
     with_client(desk)
-    with spine.writing() as log:
-        log.append('fixing_observed', {
-            'index': 'FxRate.UNDECLARED', 'date': '2024-06-20', 'value': 1.25, 'source': 'WM'},
-            actor=ACTOR, book='BOOK')
-    document, _ = service.BOOK.read()
-    strict_job = spine.compiled_job(document, strict=True, folds=service.folds())
-    loose_job = spine.compiled_job(document, strict=False, folds=service.folds())
-    assert derivus.content_hash(strict_job) == derivus.content_hash(loose_job)
+    declare(recorded, policy.FIXINGS_POLICY, {'sources': {'FxRate.ZAR': ['ECB']}})
+    assert ticketed('CF-PLAIN').json()['written'] is True
 
+    def plan():
+        document = CLIENT.get('/book').json()['document']
+        answer = CLIENT.post('/prepare', content=dump(document), headers=JSON)
+        assert answer.status_code == 200, answer.text
+        return answer.json()['plan_id']
 
-def test_verb_gates_on_delete_paths_close_settlements_and_metronome(recorded, desk):
-    """Completeness of the 9-verb gates:
-    - delete demands `book` over the book;
-    - POST /paths demands `mark`;
-    - POST /book/close demands `mark` alone (not `validate`);
-    - POST /book/settlements demands `settle` alone (not `validate`);
-    - Metronome.beat demands `mark` of the hub.
-
-    Killing mutations: dropping any one gate allows an unentitled seat (or a validate-only seat)
-    to mutate the book, redirect paths, declare a close, strike payments, or submit a tick.
-    """
-    with_client(desk)
-    # Seed one deal to delete and designate a market for settlement export.
-    booked = CLIENT.post('/book/deals', content=dump({
-        'action': 'add', 'deal': dict(CASHFLOW, Reference='DEL-1', Amount=50_000.0),
-        'parent_reference': CLIENT_SET, 'quantity': 1.0, 'execution_reference': 'DEL-1'}),
+    before = plan()
+    printed = CLIENT.post('/book/lifecycle', content=dump({
+        'event_type': 'fixing_observed', 'actor': ACTOR, 'body': {
+            'index': 'FxRate.UNDECLARED', 'date': '2024-06-20', 'source': 'WM', 'value': 1.25}}),
         headers=JSON)
-    assert booked.json()['written'] is True, booked.text
-    deal_path = booked.json()['deal_path']
+    assert printed.status_code == 200, printed.text
+    assert plan() == before
 
-    declared = CLIENT.post('/book/markets', json={'name': 'official', 'actor': ACTOR})
+
+#: Seats holding one verb each, for the writes the service asks a verb of itself.
+VIEWER, MARKER, SETTLER = 'subject-validates', 'subject-marks', 'subject-settles'
+
+
+def test_a_delete_asks_book_at_the_node_holding_the_position(recorded, desk):
+    """A DELETE ASKS `book` WHERE THE POSITION SITS. It files nothing, so the service asks itself,
+    at the deepest node holding the position: a seat holding `validate` alone is refused naming
+    `book`, and so is one holding `book` at a sibling node, each with the file untouched and the
+    denial landed; the seat holding `book` at the position's node deletes it.
+
+    Killing mutations: the gate removed, which deletes for the seat holding `validate` alone; and
+    the node holding the position never read, the delete asked anywhere under the book, which
+    deletes for the seat at the sibling node.
+    """
+    with_client(desk)
+    fx, rates = 'spine-desk/FX', 'spine-desk/Rates'
+    for path in (fx, rates):
+        spine.declare_portfolio(path)
+    booked = ticketed('DEL-1', portfolio=fx).json()
+    assert booked['written'] is True, booked
+    entitle(recorded, [(ACTOR, 'admin', '*'), (ACTOR, 'validate', '*'), (VIEWER, 'validate', '*'),
+                       (DESK_TWO, 'book', rates), (DESK_FX, 'book', fx)])
+
+    def delete(seat):
+        return CLIENT.post('/book/deals', json={
+            'action': 'delete', 'deal_path': booked['deal_path'], 'actor': seat})
+
+    before = desk.read_bytes()
+    refused = {seat: delete(seat) for seat in (VIEWER, DESK_TWO)}
+    assert {seat: answer.status_code for seat, answer in refused.items()} == {
+        VIEWER: 422, DESK_TWO: 422}, {seat: answer.text for seat, answer in refused.items()}
+    assert desk.read_bytes() == before, 'a refused delete moved the file'
+    for seat, answer in refused.items():
+        assert "holds no book scope over '{}'".format(fx) in answer.json()['detail'], seat
+    assert [body for _, _, body in facts(recorded, 'capability_denied')] == [
+        {'subject': seat, 'verb': 'book', 'book': fx, 'attempted_type': 'delete'}
+        for seat in refused]
+    deleted = delete(DESK_FX)
+    assert deleted.status_code == 200 and deleted.json()['deleted'] == 'DEL-1', deleted.text
+
+
+def test_a_path_save_asks_mark_over_the_book(recorded, desk):
+    """`POST /paths` ASKS `mark` OVER THE BOOK SERVED. Where this box reads the files a job names
+    decides the market the book prices on, and the save files nothing, so the service asks
+    itself: a seat holding `validate` alone is refused naming `mark` with the maps as they were,
+    and the seat holding `mark` over the book saves them.
+
+    Killing mutation: the gate removed, which saves the maps for the seat holding `validate` alone.
+    """
+    entitle(recorded, [(ACTOR, 'admin', '*'), (VIEWER, 'validate', '*'),
+                       (MARKER, 'mark', 'spine-desk')])
+    maps = {'path_transform': {'/elsewhere': str(desk.parent)}, 'file_transform': {}}
+    refused = CLIENT.post('/paths', json=dict(maps, actor=VIEWER))
+    assert refused.status_code == 422, refused.text
+    assert "holds no mark scope over 'spine-desk'" in refused.json()['detail']
+    assert CLIENT.get('/paths').json()['path_transform'] == {}
+    saved = CLIENT.post('/paths', json=dict(maps, actor=MARKER))
+    assert saved.status_code == 200, saved.text
+    assert CLIENT.get('/paths').json()['path_transform'] == maps['path_transform']
+
+
+def test_a_close_asks_mark_over_the_firm_before_its_verdict_and_never_validate(recorded, desk):
+    """`POST /book/close` ASKS `mark` OVER THE FIRM, FIRST. A seat holding `validate` alone is
+    refused in the service's own sentence before anything is compiled - on a day the close is not
+    legal too, so it is never told what the day waits on - and the seat holding `mark` over `*` and
+    no `validate` declares the close, the diary it stands behind being the hub's.
+
+    Killing mutations: the gate removed, which answers the seat holding `validate` alone with what
+    the illegal day waits on; and the diary compiled under the requester's seat, which refuses the
+    marking seat for want of `validate`.
+    """
+    with_client(desk)
+    assert ticketed('CLOSE-1').json()['written'] is True
+    assert CLIENT.post('/book/markets', json={'name': 'official', 'actor': ACTOR}).status_code == 200
+    entitle(recorded, [(ACTOR, 'admin', '*'), (ACTOR, 'validate', '*'), (VIEWER, 'validate', '*'),
+                       (MARKER, 'mark', '*')])
+
+    def close(seat, day):
+        return CLIENT.post('/book/close', json={'date': day, 'actor': seat})
+
+    assert close(MARKER, '2026-12-31').status_code == 422, 'the cashflow of 2026 is unsettled'
+    for day in ('2024-06-28', '2026-12-31'):
+        refused = close(VIEWER, day)
+        assert refused.status_code == 422, (day, refused.text)
+        assert "holds no mark scope over '*', so no close is declared" in refused.json()['detail']
+    assert facts(recorded, 'official_close_declared') == []
+    declared = close(MARKER, '2024-06-28')
     assert declared.status_code == 200, declared.text
-    with spine.writing() as log:
-        spine.package().policy.declare(
-            log, ACTOR, spine.package().policy.TIERS_POLICY,
-            {'designations': {spine.SETTLEMENT_EXPORT: 'official'},
-             'tiers': [{'name': 'all', 'four_eyes': False}]})
-
-    viewer, marker, settler, booker = 's-val', 's-mark', 's-settle', 's-book'
-    entitle(recorded, [
-        (ACTOR, 'admin', '*'),
-        (ACTOR, 'validate', '*'),
-        (viewer, 'validate', '*'),
-        (marker, 'mark', '*'),
-        (settler, 'settle', '*'),
-        (booker, 'book', '*'),
-    ])
-
-    # 1. delete asks `book`
-    refused_del = CLIENT.post('/book/deals', json={
-        'action': 'delete', 'deal_path': deal_path, 'actor': viewer})
-    assert refused_del.status_code == 422 and 'book' in refused_del.json()['detail']
-    ok_del = CLIENT.post('/book/deals', json={
-        'action': 'delete', 'deal_path': deal_path, 'actor': booker})
-    assert ok_del.status_code == 200 and ok_del.json()['written'] is True
-
-    # 2. POST /paths asks `mark`
-    refused_paths = CLIENT.post('/paths', json={
-        'path_transform': {}, 'file_transform': {}, 'actor': viewer})
-    assert refused_paths.status_code == 422 and 'mark' in refused_paths.json()['detail']
-    ok_paths = CLIENT.post('/paths', json={
-        'path_transform': {}, 'file_transform': {}, 'actor': marker})
-    assert ok_paths.status_code == 200
-
-    # 3. POST /book/close asks `mark` alone (a mark-only seat without `validate` succeeds;
-    #    a validate-only seat is refused)
-    refused_close = CLIENT.post('/book/close', json={'date': '2024-06-28', 'actor': viewer})
-    assert refused_close.status_code == 422 and 'mark' in refused_close.json()['detail']
-    ok_close = CLIENT.post('/book/close', json={'date': '2024-06-28', 'actor': marker})
-    assert ok_close.status_code == 200, ok_close.text
-
-    # 4. POST /book/settlements asks `settle` alone (a settle-only seat without `validate`
-    #    succeeds; a validate-only seat is refused)
-    refused_exp = CLIENT.post('/book/settlements', json={
-        'due_before': '2024-06-28', 'actor': viewer})
-    assert refused_exp.status_code == 422 and 'settle' in refused_exp.json()['detail']
-    ok_exp = CLIENT.post('/book/settlements', json={
-        'due_before': '2024-06-28', 'actor': settler})
-    assert ok_exp.status_code == 200, ok_exp.text
-
-    # 5. Metronome.beat asks `mark` of the hub (ACTOR holds admin+validate, not mark)
-    metronome = service.Metronome(60.0)
-    with pytest.raises(spine.SpineRefused, match='mark'):
-        metronome.beat()
+    assert [body['date'] for _, _, body in facts(recorded, 'official_close_declared')] == [
+        '2024-06-28']
 
 
+def test_a_settlement_file_asks_settle_over_the_book_and_never_validate(recorded, desk):
+    """`POST /book/settlements` ASKS `settle` OVER THE BOOK. The file is struck and nothing is
+    filed, so the service asks itself: a seat holding `validate` alone is refused naming `settle`,
+    and the seat holding `settle` over the book and no `validate` is answered the file, the diary
+    it reads being the hub's.
+
+    Killing mutations: the gate removed, which strikes the file for the seat holding `validate`
+    alone; and the diary compiled under the requester's seat, which refuses the settling seat for
+    want of `validate`.
+    """
+    with_client(desk)
+    assert CLIENT.post('/book/markets', json={'name': 'official', 'actor': ACTOR}).status_code == 200
+    declare(recorded, policy.TIERS_POLICY, tiers(
+        {'name': 'all', 'four_eyes': False}, designations={spine.SETTLEMENT_EXPORT: 'official'}))
+    entitle(recorded, [(ACTOR, 'admin', '*'), (ACTOR, 'validate', '*'), (VIEWER, 'validate', '*'),
+                       (SETTLER, 'settle', 'spine-desk')])
+
+    def export(seat):
+        return CLIENT.post('/book/settlements', json={'due_before': '2024-06-28', 'actor': seat})
+
+    refused = export(VIEWER)
+    assert refused.status_code == 422, refused.text
+    assert "holds no settle scope over 'spine-desk'" in refused.json()['detail']
+    assert facts(recorded, 'capability_denied')[-1][2] == {
+        'subject': VIEWER, 'verb': 'settle', 'book': 'spine-desk',
+        'attempted_type': 'settlement_export'}
+    struck = export(SETTLER)
+    assert struck.status_code == 200 and struck.json()['market']['name'] == 'official', struck.text
+
+
+#: `DV_Service --tick`'s own start, in an interpreter of its own so its thread ends with it: the
+#: cadence beats until two beats have failed, each warning it logs printed as it is said.
+CADENCE = """
+import logging, sys, time
+from derivus import service
+logging.basicConfig(level=logging.WARNING, stream=sys.stdout, format='%(message)s')
+service.BOOK = service.Book(sys.argv[1])
+ticker = service.Metronome(0.2).start()
+ends = time.monotonic() + 60.0
+while ticker.failures < 2 and time.monotonic() < ends:
+    time.sleep(0.02)
+"""
+
+
+def test_a_tick_the_hub_may_not_mark_is_refused_and_the_cadence_lives(recorded, desk):
+    """THE SCHEDULED TICK ASKS `mark` OF THE HUB'S OWN SEAT. Under a capabilities document granting
+    `DV_SPINE_ACTOR` no `mark` over the book served, a beat submits nothing, the cadence logs one
+    warning a beat naming the grant to declare, and its thread outlives the refusal to beat again;
+    the beats' denials are one fact.
+
+    Killing mutation: the gate removed from `Metronome.beat`, which goes on to submit the tick -
+    refused on this book for declaring no bootstrapper, in a warning naming no grant.
+    """
+    import subprocess
+
+    entitle(recorded, [(ACTOR, 'admin', '*'), (ACTOR, 'validate', '*')])
+    ran = subprocess.run(
+        [sys.executable, '-c', CADENCE, str(desk)], stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, universal_newlines=True, timeout=300,
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    said = [line for line in ran.stdout.splitlines() if line.startswith('bloomberg tick')]
+    denial = facts(recorded, 'capability_denied')
+    assert [body for _, _, body in denial] == [{
+        'subject': ACTOR, 'verb': 'mark', 'book': 'spine-desk',
+        'attempted_type': 'bloomberg_tick'}], ran.stdout
+    assert said[:2] == [
+        "bloomberg tick failed ({} in a row): actor '{}' holds no mark scope over 'spine-desk', "
+        "so no bloomberg tick is written. Declare a document granting ('{}', mark, 'spine-desk') "
+        "through `DV_Spine grant --file`. The refusal is itself recorded at LSN {} - the book is "
+        "untouched".format(beat, ACTOR, ACTOR, denial[0][0]) for beat in (1, 2)], ran.stdout

@@ -287,8 +287,13 @@ the book where the record holds none; `POST /paths` and each beat of the schedul
 `mark`, the tick of the hub's own seat; `POST /book/settlements` asks `settle` over the book.
 `POST /book/close` asks `mark` over the firm before it compiles anything. The close and the
 settlement file read the diary as the hub compiles it (`hub_diary`), so neither seat needs
-`validate`. **Held by**
-`test_spine_engine.py::test_verb_gates_on_delete_paths_close_settlements_and_metronome`.
+`validate`. A tick the hub's seat may not mark submits nothing: the cadence warns once a beat,
+naming the grant to declare, and beats on. **Held by**
+`test_spine_engine.py::test_a_delete_asks_book_at_the_node_holding_the_position`,
+`::test_a_path_save_asks_mark_over_the_book`,
+`::test_a_close_asks_mark_over_the_firm_before_its_verdict_and_never_validate`,
+`::test_a_settlement_file_asks_settle_over_the_book_and_never_validate`,
+`::test_a_tick_the_hub_may_not_mark_is_refused_and_the_cadence_lives`.
 
 `verbs` is the map in force, the verb each act demands. A declaration is stored with the
 vocabulary's verb for every act it does not move, governance staying `admin`, so the map in force

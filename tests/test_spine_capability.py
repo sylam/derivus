@@ -171,7 +171,7 @@ def attempts(log):
         ('quote_filed', {'quote_id': 'Q-1', 'structure': 'ZeroCostCollar', 'plan_hash': HASH_A,
                          'values_hash': values, 'solved': {'floor': 17.25}, 'edge': 4200.0},
          BOOK_ONE),
-        # approve: a tuple the hub did not witness acquiring standing is a second pair of eyes
+        # mark: a tuple the hub did not witness, given standing
         ('result_pinned', {'plan_hash': HASH_A, 'values_hash': values, 'engine_version': '0.1.0',
                            'seed': None, 'quasi_seed': 1234, 'job': job, 'result': produced,
                            'tolerance_policy': tolerance}, BOOK_ONE),
