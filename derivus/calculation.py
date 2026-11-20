@@ -4268,9 +4268,9 @@ class NettingSetCalculation(Calculation):
         it over the valuation's `Scenarios`, each trade alone under its set, on the price factors
         `over` states in place of the standing ones, and priced as it stands, with the engine's
         sentences for what it skipped inside each trade, the distinct ones spoken at its deals, or
-        the verdict the compile stamped on a trade it left out unspoken, an expired one. A trade
-        whose own compile refuses its document by name (`utils.UnpriceableSchedule`) is set aside
-        unvalued, its sentence among them."""
+        the verdict the compile stamped on a trade it left out unspoken, an expired one, each deal
+        compiled kept under the instrument booked (`built`). A trade whose own compile refuses its
+        document by name (`utils.UnpriceableSchedule`) is set aside unvalued, its sentence among them."""
         factors = self.config.params['Price Factors']
         calc = self.compiled = ScenarioValuation(self.config, prec=torch.float64,
                                                  device=utils.calculation_device())
@@ -4290,10 +4290,9 @@ class NettingSetCalculation(Calculation):
                     # a census names the trade and values the rest: its compile attached nothing
                     # and stamped and counted the deal it refused
                     continue
-            held = {deal.Instrument.resolved_from or deal.Instrument: deal.Calc_res for deal in [
-                structure.obj for structure in calc.netting_sets.structures()] + list(
-                calc.netting_sets.deals())}
-            self.results = [held.get(node['Instrument'], {}) for _, node in self.trades]
+            self.built = {deal.Instrument.resolved_from or deal.Instrument: deal for deal in itertools.chain(
+                calc.netting_sets.deals(), (structure.obj for structure in calc.netting_sets.structures()))}
+            self.results = [getattr(self.built.get(node['Instrument']), 'Calc_res', {}) for _, node in self.trades]
             values = self.value([{}])[0]
         finally:
             logging.getLogger().removeHandler(heard)
@@ -5638,14 +5637,11 @@ class SACCR(NettingSetCalculation):
         return max(math.exp(-rate * start) * -math.expm1(-rate * (end - start)) / rate,
                    self.horizon)
 
-    def swap_rate(self, deal, terms):
+    def swap_rate(self, deal):
         """A swaption's forward swap rate in percent, its strike's unit: the par rate of the legs it
         is written on, on the curve it forecasts on, as the compiled legs read it."""
-        structure = next(structure for structure in self.compiled.netting_sets.structures() if (
-            structure.obj.Instrument.resolved_from or structure.obj.Instrument) is deal)
-        curve = self.compiled.all_factors[structure.obj.Factor_dep['Forward'][0][
-            utils.FACTOR_INDEX_Offset]]
-        legs = [leg.Factor_dep['Cashflows'] for leg in structure.dependencies]
+        curve = self.compiled.all_factors[self.held[deal]['Forward'][0][utils.FACTOR_INDEX_Offset]]
+        legs = [leg.Factor_dep['Cashflows'] for leg in self.beneath[deal]]
         floating = next(leg for leg in legs if leg.Resets is not None)
         fixed = next(leg for leg in legs if leg.Resets is None)
         rate, annuity = floating.get_par_swap_rate(self.valuation['Base_Date'], curve)
@@ -5702,7 +5698,7 @@ class SACCR(NettingSetCalculation):
         underlying's `forward` for the day, read here where None, a compo's the product S X's in
         the currency it pays and is struck in."""
         if asset == 'IR':
-            return self.swap_rate(deal, terms)
+            return self.swap_rate(deal)
         if day < self.valuation['Base_Date']:
             return dict(deal.field['Price_Fixing'])[day]
         forward = self.FORWARDS[asset](self, deal, terms, day) if forward is None else forward
@@ -6100,18 +6096,20 @@ class SACCR(NettingSetCalculation):
 
     def report(self, base):
         """The run's results off the book's `base`: a row per netting set and per component of a
-        trade it values, in book order, each deal read off its compile (`held`) and known by the
-        trade it is part of (`trade_of`), a pair's or a share's forward read off codes and a spot lag
-        worked out once (`carried`)."""
-        compiled, self.carried = self.compiled.netting_sets, {}
-        self.held = {deal.Instrument.resolved_from or deal.Instrument: deal.Factor_dep for deal in itertools.chain(
-            compiled.deals(), (structure.obj for structure in compiled.structures()))}
+        trade it values, in book order, each deal read off its compile (`held`), a structure's parts
+        too (`beneath`), and known by the trade it is part of (`trade_of`), a pair's or a share's
+        forward read off codes and a spot lag worked out once (`carried`)."""
+        self.carried, under = {}, defaultdict(list)
+        self.held = {key: deal.Factor_dep for key, deal in self.built.items()}
+        self.beneath = {structure.obj.Instrument.resolved_from or structure.obj.Instrument: structure.dependencies
+                        for structure in self.compiled.netting_sets.structures()}
         self.trade_of = {part['Instrument']: node['Instrument'] for _, node in self.trades
                          for _, part in schema.walk([node])}
+        for index, (agreement, _) in enumerate(self.trades):
+            under[id(agreement)].append(index)
         sets, trades = [], []
         for agreement in self.config.deals['Deals']['Children']:
-            row, rows = self.netting_set(agreement, [
-                index for index, (held, _) in enumerate(self.trades) if held is agreement], base)
+            row, rows = self.netting_set(agreement, under[id(agreement)], base)
             sets.append(row)
             trades.extend(rows)
         self.output = {'SACCR': {'netting_sets': pd.DataFrame(sets, columns=list(self.SETS)),
