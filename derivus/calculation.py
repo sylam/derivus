@@ -5655,11 +5655,16 @@ class SACCR(NettingSetCalculation):
         """A unit of currency `local` in `other` for `day`, the pair carried between its spot dates
         as the engine carries it (`utils.calc_fx_forward`)."""
         calc, base = self.compiled, self.valuation['Base_Date']
-        pair = [utils.check_rate_name(currency) for currency in (local, other)]
-        codes = [instruments.get_fx_and_zero_rate_factor(
-            name, calc.static_factors, calc.stoch_factors, calc.all_tenors, calc.all_factors) for name in pair]
-        return utils.calc_fx_forward(*codes, (day - base).days, calc.time_grid.time_grid[:1], self.shared, lag=(
-            deal.spot_lag('FxRate', pair[0], calc.all_factors, base, calc.config.holidays, pair[1]))).item()
+        key = ('FxRate',) + tuple(utils.check_rate_name(currency) for currency in (local, other))
+        if key not in self.carried:
+            # once a run: a lag's calendars are built afresh each call, and the engine's forward
+            # cache is keyed on them
+            self.carried[key] = [instruments.get_fx_and_zero_rate_factor(
+                name, calc.static_factors, calc.stoch_factors, calc.all_tenors, calc.all_factors) for name in key[1:]], (
+                deal.spot_lag('FxRate', key[1], calc.all_factors, base, calc.config.holidays, key[2]))
+        codes, lag = self.carried[key]
+        return utils.calc_fx_forward(*codes, (day - base).days, calc.time_grid.time_grid[:1], self.shared,
+                                     lag=lag).item()
 
     def fx_forward(self, deal, terms, day):
         """An FX option's outright for `day`, a unit of its amount's currency in the other one."""
@@ -5670,14 +5675,16 @@ class SACCR(NettingSetCalculation):
         an equity option carries it (`utils.calc_eq_forward`)."""
         calc, base, name = self.compiled, self.valuation['Base_Date'], utils.check_rate_name(
             deal.field[terms.underlying])
-        offsets = calc.static_factors, calc.stoch_factors
-        return utils.calc_eq_forward(
-            instruments.get_equity_rate_factor(name, *offsets),
-            instruments.get_equity_zero_rate_factor(name, *offsets, calc.all_tenors, calc.all_factors),
-            instruments.get_dividend_rate_factor(deal.check_factor_name('Dividends', name[:1]), *offsets,
-                                                 calc.all_tenors),
-            (day - base).days, calc.time_grid.time_grid[:1], self.shared,
-            lag=deal.spot_lag('EquityPrice', name, calc.all_factors, base, calc.config.holidays)).item()
+        key = 'EquityPrice', name, deal.check_factor_name('Dividends', name[:1])
+        if key not in self.carried:
+            offsets, tenors = (calc.static_factors, calc.stoch_factors), calc.all_tenors
+            self.carried[key] = (instruments.get_equity_rate_factor(name, *offsets),
+                                 instruments.get_equity_zero_rate_factor(name, *offsets, tenors, calc.all_factors),
+                                 instruments.get_dividend_rate_factor(key[2], *offsets, tenors)), deal.spot_lag(
+                'EquityPrice', name, calc.all_factors, base, calc.config.holidays)
+        codes, lag = self.carried[key]
+        return utils.calc_eq_forward(*codes, (day - base).days, calc.time_grid.time_grid[:1], self.shared,
+                                     lag=lag).item()
 
     def reference_forward(self, deal, terms, day):
         """A reference price's forward for the delivery its fixing curve maps `day` to."""
@@ -6094,8 +6101,9 @@ class SACCR(NettingSetCalculation):
     def report(self, base):
         """The run's results off the book's `base`: a row per netting set and per component of a
         trade it values, in book order, each deal read off its compile (`held`) and known by the
-        trade it is part of (`trade_of`)."""
-        compiled = self.compiled.netting_sets
+        trade it is part of (`trade_of`), a pair's or a share's forward read off codes and a spot lag
+        worked out once (`carried`)."""
+        compiled, self.carried = self.compiled.netting_sets, {}
         self.held = {deal.Instrument.resolved_from or deal.Instrument: deal.Factor_dep for deal in itertools.chain(
             compiled.deals(), (structure.obj for structure in compiled.structures()))}
         self.trade_of = {part['Instrument']: node['Instrument'] for _, node in self.trades
