@@ -189,12 +189,11 @@ export function markText(value: number, currency: string | null): string {
 
 // ---- what happened ----------------------------------------------------------------------------
 
-/** The record's rows touching a client, newest first: its own declaration, and every row naming
- * one of its agreements - a booking, a signature, a restatement. */
-export function touching(rows: ActivityRow[], id: string, agreements: string[]): ActivityRow[] {
-  return rows.filter((row) => row.entity === id
-    || (row.agreement !== null && agreements.includes(row.agreement))).reverse();
-}
+/** A client's history off the record's reads asked for it - by its entity, its declarations, and
+ * by each of its agreements, a booking, a signature, a restatement - each row once though two reads
+ * answer it, newest first. */
+export const touching = (reads: ActivityRow[][]): ActivityRow[] =>
+  [...new Map(reads.flat().map((row) => [row.lsn, row])).values()].sort((a, b) => b.lsn - a.lsn);
 
 /** The record's rows under a set since its XVA row was run - the ones naming its agreement,
  * written after the run by the instant each stamp names. */

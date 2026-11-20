@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   failure, getBookActivity, getBookAgreements, getBookEntities, getBookPositions, getBookRisk,
-  getBookXva,
+  getBookXva, type About,
 } from '../api';
 import {
   baseDateOf, cellText, quoted, rowsByPath, sizeOf, toRows, type BlotterRow, type Picked,
@@ -44,11 +44,11 @@ export function useRead<T>(read: (() => Promise<T>) | null, keys: unknown[]) {
   return held;
 }
 
-/** What the page reads beside the store: on a desk that keeps one the record's paper and every
- * row of it, the XVA projection, and the consolidated risk for the marks. */
+/** What the page reads beside the store: on a desk that keeps one the record's paper, the XVA
+ * projection, and the consolidated risk for the marks. */
 type Reads = {
   entities: Entity[] | null; agreements: Agreement[] | null; positions: Position[] | null;
-  unstated: SettlementState | null; record: ActivityRow[] | null;
+  unstated: SettlementState | null;
   xva: { data: BookXva | null; error: string | null };
   risk: { data: BookRisk | null; error: string | null };
 };
@@ -65,7 +65,7 @@ export function ClientView() {
   const live = source?.kind === 'book';
   const clock = clockOf(state);
   const paper = useRead(live && recording ? () => Promise.all([
-    getBookEntities(), getBookAgreements(), getBookPositions(), wholeRecord(getBookActivity)])
+    getBookEntities(), getBookAgreements(), getBookPositions()])
     : null, [source, recording, pinnedAt(state.record.spine)]);
   const xva = useRead(live ? getBookXva : null, [clock]);
   const risk = useRead(live ? getBookRisk : null, [clock, state.seat]);
@@ -81,11 +81,10 @@ export function ClientView() {
     return <EmptyState title={paper.error ?? "Reading the record's paper…"}
                        hint="The entities legal declares, their agreements and the positions under them." />;
   }
-  const [legal, signed, held, record] = paper.data ?? [null, null, null, null];
+  const [legal, signed, held] = paper.data ?? [null, null, null];
   const reads: Reads = {
     entities: legal?.entities ?? null, agreements: signed?.agreements ?? null,
-    unstated: signed?.settlement_state ?? null, positions: held?.positions ?? null, record, xva,
-    risk,
+    unstated: signed?.settlement_state ?? null, positions: held?.positions ?? null, xva, risk,
   };
   const market = marketOf(state);
   const factors = market?.['Price Factors'] ?? {};
@@ -127,6 +126,11 @@ function ClientPage({ id, lines, own, reads, rows, factor, market, schema }: {
   const curveCard = useRef<HTMLDivElement>(null);
   useEffect(() => { if (form?.curve) curveCard.current?.scrollIntoView({ block: 'start' }); }, [form]);
   const { entities } = reads;
+  // its history asked for by its entity and by each of its agreements, where the desk records
+  const asked: About[] = [{ entity: id }, ...own.map((row) => ({ agreement: row.agreement }))];
+  const history = useRead(entities ? async () => touching(await Promise.all(asked.map((about) =>
+    wholeRecord((since) => getBookActivity(since, about))))) : null,
+  [JSON.stringify(asked), !!entities, pinnedAt(state.record.spine)]);
   const entity = entities?.find((row) => row.entity === id);
   const below = (entities ?? []).filter((row) => row.parent === id);
   const name = entities ? entityText(entities, id) : id;
@@ -205,8 +209,8 @@ function ClientPage({ id, lines, own, reads, rows, factor, market, schema }: {
       </div>
 
       <OnBook own={own} reads={reads} rows={rows} market={market} schema={schema} />
-      <XvaRows id={id} xva={reads.xva} record={reads.record} />
-      <Happened id={id} own={own} record={reads.record} />
+      <XvaRows id={id} xva={reads.xva} record={history.data} />
+      <Happened history={entities && history} />
     </div>
   );
 }
@@ -481,19 +485,24 @@ function XvaRow({ set, read, moved }: { set: XvaSet; read: string; moved: number
   );
 }
 
-/** The rows of the whole `record` touching the client, newest first, each opening what it names. */
-function Happened({ id, own, record }: { id: string; own: Agreement[]; record: ActivityRow[] | null }) {
+/** The client's own rows of the record, newest first, each opening what it names - null `history`
+ * where the desk keeps no record. */
+function Happened({ history }: {
+  history: { data: ActivityRow[] | null; error: string | null } | null;
+}) {
   const { state, dispatch } = useApp();
-  if (!record) {
+  if (!history?.data) {
     return (
       <section className="card">
         <h3>What happened</h3>
-        <div className="note">This desk keeps no record: nothing says who did what to this client,
-          or when.</div>
+        {!history ? <div className="note">This desk keeps no record: nothing says who did what to
+          this client, or when.</div> : history.error
+          ? <div className="error-box">{history.error}</div>
+          : <div className="hint">Reading its history…</div>}
       </section>
     );
   }
-  const rows = touching(record, id, own.map((row) => row.agreement));
+  const rows = history.data;
   return (
     <section className="card">
       <h3>What happened ({rows.length})</h3>

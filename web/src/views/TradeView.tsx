@@ -30,7 +30,8 @@ import { OnStrip } from './RiskView';
  * and null until the read of this path lands. */
 function useHistory(path: string | undefined, recording: boolean, at: string | null) {
   const read = useRead(recording && path !== undefined ? async () => ({ path, rows: historyOf(
-    await wholeRecord((since) => getBookActivity(since, path))) }) : null, [path, recording, at]);
+    await wholeRecord((since) => getBookActivity(since, { deal_path: path }))) }) : null,
+  [path, recording, at]);
   return read.error ?? (read.data && read.data.path === path ? read.data.rows : null);
 }
 

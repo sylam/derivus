@@ -195,9 +195,16 @@ const RECORD = [row(19, '2026-11-19T20:27:19Z', null, 'KES'), row(20, '2026-11-1
                 row(22, '2026-11-19T20:27:20Z', 'ISDA-KES', 'KES'), row(23, '2026-11-19T20:27:20Z', 'ISDA-NEW', 'ALD'),
                 row(29, '2026-11-19T20:27:28.518Z', 'ISDA-KES'), row(31, '2026-11-19T20:33:21.227Z', 'ISDA-KES'),
                 row(32, '2026-11-19T20:33:22Z', 'CSA-ALD'), row(33, '2026-11-19T20:33:23Z', null)];
-check("a client's rows are its declaration and every row naming one of its agreements, newest first",
-      "the record's order kept, oldest first; or another client's declaration read",
-      client.touching(RECORD, 'KES', ['ISDA-KES']).map((entry) => entry.lsn), [31, 29, 22, 19]);
+// the reads a client's page asks: by its entity, and by each of its agreements
+const BY_ENTITY = RECORD.filter((entry) => entry.entity === 'KES');
+const BY_AGREEMENT = RECORD.filter((entry) => entry.agreement === 'ISDA-KES');
+check("a client's history is its reads together - by its entity and by each agreement - each row "
+        + 'once though two reads answer it, newest first',
+      'the reads laid end to end, which lists the agreement declared with the entity twice; or the '
+        + "record's order kept, oldest first",
+      [client.touching([BY_ENTITY, BY_AGREEMENT]).map((entry) => entry.lsn),
+       client.touching([BY_ENTITY, []]).map((entry) => entry.lsn)],
+      [[31, 29, 22, 19], [22, 19]]);
 
 check("a set moved since its XVA run by the record's rows naming it written after the run, each "
       + 'stamp read at its own offset',
