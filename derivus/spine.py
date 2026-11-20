@@ -686,7 +686,9 @@ def compiled_job(document, lsn=None, strict=True, runs=None, folds=None, market=
             balances = {}
         if not held and not balances and not papers and not _observing(document):
             return document
-        filled = deepcopy(document)
+        # every write below lands in the deal tree, so the market is shared and not copied
+        filled = dict(document, Calc=dict(document['Calc'],
+                                          Deals=deepcopy(document['Calc']['Deals'])))
         _hold(filled, held)
         for _, node in netting_sets(filled):
             deal = node['Instrument']['.Deal']
@@ -747,10 +749,13 @@ def _balances(document, papers, lsn=None, folds=None):
     cash = spine.projections.PROJECTORS['cash']
     held = spine.projections.CSA.held(folded(lambda log: cash.rows(_state(
         log, cash, lsn, folds))), base_day(document))
-    market = _market(document)
-    balances = {}
+    balances, market = {}, None
     for agreement, terms in sets.items():
         holding = held.get(agreement, spine.projections.CSA.NOTHING)[spine.verbs.COLLATERAL]
+        if not holding:
+            continue
+        # the market is loaded for the first set holding collateral, and for none where none does
+        market = market or _market(document)
         dials = spine.projections.CSA.of(terms)
         currency = dials['Balance_Currency']
         fx = dict(PnL.rates(market['Price Factors'], currency, base_currency(market)),
@@ -762,8 +767,7 @@ def _balances(document, papers, lsn=None, folds=None):
                 'it into {}, its Balance_Currency: a balance in an asset the book carries no spot '
                 'for is a market the book lacks; install the spot'.format(
                     ', '.join(uncrossed), agreement, currency))
-        if holding:
-            balances[agreement] = spine.projections.CSA.valued(holding, dials, fx)
+        balances[agreement] = spine.projections.CSA.valued(holding, dials, fx)
     return balances
 
 

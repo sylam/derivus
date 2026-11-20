@@ -1416,6 +1416,51 @@ def test_the_money_a_settlement_moved_reads_back_as_balances(recorded, desk):
     assert verify_home(recorded)['events'] == head(recorded)
 
 
+def test_a_compile_copies_the_deal_tree_alone_and_loads_a_market_only_for_collateral_held(
+        recorded, desk):
+    """A compile under a record writes inside the deal tree and nowhere else, so that is all it
+    copies: the compiled job's market IS the document's, and the document hashes after the compile
+    as it did before. And the market is loaded only to cross collateral the record holds: over a
+    collateralised set nothing is held under, the loader is never asked; once 2,500,000 dollars
+    settle under it the loader is asked once and the set is written that balance, 2,500,000.0 in
+    its dollar `Balance_Currency` at a spot of one.
+
+    Killing mutations: the market loaded before a holding is known, where the loader is asked with
+    nothing held; the tree written where it stands rather than copied, where the document's own
+    set carries the balance and its hash moves.
+    """
+    terms = dict(netting_set(CLIENT_SET, 'LEI-A')['Instrument']['.Deal'], Collateralized='True')
+    document = json.loads(desk.read_text())
+    document['Calc']['Deals']['Deals']['Children'].append({'Instrument': {'.Deal': terms}})
+    desk.write_text(json.dumps(document, indent=2), newline='\n')
+    CLIENT.post('/book/entities', content=dump({'entity': 'LEI-A', 'name': 'Client A'}),
+                headers=JSON)
+    assert CLIENT.post('/book/agreements', content=dump({
+        'agreement': CLIENT_SET, 'entity': 'LEI-A', 'kind': 'ISDA 2002 with CSA',
+        'terms': terms}), headers=JSON).status_code == 200
+    asked = []
+
+    def compiled():
+        document = service.BOOK.read()[0]
+        before = derivus.content_hash(document)
+        job = spine.compiled_job(document, strict=False, runs='CreditMonteCarlo',
+                                 market=lambda job: asked.append(job) or service.market_of(job))
+        assert derivus.content_hash(document) == before, 'the compile wrote the document it read'
+        return document, job
+
+    document, job = compiled()
+    assert job is document and not asked, 'a market was loaded with no collateral held'
+    assert CLIENT.post('/book/transition', content=dump({
+        'status': 'settled', 'subject': CLIENT_SET, 'amount': 2_500_000.0, 'asset': 'USD',
+        'kind': 'collateral', 'reference': 'COL-1', 'value_date': '2024-06-28'}),
+        headers=JSON).status_code == 200
+    document, job = compiled()
+    assert len(asked) == 1
+    assert [node['Instrument']['.Deal'].get('Opening_Balance')
+            for _, node in service.netting_sets(job)] == [2_500_000.0]
+    assert job['Calc']['MergeMarketData'] is document['Calc']['MergeMarketData']
+
+
 def test_a_position_is_read_where_it_sits_and_where_the_file_holds_it(recorded, desk):
     """`/book/positions` is the fold at the head joined to the FILE: every position standing under
     its agreement and portfolio, beside the nodes carrying its instrument under that agreement's
