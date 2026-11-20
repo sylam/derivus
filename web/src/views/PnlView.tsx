@@ -1,12 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
-import { failure, getBookAgreements, getBookEntities, getMarkedDays, getPnl } from '../api';
+import { useRef, useState } from 'react';
+import { getBookAgreements, getBookEntities, getMarkedDays, getPnl } from '../api';
 import { EmptyState } from '../components/EmptyState';
 import {
-  behind, explained, factorLabel, FIGURES, pnlQuery, positionLabel, residualShare,
-  type MarkedDays, type Pnl,
+  behind, explained, factorLabel, FIGURES, pnlQuery, positionLabel, residualShare, type Pnl,
 } from '../pnl';
-import type { Agreement, Entity } from '../positions';
-import { useApp } from '../state';
+import { useApp, useRead } from '../state';
 import { formatNumber, type Kind } from '../tokens';
 
 /** A figure as a cell: a number signed in colour, and a dash for what nobody can know. */
@@ -30,9 +28,6 @@ export function PnlView() {
   const { state } = useApp();
   const live = state.source?.kind === 'book';
   const etag = state.source?.kind === 'book' ? state.source.etag : undefined;
-  const [days, setDays] = useState<MarkedDays | null>(null);
-  const [paper, setPaper] = useState<{ entities: Entity[]; agreements: Agreement[] }>(
-    { entities: [], agreements: [] });
   const [start, setStart] = useState('');
   const [end, setEnd] = useState('');
   const [scope, setScope] = useState({ portfolio: '', agreement: '', client: '' });
@@ -40,38 +35,26 @@ export function PnlView() {
   const [path, setPath] = useState('');
   const commit = () => { if (path !== scope.portfolio) setScope({ ...scope, portfolio: path }); };
   const [explain, setExplain] = useState(false);
-  const [answer, setAnswer] = useState<Pnl | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
   // the book as it stood when the answer in hand was read, and a count the reader bumps to read
   // again: a window ending now values the whole book, so a write offers a re-read, never runs one
   const current = useRef(etag);
   current.current = etag;
-  const [readAt, setReadAt] = useState<string | undefined>(undefined);
   const [again, setAgain] = useState(0);
 
-  useEffect(() => {
-    if (!live) return;
-    getMarkedDays().then(setDays).catch((reason) => setError(failure(reason).error));
-    Promise.all([getBookEntities(), getBookAgreements()])
-      .then(([legal, signed]) => setPaper(
-        { entities: legal.entities, agreements: signed.agreements }))
-      .catch(() => undefined);
-  }, [live]);
-
+  const marked = useRead(live ? getMarkedDays : null, [live]);
+  const days = marked.data;
+  const paperRead = useRead(live ? () => Promise.all([getBookEntities(), getBookAgreements()])
+    : null, [live]);
+  const paper = { entities: paperRead.data?.[0].entities ?? [],
+                  agreements: paperRead.data?.[1].agreements ?? [] };
   // read again whenever the window or the scope moves, or the reader asks - the explain only when
-  // asked for
-  useEffect(() => {
-    if (!live || !days?.days.length) return;
-    let wanted = true;
-    const asked = current.current;
-    setLoading(true);
-    getPnl(pnlQuery(start, end, scope, explain))
-      .then((read) => { if (wanted) { setAnswer(read); setReadAt(asked); setError(null); } })
-      .catch((reason) => { if (wanted) setError(failure(reason).error); })
-      .finally(() => { if (wanted) setLoading(false); });
-    return () => { wanted = false; };
-  }, [live, days, start, end, scope, explain, again]);
+  // asked for - with the book it was read at
+  const read = useRead(live && days?.days.length ? async () => ({ asked: current.current,
+    answer: await getPnl(pnlQuery(start, end, scope, explain)) }) : null,
+  [live, days, start, end, scope, explain, again]);
+  const { answer, asked: readAt } = read.data ?? {};
+  const { loading } = read;
+  const error = marked.error ?? read.error;
 
   if (!live) {
     return (

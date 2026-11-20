@@ -1,16 +1,13 @@
-import { useState } from 'react';
-import { amendDeal } from '../api';
-import { quoted, toRows } from '../blotter';
-import { DealPanels, DescriptorPanel, type AmendField } from '../components/FieldView';
+import { DescriptorPanel } from '../components/FieldView';
 import { Tree, type TreeNode } from '../components/Tree';
 import {
   GROUPINGS, NO_PAPER, POSITION, byId, byPath, clientName, clientTree, closed, nodeAt,
   portfolioTree, type Paper, type Position,
 } from '../positions';
-import { verdictOf } from '../quote';
-import { heldBack, marketOf, openTrade, useApp, written } from '../state';
+import { openTrade, useApp } from '../state';
 import { tradeAt } from '../trade';
 import type { DealNode, Descriptor } from '../types';
+import { DealEditor } from '../components/Desk';
 
 /** A tree node's id is its POSITIONAL path ('0/2/1') - the same identity the service's
  * `deal_path` uses, because references are not unique in a book. */
@@ -101,47 +98,6 @@ export function PortfolioView() {
         {selected && <DealEditor path={dealPath!} node={selected} />}
       </div>
     </div>
-  );
-}
-
-/** What filing an edit does under a record, where an amendment of a booked trade is a restrike. */
-const RESTRIKE = 'Filing this restrikes the trade: its new terms are filed under a new instrument '
-  + 'and go through approval again.';
-
-/** The deal at `path` in its panels, each level box saying how the market quotes it by the
- * blotter's rule, and every scalar amendable over the LIVE BOOK - a local file has nothing
- * server-side to amend - a restrike under a record asked first, its answer read above the
- * panels as a booking's is. A filed amendment re-reads the book at once rather than waiting a poll
- * tick. */
-export function DealEditor({ path, node }: { path: string; node: DealNode }) {
-  const { state, dispatch } = useApp();
-  const [said, setSaid] = useState<string[]>([]);
-  const recording = state.source?.kind === 'book' && state.record.spine !== null;
-  const read = quoted(toRows([node], state.schema?.Instrument.containers ?? [], undefined)[0],
-                      marketOf(state));
-  const beside = (key: string) => {
-    const level = [read.strike, read.barrier].find((picked) => picked?.key === key);
-    if (level?.title) return <span className="readas">the market quotes {level.title}</span>;
-    if (key === 'Barrier_Type' && read.terms) {
-      return <span className="readas">the market reads {read.terms.parts.join(' · ')}</span>;
-    }
-    return key === 'Option_Type' && read.on && read.sense && (
-      <span className="readas">
-        a {read.sense} on {String(read.on.value)} as the market quotes it</span>);
-  };
-  const onAmend: AmendField | undefined = state.source?.kind === 'book'
-    ? async (key, wireValue) => {
-      const answer = await amendDeal(path, { [key]: wireValue });
-      setSaid(answer.written ? verdictOf(answer).words : []);
-      return written(dispatch, answer);
-    } : undefined;
-  return (
-    <>
-      {said.map((words) => <div key={words} className="note">{words}</div>)}
-      <DealPanels deal={node.Instrument['.Deal']} schema={state.schema} onAmend={onAmend}
-                  hold={heldBack(state, 'book')}
-                  beside={beside} ask={recording ? RESTRIKE : undefined} />
-    </>
   );
 }
 

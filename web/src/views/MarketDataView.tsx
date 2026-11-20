@@ -1,13 +1,12 @@
-import { useEffect, useState } from 'react';
 import { getBookMarkets, patchMarket } from '../api';
 import { DescriptorPanel, type AmendField } from '../components/FieldView';
 import { Navigator } from '../components/Navigator';
 import { Whose } from '../components/Whose';
 import { fileName, spotQuoted, spreads, stampText } from '../desk';
 import { marketsView } from '../spine';
-import { blockHint, heldBack, marketOf, useApp, written } from '../state';
+import { blockHint, heldBack, marketOf, useApp, useRead, written } from '../state';
 import { curveOf, formatNumber, isObject, tenorLabel } from '../tokens';
-import type { BookMarkets, Market, Schema, Section } from '../types';
+import type { Market, Schema, Section } from '../types';
 
 /** `ModelParams.search` ported (config.py): a `Price Models` block keyed exactly wins; else the
  * first matching Model Configuration filter row; else the type's default; else static. */
@@ -135,20 +134,13 @@ export function MarketDataView() {
  */
 function RecordMarkets() {
   const { state } = useApp();
-  const [markets, setMarkets] = useState<BookMarkets | null>(null);
   const source = state.source;
   const records = state.record.spine !== null;
 
   // the record's own read, on the etag the whole screen rides: a close declared by any client
   // lands here on the next beat, and a desk that keeps no record is not asked at all
-  useEffect(() => {
-    if (source?.kind !== 'book' || !records) return;
-    let live = true;
-    getBookMarkets()
-      .then((answer) => { if (live) setMarkets(answer); })
-      .catch(() => { if (live) setMarkets(null); });
-    return () => { live = false; };
-  }, [source, records]);
+  const markets = useRead(source?.kind === 'book' && records ? getBookMarkets : null,
+                          [source, records]).data;
 
   if (markets === null) return null;
   const { closes, names, snapshots } = marketsView(markets);

@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react';
 import {
-  HEADS, RECORD_HEADS, WINDOWS, baseDateOf, cellText, csvText, describe, exported, filterRows,
-  flatten, groupedRows, heldRows, holdsTrades, inWindow, nameOf, quoted, rollingCount, rowsByPath,
-  sizeOf, sortRows, toRows, type BlotterRow, type Picked,
+  HEADS, RECORD_HEADS, WINDOWS, baseDateOf, cellText, csvText, exported, filterRows, flatten,
+  groupedRows, heldRows, holdsTrades, inWindow, nameOf, quoted, rollingCount, rowsByPath, sizeOf,
+  sortRows, toRows, type BlotterRow,
 } from '../blotter';
 import { DealPanels } from '../components/FieldView';
 import {
@@ -10,8 +10,9 @@ import {
   type Paper, type Position,
 } from '../positions';
 import { marketOf, openTrade, useApp } from '../state';
-import { formatNumber, type Kind } from '../tokens';
+import { formatNumber } from '../tokens';
 import type { Market, Schema } from '../types';
+import { SIDE, Side, Value } from '../components/Desk';
 
 /** The desk blotter: one row per booked deal over the live book, the tree flattened with
  * containers still holding their legs, sorted by days-to-roll so "who rolls off this week" is one
@@ -180,10 +181,6 @@ export function BlotterView() {
   );
 }
 
-/** Whose side the Side column states. */
-const SIDE = 'the desk\'s side of the trade, as the desk booked it: Sell is the desk selling, '
-  + 'whatever the client calls the same trade';
-
 const HELD = 'under a position, the written amount times the units the record holds of it';
 
 const LEVELS = 'an FX level as the market quotes its pair, base then quote';
@@ -286,32 +283,6 @@ function Held({ held, entities }: { held: Position[]; entities: Paper['entities'
       </td>
     </>
   );
-}
-
-/** Buy or sell as a chip, whatever the family calls it - Buy_Sell, Payer_Receiver, a lender - and
- * always the desk's. */
-export function Side({ side }: { side?: Picked }) {
-  const text = side ? cellText(side.value) : undefined;
-  if (!text) return null;
-  const short = ['Sell', 'Pay', 'Payer', 'Lender'].includes(text) ? 'sell' : 'buy';
-  return (
-    <span className={`side ${short}`} title={`${SIDE} (${side!.title ?? side!.key})`}>{text}</span>
-  );
-}
-
-/** One picked column. A shape a cell cannot state says so and points at the expander, which
- * renders it whole - the viewer never hides a value it cannot format. */
-export function Value({ picked, object, schema, kind }: {
-  picked?: Picked; object: string; schema: Schema | null; kind?: Kind;
-}) {
-  if (!picked) return <td className="n" />;
-  const text = cellText(picked.value, kind);
-  const exact = typeof picked.value === 'number' ? `: ${picked.value}` : '';
-  const title = picked.title ?? describe(schema, object, picked.key) + exact;
-  if (text === undefined) {
-    return <td className="n"><span className="hint" title={title}>{'{…}'}</span></td>;
-  }
-  return <td className="n" title={title}>{text}</td>;
 }
 
 /** Days to roll: past is spent, this week is hot, the month is warm, undated is silent. */

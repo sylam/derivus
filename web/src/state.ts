@@ -2,8 +2,8 @@
 // user action (describe/validate/execute) and by the book poll, which only re-fetches when the
 // etag moved - a booking made by any other client appears within a tick.
 
-import { createContext, useContext, type Dispatch } from 'react';
-import { SEAT, getBook, stored, type BookDealOutcome } from './api';
+import { createContext, useContext, useEffect, useState, type Dispatch } from 'react';
+import { SEAT, failure, getBook, getQuote, getQuotes, stored, type BookDealOutcome } from './api';
 import { bookClock } from './desk';
 import type { Grouping, Paper } from './positions';
 import { pinnedAt, readRecord, reconciledRecord, type RecordHeld } from './spine';
@@ -411,10 +411,45 @@ export function heldBack(state: AppState, act: Act,
     + `holds it ${held.length ? `only over ${held.join(', ')}` : 'nowhere'}.`;
 }
 
-export const AppContext = createContext<{ state: AppState; dispatch: Dispatch<Action> } | null>(null);
+/** The store, its dispatch, and each tab's label by its id. */
+export const AppContext = createContext<{
+  state: AppState; dispatch: Dispatch<Action>; labels: Record<string, string>;
+} | null>(null);
 
 export function useApp() {
   const app = useContext(AppContext);
   if (!app) throw new Error('useApp outside AppContext');
   return app;
+}
+
+/** One read of the live book while a screen is up, again whenever `keys` move - the answer held
+ * on screen while the next is read - or the service's refusal in its own words. */
+export function useRead<T>(read: (() => Promise<T>) | null, keys: unknown[]) {
+  const [held, setHeld] = useState<{ data: T | null; error: string | null; loading: boolean }>(
+    { data: null, error: null, loading: false });
+  useEffect(() => {
+    if (!read) return;
+    let live = true;
+    setHeld((standing) => ({ ...standing, loading: true }));
+    read().then((data) => { if (live) setHeld({ data, error: null, loading: false }); })
+      .catch((error) => {
+        if (live) setHeld({ data: null, error: failure(error).error, loading: false });
+      });
+    return () => { live = false; };
+  }, keys);
+  return held;
+}
+
+/** The desk's quotes, newest first, read again where the book or the record moves and on `again`;
+ * nothing where no service book stands behind the page. */
+export function useQuoteList(again?: number) {
+  const { state } = useApp();
+  return useRead(state.source?.kind === 'book' ? getQuotes : null, [clockOf(state), again]);
+}
+
+/** The pending trade each quote id names, read again where the book or the record moves. */
+export function useQuotes(ids: string[]) {
+  const { state } = useApp();
+  return useRead(ids.length ? async () => Object.fromEntries(await Promise.all(ids.map(
+    async (id) => [id, await getQuote(id)] as const))) : null, [ids.join(' '), clockOf(state)]);
 }

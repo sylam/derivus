@@ -8,10 +8,10 @@ import { DataTable } from '../components/DataTable';
 import { Navigator, type Page } from '../components/Navigator';
 import { TimeSeriesChart } from '../components/TimeSeriesChart';
 import { currencyOf, lagsBook, ownDials, stampText, tableReading } from '../desk';
-import { clockOf, marketOf, useApp } from '../state';
+import { clockOf, marketOf, useApp, useRead } from '../state';
 import { formatNumber, isObject, token } from '../tokens';
 import type { JobDoc, Schema, TableShape } from '../types';
-import { OnStrip } from './RiskView';
+import { OnStrip } from '../components/Desk';
 
 // a page of a table: its leading rows and columns, the whole of it a download away
 const PAGE = 200;
@@ -45,15 +45,10 @@ export function CalculationView() {
   const { state, dispatch } = useApp();
   const { doc, schema, run } = state;
   const live = state.source?.kind === 'book';
-  const [saved, setSaved] = useState<Calculations>({});
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!live) return;
-    getCalculations()
-      .then((answer) => { setSaved(answer.calculations); setError(null); })
-      .catch((failed) => setError(failure(failed).error));
-  }, [live]);
+  const read = useRead(live ? getCalculations : null, [live]);
+  // the file as the last save answered it, over the read
+  const [written, setSaved] = useState<Calculations | null>(null);
+  const saved = written ?? read.data?.calculations ?? {};
 
   // poll while the run is live
   useEffect(() => {
@@ -149,7 +144,7 @@ export function CalculationView() {
 
   return (
     <Navigator screen="calculation" pages={pages}
-               head={error && <div className="error-box">{error}</div>} />
+               head={read.error && <div className="error-box">{read.error}</div>} />
   );
 }
 

@@ -1,15 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  failure, getBookActivity, getBookAgreements, getBookEntities, getBookPositions, getBookRisk,
-  getBookXva, type About,
+  getBookActivity, getBookAgreements, getBookEntities, getBookPositions, getBookRisk, getBookXva,
+  type About,
 } from '../api';
 import {
   baseDateOf, cellText, quoted, rowsByPath, sizeOf, toRows, type BlotterRow, type Picked,
 } from '../blotter';
 import {
   CLIENT, RUNS, agreementsOf, bookedSince, bookedText, heldUnder, markText, readiness, ready,
-  termsReading,
-  touching, type Held, type Line, type Term,
+  termsReading, touching, type Held, type Line, type Term,
 } from '../client';
 import { EmptyState } from '../components/EmptyState';
 import { Navigator } from '../components/Navigator';
@@ -19,31 +18,13 @@ import {
 } from '../desk';
 import { statusText, type Agreement, type Entity, type Position } from '../positions';
 import { pinnedAt } from '../spine';
-import { clockOf, marketOf, opened, standing, useApp } from '../state';
+import { clockOf, marketOf, opened, standing, useApp, useRead } from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
 import { markOf, wholeRecord } from '../trade';
 import type {
   ActivityRow, BookRisk, BookXva, DealMark, Market, Schema, SettlementState, XvaSet,
 } from '../types';
-import { Side, Value } from './BlotterView';
-import { CreditCard, SpreadTable } from './CurvesView';
-import { AgreementForm } from './PaperView';
-import { Back } from './TradeView';
-
-/** One read of the live book while this page is up, again whenever `keys` move - the answer held
- * on screen while the next is read - or the service's refusal in its own words. */
-export function useRead<T>(read: (() => Promise<T>) | null, keys: unknown[]) {
-  const [held, setHeld] = useState<{ data: T | null; error: string | null }>(
-    { data: null, error: null });
-  useEffect(() => {
-    if (!read) return;
-    let live = true;
-    read().then((data) => { if (live) setHeld({ data, error: null }); })
-      .catch((error) => { if (live) setHeld({ data: null, error: failure(error).error }); });
-    return () => { live = false; };
-  }, keys);
-  return held;
-}
+import { AgreementForm, Back, CreditCard, Side, SpreadTable, Value } from '../components/Desk';
 
 /** What the page reads beside the store: on a desk that keeps one the record's paper, the XVA
  * projection, and the consolidated risk for the marks. */

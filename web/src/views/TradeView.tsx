@@ -10,20 +10,17 @@ import {
   NO_PAPER, byPath, clientName, closed, netOf, nodeAt, type Position, type Ticket,
 } from '../positions';
 import { clientText, quoteAt, verdictOf, type Verdict } from '../quote';
-import { WORKSPACES } from '../registry';
 import { pinnedAt } from '../spine';
-import { clockOf, heldBack, marketOf, useApp, written } from '../state';
+import {
+  clockOf, heldBack, marketOf, useApp, useQuoteList, useQuotes, useRead, written,
+} from '../state';
 import { formatNumber, ungrouped } from '../tokens';
 import {
   bookedBy, datesOf, historyOf, legsOf, markOf, movedTerms, tradeAt, tradeName, tradeSize,
   unwindFill, unwindWords, wholeRecord, type Price,
 } from '../trade';
 import type { ActivityRow, QuoteGiven } from '../types';
-import { Side, Value } from './BlotterView';
-import { DealEditor } from './PortfolioView';
-import { useRead } from './ClientView';
-import { TicketCard, useQuoteList, useQuotes } from './QuoteView';
-import { OnStrip } from './RiskView';
+import { Back, DealEditor, OnStrip, Side, TicketCard, Value } from '../components/Desk';
 
 /** One trade's rows on the record, newest first, asked for by its path where the desk keeps one
  * and again whenever the record moves - the service's own sentence where the read is refused -
@@ -33,17 +30,6 @@ function useHistory(path: string | undefined, recording: boolean, at: string | n
     await wholeRecord((since) => getBookActivity(since, { deal_path: path }))) }) : null,
   [path, recording, at]);
   return read.error ?? (read.data && read.data.path === path ? read.data.rows : null);
-}
-
-/** The way back to the tab a page was opened from, where it was opened from one. */
-export function Back() {
-  const { state, dispatch } = useApp();
-  const back = WORKSPACES.find((workspace) => workspace.id === state.back);
-  return back ? (
-    <button className="ghost" onClick={() => dispatch({ type: 'TAB', tab: back.id })}>
-      ‹ back to {back.label}
-    </button>
-  ) : null;
 }
 
 /** One trade on one page: what it is in the market's words, where it came from, what it is

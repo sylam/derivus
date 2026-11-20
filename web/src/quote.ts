@@ -21,6 +21,12 @@ import type {
 export const salesNames = (declared: StructureType): string[] =>
   declared.vernacular.split(',').map((name) => name.trim()).filter(Boolean);
 
+/** The structure a schema declares by the sales name a desk says first, else by its own name. */
+export const salesName = (schema: Schema | null, structure: string): string => {
+  const declared = schema?.Structure?.types[structure];
+  return declared ? salesNames(declared)[0] : structure;
+};
+
 /** A pair as a desk types it - USDZAR, USD/ZAR, USD.ZAR - as its base and quote currencies. */
 export function pairSides(pair: unknown): [string, string] | undefined {
   const found = /^\s*([a-z]{3})[/.]?([a-z]{3})\s*$/i.exec(String(pair ?? ''));
@@ -264,6 +270,12 @@ export function verdictOf(answer: Acceptance): Verdict {
 }
 
 // ---- the desk's quotes --------------------------------------------------------------------------
+
+/** Where a quote stands, in words. */
+export const STANDS: Record<string, string> = {
+  booked: 'booked as', accepted: 'accepted, not booked', firm: 'firm',
+  lapsed: 'past its firm window', quoted: 'quoted, with no firm window',
+};
 
 /** Where a quote stands at `now`: booked; accepted on the record and not booked; else firm until the
  * book's window closes or past it, `until` saying when - one stating no time it was quoted at is

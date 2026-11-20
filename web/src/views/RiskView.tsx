@@ -1,16 +1,17 @@
-import { Fragment, useMemo, useState, type ReactNode } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import { NO_SEAT } from '../api';
 import {
-  factorAxes, factorFamily, lagsBook, markHolds, marketSource, marksTotal, onPair, perOf,
-  perUnitText, plural, positionsUnder, quoteText, quoteView, reconciles, riskOf, riskReading,
-  sharedPer, sortGreeks, stampText, tenorText, valuationDay, type GreekKey, type Ladder,
+  factorAxes, factorFamily, lagsBook, markHolds, marksTotal, onPair, perOf, perUnitText, plural,
+  positionsUnder, quoteText, quoteView, reconciles, riskOf, riskReading, sharedPer, sortGreeks,
+  stampText, tenorText, type GreekKey, type Ladder,
 } from '../desk';
 import { EmptyState } from '../components/EmptyState';
 import { closed, type Position } from '../positions';
 import { clockOf, marketOf, openTrade, useApp } from '../state';
 import { axisText, formatNumber } from '../tokens';
 import { tradeAt } from '../trade';
-import type { BookRisk, GreekRow, JobDoc } from '../types';
+import type { BookRisk, GreekRow } from '../types';
+import { OnStrip } from '../components/Desk';
 
 /** The consolidated risk: the book's own mark and its whole-book gradient, counterparty-blind.
  *
@@ -179,40 +180,6 @@ export function RiskView() {
           </>
         )}
       </div>
-    </div>
-  );
-}
-
-/** What the numbers on a desk screen are ON: the day the book values on, when they were computed,
- * the currency they report in and where the market came from as far as the book says - and, where
- * the answer was read at an older clock than the book on screen, that in words. `doc` is the
- * document they were computed over where that is not the one on screen, and `again` what brings
- * fresh ones where nothing reads them again on its own. */
-export function OnStrip({ computed, title, currency, lagging, loading, doc, again }: {
-  computed: ReactNode; title?: string; currency: ReactNode; lagging: boolean; loading: boolean;
-  doc?: JobDoc; again?: string;
-}) {
-  const { state } = useApp();
-  const on = doc ?? state.doc;
-  const market = marketSource(on, marketOf(state));
-  return (
-    <div className={`onstrip${lagging ? ' behind' : ''}`}>
-      <span><span className="k">valued on</span><b>{valuationDay(on) || '—'}</b></span>
-      <span title={title}><span className="k">computed</span>{computed}</span>
-      <span><span className="k">reported in</span><b>{currency || '—'}</b></span>
-      <span>
-        <span className="k">market</span>
-        {market.file ? <><b>{market.file}</b> with the book's own block over it</>
-          : <>the book's own block</>}
-        {market.seen && <>, quotes last seen {stampText(market.seen)}</>}
-      </span>
-      {lagging && (
-        <span className="lag">
-          These numbers are of an earlier book: it or its record has moved since they were read.
-          {again ?? (loading ? ' A fresh read is on its way.'
-            : ' They are read again on the next poll.')}
-        </span>
-      )}
     </div>
   );
 }

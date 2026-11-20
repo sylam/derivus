@@ -2,8 +2,8 @@ import { useState, type ReactNode } from 'react';
 import { getBookCollateral, getBookRisk, getXvaProfile } from '../api';
 import { SET, fieldsOf, rowsByPath, toRows } from '../blotter';
 import {
-  RUNS, WRONG, actionFirst, agreementsOf, bookedText, creditLines, exposureAfter, openClient, runSum,
-  statedHolding, summed, unmarked, wrongWith, type CreditLine, type Wrong,
+  RUNS, WRONG, actionFirst, agreementsOf, bookedText, creditLines, exposureAfter, openClient,
+  runSum, statedHolding, summed, unmarked, wrongWith, type CreditLine, type Wrong,
 } from '../client';
 import { EmptyState } from '../components/EmptyState';
 import { TimeSeriesChart } from '../components/TimeSeriesChart';
@@ -11,10 +11,9 @@ import {
   SURVIVAL, ageOf, currencyOf, entityText, lagsBook, peaks, plural, replayRows, spreads, stampText,
   tableReading, xvaTotals, type Peak,
 } from '../desk';
-import { clockOf, marketOf, useApp } from '../state';
+import { clockOf, marketOf, useApp, useRead } from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
-import { useRead } from './ClientView';
-import { OnStrip } from './RiskView';
+import { Amount, OnStrip } from '../components/Desk';
 
 /** What a cell says of a done run whose row keeps no peaks. */
 const UNKEPT = 'this row was filed before rows kept a run\'s peaks: a recalc keeps them';
@@ -387,20 +386,5 @@ function Profiled({ line }: { line: CreditLine }) {
         </details>
       )}
     </section>
-  );
-}
-
-/** An amount, in whole units unless it is an adjustment, in the `currency` beside it where the
- * header does not name one. A null is an absence, and says why on hover. */
-function Amount({ value, currency, absent, kind = 'whole' }: {
-  value: number | null; currency?: string | null; absent: string; kind?: 'whole' | 'money';
-}) {
-  return (
-    <td className={`n${value !== null && value < 0 ? ' neg' : ''}`}
-        title={value === null ? undefined : String(value)}>
-      {value === null ? <span className="hint" title={absent}>—</span> : (
-        <>{formatNumber(value, kind)}{currency && <> <span className="unit">{currency}</span></>}</>
-      )}
-    </td>
   );
 }

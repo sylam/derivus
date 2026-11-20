@@ -8,7 +8,7 @@ import {
   USED_COLUMNS, mapPages, mapRows, mergeRequest, rejectedRows, seedDescriptor, setAt, usedRows,
   verifyRequest, withMember,
 } from '../securities';
-import { heldBack, useApp } from '../state';
+import { heldBack, useApp, useRead } from '../state';
 import { isObject } from '../tokens';
 import type { SecuritiesAnswer, SeedOutcome, UsedRow, VerifyOutcome } from '../types';
 
@@ -289,22 +289,14 @@ const printPages = (used: UsedRow[]): Page[] =>
 export function SecuritiesView() {
   const { state, dispatch } = useApp();
   const pane = state.selection.picks.securities ?? PANES[0].id;
-  const [answer, setAnswer] = useState<SecuritiesAnswer | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   const source = state.source;
   const verify = useVerification(() => setReload((count) => count + 1));
 
   // the read rides the etag poll like every other screen, and a write here or a verification that
   // rewrote the map asks for it again
-  useEffect(() => {
-    if (source?.kind !== 'book') return;
-    let live = true;
-    getSecurities()
-      .then((next) => { if (live) { setAnswer(next); setError(null); } })
-      .catch((failed) => { if (live) setError(failure(failed).error); });
-    return () => { live = false; };
-  }, [source, reload]);
+  const { data: answer, error } = useRead(source?.kind === 'book' ? getSecurities : null,
+                                          [source, reload]);
 
   if (source?.kind !== 'book') {
     return (

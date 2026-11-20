@@ -13,6 +13,9 @@ import { AppContext, INITIAL, bookLoaded, clockOf, reducer } from './state';
 
 const BOOK_POLL_MS = 2000;
 
+/** Each tab's label by its id, for a page's way back. */
+const LABELS = Object.fromEntries(WORKSPACES.map((w) => [w.id, w.label]));
+
 export function App() {
   const [state, dispatch] = useReducer(reducer, INITIAL, (initial) => ({
     ...initial,
@@ -212,7 +215,7 @@ export function App() {
   const Active = WORKSPACES.find((w) => w.id === state.tab)?.view ?? WORKSPACES[0].view;
 
   return (
-    <AppContext.Provider value={{ state, dispatch }}>
+    <AppContext.Provider value={{ state, dispatch, labels: LABELS }}>
       <div className="app">
         <header className="masthead">
           <h1><span>▮</span> derivus</h1>

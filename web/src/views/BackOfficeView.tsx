@@ -7,13 +7,15 @@ import { EmptyState } from '../components/EmptyState';
 import { stampText } from '../desk';
 import { NO_PAPER } from '../positions';
 import { clientText, quoteAt, spreadText } from '../quote';
-import { heldBack, marketOf, opened, useApp, type Act } from '../state';
+import {
+  type Act, heldBack, marketOf, opened, useApp, useQuoteList, useQuotes, useRead,
+} from '../state';
 import { formatNumber, ungrouped } from '../tokens';
 import {
   holdsFor, paperText, ticketWords, tradeAt, tradeName, waitedText, waitingElsewhere,
 } from '../trade';
 import type { CloseVerdict, Decided, PendingQuote, WorkRow, Worklist } from '../types';
-import { TicketCard, useQuoteList, useQuotes } from './QuoteView';
+import { TicketCard } from '../components/Desk';
 
 /** The three lists this seat clears, each by its own verb. */
 type List = 'payments' | 'unconfirmed' | 'calls';
@@ -32,18 +34,8 @@ export function BackOfficeView() {
   const { state } = useApp();
   const { spine, worklist, worklistError } = state.source?.kind === 'book'
     ? state.record : { spine: null, worklist: null, worklistError: null };
-  const [read, setRead] = useState<{ check: CloseVerdict | null; error: string | null }>(
-    { check: null, error: null });
-
   // the day's close is checked again at every read of what waits, which is every head move
-  useEffect(() => {
-    if (!worklist) return;
-    let live = true;
-    getCloseCheck(worklist.date)
-      .then((check) => { if (live) setRead({ check, error: null }); })
-      .catch((error) => { if (live) setRead({ check: null, error: failure(error).error }); });
-    return () => { live = false; };
-  }, [worklist]);
+  const read = useRead(worklist ? () => getCloseCheck(worklist.date) : null, [worklist]);
 
   if (spine === null) {
     return (
@@ -53,7 +45,7 @@ export function BackOfficeView() {
       />
     );
   }
-  const { check } = read;
+  const check = read.data;
   const error = worklistError ?? read.error;
   if (!worklist) {
     return error ? (
