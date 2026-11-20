@@ -3400,11 +3400,20 @@ def diary_rows(job, lsn, files=None):
         PnL.held_legs(job_children(job), set(units)))
 
 
+def declared_entity(field, entity):
+    """`{entity: row}` for every legal entity the record declares, or the 422 saying `field` names
+    none of them."""
+    declared = {row['entity']: row for row in spine.entities()}
+    if entity not in declared:
+        raise HTTPException(422, '{} {!r} is no legal entity the record declares - it declares {}: '
+                                 'declare the entity first'.format(
+                                     field, entity, ', '.join(sorted(declared)) or 'none'))
+    return declared
+
+
 def clients_under(entity):
     """`entity` and every entity declared under it, however deep - the client a view groups."""
-    parents = {row['entity']: row.get('parent') for row in spine.entities()}
-    if entity not in parents:
-        raise HTTPException(422, 'client {!r} is no entity the record declares'.format(entity))
+    parents = {name: row.get('parent') for name, row in declared_entity('client', entity).items()}
     found, grew = {entity}, True
     while grew:
         grew = False
@@ -3555,11 +3564,7 @@ def book_agreement_declared(request: dict):
     """
     recorded()
     agreement, entity = request.get('agreement'), request.get('entity')
-    declared = sorted(row['entity'] for row in spine.entities())
-    if entity not in declared:
-        raise HTTPException(422, 'agreement {!r} names entity {!r} and the record declares {} - '
-                                 'declare the entity first'.format(
-                                     agreement, entity, ', '.join(declared) or 'none'))
+    declared_entity('entity', entity)
     terms = agreement_terms(request.get('terms'), agreement, entity)
     filed = spine.declare_agreement(agreement, entity, request.get('kind'), terms,
                                     actor_name=request.get('actor'))
@@ -4677,11 +4682,7 @@ def book_survival(request: dict):
     rows = spread if isinstance(spread, list) else [{'tenor': '1Y', 'spread': spread}]
     marking(request, 'survival_curve')
     if spine.configured():
-        declared = sorted(row['entity'] for row in spine.entities())
-        if counterparty not in declared:
-            raise HTTPException(422, 'counterparty {!r} is no legal entity the record declares - '
-                                     'it declares {}: declare the entity first'.format(
-                                         counterparty, ', '.join(declared) or 'none'))
+        declared_entity('counterparty', counterparty)
     if not (isinstance(counterparty, str) and counterparty):
         raise HTTPException(422, 'counterparty {!r} names nobody: a survival curve is written for '
                                  'the counterparty a netting set names'.format(counterparty))
