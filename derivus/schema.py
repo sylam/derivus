@@ -1527,7 +1527,9 @@ MARKET_QUOTE_CLOCKS = quote_clocks(bootstrappers)
 #: The registries the store and the partition read, each off its declarations - read at call time
 #: through this module, never bound by name at import, as the families import from here.
 OBSERVES = declarations(instruments, 'observes')
-EXPOSURES = declarations(instruments, 'exposure')
+#: Each type's `Exposure` components, a tuple of one where it declares one.
+EXPOSURES = {kind: (terms,) if isinstance(terms, Exposure) else terms
+             for kind, terms in declarations(instruments, 'exposure').items()}
 FACTOR_FIELDS = factor_fields(riskfactors)
 _types, _sections, _containers, _vernacular, _titles = emit_instrument(instruments)
 _factor_types = emit_factor(riskfactors)

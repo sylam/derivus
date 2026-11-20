@@ -2450,7 +2450,7 @@ class FXSwapDeal(Deal):
 class FXForwardDeal(Deal):
     vernacular = 'FX forward, outright forward, deliverable forward'
     quoted = 'Buy_Amount'
-    exposure = Exposure('Buy_Amount', 'Buy_Currency', 'Sell_Currency', other='Sell_Amount')
+    exposure = FXNonDeliverableForward.exposure
     fields = [ADMIN, own('FXForwardDeal', [
         F('Sell_Currency', 'Text', default='', factors=['FxRate']),
         F('Sell_Amount', 'Float', default=0.0, sized=True),
@@ -3487,7 +3487,7 @@ class FloorDeal(CapDeal):
     vernacular = 'interest rate floor, floor, floorlets'
     # the schema reads each type's own declarations, never a parent's
     observes = Observes('Forecast_Rate', 'InterestRate')
-    exposure = Exposure('Principal', 'Currency')
+    exposure = CapDeal.exposure
     fields = [ADMIN, PRICING, FLOATING_INDEX, COUPON_SCHEDULE, CAP_FLOOR, own('FloorDeal', [
         F('Floor_Rate', 'Float', default=0.0)
     ])]
@@ -5296,8 +5296,7 @@ class EquityBarrierOption(BarrierLifecycle, Deal):
 class CommodityDigitalOption(Deal):
     vernacular = 'commodity digital, energy digital, binary option on a reference price'
     observes = Observes('Reference_Type', 'ReferencePrice', 'Price_Fixing', 1, expires='Expiry_Date')
-    exposure = Exposure('Payoff', underlying='Reference_Type', long=('Buy_Sell', 'Buy'), strike='Strike_Price',
-                        expiry='Expiry_Date', call=('Option_Type', 'Call'), digital=('Payoff_Style', 'Cash', 'Asset'))
+    exposure = EquityBinaryOption.exposure._replace(underlying='Reference_Type')
     fields = [ADMIN, PRICING, own('CommodityDigitalOption', [
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
@@ -5524,8 +5523,7 @@ class CommodityNoTouchOption(CommodityOneTouchOption):
 class CommodityBarrierOption(BarrierLifecycle, CommodityFixingWatch, Deal):
     vernacular = 'commodity barrier option, energy barrier option, commodity knock-in, commodity knock-out'
     observes = Observes('Reference_Type', 'ReferencePrice', 'Price_Fixing', 1, expires='Expiry_Date')
-    exposure = Exposure('Units', underlying='Reference_Type', long=('Buy_Sell', 'Buy'), strike='Strike_Price',
-                        expiry='Expiry_Date', call=('Option_Type', 'Call'))
+    exposure = EQUITY_OPTION._replace(underlying='Reference_Type')
     fields = [ADMIN, PRICING, COMMODITY_TOUCH, own('CommodityBarrierOption', [
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
@@ -6464,9 +6462,8 @@ class FXTARFOptionDeal(Deal):
     vernacular = 'TARF, target redemption forward, target forward'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'TARF_ExpiryDates', 2)
     # at each fixing an option of its kind on Underlying_Amount and the other kind sold on LeverageNotional
-    exposure = (FX_OPTION._replace(expiry=None, per='TARF_ExpiryDates'), FX_OPTION._replace(
-        amount='LeverageNotional', long=('Buy_Sell', 'Sell'), expiry=None, call=('Option_Type', 'Put'),
-        per='TARF_ExpiryDates'))
+    exposure = (FX_OPTION._replace(per='TARF_ExpiryDates'), FX_OPTION._replace(
+        amount='LeverageNotional', long=('Buy_Sell', 'Sell'), call=('Option_Type', 'Put'), per='TARF_ExpiryDates'))
     fields = [ADMIN, FX_STRIP_ADMIN, FXOPTIONBASE, own('FXTARFOptionDeal', [
         F('Expiry_Date', 'Date', default=''),
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
@@ -6622,8 +6619,8 @@ class FXTARFOptionDeal(Deal):
 class FXAccumulatorOptionDeal(Deal):
     vernacular = 'FX accumulator, decumulator, accu'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Accumulator_ExpiryDates', 2)
-    exposure = (FX_OPTION._replace(expiry=None, per='Accumulator_ExpiryDates'), FX_OPTION._replace(
-        amount='LeverageNotional', long=('Buy_Sell', 'Sell'), expiry=None, call=('Option_Type', 'Put'),
+    exposure = (FX_OPTION._replace(per='Accumulator_ExpiryDates'), FX_OPTION._replace(
+        amount='LeverageNotional', long=('Buy_Sell', 'Sell'), call=('Option_Type', 'Put'),
         per='Accumulator_ExpiryDates'))
     fields = [ADMIN, FX_STRIP_ADMIN, FXOPTIONBASE, own('FXAccumulatorOptionDeal', [
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
@@ -7021,7 +7018,7 @@ class FXOptionDeal(Deal):
 
 
 class FXEuropeanOption(FXOptionDeal):
-    exposure = FXOptionDeal.exposure
+    exposure = FX_OPTION
 
 
 class FXBinaryOption(FXOptionDeal):

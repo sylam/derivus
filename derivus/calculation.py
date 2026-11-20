@@ -5745,21 +5745,20 @@ class SACCR(NettingSetCalculation):
         fixings' (`strip`) or, a package, its children's (`package`)."""
         deal = node['Instrument']
         kind = deal.field['Object']
-        terms, optionlets = schema.EXPOSURES.get(kind), self.optionlets(deal)
-        if (terms is None or optionlets) and node.get('Children') and not deal.settles_children and (
+        parts, optionlets = schema.EXPOSURES.get(kind), self.optionlets(deal)
+        if (parts is None or optionlets) and node.get('Children') and not deal.settles_children and (
                 kind != 'NettingCollateralSet'):
             return self.package(node, mpor)
-        if terms is None:
+        if parts is None:
             raise ValueError('SACCR: trade {} is a {}, which declares no exposure CRE52 reads'.format(
                 deal.field.get('Reference'), kind))
-        parts = [terms] if isinstance(terms, schema.Exposure) else terms
         if parts[0].per:
             return self.strip(deal, parts, mpor)
-        if isinstance(terms, schema.Exposure):
-            return [] if terms.amount is None else self.caplets(deal, terms, mpor) if optionlets else self.row(
-                deal, terms, mpor)
+        if len(parts) == 1:
+            return [] if parts[0].amount is None else self.caplets(deal, parts[0], mpor) if optionlets else self.row(
+                deal, parts[0], mpor)
         # a type of several components: a row each, named by its last day, one settled before today none
-        return [dict(row, Component=part.end) for part in terms
+        return [dict(row, Component=part.end) for part in parts
                 if deal.field[part.end] >= self.valuation['Base_Date'] for row in self.row(deal, part, mpor)]
 
     def package(self, node, mpor):
@@ -5793,8 +5792,8 @@ class SACCR(NettingSetCalculation):
         """`[(position, deal, terms)]` of the linear rate legs among `children`: each declaring the
         currency it pays and no other risk factor, and its size a table's its compile binds, or none,
         its amounts fixed today, and priced as no optionlets."""
-        return [(position, child['Instrument'], terms) for position, child in enumerate(children) if isinstance(
-            terms := schema.EXPOSURES.get(child['Instrument'].field['Object']), schema.Exposure) and terms.currency
+        return [(position, child['Instrument'], terms) for position, child in enumerate(children) if len(
+            parts := schema.EXPOSURES.get(child['Instrument'].field['Object'], ())) == 1 and (terms := parts[0]).currency
             and not terms.underlying and (terms.amount is None or isinstance(
                 child['Instrument'].field[terms.amount], dict)) and not self.optionlets(child['Instrument'])]
 

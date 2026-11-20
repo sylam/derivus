@@ -120,7 +120,7 @@ import pandas as pd
 
 from . import (PATHS_FILE, Context, bootstrappers, content_hash, dv_home, instruments, riskfactors,
                solve_deal_field, spine, structures, utils)
-from .schema import (EXPOSURES, PRICES_KEY, Exposure, mapping, deal_at, declared_block,
+from .schema import (EXPOSURES, PRICES_KEY, mapping, deal_at, declared_block,
                      declared_defaults, declared_factors, declared_fields, declared_settlements,
                      instrument_of, job_children, live_deals, quote_plan, quote_stamps, remove_deal,
                      settlement_days, sniff_indent, splice_deal, stated_messages, tables_of,
@@ -1294,7 +1294,7 @@ def deal_size(market, base, deal):
     elif terms is not None:
         declared = declared_fields(cls)
         fields = declared_block(declared.values(), deal)
-        for part in [terms] if isinstance(terms, Exposure) else terms:
+        for part in terms:
             if part.amount is None:
                 stated += [(fields.get(cash.currency or 'Currency'), fields.get(cash.amount))
                            for *_, cash in declared_settlements(cls) if cash.amount]
