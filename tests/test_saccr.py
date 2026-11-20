@@ -1778,6 +1778,24 @@ def test_every_row_of_a_trade_matures_on_the_trades_last_day(world):
     assert (trades(output, 'TRADE_CAP')[columns].to_numpy() == trades(output, 'TRADE_PACKAGE')[columns].to_numpy()).all()
 
 
+def test_a_run_counts_its_years_from_its_own_base_date(tmp_path):
+    """CRE52.34. One process reads a swap on ten million from two years out to five at the base
+    date, d 1e7 SD(2, 5), and again a year on, d 1e7 SD(1, 4): each run counts a day's years from
+    its own base date.
+
+    Killing mutation: a day's years kept from one run to the next - the second run's d the first's.
+    """
+    job = document({'SET': ({}, [node(swap('SWAP', years(5), 'Fixed', Effective_Date=years(2)))])},
+                   saccr(mapping_file(tmp_path / 'mapping.json')))
+    later = json.loads(json.dumps(job))
+    later['Calc']['Calculation']['Base_Date'] = later['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'System Parameters']['Base_Date'] = json.loads(json.dumps(years(1), cls=CustomJsonEncoder))
+    for dated, (start, end) in ((job, (2.0, 5.0)), (later, (1.0, 4.0))):
+        rows = trades(run(dated), 'SET')
+        assert rows.loc['SWAP', 'AdjustedNotional'] == pytest.approx(
+            1e7 * supervisory_duration(start, end), rel=1e-14), rows
+
+
 EQUITY_LEG = {'Object': 'EquitySwapLeg', 'Reference': 'LEG', 'Currency': 'USD',
               'Equity_Currency': 'USD', 'Discount_Rate': 'USD', 'Equity': 'INDEX', 'Buy_Sell': 'Buy',
               'Effective_Date': BASE, 'Maturity_Date': years(1),
