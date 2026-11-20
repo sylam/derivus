@@ -1086,7 +1086,7 @@ def margin_value(book, margin):
                          'currency it is stated in, not {!r}'.format(margin)) from None
     book = Loads.of(book)
     market = book.market()
-    pricing = reporting_currency(book.document, market)
+    pricing = reporting_currency(book.document)
     return {'amount': amount, 'currency': currency, 'pricing_currency': pricing,
             'value': amount * engine_spot(market, currency, pricing)}
 
@@ -1097,12 +1097,11 @@ def base_currency(market):
     return market['System Parameters']['Base_Currency']
 
 
-def reporting_currency(document, market=None):
+def reporting_currency(document, market=market_of):
     """The currency `document` reports in, which every premium it prices is in: its
-    `Calculation.Currency`, else its market's base - `market` where the caller holds it, or a
-    loader of `document`'s market, read only where `Calculation.Currency` is absent."""
-    return document['Calc']['Calculation'].get('Currency') or base_currency(
-        market_of(document) if market is None else market(document) if callable(market) else market)
+    `Calculation.Currency`, else the base of its market, which `market(document)` loads only where
+    the document states none."""
+    return document['Calc']['Calculation'].get('Currency') or base_currency(market(document))
 
 
 def crossed_spots(base, crosses):
@@ -1981,7 +1980,7 @@ def risk_impact(book, params, reference, surface, legs, halves, charge_full, cac
     market = book.market()
     min_ticket = float(policy['min_ticket_bp']) * 1e-4 * float(params['notional']) * \
         engine_spot(market, str(params['notional_currency']).upper(),
-                    reporting_currency(book.document, market))
+                    reporting_currency(book.document))
     scale, saving, effective, note = risk_scale(rows, cost, policy, charge_full, min_ticket)
     return {'coordinates': 'quote-space', 'buckets': rows, 'saving': saving,
             'charge_full': charge_full, 'charge_effective': effective, 'scale': scale,
@@ -2170,7 +2169,7 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
         # and it IS the charge, so it is non-negative by construction
         'edge': levied,
         # the one currency every money in this outcome is in, legs, spread and risk rows included
-        'currency': reporting_currency(document, market),
+        'currency': reporting_currency(document),
         'spread_note': None if halves else '{} {} - there is no two-way to charge, so the quote '
         'is the mid'.format(prices_block(surface),
                             'carries no Quoted_Bid/Quoted_Ask'

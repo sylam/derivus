@@ -2427,19 +2427,27 @@ def test_reporting_currency_reads_calculation_before_loading_the_market(book):
     """`structures.reporting_currency` answers `Calculation.Currency` without loading the market
     file, and falls back to the market's base currency only where `Calculation.Currency` is absent.
 
+    Its second argument means one thing, the loader of the document's market: asked of the document
+    where it states no currency, and of nothing where it states one.
+
     Killing mutation: eagerly loading the market before checking `Calculation.Currency` (fails with
-    FileNotFoundError on the stated-currency arm) or dropping the `base_currency` fallback (fails
-    on the unstated-currency arm).
+    FileNotFoundError on the stated-currency arm), dropping the `base_currency` fallback (fails
+    on the unstated-currency arm), or loading with `market_of` whatever loader is handed (the
+    unstated arm over the missing file raises FileNotFoundError instead of answering GBP).
     """
     stated = copy.deepcopy(book)
     stated['Calc']['Calculation']['Currency'] = 'ZAR'
     stated['Calc']['MergeMarketData'] = {'MarketDataFile': 'missing_market_file.json'}
     assert structures.reporting_currency(stated) == 'ZAR'
+    asked = []
+    assert structures.reporting_currency(stated, asked.append) == 'ZAR' and not asked
 
     unstated = copy.deepcopy(book)
     unstated['Calc']['Calculation'].pop('Currency', None)
     assert structures.reporting_currency(unstated) == 'USD'
-
+    unstated['Calc']['MergeMarketData'] = {'MarketDataFile': 'missing_market_file.json'}
+    assert structures.reporting_currency(unstated, lambda document: asked.append(document) or {
+        'System Parameters': {'Base_Currency': 'GBP'}}) == 'GBP' and asked == [unstated]
 
 
 @pytest.mark.card
