@@ -1,9 +1,9 @@
 import { useState, type ReactNode } from 'react';
-import { getBookCollateral, getBookRisk } from '../api';
+import { getBookActivity, getBookCollateral, getBookRisk, getXvaProfile } from '../api';
 import { SET, fieldsOf, rowsByPath, toRows } from '../blotter';
 import {
-  WRONG, actionFirst, agreementsOf, creditLines, exposureAfter, openClient, runSum, statedHolding,
-  summed, unmarked, wrongWith, type CreditLine, type Wrong,
+  RUNS, WRONG, actionFirst, agreementsOf, creditLines, exposureAfter, openClient, runSum,
+  statedHolding, summed, unmarked, wrongWith, type CreditLine, type Wrong,
 } from '../client';
 import { EmptyState } from '../components/EmptyState';
 import { TimeSeriesChart } from '../components/TimeSeriesChart';
@@ -11,14 +11,15 @@ import {
   SURVIVAL, ageOf, currencyOf, entityText, lagsBook, peaks, plural, replayRows, spreads, stampText,
   tableReading, xvaTotals, type Peak,
 } from '../desk';
+import { pinnedAt } from '../spine';
 import { clockOf, marketOf, useApp } from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
+import { wholeRecord } from '../trade';
 import { useRead } from './ClientView';
 import { OnStrip } from './RiskView';
 
-/** What a cell says of a done run whose row keeps no peaks or profile. */
-const UNKEPT = 'this row was filed before the projection kept a run\'s peaks and profile: a recalc '
-  + 'keeps them';
+/** What a cell says of a done run whose row keeps no peaks. */
+const UNKEPT = 'this row was filed before rows kept a run\'s peaks: a recalc keeps them';
 
 /** A client as the screen holds it: its lines, what is wrong under them, and its sums. */
 type Client = {
@@ -29,12 +30,12 @@ type Client = {
 /** Every counterparty as a credit officer reads it, the ones to act on first: what the desk is
  * owed, the collateral against it, the exposure after collateral, how large it can get, its CVA
  * and FVA - each its own set's last run, with its own age - and what is wrong, in business words.
- * A row opens its runs' profiles and leads to the client's page.
+ * A set's row opens its profile and leads to the client's page.
  *
- * READ-ONLY BY DESIGN: a recalc is asked for through the MCP verbs, never from here, and the
- * screen says so. Every run is read off its own row - its peaks, its profile and whether it is as
- * current as the book - on both desks; one that keeps no record reads no collateral call and no
- * second seat, and the screen says that too.
+ * READ-ONLY BY DESIGN: a recalc is asked for through the chat, never from here, and the screen
+ * says so. A run's peaks are read off its row, its profile one set at a time; on a desk that
+ * records, the events filed under each run set since its run are read by the set's agreement. One
+ * that keeps no record reads no collateral call, no second seat and no events, and says so.
  */
 export function XvaView() {
   const { state } = useApp();
@@ -45,6 +46,11 @@ export function XvaView() {
   const [opened, setOpened] = useState<string | null>(null);
   const risk = useRead(live ? getBookRisk : null, [clock, state.seat]);
   const collateral = useRead(live && recording ? getBookCollateral : null, [clock, state.seat]);
+  const ran = (xva.data?.sets ?? []).filter((set) => set.as_of !== null).map((set) => set.reference);
+  const record = useRead(live && recording && ran.length ? async () => Object.fromEntries(
+    await Promise.all(ran.map(async (reference) => [reference, await wholeRecord((since) =>
+      getBookActivity(since, { agreement: reference }))] as const))) : null,
+  [ran.join('\n'), pinnedAt(state.record.spine)]);
 
   if (!live) {
     return (
@@ -98,6 +104,7 @@ export function XvaView() {
     const agreements = agreementsOf(id, paper?.agreements ?? null, doc);
     const lines = creditLines(id, {
       sets: view.sets, agreements, rows, positions: paper?.positions ?? null,
+      record: recording ? record.data : null,
       marks: risk.data?.per_deal ?? null, calls: recording ? collateral.data?.calls ?? null
         : agreements.map((row) => statedHolding(row.terms, fieldsOf(schema, SET) ?? {}, market)),
     }, schema);
@@ -124,7 +131,7 @@ export function XvaView() {
     <div className="main">
       <div className="panel">
         <OnStrip
-          computed={<>each row its own set's last run, with its own age; the value to the desk
+          computed={<>{RUNS}; the value to the desk
             {risk.data ? <> read {stampText(risk.data.as_of)}</> : ' unread'}
             {recording && <>; collateral{collateral.data ? ` on the ${marked}` : `: ${marked ?? 'unread'}`}</>}</>}
           currency={currency} lagging={lagsBook(xva.clock, clock)} loading={xva.loading}
@@ -132,10 +139,6 @@ export function XvaView() {
         {[risk.error && `The value to the desk is not read: ${risk.error}`,
           collateral.error && `The collateral is not read: ${collateral.error}`]
           .map((refused) => refused && <div key={refused} className="error-box">{refused}</div>)}
-        {view.current_unknown && (
-          <div className="note">Whether a run is older than the book is not read: {
-            view.current_unknown}</div>
-        )}
         <div className={`blotterbar wrongs${acting.length ? ' act' : ''}`}>
           {acting.length ? (
             <span className="hint">
@@ -144,8 +147,8 @@ export function XvaView() {
             </span>
           ) : (
             <span className="hint">
-              <b>Nothing to act on.</b> Every client's sets have a run that is done and not older
-              than the book{recording ? ', and no trade waits on a second seat' : ''}.
+              <b>Nothing to act on.</b> Every client's sets have a run that is done{recording
+                ? ', nothing filed under them since, and no trade waits on a second seat' : ''}.
             </span>
           )}
           <span className="spacer" />
@@ -161,15 +164,13 @@ export function XvaView() {
         </div>
 
         <div className="note">
-          Each row is a client; a client trading under several netting sets has each beneath it.
-          A recalc is asked for through the MCP verbs — <code>recalc_xva</code> — and never from
-          here: this screen reads the desk's projection, the last run per set, each with its own
-          peaks and profile. A run is older than the book where a recalc now would not price what
-          it priced.{' '}
-          {recording ? 'Collateral is read on the close marked for the book\'s day, and trades '
-            + 'waiting on a second seat off the record.'
+          Each row is a client; a client trading under several netting sets has each beneath it,
+          and a set's row opens its profile.{' '}
+          {recording ? 'Collateral is read on the close marked for the book\'s day; trades '
+            + 'waiting on a second seat and the events filed under a set since its run off the '
+            + 'record.'
             : "This desk keeps no record: collateral is what each set's terms state it holds, no "
-              + 'call is worked and no trade waits on a second seat.'}
+              + 'call is worked, no trade waits on a second seat and no event is filed under a set.'}
         </div>
 
         <div className="tablewrap">
@@ -194,9 +195,8 @@ export function XvaView() {
             </thead>
             <tbody>
               {clients.map((client) => (
-                <ClientRows key={client.id} client={client} reads={reads}
-                            opened={opened === client.id}
-                            onOpen={() => setOpened(opened === client.id ? null : client.id)} />
+                <ClientRows key={client.id} client={client} reads={reads} opened={opened}
+                            onOpen={(set) => setOpened(opened === set ? null : set)} />
               ))}
               {clients.length === 0 && (
                 <tr><td colSpan={13} className="hint">no client is declared and no netting set
@@ -219,18 +219,22 @@ type Reads = {
 const amount = (value: number | null) => (value === null ? '—' : formatNumber(value, 'whole'));
 
 function ClientRows({ client, reads, opened, onOpen }: {
-  client: Client; reads: Reads; opened: boolean; onOpen: () => void;
+  client: Client; reads: Reads; opened: string | null; onOpen: (set: string) => void;
 }) {
   const { dispatch } = useApp();
   const { lines, spread } = client;
   const own = lines.filter((line) => !line.run?.note);
   const one = lines.length === 1 ? lines[0] : null;
+  const shown = lines.find((line) => line.reference === opened);
   const cva = runSum(lines, 'cva');
   const fva = runSum(lines, 'fva');
   const by = <td className="hint n">{lines.length ? 'by set' : ''}</td>;
+  const opener = (line: CreditLine) => (
+    <td className="opener"><span>{line === shown ? '×' : '⋯'}</span></td>);
   return (
     <>
-      <tr className={`pick${client.wrong.length ? ' acting' : ''}`} onClick={onOpen}>
+      <tr className={`${one ? 'pick' : ''}${client.wrong.length ? ' acting' : ''}`}
+          onClick={() => one && onOpen(one.reference)}>
         <td>
           <button className="ghost" title="open this client's page"
                   onClick={(event) => { event.stopPropagation(); openClient(dispatch, client.id); }}>
@@ -256,15 +260,16 @@ function ClientRows({ client, reads, opened, onOpen }: {
             {by}
           </>
         )}
-        <td className="opener"><span>{opened ? '×' : '⋯'}</span></td>
+        {one ? opener(one) : <td />}
       </tr>
       {!one && lines.map((line) => (
-        <tr key={line.reference} className={`node${line.run?.note ? ' muted' : ''}`}>
+        <tr key={line.reference} className={`node pick${line.run?.note ? ' muted' : ''}`}
+            onClick={() => onOpen(line.reference)}>
           <td className="mono">{line.reference}
             {line.run?.note && <span className="badge" title={line.run.note}>left the book</span>}</td>
           <td />
           <LineCells line={line} reads={reads} />
-          <td />
+          {opener(line)}
         </tr>
       ))}
       {client.wrong.length > 0 && (
@@ -281,10 +286,10 @@ function ClientRows({ client, reads, opened, onOpen }: {
           </td>
         </tr>
       )}
-      {opened && (
+      {shown && (
         <tr className="detail">
           <td colSpan={13}>
-            {lines.map((line) => <Profiled key={line.reference} line={line} />)}
+            <Profiled line={shown} />
             <button className="ghost" onClick={() => openClient(dispatch, client.id)}>
               open {client.name}'s page: its paper, its trades and what happened to it
             </button>
@@ -340,8 +345,7 @@ function LineCells({ line, reads }: { line: CreditLine; reads: Reads }) {
               absent={run?.status === 'failed' ? 'its run failed' : 'no completed run'} />
       <Amount kind="money" value={run?.fva ?? null} currency={run?.currency ?? null}
               absent={run?.status === 'failed' ? 'its run failed' : 'no completed run'} />
-      <td className={`age ${run?.current === false ? 'stale' : age?.tone ?? 'none'}`}
-          title={age?.title}>
+      <td className={`age ${line.moved ? 'stale' : age?.tone ?? 'none'}`} title={age?.title}>
         {age ? age.text : 'no set booked'}
         {run?.recalc && <span className="chip running">{run.recalc.status}</span>}
       </td>
@@ -349,12 +353,15 @@ function LineCells({ line, reads }: { line: CreditLine; reads: Reads }) {
   );
 }
 
-/** One set's profile against time, off its own row: its expected exposure and PFE as the run read
- * them, net of the collateral its terms hold - or why it cannot be read. */
+/** One set's profile against time, read for it alone when its row opens: its expected exposure
+ * and PFE as the run read them, net of the collateral its terms hold - or the service's sentence
+ * for why there is none. */
 function Profiled({ line }: { line: CreditLine }) {
   const { state } = useApp();
   const { run } = line;
-  const page = run?.profile;
+  const read = useRead(run ? () => getXvaProfile(line.reference) : null,
+                       [line.reference, run?.result_id, run?.as_of]);
+  const page = read.data?.profile;
   return (
     <section className="card profile">
       <h3>{line.reference} — {line.collateralised
@@ -364,7 +371,7 @@ function Profiled({ line }: { line: CreditLine }) {
       {page ? (
         <>
           <div className="tablenote">
-            <span>amounts in <b>{run!.currency}</b>, the run's report currency</span>
+            <span>amounts in <b>{run?.currency}</b>, the run's report currency</span>
             {tableReading('exposure_profile', page.columns, true, state.doc!, state.schema,
                           marketOf(state)).columns.map(([column, words]) => (
               <span key={column}><b>{column}</b> {words}</span>
@@ -372,10 +379,9 @@ function Profiled({ line }: { line: CreditLine }) {
           </div>
           <TimeSeriesChart page={page} />
         </>
-      ) : run?.status === 'done' && <div className="hint">No profile: {UNKEPT}.</div>}
-      {(!run || run.status === 'never run') && (
-        <div className="hint">No run yet, so no profile: {line.trades
-          ? 'a recalc through recalc_xva runs one.' : 'nothing is booked under it.'}</div>
+      ) : (
+        <div className="hint">{!run ? 'Nothing is booked under it, so it has no run and no profile.'
+          : read.error ?? 'Reading its profile…'}</div>
       )}
       {run?.as_of && (
         <details className="fold">

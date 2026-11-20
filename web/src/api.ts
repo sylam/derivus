@@ -11,7 +11,7 @@ import type {
   CalculationsAnswer, CloseVerdict, CurveOutcome, CurvesAnswer, Decided, DescribeResult, JobDoc,
   PathMaps,
   PathsAnswer, Reconcile, Recorded, ResultSummary, Schema, SeatGrants, SecuritiesAnswer,
-  SeedOutcome, SettlementState, TablePage, ValidateResult, Worklist,
+  SeedOutcome, SettlementState, TablePage, ValidateResult, Worklist, XvaProfile,
 } from './types';
 
 /** Where this browser keeps who it acts as: the ID token a deployment's sign-in stored, else the
@@ -149,6 +149,9 @@ export const verifySecurities = (scope: Record<string, unknown>) =>
 // asked for through the MCP verbs, and this client does not have that vocabulary on purpose.
 export const getBookRisk = () => call<BookRisk>('GET', '/book/risk');
 export const getBookXva = () => call<BookXva>('GET', '/book/xva');
+// one set's exposure profile, off its row, read when the set is opened
+export const getXvaProfile = (reference: string) =>
+  call<XvaProfile>('GET', `/book/xva/${encodeURIComponent(reference)}/profile`);
 // the record's four readings. `status` carries the pin and how far the record has moved since,
 // which is a walk; `reconcile` says what the two disagree ABOUT and folds at the head, so it is
 // asked for when the counts say there is something and never on the poll's own beat

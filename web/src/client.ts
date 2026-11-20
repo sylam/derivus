@@ -208,19 +208,21 @@ export function since(set: XvaSet, rows: ActivityRow[]): ActivityRow[] {
 /** One netting set a client trades under: where the book holds it, the paper it is under - its
  * agreement's kind, null where none is in force - and whether its terms collateralise, its last
  * run, its trades and those waiting on a second seat, its value to the desk now in the risk's
- * currency and its call on the marked close. */
+ * currency, its call on the marked close, and how many events the record filed under it since its
+ * run - null where the record's rows under it are not read. */
 export type CreditLine = {
   reference: string; path: string | null; paper: string | null; collateralised: boolean;
   run: XvaSet | null; trades: number; pending: number; value: number | null;
-  call: CollateralCall | null;
+  call: CollateralCall | null; moved: number | null;
 };
 
 /** What the lines are read off: the projection's sets, the client's agreements (`agreementsOf`),
- * the file's rows, and - each null where it is not read - the record's positions, the risk's marks
- * and the calls on the marked close. */
+ * the file's rows, and - each null where it is not read - the record's positions, its rows under
+ * each set by the set's reference, the risk's marks and the calls on the marked close. */
 export type CreditReads = {
   sets: XvaSet[]; agreements: Agreement[]; rows: Map<string, BlotterRow>;
-  positions: Position[] | null; marks: DealMark[] | null; calls: CollateralCall[] | null;
+  positions: Position[] | null; record: Record<string, ActivityRow[]> | null;
+  marks: DealMark[] | null; calls: CollateralCall[] | null;
 };
 
 /** A client's lines: a set the book holds or held naming it, under its own agreement where one is
@@ -241,6 +243,7 @@ export function creditLines(id: string, reads: CreditReads, schema: Schema): Cre
       value: path === null ? (run ? null : 0)
         : reads.marks && (markOf(reads.marks, path).own?.value ?? null),
       call: reads.calls?.find((call) => call.agreement === reference) ?? null,
+      moved: run && reads.record?.[reference] ? since(run, reads.record[reference]).length : null,
     };
   };
   return [...runs.map((run) => line(run.reference, run)),
@@ -302,19 +305,20 @@ export function runSum(lines: CreditLine[], key: 'cva' | 'fva'):
 /** What a row says to act on, worst first. */
 export const WRONG = {
   failed: 'run failed', unpapered: 'trading with no agreement in force',
-  stale: 'run older than the book', pending: 'waiting on a second seat', unrun: 'never run',
+  moved: 'changed since its run', pending: 'waiting on a second seat', unrun: 'never run',
 } as const;
 
 /** One thing to act on under a set, in business words, and who puts it right. */
 export type Wrong = { kind: keyof typeof WRONG; reference: string; text: string; who: string };
 
-const RECALC = 'a recalc through the MCP verb recalc_xva';
+const RECALC = 'a recalc asked for through the chat';
 
-/** Why a set's run is older than the book, its row's `current` false - with `moved`, the record's
- * rows under the set since its run, where they are read. */
-export const staleText = (moved: number | null): string => 'a recalc now would not price what '
-  + `its run priced${moved ? `: ${plural(moved, 'event')} booked, amended or signed under it since`
-    : ''}`;
+/** What every XVA row is, said once where the rows are read. */
+export const RUNS = 'each row is the last run of its set, refreshed at the close, and a recalc is '
+  + 'asked for through the chat';
+
+/** The record's word on a set since its run: how many events it filed under the set. */
+export const movedText = (moved: number): string => `${plural(moved, 'event')} under it since the run`;
 
 /** Who puts a failed run right, off the factor the engine could not find: a credit curve whoever
  * marks states, any other factor the market's owner adds. */
@@ -325,19 +329,19 @@ export function ownerOf(error: string | null): string {
       : `a market factor is missing: the market's owner adds ${factor}`;
 }
 
-/** What is wrong under a client's lines, worst first - a done run older than the book by its own
- * row's word; a set that has left the book reads its last run and asks for nothing. */
+/** What is wrong under a client's lines, worst first - a done run's set the record filed events
+ * under since; a set that has left the book reads its last run and asks for nothing. */
 export function wrongWith(lines: CreditLine[]): Wrong[] {
   const order = Object.keys(WRONG);
   return lines.filter((line) => !line.run?.note).flatMap(({
-    reference, paper, run, trades, pending }) => [
+    reference, paper, run, trades, pending, moved }) => [
     run?.status === 'failed' && { kind: 'failed' as const, reference,
       text: run.error ?? 'its last run failed', who: ownerOf(run.error) },
     trades > 0 && paper === null && { kind: 'unpapered' as const, reference,
       who: 'legal declares the agreement on Paper',
       text: `${plural(trades, 'trade')} under ${reference}, which no agreement in force covers` },
-    run?.status === 'done' && run.current === false && { kind: 'stale' as const, reference,
-      who: RECALC, text: staleText(null) },
+    !!moved && run?.status === 'done' && { kind: 'moved' as const, reference,
+      who: `the close refreshes it, or ${RECALC}`, text: movedText(moved) },
     pending > 0 && { kind: 'pending' as const, reference, who: 'another seat signs on the Back Office',
       text: `${plural(pending, 'trade')} under it waiting on a second seat` },
     trades > 0 && (!run || run.status === 'never run') && {

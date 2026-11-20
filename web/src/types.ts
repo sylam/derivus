@@ -326,13 +326,9 @@ export type XvaSet = {
   error: string | null;
   /** A recalc in flight for this set: {result_id, status: 'queued' | 'running'}. */
   recalc: { result_id: string; status: string } | null;
-  /** Whether a recalc now would price what this row's run priced: false for a set the book no
-   * longer holds, null for one never run or where the read cannot judge it (`current_unknown`). */
-  current: boolean | null;
-  /** The run's largest `EE` and each `PFE_<percentile>`, each with the day it first falls on, and
-   * its exposure table - null on a row filed before the projection kept them. */
+  /** The run's largest `EE` and each `PFE_<percentile>`, each with the day it first falls on -
+   * null on a row filed before rows kept them. */
   peaks: Record<string, { value: number; day: string }> | null;
-  profile: { columns: string[]; index: string[]; data: number[][] } | null;
 };
 
 export type BookXva = {
@@ -341,8 +337,13 @@ export type BookXva = {
   as_of: string;
   path: string;
   sets: XvaSet[];
-  /** Why no row's `current` could be judged - the record's sentence - null where each was. */
-  current_unknown: string | null;
+};
+
+/** `GET /book/xva/{reference}/profile`: one set's exposure profile off its row, under the run it
+ * came from - a 404 and its sentence where the set has no completed run or its row keeps none. */
+export type XvaProfile = {
+  reference: string; result_id: string; as_of: string;
+  profile: { columns: string[]; index: string[]; data: number[][] };
 };
 
 // ---- the record's readings: the spine block, /book/activity, /book/markets, /book/reconcile -----

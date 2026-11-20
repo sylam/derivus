@@ -7,7 +7,7 @@ import {
   baseDateOf, cellText, quoted, rowsByPath, sizeOf, toRows, type BlotterRow, type Picked,
 } from '../blotter';
 import {
-  CLIENT, agreementsOf, heldUnder, markText, readiness, ready, since, staleText, termsReading,
+  CLIENT, RUNS, agreementsOf, heldUnder, markText, movedText, readiness, ready, since, termsReading,
   touching, type Held, type Line, type Term,
 } from '../client';
 import { EmptyState } from '../components/EmptyState';
@@ -209,7 +209,7 @@ function ClientPage({ id, lines, own, reads, rows, factor, market, schema }: {
       </div>
 
       <OnBook own={own} reads={reads} rows={rows} market={market} schema={schema} />
-      <XvaRows id={id} xva={reads.xva} record={history.data} />
+      <XvaRows id={id} xva={reads.xva} recording={!!entities} record={history.data} />
       <Happened history={entities && history} />
     </div>
   );
@@ -409,11 +409,10 @@ function TradeRow({ trade, market, schema, recording, mark }: {
   );
 }
 
-/** The client's XVA rows - each the last run of a set naming it - with what each was run on and
- * whether it is older than the book by its own row, the client's `record` under the set since
- * beside that where it is read. */
-function XvaRows({ id, xva, record }: {
-  id: string; xva: Reads['xva']; record: ActivityRow[] | null;
+/** The client's XVA rows - each the last run of a set naming it - with when each ran and, on a
+ * desk that records, how many events the client's `record` filed under the set since its run. */
+function XvaRows({ id, xva, recording, record }: {
+  id: string; xva: Reads['xva']; recording: boolean; record: ActivityRow[] | null;
 }) {
   const sets = (xva.data?.sets ?? []).filter((set) => set.counterparty === id);
   return (
@@ -431,31 +430,25 @@ function XvaRows({ id, xva, record }: {
             <tr>
               <th>Netting set</th><th>CSA</th><th className="n">CVA<div className="sub">+ is an expected loss</div></th>
               <th className="n">FVA<div className="sub">+ is a funding cost</div></th>
-              <th>Run</th><th>Status</th><th>Against the book</th>
+              <th>Run</th><th>Status</th>{recording && <th>Since its run</th>}
             </tr>
           </thead>
           <tbody>
             {sets.map((set) => (
-              <XvaRow key={set.reference} set={set} read={xva.data!.as_of}
+              <XvaRow key={set.reference} set={set} read={xva.data!.as_of} recording={recording}
                       moved={record && since(set, record).length} />
             ))}
           </tbody>
         </table>
       )}
-      {sets.length > 0 && xva.data?.current_unknown && (
-        <div className="note">Whether a run is older than the book is not read: {
-          xva.data.current_unknown}</div>
-      )}
-      {sets.length > 0 && (
-        <div className="note">Each row is the last run of its set, on the set as it stood then; a
-          recalc is asked for through the MCP verbs (<code>recalc_xva</code>), never from here. A
-          run is older than the book where a recalc now would not price what it priced.</div>
-      )}
+      {sets.length > 0 && <div className="note">In this table {RUNS}.</div>}
     </section>
   );
 }
 
-function XvaRow({ set, read, moved }: { set: XvaSet; read: string; moved: number | null }) {
+function XvaRow({ set, read, recording, moved }: {
+  set: XvaSet; read: string; recording: boolean; moved: number | null;
+}) {
   const age = ageOf(set.as_of, read);
   const chip = lastRunChip(set);
   const money = (value: number | null) => (value === null ? <span className="hint">—</span>
@@ -472,14 +465,16 @@ function XvaRow({ set, read, moved }: { set: XvaSet; read: string; moved: number
           {set.as_of ? `${stampText(set.as_of)} · ${age.text}` : age.text}</td>
         <td><span className={`chip ${chip.tone}`} title={chip.title}>{chip.text}</span>
           {set.recalc && <span className="chip running">{set.recalc.status}</span>}</td>
-        <td className={`prose${set.current === false ? ' age stale' : ''}`}>
-          {set.as_of === null ? <span className="hint">never run</span>
-            : set.current === null ? <span className="hint">not judged</span>
-              : set.current ? 'not older than the book' : staleText(moved)}
-        </td>
+        {recording && (
+          <td className={`prose${moved ? ' age stale' : ''}`}>
+            {set.as_of === null ? '' : moved === null ? <span className="hint">reading the record…</span>
+              : movedText(moved)}
+          </td>
+        )}
       </tr>
       {set.status === 'failed' && set.error && (
-        <tr className="detail"><td colSpan={7}><div className="error-box">{set.error}</div></td></tr>
+        <tr className="detail"><td colSpan={recording ? 7 : 6}>
+          <div className="error-box">{set.error}</div></td></tr>
       )}
     </>
   );
