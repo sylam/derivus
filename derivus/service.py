@@ -4036,6 +4036,10 @@ XVA_FVA_BLOCK = {'Calculate': 'Yes', 'Counterparty': '', 'Bank': '',
 #: pending id here. Never cleaned: a settled id simply stops reading `queued`/`running`.
 XVA_PENDING = {}
 
+#: What one run files on its set's row beside its status, each a null where the run said nothing.
+XVA_COLUMNS = ('cva', 'fva', 'peaks', 'currency', 'as_of', 'result_id', 'plan_hash', 'values_hash',
+               'seed', 'quasi_seed')
+
 
 def xva_path():
     return os.path.join(dv_home(), XVA_FILE)
@@ -4215,13 +4219,12 @@ class XvaJob:
         Both adjustment columns, `peaks` and `profile` (`exposure`) are in the BASE dict as nulls,
         so a row is never filed missing one: a failure path states its error and nothing else, and
         every row the file carries has the same keys whatever happened to it."""
-        return dict({'counterparty': self.counterparty, 'collateralized': self.collateralized,
-                     'cva': None, 'fva': None, 'peaks': None, 'profile': None,
-                     'currency': self.document['Calc']['Calculation'].get('Currency'),
-                     'result_id': self.result_id, 'plan_hash': self.stamp['plan_hash'],
-                     'values_hash': self.stamp['values_hash'], 'seed': self.stamp['seed'],
-                     'quasi_seed': self.stamp['quasi_seed'],
-                     'as_of': as_of()}, **fields)
+        return dict(dict(dict.fromkeys(XVA_COLUMNS), counterparty=self.counterparty,
+                         collateralized=self.collateralized, profile=None, as_of=as_of(),
+                         currency=self.document['Calc']['Calculation'].get('Currency'),
+                         result_id=self.result_id,
+                         **{key: self.stamp[key] for key in XVA_COLUMNS if key in self.stamp}),
+                    **fields)
 
     @staticmethod
     def adjustments(results, stored=False):
@@ -4415,12 +4418,8 @@ def projection_entry(row, **book):
     row = row or {}
     entry = dict({'reference': None, 'deal_path': None, 'counterparty': row.get('counterparty'),
                   'collateralized': row.get('collateralized'), 'note': None}, **book)
-    entry.update(status=row.get('status', 'never run'), cva=row.get('cva'), fva=row.get('fva'),
-                 currency=row.get('currency'), as_of=row.get('as_of'),
-                 result_id=row.get('result_id'),
-                 plan_hash=row.get('plan_hash'), values_hash=row.get('values_hash'),
-                 seed=row.get('seed'), quasi_seed=row.get('quasi_seed'), error=row.get('error'),
-                 peaks=row.get('peaks'), recalc=None)
+    entry.update({key: row.get(key) for key in XVA_COLUMNS + ('error',)},
+                 status=row.get('status', 'never run'), recalc=None)
     pending = XVA_PENDING.get(entry['reference'])
     outcome = EXECUTOR.result(pending) if pending is not None else None
     if outcome is not None and outcome['status'] in ('queued', 'running'):
