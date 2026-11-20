@@ -372,7 +372,7 @@ function Actions({ row, held, recording }: {
   const [verdict, setVerdict] = useState<Verdict | null>(null);
   const children = state.doc?.Calc.Deals.Deals.Children ?? [];
   const live = state.source?.kind === 'book';
-  const hold = heldBack(state, 'book');
+  const hold = heldBack(state, 'fill');
   const open = held.filter((position) => !closed(position.quantity));
   return (
     <section className="card">

@@ -421,27 +421,31 @@ check('a field naming no factor never walks the market',
 // --- what the seat may do: one rule over GET /book/seat
 const verbs = (held) => ({ book: [], approve: [], mark: [], document: [], settle: [], confirm: [],
                             collateral: [], validate: [], admin: [], ...held });
-const seated = (grants, seat = 'sales-1', extra = {}) => ({
+// the map GET /book/seat answers where no capabilities document moves an act
+const DEMANDS = { fill: 'book', amendment: 'book', approval: 'approve', entity_declared: 'document',
+                  agreement_declared: 'document', official_close_declared: 'mark',
+                  status_transition: 'settle', confirmed: 'confirm', collateral: 'collateral' };
+const seated = (grants, seat = 'sales-1', extra = {}, demands = DEMANDS) => ({
   source: { kind: 'book' }, record: { spine: { lsn: 1 } }, seat,
   doc: { Calc: { Deals: { Reference: 'HARBOURLINE' } } },
-  grants: grants && { asked: seat, read: { seat, verbs: verbs(grants) }, refused: null },
+  grants: grants && { asked: seat, read: { seat, verbs: verbs(grants), demands }, refused: null },
   ...extra });
 const NO_SEAT = 'No seat is set, and this desk files every act under the seat that asks.';
-check('a seat may act where a node it holds the act at is the node or above it, the book by '
-      + 'default and the whole firm only by a grant over every node; and says, naming the act, '
-      + 'what holds it elsewhere',
+check('a seat may act where a node it holds the act\'s verb at is the node or above it, the book '
+      + 'by default and the whole firm only by a grant over every node; and says, naming the '
+      + 'verb, what holds it elsewhere',
       'the held nodes matched by prefix, which lets a grant over HARBOURLINE act at HARBOURLINE-2; '
       + 'a grant at a node read as reaching the firm, which offers a declaration the record '
       + 'refuses; a node above the one held read as reached, which offers HARBOURLINE to a seat '
       + 'holding HARBOURLINE/fx; an empty list read as everywhere; or another act\'s grant read',
       [state.heldBack(seated({ mark: ['HARBOURLINE'] }), 'mark'),
-       state.heldBack(seated({ book: ['HARBOURLINE'] }), 'book', 'HARBOURLINE/fx/spot'),
-       state.heldBack(seated({ document: null }), 'document', null),
+       state.heldBack(seated({ book: ['HARBOURLINE'] }), 'fill', 'HARBOURLINE/fx/spot'),
+       state.heldBack(seated({ document: null }), 'agreement_declared', null),
        state.heldBack(seated({ book: ['HARBOURLINE'] }), 'mark'),
-       state.heldBack(seated({ book: ['HARBOURLINE'] }), 'book', 'HARBOURLINE-2'),
-       state.heldBack(seated({ document: ['HARBOURLINE'] }), 'document', null),
-       state.heldBack(seated({ book: ['HARBOURLINE/fx'] }), 'book'),
-       state.heldBack(seated({ mark: ['HARBOURLINE'] }), 'mark', null)],
+       state.heldBack(seated({ book: ['HARBOURLINE'] }), 'fill', 'HARBOURLINE-2'),
+       state.heldBack(seated({ document: ['HARBOURLINE'] }), 'entity_declared', null),
+       state.heldBack(seated({ book: ['HARBOURLINE/fx'] }), 'amendment'),
+       state.heldBack(seated({ mark: ['HARBOURLINE'] }), 'official_close_declared', null)],
       [null, null, null, 'Needs mark: sales-1 holds it nowhere.',
        'Needs book over HARBOURLINE-2: sales-1 holds it only over HARBOURLINE.',
        'Needs document over the whole firm: sales-1 holds it only over HARBOURLINE.',
@@ -452,14 +456,28 @@ check('nothing is held back off a desk that records, before the grants of the se
       'a plain desk held back for want of a record, which hides every control it can use; the '
       + "grants of the seat typed before read for the one typed now; a null act read as nowhere; "
       + 'or a refusal - no seat named - read as leave to act',
-      [state.heldBack(seated({}, 'sales-1', { record: { spine: null } }), 'book'),
-       state.heldBack(seated({}, 'sales-1', { source: { kind: 'local' } }), 'book'),
-       state.heldBack({ ...seated({}), seat: 'fx-trader' }, 'approve'),
-       state.heldBack(seated(null), 'book'),
-       state.heldBack(seated({ approve: null }), 'approve'),
+      [state.heldBack(seated({}, 'sales-1', { record: { spine: null } }), 'fill'),
+       state.heldBack(seated({}, 'sales-1', { source: { kind: 'local' } }), 'fill'),
+       state.heldBack({ ...seated({}), seat: 'fx-trader' }, 'approval'),
+       state.heldBack(seated(null), 'fill'),
+       state.heldBack(seated({ approve: null }), 'approval'),
        state.heldBack(seated(null, '', { grants: { asked: '', read: null, refused: NO_SEAT } }),
-                      'book')],
+                      'fill')],
       [null, null, null, null, null, NO_SEAT]);
+const MOVED = { ...DEMANDS, approval: 'mark' };
+check('a control is judged by the verb its act demands under the map in force and says that verb: '
+      + 'where a stored map moves the approval to mark the sign control is the marking seat\'s '
+      + 'and held from the approving one, and a verb the service asks itself is its own',
+      'the act read as a verb\'s name, or its verb off the vocabulary and not the map GET '
+      + '/book/seat answers, which shows the approving seat a sign control the record refuses and '
+      + 'hides it from the marking seat that holds it',
+      [state.heldBack(seated({ mark: ['HARBOURLINE'] }, 'sales-1', {}, MOVED), 'approval'),
+       state.heldBack(seated({ approve: ['HARBOURLINE'] }, 'sales-1', {}, MOVED), 'approval'),
+       state.heldBack(seated({ approve: ['HARBOURLINE'] }), 'approval'),
+       state.heldBack(seated({ mark: ['HARBOURLINE'] }), 'approval'),
+       state.heldBack(seated({ approve: ['HARBOURLINE'] }, 'sales-1', {}, MOVED), 'mark')],
+      [null, 'Needs mark: sales-1 holds it nowhere.', null,
+       'Needs approve: sales-1 holds it nowhere.', 'Needs mark: sales-1 holds it nowhere.']);
 // --- every write of the market or its set-up names the seat: the requests a fetch stub catches,
 // so nothing leaves this process - no tick, no verification and no set-up is ever sent
 const api = await load('api');

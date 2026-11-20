@@ -69,6 +69,7 @@ structure takes it as `name`. **Held by**
 | `list_quotes` | `GET /book/quotes`: every quote given, newest first, with where each stands |
 | `approve_ticket`, `reject_ticket`, `approve_quote`, `reject_quote` | `POST /book/approve`, `/book/reject`: a second seat's verdict |
 | `worklist` | `GET /book/worklist`: what waits on the seat asking |
+| `describe_seat` | `GET /book/seat`: the nodes the seat asking holds each verb at, and the verb each act demands under the map in force |
 | `poll_result`, `fetch_table`, `deal_values` | `GET /results/{id}[/{table}]`: status and shapes; one capped page; `{reference: value}` |
 | `update_market_quotes`, `patch_market_values`, `retire_market_overrides` | `POST /book/market`: quote blocks ticked and bootstrapped; values patched; the block's own entries retired, the file's standing again |
 | `configure_book` | `POST /book/configure`: one bootstrap dial, the market re-bootstrapped |

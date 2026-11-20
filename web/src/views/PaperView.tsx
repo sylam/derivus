@@ -19,7 +19,7 @@ export function PaperView() {
   const { schema } = state;
   const recording = spineOf(state) !== null;
   const [amending, setAmending] = useState<{ from: Agreement; at: number } | null>(null);
-  const hold = heldBack(state, 'document', null);
+  const hold = heldBack(state, 'agreement_declared', null);
 
   const paper = { ...(state.paper.data ?? NO_PAPER), error: state.paper.error };
 
@@ -102,7 +102,7 @@ export function PaperView() {
 /** Declaring a legal entity: its id as the legal system knows it, its name and the parent it is
  * grouped under. */
 function EntityForm({ entities }: { entities: Entity[] }) {
-  const hold = heldBack(useApp().state, 'document', null);
+  const hold = heldBack(useApp().state, 'entity_declared', null);
   const [entity, setEntity] = useState({ entity: '', name: '', parent: '' });
   const [said, setSaid] = useState<Said>(null);
 

@@ -1905,8 +1905,10 @@ def describe_seat(actor: str | None = None) -> dict:
     filed under, and `verbs` - for each verb a grant names (`book`, `approve`, `mark`, `settle`,
     `confirm`, `collateral`, `document`, `validate`, `admin`) the nodes of the book's tree it
     holds it at, a node reaching every path under it; null where it holds it everywhere, empty
-    where nowhere. A request naming no seat where grants are in force is refused, as its acts
-    would be. 404 on a box that records nothing."""
+    where nowhere - and `demands`, the verb each act the record files asks under the map in force
+    (a `fill` `book`, an `approval` `approve`, a `confirmed` transition `confirm`, unless the
+    desk's capabilities document moves one). A request naming no seat where grants are in force is
+    refused, as its acts would be. 404 on a box that records nothing."""
     return service().call('GET', '/book/seat', params=_stated(actor=actor))
 
 

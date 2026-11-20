@@ -17,12 +17,12 @@ import {
 import type { CloseVerdict, Decided, PendingQuote, WorkRow, Worklist } from '../types';
 import { TicketCard } from '../components/TicketCard';
 
-/** The three lists this seat clears, each by its own verb. */
+/** The three lists this seat clears, each by the act that clears a row of it. */
 type List = 'payments' | 'unconfirmed' | 'calls';
-const LISTS: { list: List; title: string; verb: Act }[] = [
-  { list: 'payments', title: 'Payments due', verb: 'settle' },
-  { list: 'unconfirmed', title: 'Trades to confirm', verb: 'confirm' },
-  { list: 'calls', title: 'Collateral called', verb: 'collateral' },
+const LISTS: { list: List; title: string; act: Act }[] = [
+  { list: 'payments', title: 'Payments due', act: 'status_transition' },
+  { list: 'unconfirmed', title: 'Trades to confirm', act: 'confirmed' },
+  { list: 'calls', title: 'Collateral called', act: 'collateral' },
 ];
 
 /** What waits on this seat: the tickets it signs, the payments due, the trades unconfirmed and the
@@ -58,9 +58,10 @@ export function BackOfficeView() {
         {error && <div className="error-box">{error}</div>}
         {check && <CloseCheck check={check} />}
         <Tickets key={worklist.seat ?? ''} worklist={worklist} />
-        {LISTS.map(({ list, title, verb }) => (
+        {LISTS.map(({ list, title, act }) => (
           <section className="card" key={list}>
-            <h3>{title} ({worklist.counts[list]}) <span className="hint">{verb}</span></h3>
+            <h3>{title} ({worklist.counts[list]}){' '}
+              <span className="hint">{state.grants?.read?.demands[act]}</span></h3>
             {worklist[list].length ? (
               <div className="tablewrap">
                 <table className="data">
@@ -73,7 +74,7 @@ export function BackOfficeView() {
                 </table>
               </div>
             ) : <div className="nested">
-              {nothing(heldBack(state, verb), 'nothing waits on this seat')}
+              {nothing(heldBack(state, act), 'nothing waits on this seat')}
             </div>}
           </section>
         ))}
@@ -131,7 +132,7 @@ function Tickets({ worklist }: { worklist: Worklist }) {
     );
   };
   // what holds this seat from signing: once on a card where it holds every row, else per row
-  const hold = heldBack(state, 'approve');
+  const hold = heldBack(state, 'approval');
   const holds = elsewhere.map((row) => holdsFor(row, worklist.seat, false));
   const once = hold ?? (new Set(holds).size === 1 ? holds[0] : null);
   return (
@@ -348,7 +349,7 @@ function Clearing({ list, row, day }: { list: List; row: WorkRow; day: string })
 /** The book's day's close behind the check's own verdict: legal, and declaring it is one act; not,
  * and what it waits on is listed. The close refuses an illegal day in its own words besides. */
 function CloseCheck({ check }: { check: CloseVerdict }) {
-  const hold = heldBack(useApp().state, 'mark', null);
+  const hold = heldBack(useApp().state, 'official_close_declared', null);
   const [refused, setRefused] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
 

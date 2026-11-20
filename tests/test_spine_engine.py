@@ -2768,13 +2768,15 @@ def tiers(*rows, **sections):
     return dict(tiers=list(rows), **sections)
 
 
-def entitle(home, grants):
+def entitle(home, grants, **sections):
     """Declare a capabilities document, which is what turns enforcement ON: until one is in force
-    the home is the single-user instrument it was, and after it every append needs a grant."""
+    the home is the single-user instrument it was, and after it every append needs a grant.
+    `sections` are its others as stated - `verbs`, the acts it moves."""
     log = opened(home)
     try:
-        blob = log.store.put(canonical_document(
-            {'grants': [{'subject': s, 'verb': v, 'book': b} for s, v, b in grants], 'read': []}))
+        blob = log.store.put(canonical_document(dict(
+            {'grants': [{'subject': s, 'verb': v, 'book': b} for s, v, b in grants], 'read': []},
+            **sections)))
         return log.append('policy_declared', {'policy': CAPABILITIES_POLICY, 'blob': blob},
                           actor=ACTOR, blob_refs=(blob,))
     finally:
@@ -5473,31 +5475,61 @@ def test_a_seat_reads_what_it_may_do_and_where(recorded, desk):
     agree: the FX seat's booking at its node lands, and at the book's root is refused. A request
     naming no seat is refused as each of its acts would be.
 
-    Killing mutation: the verbs read for the seat the deployment runs as rather than the one
-    asking, which hands the FX seat the deployment's `admin` and `validate` everywhere.
+    `demands` IS THE MAP IN FORCE, act -> the verb it demands: the vocabulary's until a document
+    moves an act, then the document's. Where one moves the approval to `mark` the read says so,
+    and the acts agree: the seat holding `approve` is refused the signature naming `mark`, and the
+    seat holding `mark` where the ticket books signs it.
+
+    Killing mutations: the verbs read for the seat the deployment runs as rather than the one
+    asking, which hands the FX seat the deployment's `admin` and `validate` everywhere; and
+    `demands` read off the vocabulary rather than the document in force, which tells a screen
+    `approve` signs where the record asks `mark`.
     """
     with_client(desk)
     verbs = ('validate', 'book', 'approve', 'mark', 'document', 'settle', 'confirm', 'collateral',
              'admin')
+    asked = {'fill': 'book', 'amendment': 'book', 'election': 'book', 'approval': 'approve',
+             'rejection': 'approve', 'official_close_declared': 'mark', 'result_pinned': 'mark',
+             'entity_declared': 'document', 'agreement_declared': 'document',
+             'status_transition': 'settle', 'confirmed': 'confirm', 'collateral': 'collateral',
+             'margin': 'collateral', 'portfolio_declared': 'admin'}
 
     def seat(actor=None):
         return CLIENT.get('/book/seat', params={} if actor is None else {'actor': actor})
 
-    assert seat(DESK_FX).json() == {'seat': DESK_FX, 'verbs': dict.fromkeys(verbs)}
-    assert seat().json() == {'seat': ACTOR, 'verbs': dict.fromkeys(verbs)}
-    entitle(recorded, [(ACTOR, 'admin', '*'), (ACTOR, 'validate', '*'), (DESK_TWO, 'approve', '*'),
-                       (DESK_FX, 'validate', 'spine-desk'), (DESK_FX, 'book', 'spine-desk/FX')])
-    assert seat(DESK_FX).json() == {'seat': DESK_FX, 'verbs': dict(
-        dict.fromkeys(verbs, []), validate=['spine-desk'], book=['spine-desk/FX'])}
-    assert seat(DESK_TWO).json() == {'seat': DESK_TWO, 'verbs': dict(dict.fromkeys(verbs, []),
-                                                                      approve=None)}
+    def read(actor=None):
+        answer = seat(actor).json()
+        assert sorted(answer) == ['demands', 'seat', 'verbs'], answer
+        return answer['seat'], answer['verbs'], {act: answer['demands'][act] for act in asked}
+
+    assert read(DESK_FX) == (DESK_FX, dict.fromkeys(verbs), asked)
+    assert read() == (ACTOR, dict.fromkeys(verbs), asked)
+    grants = [(ACTOR, 'admin', '*'), (ACTOR, 'validate', '*'), (DESK_TWO, 'approve', '*'),
+              (DESK_FX, 'validate', 'spine-desk'), (DESK_FX, 'book', 'spine-desk/FX'),
+              (RISK_SEAT, 'mark', 'spine-desk/FX')]
+    entitle(recorded, grants)
+    assert read(DESK_FX) == (DESK_FX, dict(
+        dict.fromkeys(verbs, []), validate=['spine-desk'], book=['spine-desk/FX']), asked)
+    assert read(DESK_TWO) == (DESK_TWO, dict(dict.fromkeys(verbs, []), approve=None), asked)
     unnamed = seat()
     assert (unnamed.status_code, unnamed.json()['detail']) == (
         422, spine.UNNAMED.format(spine.SPINE_ACTOR))
 
-    assert ticketed('CF-FX', portfolio='spine-desk/FX', actor=DESK_FX).json()['written'] is True
+    booked = ticketed('CF-FX', portfolio='spine-desk/FX', actor=DESK_FX).json()
+    assert booked['written'] is True, booked
     root = ticketed('CF-ROOT', actor=DESK_FX)
     assert root.status_code == 422 and 'holds no book scope' in root.json()['detail'], root.text
+
+    entitle(recorded, grants, verbs={'approval': 'mark'})
+    assert read(DESK_TWO) == (DESK_TWO, dict(dict.fromkeys(verbs, []), approve=None),
+                              dict(asked, approval='mark'))
+
+    def sign(actor):
+        return CLIENT.post('/book/approve', json={'ticket': booked['ticket'], 'actor': actor})
+
+    refused = sign(DESK_TWO)
+    assert refused.status_code == 422 and 'holds no mark scope' in refused.json()['detail']
+    assert sign(RISK_SEAT).status_code == 200
 
 
 def test_a_read_naming_its_seat_needs_no_deployment_seat_where_nothing_is_enforced(recorded, desk,

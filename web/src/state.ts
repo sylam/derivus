@@ -425,13 +425,18 @@ export function blockHint(doc: JobDoc, path: string[]): string | undefined {
 
 // ---- what the seat may do -----------------------------------------------------------------------
 
-/** An act a grant names, as the record's refusal of a seat lacking it names it. */
-export type Act = 'book' | 'approve' | 'mark' | 'document' | 'settle' | 'confirm' | 'collateral';
+/** What a control does: an act the record files, as the map in force keys it - a transition's a
+ * payment's `status_transition`, a confirmation's `confirmed` or a collateral movement's
+ * `collateral` - or `mark`, the verb the service asks itself where a write of the market or of
+ * this box's paths files nothing. */
+export type Act = 'fill' | 'amendment' | 'approval' | 'entity_declared' | 'agreement_declared'
+  | 'official_close_declared' | 'status_transition' | 'confirmed' | 'collateral' | 'mark';
 
 /** Why the seat may not `act` at `node` - the book by default, null for the firm's own facts, which
- * only a grant over every node reaches - in a line naming the act; null where it may: off a desk
- * that records, until its grants are read for this seat, and where it holds the act at `node` or
- * at a node above it. */
+ * only a grant over every node reaches - in a line naming the verb the act demands under the map
+ * in force (`demands`), a verb the service asks being itself; null where it may: off a desk that
+ * records, until its grants are read for this seat, and where it holds that verb at `node` or at
+ * a node above it. */
 export function heldBack(state: AppState, act: Act,
                          node: string | null = String(state.doc?.Calc.Deals.Reference ?? '')):
   string | null {
@@ -441,10 +446,11 @@ export function heldBack(state: AppState, act: Act,
   }
   if (grants.refused !== null) return grants.refused;
   const { read } = grants;
-  const held = read?.verbs[act];
+  const verb = read?.demands[act] ?? act;
+  const held = read?.verbs[verb];
   if (!read || !held || (node !== null && held.some((at) => node === at
                                                      || node.startsWith(`${at}/`)))) return null;
-  return `Needs ${act}${held.length ? ` over ${node ?? 'the whole firm'}` : ''}: ${read.seat} `
+  return `Needs ${verb}${held.length ? ` over ${node ?? 'the whole firm'}` : ''}: ${read.seat} `
     + `holds it ${held.length ? `only over ${held.join(', ')}` : 'nowhere'}.`;
 }
 

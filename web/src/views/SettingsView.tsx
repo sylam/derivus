@@ -3,7 +3,7 @@ import { DataTable } from '../components/DataTable';
 import { DescriptorPanel, EditableScalar } from '../components/FieldView';
 import { Whose } from '../components/Whose';
 import { edited, mapRows, type MapName } from '../files';
-import { heldBack, holds, marketOf, useApp, written } from '../state';
+import { heldBack, marketOf, useApp, written } from '../state';
 import { isObject } from '../tokens';
 import type { Descriptor, NamedFile } from '../types';
 
@@ -16,11 +16,14 @@ const WHICH: Record<NamedFile['key'], string> = {
 const HERE: Descriptor = { widget: 'Text', description: 'on this box', value: null };
 
 /** This workstation's first, where it reads the files a job names, which is no part of the
- * document and stands whether or not its market read; then the document's settings. */
+ * document and stands whether or not its market read; then the document's settings. What a seat
+ * that may not mark needs to change either is said once above them. */
 export function SettingsView() {
+  const hold = heldBack(useApp().state, 'mark');
   return (
     <div className="main">
       <div className="panel">
+        {hold && <div className="note">{hold}</div>}
         <Files />
         <Stated />
       </div>
@@ -32,8 +35,7 @@ export function SettingsView() {
  * own, as the market the book prices on states it, each entry marked whose it is: System
  * Parameters against the schema's System store, and every other market-data section as itself,
  * `.ModelParams` getting its two tables through FieldView and everything else falling to the JSON
- * view rather than to nothing. Where the block states a section here over a file and the seat may
- * not mark, what it needs to retire one is said once above them. */
+ * view rather than to nothing. */
 function Stated() {
   const { state } = useApp();
   const { doc, schema } = state;
@@ -45,12 +47,9 @@ function Stated() {
   const elsewhere = ['System Parameters', 'Price Factors', 'Price Models', 'Market Prices']
     .concat(Object.keys(schema.Configuration));
   const others = Object.entries(market).filter(([section]) => !elsewhere.includes(section));
-  const hold = merge.MarketDataFile && ['System Parameters', ...others.map(([section]) => section)]
-    .some((section) => holds(merge.ExplicitMarketData, [section])) && heldBack(state, 'mark');
 
   return (
     <>
-      {hold && <div className="note">{hold}</div>}
       {isObject(system) && (
         <DescriptorPanel title="System Parameters" fields={schema.System.fields} values={system}
                          aside={(key) => <Whose path={['System Parameters', key]} />} />
@@ -69,9 +68,10 @@ function Stated() {
 
 /** The service's own fact, kept on this box and never written into a job: the files the served
  * book names, where this box reads each and what it read, then the two maps a name is read
- * through, each entry edited in place and an emptied one removed. */
+ * through, each entry edited in place and an emptied one removed, by a seat that may mark. */
 function Files() {
   const { state, dispatch } = useApp();
+  const hold = heldBack(state, 'mark');
   const paths = state.paths.data;
   if (!paths) {
     return state.paths.error ? (
@@ -91,7 +91,7 @@ function Files() {
     return (
       <DataTable columns={['as written', 'on this box']} index={[]}
                  data={rows.map((row) => [row.written, row.here])}
-                 cell={(r, c) => (c === 1 ? (
+                 cell={(r, c) => (c === 1 && !hold ? (
                    <EditableScalar name={rows[r].written} descriptor={HERE} value={rows[r].here}
                                    onAmend={save(map)} />
                  ) : undefined)} />

@@ -451,7 +451,7 @@ function Acceptance({ id, pending, verdict, quoting, onVerdict, onRequote }: {
   const [booking, setBooking] = useState(false);
   const paper = state.paper.data ?? NO_PAPER;
   const recording = state.record.spine !== null;
-  const hold = heldBack(state, 'book');
+  const hold = heldBack(state, 'fill');
   const { quote } = pending;
   const booked = pending.booked ?? verdict?.booked;
 

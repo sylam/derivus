@@ -131,7 +131,7 @@ export function DealEditor({ path, node }: { path: string; node: DealNode }) {
     <>
       {said.map((words) => <div key={words} className="note">{words}</div>)}
       <DealPanels deal={node.Instrument['.Deal']} schema={state.schema} onAmend={onAmend}
-                  hold={heldBack(state, 'book')}
+                  hold={heldBack(state, 'amendment')}
                   beside={beside} ask={recording ? RESTRIKE : undefined} />
     </>
   );

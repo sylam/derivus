@@ -35,7 +35,7 @@ export function AgreementForm({ schema, entities, agreements, unstated, from }: 
   schema: Schema; entities: Entity[]; agreements: Agreement[]; unstated: SettlementState;
   from?: Partial<Agreement>;
 }) {
-  const hold = heldBack(useApp().state, 'document', null);
+  const hold = heldBack(useApp().state, 'agreement_declared', null);
   const [named, setNamed] = useState({
     agreement: from?.agreement ?? '', entity: from?.entity ?? '', kind: from?.kind ?? '' });
   const [terms, setTerms] = useState<Record<string, unknown>>(from?.terms ?? { Object: SET });

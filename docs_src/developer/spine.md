@@ -296,7 +296,11 @@ at an LSN is the one of the day it was declared, and a vocabulary moving an act 
 next declaration; a document stored without a map reads the vocabulary's. Its one read is `capability.verb_for(event_type, body, document)`: the writer's
 hook asks it under the document in force at the head, the oracle's seat invariant under the one in
 force at each frame, so an old frame is judged by the map of its day, and the worklist narrows
-each list by the verb its clearing act demands (`spine.demands`). **Held by**
+each list by the verb its clearing act demands (`spine.demands`). `GET /book/seat` answers that
+map as `demands` beside the nodes the seat holds each verb at, so a screen judges a control by the
+act it performs (`heldBack` in `web/src/state.ts`): the act's verb under the map in force where
+the record files one, and the verb itself where the service asks it and files nothing. **Held by**
+`test_spine_engine.py::test_a_seat_reads_what_it_may_do_and_where`, `web/scripts/desk_check.mjs`,
 `test_spine_verbs.py::test_the_back_office_is_three_seats_and_none_of_them_does_anothers_work`,
 `test_spine_capability.py::test_every_verb_bearing_type_refuses_an_unscoped_actor_and_records_the_refusal`,
 `::test_a_capabilities_document_that_cannot_be_evaluated_does_not_land`,
