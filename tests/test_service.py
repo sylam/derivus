@@ -8259,15 +8259,26 @@ def test_the_desks_quotes_are_listed_newest_first_with_where_each_stands(quoting
     """`/book/quotes` is every pending file under the desk's tmp, one row each, newest first: a
     collar quoted for the client by one seat and accepted, then a collar quoted for nobody by
     another. The later reads first and quoted only; the earlier reads booked where its acceptance
-    landed it, `lsn` null on a desk that records nothing. Every cell is the pending file's own, so a
-    row says what `/book/quote/{id}` says; a sheet beside a file is not a quote.
+    landed it, `lsn` null on a desk that records nothing, and under the collar's own reference,
+    `ZeroCostCollar-` and its quote id's first eight. Every cell is the pending file's own, so a row
+    says what `/book/quote/{id}` says; a sheet beside a file is not a quote. The collar booked
+    between a trade ahead of it and one behind, the trade ahead deleted moves it to that trade's
+    path while the one behind takes its own: the row's reference still names the collar.
 
-    Killing mutation: the rows sorted oldest first, which lists the accepted collar first.
+    Killing mutations: the rows sorted oldest first, which lists the accepted collar first; and the
+    reference read off the book at the path the acceptance wrote, which names the trade behind.
     """
+    def booking(reference):
+        assert CLIENT.post('/book/deals', content=dump({
+            'action': 'add', 'deal': dict(CASHFLOW, Reference=reference),
+            'parent_reference': CLIENT_SET}), headers=JSON).json()['written'] is True
+
+    booking('AHEAD')
     first = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET, actor='desk-a')
     booked = CLIENT.post('/book/quote', json={'quote_id': first['quote_id']}).json()
     second = quote_of('ZeroCostCollar', COLLAR, actor='desk-b')
     assert booked['written'] is True, booked
+    booking('BEHIND')
 
     def row(quote, seat, landed):
         filed = CLIENT.get('/book/quote/{}'.format(quote['quote_id'])).json()
@@ -8276,9 +8287,18 @@ def test_the_desks_quotes_are_listed_newest_first_with_where_each_stands(quoting
                 'quoted_at': filed['quoted_at'], 'quoted_by': seat, 'accepted': None,
                 'booked': landed}
 
+    collar = 'ZeroCostCollar-' + first['quote_id'][:8]
     newer, older = row(second, 'desk-b', None), row(first, 'desk-a', {
-        'lsn': None, 'deal_path': booked['deal_path']})
+        'lsn': None, 'deal_path': booked['deal_path'], 'reference': collar})
     assert newer['quoted_at'] > older['quoted_at'] and older['netting_set'] == CLIENT_SET
+    assert CLIENT.get('/book/quotes').json() == {'quotes': [newer, older]}
+
+    ahead = set_paths(quoting_client)[CLIENT_SET] + '/0'
+    assert CLIENT.post('/book/deals', json={'action': 'delete', 'deal_path': ahead,
+                                            'reference': 'AHEAD'}).json()['written'] is True
+    references = {node['Instrument']['.Deal']['Reference']: deal_path for deal_path, node in
+                  service.walk_job_deals(json.loads(quoting_client.read_text()))}
+    assert (references[collar], references['BEHIND']) == (ahead, booked['deal_path'])
     assert CLIENT.get('/book/quotes').json() == {'quotes': [newer, older]}
 
 

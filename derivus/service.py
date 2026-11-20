@@ -6993,19 +6993,20 @@ def book_quotes():
     """`{quotes}` - one row per pending file under `DV_HOME/tmp`, newest first: its `quote_id`, the
     `structure` and the `variation` it was dealt as, the client's `netting_set`, the `net` in its
     `currency`, `quoted_at` and `quoted_by`, and where it stands - `accepted` and `booked` as the
-    acceptance wrote them, both null while it is only quoted. Whether it is still firm is the book's
-    `Quote Policy`, read by the acceptance and never here."""
+    acceptance wrote them, both null while it is only quoted, `booked` also naming the `reference`
+    of the deal it booked, which a path a node ahead of it moves does not. Whether it is still firm
+    is the book's `Quote Policy`, read by the acceptance and never here."""
     directory, rows = quote_dir(), []
     for name in os.listdir(directory) if os.path.isdir(directory) else ():
         if name.endswith('.json'):
             pending = book_quote_pending(name[:-len('.json')])
-            quoted = pending.get('quote') or {}
+            quoted, booked = pending.get('quote') or {}, pending.get('booked')
             rows.append(dict(
                 quote_id=name[:-len('.json')],
                 **{key: quoted.get(key) for key in ('structure', 'variation', 'netting_set', 'net',
                                                     'currency')},
-                **{key: pending.get(key) for key in ('quoted_at', 'quoted_by', 'accepted',
-                                                     'booked')}))
+                **{key: pending.get(key) for key in ('quoted_at', 'quoted_by', 'accepted')},
+                booked=booked and dict(booked, reference=pending['deal']['Reference'])))
     return {'quotes': sorted(rows, key=lambda row: row['quoted_at'] or '', reverse=True)}
 
 

@@ -938,7 +938,8 @@ def test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar(tmp_path,
         listed = mcp_server.list_quotes()['quotes']
         assert [(row['quote_id'], row['booked']) for row in listed] == [
             (charged['quote_id'], None),
-            (quote['quote_id'], {'lsn': None, 'deal_path': booked['deal_path']})]
+            (quote['quote_id'], {'lsn': None, 'deal_path': booked['deal_path'],
+                                 'reference': quote['deal']['Reference']})]
         node = mcp_server.read_deal(booked['deal_path'])
         assert len(node['children']) == 2, 'the structure booked without its legs'
 
