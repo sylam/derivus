@@ -6311,6 +6311,31 @@ def test_a_set_s_xva_job_shares_the_book_s_market_and_writes_none_of_the_book(de
         assert derivus.content_hash(document) == before, 'composing a set\'s job wrote the book'
 
 
+def test_a_recalc_of_sets_already_run_writes_no_row_and_writes_up_one_the_file_lost(
+        desk_xva, tmp_path):
+    """A recalc asked again over an unmoved book hands back the ids of the first and writes
+    nothing: the projection file stands byte for byte, each row keeping the `as_of` its run landed
+    at. A row the file has lost is written up from the result the store holds, the same id and the
+    same CVA with no second run, and the row beside it is left as it stood.
+
+    Killing mutations: every set already run written again, where the file's bytes move with the
+    `as_of`; the file's first read trusted for a row it did not find, where the lost row stays lost.
+    """
+    path = tmp_path / service.XVA_FILE
+    first = recalc()
+    before, rows = path.read_bytes(), xva_rows()
+    assert recalc() == first and path.read_bytes() == before
+
+    kept = json.loads(before)
+    del kept['sets']['NS_B']
+    path.write_text(json.dumps(kept, indent=2))
+    assert recalc() == first
+    again = xva_rows()
+    assert again['NS_A'] == rows['NS_A']
+    assert {key: again['NS_B'][key] for key in ('status', 'result_id', 'cva', 'fva')} == {
+        key: rows['NS_B'][key] for key in ('status', 'result_id', 'cva', 'fva')}
+
+
 def test_a_booking_into_one_set_leaves_another_set_s_xva_run_where_it_was(recorded, tmp_path):
     """On a recording desk every write pins the record's head beside `Calc`: genesis is four
     events and each booking one fill, so the file reads LSN 5 at the first full recalc and 6 at the

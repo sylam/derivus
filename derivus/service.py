@@ -4390,7 +4390,7 @@ def book_xva(request: dict):
     reader = Context()
     reader.held = {name: reader.digest(name)[0]
                    for name in Context.named(document).values() if name}
-    queued, files = [], content_hash(reader.files(document))
+    queued, files, filed = [], content_hash(reader.files(document)), read_projection()['sets']
     for reference in references:
         node = found[reference]
         terms = set_terms(node['Instrument']['.Deal'])
@@ -4403,10 +4403,11 @@ def book_xva(request: dict):
             Job(result_id, run, stamp, spine.CURIOSITY, actor=request.get('actor'),
                 book=book_name(document)), HEAVY)
         live_book().xva_pending[reference] = result_id
-        # a queued or running job writes its own row when it lands; one that has already run writes
-        # here only where the row is missing or names a different run, `as_of` meaning when the
-        # number was COMPUTED
-        if status not in ('queued', 'running'):
+        # a run still to land writes its own row; one already run is written here only where its
+        # row is missing or names another run. The file is read once for the request, and again
+        # only for a row that read did not find, which the worker may have landed since
+        if status not in ('queued', 'running') and (
+                filed.get(reference) or {}).get('result_id') != result_id:
             standing = read_projection()['sets'].get(reference)
             if standing is None or standing.get('result_id') != result_id:
                 write_row(reference, run.landed(EXECUTOR.result(result_id)))
