@@ -604,9 +604,11 @@ def book_deal(deal: dict | None = None, parent_reference: str | None = None,
     EVERY BOOKING IS A TICKET, which the answer carries: where the desk's tiers policy caps sizes
     or tenors, the size is read off the deal as booked at its `quantity` - nothing you state - a
     strip at every fixing still to come, and a type declaring none carries no size, so a cap passes
-    it to the next tier; a tier wanting a second seat books it PENDING with `waits_on`, which
-    another seat clears with `approve_ticket`; a ticket no tier admits books nothing and names
-    every bound it broke. An amendment is a ticket too, routed the same way. An `agreement` whose
+    it to the next tier; the answer's `tier` names the tier it fell in and, as `fell_past`, the
+    bound each earlier tier failed it on; a tier wanting a second seat books it PENDING with
+    `waits_on`, which another seat clears with `approve_ticket`; a ticket no tier admits books
+    nothing and names every bound it broke. An amendment is a ticket too, routed the same way, as
+    is `book_quote`'s acceptance. An `agreement` whose
     netting set the book does not carry yet is brought by its first booking, out of the terms legal
     declared.
 

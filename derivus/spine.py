@@ -1100,13 +1100,14 @@ def routed(log, event_type, body, subject, book_name, effective_time, plan, term
     and the seat's scope with nothing written, so the hub signs nothing a refusal then strands.
     Then, with a tiers policy in force (`terms`, what it reads of the trade), the FIRST tier
     covering where it books whose every check passes applies, the event carrying its name as `tier`
-    and, as `fell_past`, the sentence of every check an earlier tier failed on: an automatic one is
-    the hub's own approval, filed before the event; one under four eyes lets it
-    land PENDING, `waits_on` saying on whom; and one no tier admits answers `refused` with every
-    sentence the route collected. A crash between the approval and the event is the one way an
-    approval stands alone, which the oracle names until the act is retried. A seat the scope
-    refuses is answered by the append itself, which lands the denial. A body the log already holds
-    is filed over `standing`, the LSN of what it replaces, where one is handed in (`verbs.restated`).
+    and, as `fell_past`, the sentence of every check an earlier tier failed on, which the answer's
+    `tier` carries too: an automatic one is the hub's own approval, filed before the event; one
+    under four eyes lets it land PENDING, `waits_on` saying on whom; and one no tier admits answers
+    `refused` with every sentence the route collected. A crash between the approval and the event
+    is the one way an approval stands alone, which the oracle names until the act is retried. A
+    seat the scope refuses is answered by the append itself, which lands the denial. A body the log
+    already holds is filed over `standing`, the LSN of what it replaces, where one is handed in
+    (`verbs.restated`).
     """
     admitted = log.admits(event_type, body, subject, book_name, effective_time)
     answer = {}
@@ -1124,7 +1125,7 @@ def routed(log, event_type, body, subject, book_name, effective_time, plan, term
             return dict(answer, refused=route['refusals'])
         body['tier'], body['fell_past'] = route['tier'], route['refusals']
         answer['tier'] = {'name': route['tier'], 'four_eyes': bool(route['four_eyes']),
-                          'approval_lsn': route['approval_lsn']}
+                          'approval_lsn': route['approval_lsn'], 'fell_past': route['refusals']}
         if not route['four_eyes']:
             answer['tier']['approval_lsn'] = log.own(
                 'approval', {'plan_hash': body['ticket']}, book=book_name)['lsn']

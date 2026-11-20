@@ -2687,7 +2687,7 @@ def test_an_automatic_tier_is_the_hubs_own_approval_between_the_quote_and_the_fi
     booked = accept(quote, actor=ACTOR).json()
     assert booked['written'] is True, booked
     assert booked['tier'] == {'name': 'auto', 'four_eyes': False,
-                              'approval_lsn': typed(recorded, 'approval')[0][0]}
+                              'approval_lsn': typed(recorded, 'approval')[0][0], 'fell_past': []}
 
     steps = typed(recorded, 'quote_filed', 'approval', 'fill')
     assert [event_type for _, event_type in steps] == ['quote_filed', 'approval', 'fill']
@@ -2725,7 +2725,8 @@ def test_a_four_eyes_acceptance_books_pending_and_reads_the_verdict_that_stands(
     booked = accept(quote).json()
     ticket = booked['accepted']['ticket']
     assert booked['written'] is True and booked['ticket'] == ticket, booked
-    assert booked['tier'] == {'name': 'desk', 'four_eyes': True, 'approval_lsn': None}
+    assert booked['tier'] == {'name': 'desk', 'four_eyes': True, 'approval_lsn': None,
+                              'fell_past': []}
     assert 'no verdict is filed' in booked['waits_on']
     fill = facts(recorded, 'fill')[0][2]
     assert (fill['ticket'], fill['tier']) == (ticket, 'desk'), fill
@@ -2904,7 +2905,10 @@ def test_every_booking_is_a_ticket_the_tiers_route(recorded, desk):
 
     signed = ticketed('EXEC-AUTO').json()
     fill = facts(recorded, 'fill')[-1]
-    assert signed['tier'] == {'name': 'auto', 'four_eyes': False, 'approval_lsn': fill[0] - 1}
+    assert signed['tier'] == {'name': 'auto', 'four_eyes': False, 'approval_lsn': fill[0] - 1,
+                              'fell_past': ["the 'fx' tier covers spine-desk/FX and this ticket "
+                                            "books into 'spine-desk' - it is read for a ticket in "
+                                            "that node or under it"]}
     assert fill[2]['ticket'] == signed['ticket'] == spine.ticket(
         service.load(json.loads(desk.read_text())).plan_hash(), {
             field: value for field, value in fill[2].items()
@@ -3307,7 +3311,8 @@ def test_a_restrike_is_a_trade_and_the_position_reads_its_ticket(recorded, desk)
     declare(recorded, policy.TIERS_POLICY, tiers({'name': 'auto'}))
     automatic = restruck(booked['deal_path'], Amount=50_000.0)
     assert automatic['tier'] == {'name': 'auto', 'four_eyes': False,
-                                 'approval_lsn': facts(recorded, 'amendment')[-1][0] - 1}
+                                 'approval_lsn': facts(recorded, 'amendment')[-1][0] - 1,
+                                 'fell_past': []}
     declare(recorded, policy.TIERS_POLICY, tiers(
         {'name': 'capped', 'max_notional': {'amount': BIG, 'currency': 'USD'}}))
     before, at = desk.read_bytes(), head(recorded)
@@ -3627,6 +3632,40 @@ def test_a_booker_reads_why_its_ticket_waits_on_the_position(recorded, desk):
                        ).json()['status'] == 'rejected'
     assert tickets(booker)['EXEC-SMALL'] == ticket(small, 'EXEC-SMALL', 'desk', 'rejected', None,
                                                    by=amended, fell_past=capped(5_550_000.0))
+
+
+def test_a_booking_s_own_answer_says_what_its_ticket_fell_past(recorded, quoting):
+    """A BOOKER READS WHY ON THE ANSWER. Under an automatic tier capped at 100,000 dollars and a
+    four-eyes tier past it, a direct booking of 250,000 rand - 4,625,000 dollars at 18.5 on this
+    book's axis - its restrike to 300,000 - 5,550,000 - and the acceptance of a collar on a million
+    dollars each answer their `tier` with the four-eyes tier's name and, as `fell_past`, the
+    automatic tier's cap sentence at that size, exactly what the position's ticket reads back.
+
+    Killing mutation: the answer's tier left without the route's sentences, which sends a booker to
+    read the position back to learn why its ticket waits.
+    """
+    declare(recorded, policy.TIERS_POLICY, tiers(
+        {'name': 'auto', 'max_notional': {'amount': SMALL, 'currency': 'USD'}},
+        {'name': 'desk', 'four_eyes': True}))
+
+    def capped(dollars):
+        return ["the 'auto' tier caps max_notional at 100000 USD and this ticket is {} of it - "
+                "book it under a tier that admits the size, or split the clip".format(dollars)]
+
+    def tickets():
+        return {entry['ticket']: entry['fell_past']
+                for row in CLIENT.get('/book/positions').json()['positions']
+                for entry in row['tickets']}
+
+    booked = ticketed('EXEC-1').json()
+    for act, dollars in ((lambda: booked, 4_625_000.0),
+                         (lambda: restruck(booked['deal_path'], Amount=300_000.0), 5_550_000.0),
+                         (lambda: accept(quote_of('ZeroCostCollar', COLLAR,
+                                                  netting_set=CLIENT_SET)).json(), 1_000_000.0)):
+        answer = act()
+        assert answer['tier'] == {'name': 'desk', 'four_eyes': True, 'approval_lsn': None,
+                                  'fell_past': capped(dollars)}, answer
+        assert tickets()[answer['ticket']] == capped(dollars)
 
 
 def test_a_deal_booked_again_as_it_was_is_the_trade_the_record_holds(recorded, desk):
