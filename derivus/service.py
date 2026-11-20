@@ -7510,9 +7510,7 @@ def book_quote(request: dict):
     """
     live = live_book()
     quote_id = request.get('quote_id')
-    path = pending_quote(quote_id)
-    with open(path, encoding='utf-8') as handle:
-        pending = json.load(handle)
+    path, pending = pending_quote(quote_id), book_quote_pending(quote_id)
     if request.get('portfolio') is not None:
         raise HTTPException(422, 'an acceptance books where its quote was quoted for - a '
                                  '`portfolio` is stated when quoting, through POST '
@@ -7558,8 +7556,7 @@ def book_quote(request: dict):
 
     def accept(book, etag):
         # read again under the book lock: an acceptance landing since the read above is answered
-        with open(path, encoding='utf-8') as handle:
-            landed = booked_already(json.load(handle), quote_id)
+        landed = booked_already(book_quote_pending(quote_id), quote_id)
         if landed:
             return False, landed
         # the baseline before the client's declared set is spliced, as a booking takes it; the
@@ -7632,8 +7629,7 @@ def decided(request, verb):
         if quote_id is None:
             raise HTTPException(422, 'a verdict names the `ticket` it rules on - the one a booking '
                                      'answered - or the `quote_id` whose acceptance minted it')
-        with open(pending_quote(quote_id), encoding='utf-8') as handle:
-            accepted = json.load(handle).get('accepted')
+        accepted = book_quote_pending(quote_id).get('accepted')
         if not accepted:
             raise HTTPException(422, 'quote {} has not been accepted, so there is no ticket to '
                                      'rule on: a ticket is minted when the client takes the price '
