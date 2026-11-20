@@ -2450,7 +2450,7 @@ class FXSwapDeal(Deal):
 class FXForwardDeal(Deal):
     vernacular = 'FX forward, outright forward, deliverable forward'
     quoted = 'Buy_Amount'
-    exposure = FXNonDeliverableForward.exposure
+    exposure = Exposure('Buy_Amount', 'Buy_Currency', 'Sell_Currency', other='Sell_Amount')
     fields = [ADMIN, own('FXForwardDeal', [
         F('Sell_Currency', 'Text', default='', factors=['FxRate']),
         F('Sell_Amount', 'Float', default=0.0, sized=True),
@@ -5296,7 +5296,8 @@ class EquityBarrierOption(BarrierLifecycle, Deal):
 class CommodityDigitalOption(Deal):
     vernacular = 'commodity digital, energy digital, binary option on a reference price'
     observes = Observes('Reference_Type', 'ReferencePrice', 'Price_Fixing', 1, expires='Expiry_Date')
-    exposure = EquityBinaryOption.exposure._replace(underlying='Reference_Type')
+    exposure = EQUITY_OPTION._replace(amount='Payoff', underlying='Reference_Type',
+                                      digital=('Payoff_Style', 'Cash', 'Asset'))
     fields = [ADMIN, PRICING, own('CommodityDigitalOption', [
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
