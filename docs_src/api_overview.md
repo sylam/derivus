@@ -465,7 +465,8 @@ the file name it writes to where this box keeps them, and every `Context` built 
 own reads it, the job's path never rewritten. `GET /paths` answers the two maps and, per file the
 live book names, the `folder` and `file` they are looked up by, the `path` this box reads, and the
 sha256 of what it holds as `digest` or the refusal to read it as `unread`; `POST /paths`
-`{path_transform, file_transform}` replaces both maps and answers the same.
+`{path_transform, file_transform}` replaces both maps and answers the same, asked of a seat
+holding `mark` on a desk that records.
 
 **The envelope, from the service.** `/schema` describes what goes *in* a `Calculation` block, a
 `Price Factors` block and a deal; it cannot describe where those blocks go, and that is not

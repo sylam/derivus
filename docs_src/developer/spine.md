@@ -262,8 +262,8 @@ another, each demanded by these acts under the vocabulary's map:
 | --- | --- |
 | `validate` | nothing: work the queue admits |
 | `book` | `fill`, `amendment`, `election`, `quote_filed` |
-| `approve` | `approval`, `rejection`, `result_pinned` |
-| `mark` | `market_declared`, `official_close_declared`, `fixing_observed`, `determination`, `file_declared` |
+| `approve` | `approval`, `rejection` |
+| `mark` | `market_declared`, `official_close_declared`, `fixing_observed`, `determination`, `file_declared`, `result_pinned` |
 | `document` | `entity_declared`, `agreement_declared` |
 | `settle` | `status_transition` paying: `settled` moving no money, a `payment`, a `premium` or a `fee` |
 | `confirm` | `status_transition` matching a trade: `confirmed` |
@@ -274,7 +274,21 @@ A type missing from the map demands `admin`, so a forgotten entry costs governan
 write. A transition is one type and three acts, read off its body (`capability.act_of`): a
 `confirmed` status, money held under paper by its kind, `collateral` or `margin`, else a payment.
 So a seat granted `settle` alone is refused a confirmation with the denial naming `confirm`, and
-so for each pair - the separation of duties, which no grant implying another would keep.
+so for each pair - the separation of duties, which no grant implying another would keep. The
+`lifecycle` fold keeps the two apart as well: a subject's `confirmed` stands under
+`confirmations` and every other status a payment or a premium moves under `transitions`, so
+neither seat's filing replaces the other's. **Held by**
+`test_spine_verbs.py::test_confirm_and_settle_states_never_overwrite_each_other`.
+
+**What the service asks where nothing is filed.** Four writes change what the book prices or
+pays and append no event, so the service asks their verb itself (`spine.entitled`): a delete
+through `POST /book/deals` asks `book` at the deepest node holding the position, anywhere under
+the book where the record holds none; `POST /paths` and each beat of the scheduled tick ask
+`mark`, the tick of the hub's own seat; `POST /book/settlements` asks `settle` over the book.
+`POST /book/close` asks `mark` over the firm before it compiles anything. The close and the
+settlement file read the diary as the hub compiles it (`hub_diary`), so neither seat needs
+`validate`. **Held by**
+`test_spine_engine.py::test_verb_gates_on_delete_paths_close_settlements_and_metronome`.
 
 `verbs` is the map in force, the verb each act demands. A declaration is stored with the
 vocabulary's verb for every act it does not move, governance staying `admin`, so the map in force
