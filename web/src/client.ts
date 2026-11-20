@@ -4,12 +4,12 @@
 // rows and XVA rows that are its own - on a desk that records and on one that does not.
 
 import type { Dispatch } from 'react';
-import type { BlotterRow } from './blotter';
+import { fieldsOf, type BlotterRow } from './blotter';
 import { SURVIVAL, entityText, instantMs, plural } from './desk';
 import { byPath, closed, type Agreement, type Entity, type Position } from './positions';
 import { standing, type Action } from './state';
 import {
-  COLLATERAL, currencyOf, formatNumber, label, sharedSections, token, uncollateralised,
+  COLLATERAL, currencyOf, formatNumber, isBlank, label, setCurrency, token, uncollateralised,
 } from './tokens';
 import { markOf } from './trade';
 import type {
@@ -109,11 +109,9 @@ export type TermsReading = {
 /** The words a declaration names the way collateral moves in. */
 const SIDE = /\bthe bank (receives|posts)\b/;
 
-const said = (value: unknown) => value !== undefined && value !== null && value !== '';
-
 function term(key: string, field: Descriptor, value: unknown,
               currency: (description: string) => string | undefined): Term {
-  const held = said(value) ? value : field.value;
+  const held = !isBlank(value) ? value : field.value;
   const list = token(held, '.CreditSupportList');
   const amount = Array.isArray(list) ? (list[0] as unknown[])?.[1] : held;
   const phrase = /,\s*in ([^,:;]+)/.exec(field.description)?.[1] ?? '';
@@ -123,7 +121,7 @@ function term(key: string, field: Descriptor, value: unknown,
       : field.widget !== 'Table' ? label(amount) || 'none'
         : Array.isArray(held) ? plural(held.length, 'row') : 'none',
     unit: currency(field.description) ?? (phrase.startsWith('the ') ? '' : phrase),
-    convention: !said(value), side: SIDE.exec(field.description)?.[1],
+    convention: isBlank(value), side: SIDE.exec(field.description)?.[1],
   };
 }
 
@@ -132,11 +130,7 @@ function term(key: string, field: Descriptor, value: unknown,
  * each other term stated, the rest at their conventions apart; a set whose collateral is off only
  * what it states, collateral it does not have meaning nothing. The flag itself is the reading's. */
 export function termsReading(terms: Record<string, unknown>, schema: Schema): TermsReading {
-  const shared = sharedSections(schema.Instrument.types);
-  const fields: Record<string, Descriptor> = Object.assign({}, ...(
-    schema.Instrument.types[String(terms.Object)] ?? [])
-    .filter((section) => !shared.includes(section))
-    .map((section) => schema.Instrument.sections[section]));
+  const fields = fieldsOf(schema, String(terms.Object), true) ?? {};
   const currency = (description: string) =>
     currencyOf(description, Object.keys(fields), (key) => terms[key]);
   const all = Object.entries(fields).filter(([key]) => key !== COLLATERAL)
@@ -148,7 +142,7 @@ export function termsReading(terms: Record<string, unknown>, schema: Schema): Te
   const moving = all.filter((row) => row.side);
   const rest = all.filter((row) => !row.side);
   return {
-    collateralised: !off, stated: said(terms[COLLATERAL]),
+    collateralised: !off, stated: !isBlank(terms[COLLATERAL]),
     sides: [...new Set(moving.map((row) => row.side!))],
     currency: moving.map((row) => row.unit).find(Boolean),
     terms: off ? all.filter((row) => !row.convention)
@@ -177,7 +171,7 @@ export function heldUnder(path: string | null, rows: Map<string, BlotterRow>,
       row: { ...row, units: position.quantity }, position, closed: closed(position.quantity) }))
       : [{ row, closed: true }])),
     ...positions.filter((position) => !filed.has(position.deal_paths[0]))
-      .map((position) => ({ position, closed: false })),
+      .map((position) => ({ position, closed: closed(position.quantity) })),
   ];
 }
 
@@ -267,7 +261,7 @@ export function statedHolding(terms: Record<string, unknown>, fields: Record<str
                               market: Market | null): CollateralCall {
   const factors = market?.['Price Factors'] ?? {};
   const base = label(token(market?.['System Parameters'], 'Base_Currency'));
-  const currency = label([terms.Balance_Currency, terms.Agreement_Currency].find(Boolean)) || base;
+  const currency = setCurrency(terms) || base;
   const spot = (of: string) => Number(token(factors[`FxRate.${of}`], 'Spot') ?? NaN);
   const balance = Number(terms.Opening_Balance ?? fields.Opening_Balance?.value ?? 0);
   return {

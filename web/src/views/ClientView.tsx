@@ -79,7 +79,7 @@ export function ClientView() {
       : 'No netting set in the book names a counterparty.'}
                pages={pages.map(({ id, lines, own }) => ({
                  id, folder: ready(lines) ? 'ready to trade' : 'not ready to trade',
-                 label: reads.entities ? entityText(reads.entities, id) : id,
+                 label: entityText(reads.entities, id),
                  content: <ClientPage id={id} lines={lines} own={own} reads={reads} rows={rows}
                                       factor={factors[`${SURVIVAL}.${id}`]} market={market}
                                       schema={schema} />,
@@ -107,7 +107,7 @@ function ClientPage({ id, lines, own, reads, rows, factor, market, schema }: {
   [JSON.stringify(asked), !!entities, pinnedAt(state.record.spine)]);
   const entity = entities?.find((row) => row.entity === id);
   const below = (entities ?? []).filter((row) => row.parent === id);
-  const name = entities ? entityText(entities, id) : id;
+  const name = entityText(entities, id);
   const todo = lines.filter((line) => line.tone === 'todo').length;
   const onPaper = () => opened(dispatch, state.doc, null, id);
   const fix = (line: Line) => (line.fix === 'entity' ? onPaper()

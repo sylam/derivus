@@ -12,7 +12,7 @@ import {
 import { clientText, quoteAt, verdictOf, type Verdict } from '../quote';
 import { pinnedAt } from '../spine';
 import {
-  clockOf, heldBack, marketOf, useApp, useQuoteList, useQuotes, useRead, written,
+  clockOf, heldBack, marketOf, spineOf, useApp, useQuoteList, useQuotes, useRead, written,
 } from '../state';
 import { formatNumber, ungrouped } from '../tokens';
 import {
@@ -46,7 +46,7 @@ export function TradeView() {
   const picked = state.selection.picks.trade;
   const trade = picked === undefined ? undefined : tradeAt(children, picked);
   const row = trade && rows.get(trade.path);
-  const recording = state.source?.kind === 'book' && state.record.spine !== null;
+  const recording = spineOf(state) !== null;
   const history = useHistory(trade?.path, recording, pinnedAt(state.record.spine));
   const paper = state.paper.data ?? NO_PAPER;
   const held = (trade && byPath(paper.positions).get(trade.path)) || [];
@@ -90,7 +90,7 @@ function Terms({ row, set, units, quote }: {
   const { schema } = state;
   const paper = state.paper.data ?? NO_PAPER;
   const market = marketOf(state);
-  const shut = closed(units ?? undefined);
+  const shut = closed(units);
   // a trade the record closed reads at its sizes as written
   const scale = shut ? undefined : units ?? undefined;
   const read = quoted(row, market, schema);
@@ -371,6 +371,7 @@ function Actions({ row, held, recording }: {
   const [verdict, setVerdict] = useState<Verdict | null>(null);
   const children = state.doc?.Calc.Deals.Deals.Children ?? [];
   const live = state.source?.kind === 'book';
+  const hold = heldBack(state, 'book');
   const open = held.filter((position) => !closed(position.quantity));
   return (
     <section className="card">
@@ -396,7 +397,7 @@ function Actions({ row, held, recording }: {
         {!recording ? (
           <div className="note">This desk keeps no record, so nothing is unwound at a price here:
             an unwind is a fill, and a fill is filed on a desk that records.</div>
-        ) : heldBack(state, 'book') ? <div className="note">{heldBack(state, 'book')}</div>
+        ) : hold ? <div className="note">{hold}</div>
           : open.length ? open.map((position) => (
           <Unwind key={`${position.agreement}/${position.portfolio}`} row={row} position={position}
                   onVerdict={setVerdict} />

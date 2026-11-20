@@ -9,7 +9,7 @@ import {
   GROUPINGS, NO_PAPER, POSITION, byId, byPath, clientTree, closed, heldColumns, portfolioTree,
   type Paper, type Position,
 } from '../positions';
-import { marketOf, openTrade, useApp } from '../state';
+import { marketOf, openTrade, spineOf, useApp } from '../state';
 import { formatNumber } from '../tokens';
 import type { Market, Schema } from '../types';
 import { SIDE, Side, Value } from '../components/Desk';
@@ -39,7 +39,7 @@ export function BlotterView() {
     ? toRows(doc.Calc.Deals?.Deals?.Children ?? [], schema?.Instrument.containers ?? [], base)
     : []), [doc, schema, base]);
   // the record's columns and groupings are the live book's: a copy opened from a file has none
-  const recording = state.source?.kind === 'book' && state.record.spine !== null;
+  const recording = spineOf(state) !== null;
   const grouping = recording ? state.grouping : 'book';
   const paper = state.paper.data ?? NO_PAPER;
   const heldAt = useMemo(() => byPath(paper.positions), [paper]);

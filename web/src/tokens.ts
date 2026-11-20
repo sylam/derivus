@@ -13,6 +13,18 @@ export function token(value: unknown, name: string): unknown {
 export const isObject = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value);
 
+/** Whether a field value states nothing: absent, null or empty string. */
+export const isBlank = (value: unknown): boolean =>
+  value === undefined || value === null || value === '';
+
+/** A field's label: its description where short enough to sit in a label column, else its key in
+ * words with the full description kept for hover. */
+export function fieldLabel(name: string, descriptor?: Descriptor): { text: string; title?: string } {
+  const description = descriptor?.description ?? name;
+  return description.length > 64 ? { text: name.replace(/_/g, ' '), title: description }
+    : { text: description };
+}
+
 /** A credit support row travels [rating, amount], the reverse of the columns it declares; the
  * map is its own inverse, so it reads the wire and writes it. */
 export const supportRows = (rows: unknown[][]): unknown[][] => rows.map((row) => [...row].reverse());
@@ -205,6 +217,11 @@ export const COLLATERAL = 'Collateralized';
 export const uncollateralised = (fields: Section, values: Record<string, unknown>): boolean =>
   COLLATERAL in fields && String(values[COLLATERAL] ?? fields[COLLATERAL].value) === 'False';
 
+/** The currency a netting set keeps its collateral balance in: Balance_Currency, else
+ * Agreement_Currency, else blank. */
+export const setCurrency = (terms: Record<string, unknown>): string =>
+  label([terms.Balance_Currency, terms.Agreement_Currency].find(Boolean));
+
 /** `fields` cut to the ones `values` state - a container's to the children it states - and those
  * `also` names: what reads of terms whose conventions mean nothing. */
 export function statedOnly(fields: Section, values: Record<string, unknown>,
@@ -236,7 +253,7 @@ export function onPaper(fields: Section, unstated: SettlementState): Section {
  * a null is no statement, and a wire token is one value. */
 export function termsMoved(held: Record<string, unknown>, edited: Record<string, unknown>,
                            at = ''): string[] {
-  const said = (value: unknown) => (value === '' || value === null ? undefined : value);
+  const said = (value: unknown) => (isBlank(value) ? undefined : value);
   const plain = (value: unknown): value is Record<string, unknown> | undefined =>
     value === undefined || (isObject(value) && !Object.keys(value).some((key) => key.startsWith('.')));
   return [...new Set([...Object.keys(held), ...Object.keys(edited)])].sort().flatMap((key) => {

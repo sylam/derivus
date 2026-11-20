@@ -258,9 +258,11 @@ check('the firm window is the policy\'s own, its convention where it states none
        quote.firmSeconds(policy({}), SCHEMA), quote.firmSeconds(policy(null), SCHEMA)],
       [0, 600, null]);
 
-check('a quote is firm until its stamp plus the window',
-      'the window added in milliseconds, which lapses a ten-minute quote in under a second',
-      quote.firmUntil('2026-11-19T18:14:08.613+00:00', 600), '2026-11-19T18:24:08.613Z');
+check('a quote is firm until its stamp plus the window, its zone offset applied',
+      'the window added in milliseconds, or the offset ignored on a non-UTC stamp',
+      [quote.firmUntil('2026-11-19T18:14:08.613+00:00', 600),
+       quote.firmUntil('2026-11-19T20:14:08.613+02:00', 600)],
+      ['2026-11-19T18:24:08.613Z', '2026-11-19T18:24:08.613Z']);
 
 check('what holds between a quote and its acceptance is said per desk',
       'the record ignored, which tells a recording desk a quote stays bookable whatever the book '

@@ -4,10 +4,10 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { amendDeal, declareAgreement, failure, stateSurvival } from '../api';
-import { SET, cellText, dateOf, describe, quoted, toRows, type Picked } from '../blotter';
+import { SET, cellText, dateOf, describe, fieldsOf, quoted, toRows, type Picked } from '../blotter';
 import {
-  SURVIVAL, entityText, marketSource, refusedAt, spreadForm, spreadRequest, spreads, stampText,
-  survivalCurve, valuationDay, type SpreadForm,
+  SURVIVAL, entityText, instantMs, marketSource, refusedAt, spreadForm, spreadRequest, spreads,
+  stampText, survivalCurve, valuationDay, type SpreadForm,
 } from '../desk';
 import type { Agreement, Entity } from '../positions';
 import { NO_PAPER } from '../positions';
@@ -15,7 +15,7 @@ import {
   STANDS, clientText, firmSeconds, firmText, onMarketAxis, salesName, solvedNumbers, spreadText,
   standsAt, ticketLegs, verdictOf, type TicketLeg,
 } from '../quote';
-import { heldBack, marketOf, useApp, written } from '../state';
+import { heldBack, marketOf, spineOf, useApp, written } from '../state';
 import {
   COLLATERAL, curveOf, formatNumber, onPaper, statedOnly, tenorLabel, termsMoved, token,
   uncollateralised, type Kind,
@@ -134,7 +134,7 @@ export function TicketCard({ pending }: { pending: PendingQuote }) {
   useEffect(() => {
     if (word !== 'firm') return;
     const timer = setTimeout(() => lapse((count) => count + 1),
-                             Date.parse(until!) - Date.now() + 50);
+                             instantMs(until)! - Date.now() + 50);
     return () => clearTimeout(timer);
   }, [word, until]);
   const delivery = dateOf(first.Delivery_Date);
@@ -474,8 +474,7 @@ export function AgreementTerms({ schema, terms, unstated, onChange }: {
   schema: Schema; terms: Record<string, unknown>; unstated: SettlementState;
   onChange?: (terms: Record<string, unknown>) => void;
 }) {
-  const bare = !onChange && (schema.Instrument.types[SET] ?? []).some((section) =>
-    uncollateralised(schema.Instrument.sections[section], terms));
+  const bare = !onChange && uncollateralised(fieldsOf(schema, SET) ?? {}, terms);
   return (
     <DealPanels deal={terms} schema={schema} own tables={!!onChange}
                 cut={(fields) => onPaper(bare ? statedOnly(fields, terms, [COLLATERAL]) : fields,
@@ -568,7 +567,7 @@ const RESTRIKE = 'Filing this restrikes the trade: its new terms are filed under
 export function DealEditor({ path, node }: { path: string; node: DealNode }) {
   const { state, dispatch } = useApp();
   const [said, setSaid] = useState<string[]>([]);
-  const recording = state.source?.kind === 'book' && state.record.spine !== null;
+  const recording = spineOf(state) !== null;
   const read = quoted(toRows([node], state.schema?.Instrument.containers ?? [], undefined)[0],
                       marketOf(state));
   const beside = (key: string) => {

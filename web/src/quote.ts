@@ -4,12 +4,12 @@
 // own rule; and what an acceptance says.
 
 import {
-  SET, STRIP_FIELDS, dealRow, fieldsOf, pick, quoted, rowsByPath, sizeOf, toRows, type BlotterRow,
-  type Quoted, type Size,
+  SET, STRIP_FIELDS, fieldsOf, levelOnAxis, pick, quoted, rowsByPath, sizeOf, toRows,
+  type BlotterRow, type Quoted, type Size,
 } from './blotter';
-import { entityText, stampMs } from './desk';
+import { entityText, instantMs } from './desk';
 import type { Agreement, Entity } from './positions';
-import { formatNumber, isObject } from './tokens';
+import { formatNumber, isBlank, isObject } from './tokens';
 import type {
   Acceptance, DealNode, Descriptor, JobDoc, Quote, QuoteGiven, QuotedLeg, Schema, Section,
   StructureType,
@@ -57,16 +57,13 @@ export type Draft = {
   nettingSet: string; margin: { amount: string; currency: string };
 };
 
-/** A cell a desk left empty, which states nothing. */
-const blank = (value: unknown) => value === '' || value === null || value === undefined;
-
 /** The ticket as `POST /book/structure` takes it: every parameter of the form stated, a blank
  * being no statement; on a form chosen over a pair, the currency its client buys, the buying
  * selector saying it; the client and the margin where they are named. */
 export function requestOf(draft: Draft, declared: StructureType): Record<string, unknown> {
   const fields = ticketFields(declared, draft.variation);
   const params = Object.fromEntries(Object.entries(draft.values)
-    .filter(([key, value]) => key in fields && !blank(value)));
+    .filter(([key, value]) => key in fields && !isBlank(value)));
   const form = declared.variations?.[draft.variation ?? ''];
   const sides = pairSides(draft.values.pair);
   const buying = Object.keys(declared.fields).find(
@@ -204,10 +201,8 @@ export function onMarketAxis(level: number, pair: unknown, surface: unknown):
   { pair: string; level: number } | undefined {
   const sides = pairSides(pair);
   if (!sides) return undefined;
-  const read = quoted(dealRow({ FX_Volatility: surface, Underlying_Currency: sides[0],
-                                Currency: sides[1], Strike_Price: level }), null);
-  return read.on && typeof read.strike?.value === 'number'
-    ? { pair: String(read.on.value), level: read.strike.value } : undefined;
+  const read = levelOnAxis(sides[0], sides[1], level, null, surface);
+  return read && { pair: read.pair, level: read.level };
 }
 
 /** What the market's two-way cost the client and where it was charged, in one sentence - or the
@@ -231,9 +226,9 @@ export function firmSeconds(doc: JobDoc | null, schema: Schema | null): number |
   return Number(policy.firm_seconds ?? schema?.['Quote Policy']?.fields.firm_seconds?.value);
 }
 
-/** When a quote given at `quotedAt` - a service stamp in UTC - stops being firm, as a UTC stamp. */
+/** When a quote given at `quotedAt` - a service stamp - stops being firm, as a UTC stamp. */
 export function firmUntil(quotedAt: string | null, seconds: number): string | undefined {
-  const given = stampMs(quotedAt);
+  const given = instantMs(quotedAt);
   return given === undefined ? undefined : new Date(given + seconds * 1000).toISOString();
 }
 
@@ -287,7 +282,8 @@ export function standsAt(row: Pick<QuoteGiven, 'quoted_at' | 'accepted' | 'booke
   if (row.accepted) return { word: 'accepted' };
   if (seconds === null) return { word: 'quoted' };
   const until = firmUntil(row.quoted_at, seconds);
-  return { word: until !== undefined && Date.parse(until) >= now ? 'firm' : 'lapsed', until };
+  const end = instantMs(until);
+  return { word: end !== undefined && end >= now ? 'firm' : 'lapsed', until };
 }
 
 /** Whether a quote's booking is the trade at `path` under `reference`: by the reference the booking

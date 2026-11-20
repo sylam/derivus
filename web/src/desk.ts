@@ -8,7 +8,7 @@
 // the XVA verb never runs anything at all. A recalc is asked for through the MCP verbs, and this
 // module has no vocabulary for one on purpose.
 
-import { dealRow, quoted } from './blotter';
+import { fieldsOf, levelOnAxis } from './blotter';
 import { clientName, type Entity, type Position } from './positions';
 import {
   COLLATERAL, axisText, curveOf, formatNumber, isObject, label, tenorLabel, token, uncollateralised,
@@ -24,7 +24,7 @@ export const fileName = (path: string): string => path.split(/[\\/]/).pop()!;
 
 /** An entity as a reader tells it from another: its name with its id beside it, the id alone where
  * legal declared no name. */
-export function entityText(entities: Entity[], id: string): string {
+export function entityText(entities: Entity[] | null, id: string): string {
   const name = clientName(entities, id);
   return name === id ? id : `${name} (${id})`;
 }
@@ -36,10 +36,8 @@ export function entityText(entities: Entity[], id: string): string {
 
 const STAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|[+-][\d:]{4,5})?/;
 
-/** A service stamp as milliseconds on one arbitrary clock, or undefined. Read through `Date.UTC`
- * rather than `Date.parse` so no local timezone - and no DST edge inside one - can move a
- * difference between two stamps by an hour. */
-export function stampMs(stamp: string | null | undefined): number | undefined {
+/** A service stamp's wall-clock components in UTC ms, before applying its zone offset. */
+function stampMs(stamp: string | null | undefined): number | undefined {
   const parts = stamp === null || stamp === undefined ? null : STAMP.exec(stamp);
   if (!parts) return undefined;
   const fraction = parts[7] === undefined ? 0 : Number(parts[7].slice(0, 3).padEnd(3, '0'));
@@ -109,8 +107,8 @@ export function ageOf(ran: string | null, read: string): Age {
       title: 'the book carries this set, but no recalc has ever produced a row for it',
     };
   }
-  const from = stampMs(ran);
-  const to = stampMs(read);
+  const from = instantMs(ran);
+  const to = instantMs(read);
   if (from === undefined || to === undefined) return { text: ran, tone: 'none', title: ran };
   // a row stamped after the read is a clock that moved, not a number from the future
   const ms = Math.max(0, to - from);
@@ -289,12 +287,8 @@ export function spotQuoted(factor: string, level: number, market: Market | null)
   const domestic = String(token(market?.['Price Factors']?.[factor], 'Domestic_Currency')
     || token(market?.['System Parameters'], 'Base_Currency') || '');
   if (family !== 'FxRate' || !domestic) return undefined;
-  const read = quoted(dealRow({ Currency: domestic, Underlying_Currency: currency,
-                                Buy_Currency: currency, Sell_Currency: domestic,
-                                Strike_Price: level }), market);
-  if (!read.on || typeof read.strike?.value !== 'number') return undefined;
-  return { pair: String(read.on.value), level: read.strike.value,
-           turned: read.strike.value !== level, held: `${domestic} per 1 ${currency}` };
+  const read = levelOnAxis(currency, domestic, level, market);
+  return read && { ...read, held: `${domestic} per 1 ${currency}` };
 }
 
 /** A gradient row of an FX spot re-read on its pair: the level the market quotes, the derivative
@@ -439,8 +433,7 @@ export function peaks(held: XvaSet['peaks']): { ee?: Peak; pfe: (Peak & { quanti
 function collateralised(nodes: DealNode[], schema: Schema | null): string[] {
   return nodes.flatMap((node) => {
     const deal = node.Instrument['.Deal'];
-    const fields = Object.assign({}, ...(schema?.Instrument.types[String(deal.Object)] ?? [])
-      .map((section) => schema!.Instrument.sections[section]));
+    const fields = fieldsOf(schema, String(deal.Object)) ?? {};
     const held = COLLATERAL in fields && !uncollateralised(fields, deal) ? [String(deal.Reference)]
       : [];
     return [...held, ...collateralised(node.Children ?? [], schema)];
@@ -540,8 +533,8 @@ export function marketSource(doc: JobDoc | null, market: Market | null) {
     ...Object.values(market?.['Price Factors'] ?? {})
       .map((block) => token(block, 'Quote_Timestamp')),
   ].map((stamp) => (isObject(stamp) ? String(stamp['.Timestamp']) : ''))
-    .filter((stamp) => stampMs(stamp) !== undefined)
-    .sort((a, b) => stampMs(a)! - stampMs(b)!);
+    .filter((stamp) => instantMs(stamp) !== undefined)
+    .sort((a, b) => instantMs(a)! - instantMs(b)!);
   return { file: named ? fileName(named) : null, seen: seen.pop() ?? null };
 }
 

@@ -2,9 +2,9 @@ import { getBookMarkets, patchMarket } from '../api';
 import { DescriptorPanel, type AmendField } from '../components/FieldView';
 import { Navigator } from '../components/Navigator';
 import { Whose } from '../components/Whose';
-import { fileName, spotQuoted, spreads, stampText } from '../desk';
+import { factorFamily, fileName, spotQuoted, spreads, stampText } from '../desk';
 import { marketsView } from '../spine';
-import { blockHint, heldBack, marketOf, useApp, useRead, written } from '../state';
+import { blockHint, heldBack, marketOf, spineOf, useApp, useRead, written } from '../state';
 import { curveOf, formatNumber, isObject, tenorLabel } from '../tokens';
 import type { Market, Schema, Section } from '../types';
 
@@ -49,7 +49,7 @@ function FactorBlock({ schema, name, block, priceModels, modelConfig, live, mark
   priceModels: Record<string, unknown>; modelConfig: unknown; live: boolean; market: Market;
 }) {
   const { dispatch } = useApp();
-  const type = name.split('.')[0];
+  const type = factorFamily(name);
   const fields = schema.Factor.types[type];
   const onPatch: AmendField | undefined = live
     ? async (key, wireValue) => written(dispatch, await patchMarket(name, { [key]: wireValue }))
@@ -135,12 +135,11 @@ export function MarketDataView() {
 function RecordMarkets() {
   const { state } = useApp();
   const source = state.source;
-  const records = state.record.spine !== null;
+  const records = spineOf(state) !== null;
 
   // the record's own read, on the etag the whole screen rides: a close declared by any client
   // lands here on the next beat, and a desk that keeps no record is not asked at all
-  const markets = useRead(source?.kind === 'book' && records ? getBookMarkets : null,
-                          [source, records]).data;
+  const markets = useRead(records ? getBookMarkets : null, [source, records]).data;
 
   if (markets === null) return null;
   const { closes, names, snapshots } = marketsView(markets);

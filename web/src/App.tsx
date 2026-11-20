@@ -9,7 +9,9 @@ import { JobHeader } from './components/JobHeader';
 import { ActivityStrip, ReconcileBanner, SeatControl, WorklistBanner } from './components/Record';
 import { WORKSPACES } from './registry';
 import { bookOwed, polled, ringsAhead, single, worklistAt } from './spine';
-import { AppContext, INITIAL, PAPER_TABS, bookLoaded, clockOf, paperOwed, reducer } from './state';
+import {
+  AppContext, INITIAL, PAPER_TABS, bookLoaded, clockOf, paperOwed, reducer, spineOf,
+} from './state';
 
 const BOOK_POLL_MS = 2000;
 
@@ -184,8 +186,7 @@ export function App() {
 
   // What the seat may do, asked again where the seat or the record's head moved. A refusal - no
   // seat named, under grants - stands in its place; any other failure leaves acts to the service.
-  const grantsAt = worklistAt(state.source?.kind === 'book' ? state.record.spine : null,
-                              state.seat);
+  const grantsAt = worklistAt(spineOf(state), state.seat);
   useEffect(() => {
     if (grantsAt === null) return;
     let live = true;

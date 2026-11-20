@@ -3,8 +3,9 @@ import { failure } from '../api';
 import { factorNames } from '../desk';
 import { marketOf, useApp } from '../state';
 import {
-  SUPPORT_ROW, currencyOf, curveOf, editRaw, encodeScalar, formatNumber, isEditableScalar, isObject,
-  kindOf, label, offsetText, sharedSections, supportRows, token, ungrouped,
+  SUPPORT_ROW, currencyOf, curveOf, editRaw, encodeScalar, fieldLabel, formatNumber, isBlank,
+  isEditableScalar, isObject, kindOf, label, offsetText, sharedSections, supportRows, token,
+  ungrouped,
 } from '../tokens';
 import type { Descriptor, Schema, Section } from '../types';
 import { axisNames, quotesNormal } from '../vols';
@@ -97,7 +98,7 @@ export function FieldView({ value, descriptor, normal }: {
   if (isObject(value)) return <JsonView value={value} />;
 
   // --- scalars ---
-  if (value === null || value === undefined || value === '') {
+  if (isBlank(value)) {
     return <span className="hint">—</span>;
   }
   if (typeof value === 'boolean') return <span>{value ? '✓ true' : '✗ false'}</span>;
@@ -114,14 +115,6 @@ export function FieldView({ value, descriptor, normal }: {
       )}
     </span>
   );
-}
-
-/** A field's label: its description where that is a label, its own name where the description is
- * a paragraph - which is then the hover, so the prose is one pointer away rather than the column. */
-function labelOf(name: string, descriptor?: Descriptor): { text: string; title?: string } {
-  const description = descriptor?.description ?? name;
-  return description.length > 64 ? { text: name.replace(/_/g, ' '), title: description }
-    : { text: description };
 }
 
 /** Save one field's wire value; resolves to refusal messages, or null on success. */
@@ -174,7 +167,7 @@ export function DescriptorPanel({ title, fields, values, onAmend, editable, asid
           return descriptor?.widget === 'Container' ? (
             <div key={key} style={{ gridColumn: '1 / -1' }}>
               <DescriptorPanel
-                title={labelOf(key, descriptor).text
+                title={fieldLabel(key, descriptor).text
                   + (descriptor.convention && values[key] === undefined ? ' · convention' : '')}
                 fields={descriptor?.sub_fields}
                 values={whole} editable={editable} ask={ask} tables={tables} currency={inCurrency}
@@ -184,7 +177,7 @@ export function DescriptorPanel({ title, fields, values, onAmend, editable, asid
             </div>
           ) : (
             <FieldRow key={key} name={key} descriptor={descriptor} value={value}
-                      stated={values[key] !== undefined && values[key] !== null && values[key] !== ''}
+                      stated={!isBlank(values[key])}
                       declared={!!descriptor || !undeclared.includes(key)} tables={tables}
                       currency={descriptor && inCurrency(descriptor.description)}
                       onAmend={onAmend && (!descriptor || !editable || editable(key, descriptor))
@@ -245,7 +238,7 @@ function FieldRow({ name, descriptor, value, stated, declared, onAmend, aside, b
 }) {
   const editable = onAmend !== undefined && descriptor !== undefined &&
     isEditableScalar(descriptor, value);
-  const { text, title } = labelOf(name, descriptor);
+  const { text, title } = fieldLabel(name, descriptor);
   const convention = descriptor?.convention && !stated;
   return (
     <>

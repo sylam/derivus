@@ -451,6 +451,7 @@ function Acceptance({ id, pending, verdict, quoting, onVerdict, onRequote }: {
   const [booking, setBooking] = useState(false);
   const paper = state.paper.data ?? NO_PAPER;
   const recording = state.record.spine !== null;
+  const hold = heldBack(state, 'book');
   const { quote } = pending;
   const booked = pending.booked ?? verdict?.booked;
 
@@ -492,7 +493,7 @@ function Acceptance({ id, pending, verdict, quoting, onVerdict, onRequote }: {
             <span>The client's price stands on the record at position {pending.accepted.lsn}; this
               desk's tiers did not book it, and quoting again does not change that.</span>
           </div>
-        ) : heldBack(state, 'book') ? <div className="note">{heldBack(state, 'book')}</div>
+        ) : hold ? <div className="note">{hold}</div>
         : asking ? (
           <div className="banner">
             Book the {salesName(state.schema, quote.structure)} for{' '}

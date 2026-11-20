@@ -4,7 +4,7 @@ import {
   GROUPINGS, NO_PAPER, POSITION, byId, byPath, clientName, clientTree, closed, nodeAt,
   portfolioTree, type Paper, type Position,
 } from '../positions';
-import { openTrade, useApp } from '../state';
+import { openTrade, spineOf, useApp } from '../state';
 import { tradeAt } from '../trade';
 import type { DealNode, Descriptor } from '../types';
 import { DealEditor } from '../components/Desk';
@@ -37,7 +37,7 @@ export function PortfolioView() {
 
   const children = doc.Calc.Deals.Deals.Children;
   // the grouped trees are the record's, and a copy opened from a file has none
-  const recording = state.source?.kind === 'book' && state.record.spine !== null;
+  const recording = spineOf(state) !== null;
   const grouping = recording ? state.grouping : 'book';
   const paper = state.paper.data ?? NO_PAPER;
   const nodes = grouping === 'book' ? toTree(children, schema.Instrument.containers)

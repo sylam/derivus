@@ -82,6 +82,11 @@ check('two stamps written at different offsets name one instant, a stamp naming 
        '2026-11-16T19:21:07.123', 'not a stamp'].map(desk.instantMs),
       [...Array(4).fill(Date.UTC(2026, 10, 16, 19, 21, 7, 123)), undefined]);
 
+check('a row age compares instants across zone offsets rather than wall clocks',
+      'ageOf reading stampMs without offsets, which calls a run stamped in UTC two hours old '
+      + 'against a +02:00 read taken the same second',
+      desk.ageOf('2026-11-16T19:21:07Z', '2026-11-16T21:21:07+02:00').text, 'moments ago');
+
 const FACTORS = { Factor: { types: {
   InterestRate: { Curve: { widget: 'Curve', description: 'Continuously compounded interest rate' } },
   ForwardPrice: { Curve: { widget: 'Curve', description:
@@ -220,10 +225,11 @@ check('a marked row names its clients by name and id, once each, and the trades 
       [holds.clients, holds.pending.map((row) => row.reference)],
       [['Kestrel Mining Ltd (KESTREL)', 'NONAME'], ['GBPZAR-NDF']]);
 check('an entity reads as its name with its id, and a file as its name off any server path',
-      "the counterparty's id shown bare; or the XVA file's whole path on the server",
+      "the counterparty's id shown bare; a null entity list throwing; or the XVA file's whole path",
       [desk.entityText(ENTITIES, 'KESTREL'), desk.entityText(ENTITIES, 'ALDERBY'),
+       desk.entityText(null, 'KESTREL'),
        desk.fileName('C:\\desk\\home\\xva.json'), desk.fileName('/srv/desk/xva.json')],
-      ['Kestrel Mining Ltd (KESTREL)', 'ALDERBY', 'xva.json', 'xva.json']);
+      ['Kestrel Mining Ltd (KESTREL)', 'ALDERBY', 'KESTREL', 'xva.json', 'xva.json']);
 
 // --- what a run's table is in
 const SETS = { Instrument: { types: { NettingCollateralSet: ['Fields'], FXOptionDeal: ['Option'] },

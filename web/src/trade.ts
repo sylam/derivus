@@ -6,10 +6,12 @@ import {
   SET, cellText, currencyFor, dateOf, fieldsOf, quoted, sizeOf, type BlotterRow, type Picked,
   type Size,
 } from './blotter';
-import { plural } from './desk';
+import { instantMs, plural } from './desk';
 import type { Agreement, Position } from './positions';
 import { salesNames } from './quote';
-import { COLLATERAL, currencyOf, formatNumber, uncollateralised } from './tokens';
+import {
+  COLLATERAL, currencyOf, fieldLabel, formatNumber, setCurrency, uncollateralised,
+} from './tokens';
 import type {
   ActivityPage, ActivityRow, DealMark, DealNode, Descriptor, Market, Moved, QuoteGiven, Schema,
   WorkRow,
@@ -75,7 +77,7 @@ export function movedTerms(changed: Moved[], deal: Record<string, unknown>,
     const unit = declared?.sized ? currencyFor(deal, moved.field, fields)?.value
       : currencyOf(description, Object.keys(fields), (key) => deal[key]);
     return { ...moved, declared, unit: unit === undefined ? undefined : String(unit),
-             words: description.length > 64 ? moved.field.replace(/_/g, ' ') : description };
+             words: fieldLabel(moved.field, declared).text };
   });
 }
 
@@ -195,8 +197,8 @@ export function ticketWords(row: BlotterRow, name: string, market: Market | null
  * hours on the day it was booked, then since yesterday, then days - every count floored, and the
  * days this browser's calendar ones. */
 export function waitedText(since: string | null, now: number): string {
-  const at = Date.parse(since ?? '');
-  if (!isFinite(at)) return since ?? '';
+  const at = instantMs(since);
+  if (at === undefined) return since ?? '';
   const minutes = Math.floor((now - at) / 60_000);
   const day = (ms: number) => {
     const date = new Date(ms);
@@ -216,7 +218,7 @@ export function paperText(set: string, agreements: Agreement[], schema: Schema |
   const paper = agreements.find((row) => row.agreement === set);
   if (!paper) return `${set}, which the record declares no agreement for`;
   const fields = fieldsOf(schema, SET) ?? {};
-  const currency = [paper.terms.Balance_Currency, paper.terms.Agreement_Currency].find(Boolean);
+  const currency = setCurrency(paper.terms);
   return `${set} (${paper.kind})${!(COLLATERAL in fields) ? ''
     : uncollateralised(fields, paper.terms) ? ', uncollateralised'
       : `, collateralised${currency ? ` in ${currency}` : ''}`}`;

@@ -6,14 +6,8 @@ import {
   WAITING, divergences, reconcileAt, reconcileVerdict, wantsReconcile, wantsWorklist, worklistAt,
   worklistLine,
 } from '../spine';
-import { opened, useApp, type AppState } from '../state';
+import { opened, spineOf, useApp } from '../state';
 import type { Reconcile } from '../types';
-
-/** The record's own block, and null where this client is not looking at the LIVE BOOK: the record
- * is the deployment's and says nothing about a copy opened from somebody's disk. */
-function recorded(state: AppState) {
-  return state.source?.kind === 'book' ? state.record.spine : null;
-}
 
 /** Where the book FILE stands against the record, in the app frame beside the book's own header.
  *
@@ -24,7 +18,7 @@ function recorded(state: AppState) {
 export function ReconcileBanner() {
   const { state, dispatch } = useApp();
   const [open, setOpen] = useState(false);
-  const spine = recorded(state);
+  const spine = spineOf(state);
   const { reconcile, reconciledAt } = state.record;
   const verdict = reconcileVerdict(spine, reconcile);
   const etag = state.source?.kind === 'book' ? state.source.etag : null;
@@ -67,7 +61,7 @@ export function ReconcileBanner() {
 export function WorklistBanner() {
   const { state, dispatch } = useApp();
   const [open, setOpen] = useState(false);
-  const spine = recorded(state);
+  const spine = spineOf(state);
   const { worklist, worklistAt: heldAt, worklistError } = state.record;
   const at = worklistAt(spine, state.seat);
 
@@ -174,7 +168,7 @@ function Divergences({ reconcile }: { reconcile: Reconcile }) {
 export function ActivityStrip() {
   const { state, dispatch } = useApp();
   const [open, setOpen] = useState(false);
-  if (recorded(state) === null) return null;
+  if (spineOf(state) === null) return null;
 
   const rows = [...state.record.rows].reverse();
   const newest = rows[0];
@@ -206,7 +200,8 @@ export function ActivityStrip() {
                     <td className="n mono">{row.lsn}</td>
                     {/* the writer's own clock, in UTC; the title is when the fact is TRUE, which
                         is null where the fact carries no truth-time of its own */}
-                    <td title={row.effective_time ?? 'no truth-time of its own'}>
+                    <td title={row.effective_time ? stampText(row.effective_time)
+                      : 'no truth-time of its own'}>
                       {stampText(row.record_time)}
                     </td>
                     <td>{row.by}</td>

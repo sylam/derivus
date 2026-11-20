@@ -9,7 +9,7 @@
 // fills what columns it can and renders the rest in its expander, rather than raising.
 
 import { closed, netOf, type Position } from './positions';
-import { formatNumber, isObject, token, type Kind } from './tokens';
+import { formatNumber, isBlank, isObject, sharedSections, token, type Kind } from './tokens';
 import type { TreeNode } from './tree';
 import type { DealNode, Descriptor, JobDoc, Market, Schema } from './types';
 
@@ -117,19 +117,22 @@ export type Picked = { key: string; value: unknown; title?: string };
 export function pick(deal: Record<string, unknown>, candidates: string[]): Picked | undefined {
   for (const key of candidates) {
     const value = deal[key];
-    if (value === undefined || value === null || value === '') continue;
+    if (isBlank(value)) continue;
     if (Array.isArray(value) && value.length === 0) continue;
     return { key, value };
   }
   return undefined;
 }
 
-/** A type's declared fields, its sections merged; undefined where the schema declares no type. */
-export function fieldsOf(schema: Schema | null, object: string):
+/** A type's declared fields, its sections merged (excluding shared admin sections when `own`);
+ * undefined where the schema declares no type. */
+export function fieldsOf(schema: Schema | null, object: string, own = false):
   Record<string, Descriptor> | undefined {
   const sections = schema?.Instrument.types[object];
-  return sections
-    && Object.assign({}, ...sections.map((name) => schema!.Instrument.sections[name]));
+  if (!sections) return undefined;
+  const shared = own ? sharedSections(schema!.Instrument.types) : [];
+  return Object.assign({}, ...sections.filter((name) => !shared.includes(name))
+    .map((name) => schema!.Instrument.sections[name]));
 }
 
 /** The declared description for a field of this type, for the cell's tooltip - so a reader can
@@ -378,6 +381,20 @@ export function quoted(row: BlotterRow, market: Market | null, schema: Schema | 
     barrier: onAxis(deal, pick(deal, BARRIER_FIELDS.filter((key) => deal[key] !== 0)), pair),
     terms: termsOf(deal, pair, rates.slice(0, -1)),
   };
+}
+
+/** A level stated in `currency` per 1 `underlying`, on its pair as the market quotes it, using
+ * `surface` where named else the market's vol surfaces. */
+export function levelOnAxis(underlying: string, currency: string, level: number,
+                            market: Market | null, surface?: unknown):
+  { pair: string; level: number; turned: boolean } | undefined {
+  const read = quoted(dealRow({
+    Currency: currency, Underlying_Currency: underlying, Buy_Currency: underlying,
+    Sell_Currency: currency, Strike_Price: level, ...(surface ? { FX_Volatility: surface } : {}),
+  }), market);
+  if (!read.on || typeof read.strike?.value !== 'number') return undefined;
+  return { pair: String(read.on.value), level: read.strike.value,
+           turned: read.strike.value !== level };
 }
 
 // ---- the rows ---------------------------------------------------------------------------------

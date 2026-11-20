@@ -4,6 +4,7 @@ import { DataTable } from '../components/DataTable';
 import { DescriptorPanel, EditableScalar } from '../components/FieldView';
 import { Navigator } from '../components/Navigator';
 import { Whose } from '../components/Whose';
+import { factorFamily } from '../desk';
 import { blockHint, heldBack, marketOf, useApp, written } from '../state';
 import { isObject } from '../tokens';
 import type { Descriptor, Schema, Section } from '../types';
@@ -46,7 +47,7 @@ function MarketPriceBlock({ schema, name, block, live }: {
   schema: Schema; name: string; block: unknown; live: boolean;
 }) {
   const { dispatch } = useApp();
-  const fields = schema.MarketPrices.types[name.split('.')[0]];
+  const fields = schema.MarketPrices.types[factorFamily(name)];
   const instrument = isObject(block) ? block['instrument'] : undefined;
   if (!fields || !isObject(instrument)) {
     return <DescriptorPanel title={name} values={isObject(block) ? block : { value: block }} />;

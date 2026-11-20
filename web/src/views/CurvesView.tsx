@@ -9,7 +9,7 @@ import {
   QUIET_MS, commit, curveFields, curveRequest, due, nearPair, panelValues, prefill, solvedFactor,
   type CurveEdit, type CurveForm, type Editing,
 } from '../curves';
-import { SURVIVAL, creditCounterparties, entityText, valuationDay } from '../desk';
+import { SURVIVAL, creditCounterparties, entityText, factorFamily, valuationDay } from '../desk';
 import { blockHint, heldBack, marketOf, useApp, useRead, written } from '../state';
 import { curveOf, isObject, token } from '../tokens';
 import type {
@@ -176,7 +176,7 @@ function CurveCard({ schema, title, block, seeded, fields, panel, declared, fact
         <>
           <div className="pager"><Whose path={['Price Factors', solved[0]]} /></div>
           <DescriptorPanel title={`${solved[0]} — ${knots} knots`} values={solved[1]}
-                           fields={schema.Factor.types[solved[0].split('.')[0]]} />
+                           fields={schema.Factor.types[factorFamily(solved[0])]} />
         </>
       )}
     </>
@@ -231,7 +231,7 @@ export function CurvesView() {
                    convention: Number(state.schema.Factor.types[SURVIVAL]?.Recovery_Rate?.value) };
   const counterparties = creditCounterparties(entities, doc, card.factors).map((id) => ({
     id, factor: card.factors[`${SURVIVAL}.${id}`],
-    title: entities ? entityText(entities, id) : id,
+    title: entityText(entities, id),
   }));
 
   // filed by currency, the one family being every curve's; every card stays mounted, since a

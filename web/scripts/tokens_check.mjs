@@ -80,4 +80,19 @@ check("a declared field's number is money where the declaration sizes the instru
        tokens.kindOf({ widget: 'Float', description: '', value: 0 })],
       ['money', 'percent', 'plain']);
 
+const LONG = 'Strike price on the ENGINE axis: the reporting currency per unit of '
+  + 'Underlying_Currency, so a level of 17.50 on a USD book is authored as 1/17.50';
+check('a field label is its description when short, else its key in words with the prose on hover',
+      'a paragraph printed in the label column, or its hover dropped',
+      [tokens.fieldLabel('Buy_Amount', { description: 'Buy Amount' }),
+       tokens.fieldLabel('Strike_Price', { description: LONG }),
+       tokens.fieldLabel('Note', undefined)],
+      [{ text: 'Buy Amount' }, { text: 'Strike Price', title: LONG }, { text: 'Note' }]);
+
+check('a netting set balance currency is Balance_Currency, else Agreement_Currency, else blank',
+      'Agreement_Currency read ahead of Balance_Currency, or a blank read as undefined',
+      [tokens.setCurrency({ Balance_Currency: 'EUR', Agreement_Currency: 'USD' }),
+       tokens.setCurrency({ Agreement_Currency: 'USD' }), tokens.setCurrency({})],
+      ['EUR', 'USD', '']);
+
 done();

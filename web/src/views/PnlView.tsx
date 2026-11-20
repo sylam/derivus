@@ -6,6 +6,7 @@ import {
 } from '../pnl';
 import { useApp, useRead } from '../state';
 import { formatNumber, type Kind } from '../tokens';
+import { entityText } from '../desk';
 import { NO_PAPER } from '../positions';
 
 /** A figure as a cell: a number signed in colour, and a dash for what nobody can know. */
@@ -107,7 +108,8 @@ export function PnlView() {
                   onChange={(event) => setScope({ ...scope, client: event.target.value })}>
             <option value="">every client</option>
             {paper.entities.map((row) => (
-              <option key={row.entity} value={row.entity}>{row.name}</option>))}
+              <option key={row.entity} value={row.entity}>{entityText(paper.entities, row.entity)}
+              </option>))}
           </select>
           <button className={`ghost${explain ? ' on' : ''}`} onClick={() => setExplain(!explain)}>
             explain

@@ -78,7 +78,7 @@ export const positionId = (position: Position): string =>
 /** Whether the record holds nothing of a trade - a position netted to nothing, which stands only to
  * say it closed, or a row of the file the record holds at a net of none. Closed counts as live
  * nowhere. */
-export const closed = (units: number | undefined): boolean => units === 0;
+export const closed = (units: number | null | undefined): boolean => units === 0;
 
 /** What the record holds of a node at the net of its positions, and none where it holds none. */
 export const netOf = (held: Position[]): number | undefined =>
@@ -113,8 +113,8 @@ export function byPath(positions: Position[]): Map<string, Position[]> {
 }
 
 /** A counterparty as a reader knows it: the name legal declared, else the id the record holds. */
-export function clientName(entities: Entity[], id: string | null): string {
-  return entities.find((entity) => entity.entity === id)?.name ?? id ?? '';
+export function clientName(entities: Entity[] | null, id: string | null): string {
+  return entities?.find((entity) => entity.entity === id)?.name ?? id ?? '';
 }
 
 /** What the tickets of `held` read, and the quantity awaiting a second seat where that is not the

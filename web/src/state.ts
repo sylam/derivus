@@ -362,6 +362,11 @@ export function paperOwed(tab: string, held: Paper | null, answered: Record<stri
            holdings: shown && (!held || holdings) };
 }
 
+/** The record's pin on the live book, or null where the desk keeps no record or shows a local
+ * file. */
+export const spineOf = (state: AppState): SpineBlock | null =>
+  (state.source?.kind === 'book' ? state.record.spine : null);
+
 /** The clock every answer read off the live book is held against (`desk.bookClock`): the book's
  * etag and where the record stands; null for a document opened from a file, which never moves. */
 export function clockOf(state: AppState): string | null {
@@ -431,7 +436,7 @@ export function heldBack(state: AppState, act: Act,
                          node: string | null = String(state.doc?.Calc.Deals.Reference ?? '')):
   string | null {
   const { grants } = state;
-  if (state.source?.kind !== 'book' || !state.record.spine || grants?.asked !== state.seat) {
+  if (!spineOf(state) || grants?.asked !== state.seat) {
     return null;
   }
   if (grants.refused !== null) return grants.refused;

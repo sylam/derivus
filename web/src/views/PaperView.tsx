@@ -4,7 +4,7 @@ import { entityText } from '../desk';
 import { openClient } from '../client';
 import { EmptyState } from '../components/EmptyState';
 import { type Agreement, type Entity, NO_PAPER } from '../positions';
-import { heldBack, opened, standing, useApp } from '../state';
+import { heldBack, opened, spineOf, standing, useApp } from '../state';
 import { AgreementForm, AgreementTerms, type Said } from '../components/Desk';
 
 /** The paper the book trades under: every legal entity and agreement the record declares, each
@@ -17,7 +17,7 @@ import { AgreementForm, AgreementTerms, type Said } from '../components/Desk';
 export function PaperView() {
   const { state, dispatch } = useApp();
   const { schema } = state;
-  const recording = state.source?.kind === 'book' && state.record.spine !== null;
+  const recording = spineOf(state) !== null;
   const [amending, setAmending] = useState<{ from: Agreement; at: number } | null>(null);
   const hold = heldBack(state, 'document', null);
 

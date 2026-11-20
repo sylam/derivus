@@ -104,7 +104,7 @@ export function XvaView() {
     const curve = curveOf(token(factor, 'Curve'));
     const [first] = curve ? spreads(curve.data, Number(token(factor, 'Recovery_Rate'))) : [];
     return {
-      id, name: paper ? entityText(paper.entities, id) : id, lines, wrong: wrongWith(lines),
+      id, name: entityText(paper?.entities ?? null, id), lines, wrong: wrongWith(lines),
       spread: first && [first[0], first[1]], value: summed(own.map((line) => line.value)),
       after: summed(own.map((line) => exposureAfter(line, currency))),
     };
