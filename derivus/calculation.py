@@ -5840,12 +5840,14 @@ class SACCR(NettingSetCalculation):
         return str(1 + (end >= self.buckets[0]) + (end > self.buckets[1]))
 
     @staticmethod
-    def black(side, moneyness, spread, call):
-        """52.40's delta, long where `side` is one, at log moneyness `moneyness` over the vol to
-        expiry `spread`, sigma sqrt(T); at T nothing the formula's limit, one in the money, none out."""
+    def black(level, forward, side, call, spread, shift=0.0, flip=1.0):
+        """52.40's delta of an option long where `side` is one, at strike `level` shifted by `shift`
+        on the shifted `forward`, over the vol to expiry `spread`, sigma sqrt(T), on the pair the other
+        way up where `flip` is -1; at T nothing the formula's limit, one in the money, none out."""
+        moneyness = flip * math.log(forward / (level + shift))
         d1 = (moneyness + 0.5 * spread * spread) / spread if spread else math.copysign(
             math.inf, moneyness) if moneyness else 0.0
-        return side * (scipy.special.ndtr(d1) if call else -scipy.special.ndtr(-d1))
+        return flip * side * (scipy.special.ndtr(d1) if call == (flip > 0) else -scipy.special.ndtr(-d1))
 
     def caplets(self, deal, terms, mpor):
         """A row per optionlet of `deal`'s schedule whose rate is still to be known (52.43), its
@@ -5876,9 +5878,9 @@ class SACCR(NettingSetCalculation):
                     accruals[fixing].sum())
             start, stop = (self.years(flow[column]) for column in (
                 utils.CASHFLOW_INDEX_Start_Day, utils.CASHFLOW_INDEX_End_Day))
-            delta = self.black(math.copysign(1.0, nominal), math.log((100.0 * rate + shift) / (
-                100.0 * flow[utils.CASHFLOW_INDEX_Strike] + shift)), vol * math.sqrt(self.years(
-                    resets[end - 1, RESET_INDEX_Reset_Day])), compiled['Model'] is pricing.pricer_cap)
+            delta = self.black(100.0 * flow[utils.CASHFLOW_INDEX_Strike], 100.0 * rate + shift, math.copysign(
+                1.0, nominal), compiled['Model'] is pricing.pricer_cap, vol * math.sqrt(self.years(
+                    resets[end - 1, RESET_INDEX_Reset_Day])), shift)
             rows.append(dict(self.entry(asset, hedging, '', self.bucket(stop), abs(nominal) * self.fx(
                 currency) * self.duration(start, stop), delta, last, mpor), Component='{} {:%Y-%m-%d}'.format(
                     reference, base + pd.Timedelta(days=int(flow[utils.CASHFLOW_INDEX_End_Day])))))
@@ -5895,13 +5897,14 @@ class SACCR(NettingSetCalculation):
             raise ValueError("SACCR: trade {} is a {} whose accrual is on the reciprocal of its pair, where CRE52's "
                              'reading at its strike as stated does not hold'.format(reference, fields['Object']))
         named = 'strike' if len({part.strike for part in parts}) > 1 else 'amount'
+        days = [day for day, *_ in fields[parts[0].per] if day >= self.valuation['Base_Date']]
+        read = [self.row(deal, part, mpor, days) for part in parts] if days else []
         return [dict(row, Component='{} {:%Y-%m-%d} {}'.format(reference, day, getattr(part, named)))
-                for day, *_ in fields[parts[0].per] if day >= self.valuation['Base_Date']
-                for part in parts for row in self.row(deal, part, mpor, day)]
+                for position, day in enumerate(days) for part, rows in zip(parts, read) for row in rows[position]]
 
-    def row(self, deal, terms, mpor, expiry=None):
-        """`deal`'s rows off its declaration `terms` (`entry`), an option's T its `expiry` where
-        stated, a strip's fixing, else its declared one; a digital's its collar (52.42(3))."""
+    def row(self, deal, terms, mpor, expiries=None):
+        """`deal`'s rows off its declaration `terms` (`entry`), an option's at its declared expiry,
+        or a list of them per day of `expiries`, a strip's fixings; a digital's its collar (52.42(3))."""
         fields, reference = deal.field, deal.field.get('Reference')
         asset, paid = self.asset(deal), terms.pays(fields)
         if isinstance(fields[terms.amount], dict):
@@ -5970,36 +5973,36 @@ class SACCR(NettingSetCalculation):
         maturity = last if terms.runs is None or fields[terms.runs[0]] == terms.runs[1] else start
         if not terms.strike:
             return [self.entry(asset, hedging, subclass, bucket, notional, side, maturity, mpor)]
-        strike, expiry = fields[terms.strike], expiry or fields[terms.expiry]
-        spread = supervisory['option_volatility'] * math.sqrt(self.years(expiry))
+        strike, call = fields[terms.strike], terms.call is True or fields[terms.call[0]] == terms.call[1]
         shift = self.shifts.get(hedging, 0.0) if asset == 'IR' else 0.0
-        forward = (self.mean(asset, deal, terms) if terms.average else self.underlying(
-            asset, deal, terms, expiry)) + shift
-        call = terms.call is True or fields[terms.call[0]] == terms.call[1]
         surface = asset == 'FX' and fields[next(
             key for key, kinds in type(deal).factor_fields.items() if 'FXVol' in kinds)]
         # priced in what its vol surface quotes first: on the pair as quoted (52.59 FAQ1)
         flip = -1.0 if surface and utils.check_rate_name(surface)[0] == utils.check_rate_name(
             fields[terms.underlying])[0] else 1.0
 
-        def black(level):
-            return self.black(flip * side, flip * math.log(forward / (level + shift)), spread, call == (flip > 0))
-        if not paid:
-            return [self.entry(asset, hedging, subclass, bucket, notional, black(strike), maturity, mpor)]
-        rows = [] if paid == 'cash' else [dict(self.entry(
-            asset, hedging, subclass, bucket, notional, black(strike) * (1.0 if call else -1.0), maturity, mpor),
-            Component='{} vanilla'.format(reference))]
-        if expiry < self.valuation['Base_Date']:
-            # its expiry has fixed what it pays: cash its value V's alone, units its vanilla's row
-            return rows
-        # Q per unit of its amount: one of cash, a unit's strike
-        cash = strike if paid == 'units' else 1.0
-        digital = self.entry(asset, hedging, subclass, bucket, notional * cash / (0.1 * strike), black(
-            (0.95 if call else 1.05) * strike) - black((1.05 if call else 0.95) * strike), maturity, mpor)
-        limit = size * cash * self.fx(deal.payoff_ccy) / supervisory['factor']
-        digital.update({key: math.copysign(min(abs(digital[key]), limit), digital[key])
-                        for key in ('EffectiveNotional', 'Unmargined')})
-        return rows + [digital if paid == 'cash' else dict(digital, Component='{} digital'.format(reference))]
+        def at(expiry):
+            black = partial(self.black, forward=(self.mean(asset, deal, terms) if terms.average else self.underlying(
+                asset, deal, terms, expiry)) + shift, side=side, call=call, spread=supervisory[
+                'option_volatility'] * math.sqrt(self.years(expiry)), shift=shift, flip=flip)
+            if not paid:
+                return [self.entry(asset, hedging, subclass, bucket, notional, black(strike), maturity, mpor)]
+            rows = [] if paid == 'cash' else [dict(self.entry(
+                asset, hedging, subclass, bucket, notional, black(strike) * (1.0 if call else -1.0), maturity, mpor),
+                Component='{} vanilla'.format(reference))]
+            if expiry < self.valuation['Base_Date']:
+                # its expiry has fixed what it pays: cash its value V's alone, units its vanilla's row
+                return rows
+            # Q per unit of its amount: one of cash, a unit's strike
+            cash = strike if paid == 'units' else 1.0
+            digital = self.entry(asset, hedging, subclass, bucket, notional * cash / (0.1 * strike), black(
+                (0.95 if call else 1.05) * strike) - black((1.05 if call else 0.95) * strike), maturity, mpor)
+            limit = size * cash * self.fx(deal.payoff_ccy) / supervisory['factor']
+            digital.update({key: math.copysign(min(abs(digital[key]), limit), digital[key])
+                            for key in ('EffectiveNotional', 'Unmargined')})
+            return rows + [digital if paid == 'cash' else dict(digital, Component='{} digital'.format(reference))]
+        found = [at(expiry) for expiry in ([fields[terms.expiry]] if expiries is None else expiries)]
+        return found[0] if expiries is None else found
 
     def add_ons(self, rows, column):
         """`[add-on]` per asset class over a set's trade `rows`, each effective notional its
