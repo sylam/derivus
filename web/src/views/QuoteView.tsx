@@ -13,7 +13,7 @@ import {
 import { heldBack, openTrade, useApp, useQuoteList, useQuotes } from '../state';
 import { formatNumber } from '../tokens';
 import type { PendingQuote, Quote, QuoteGiven, StructureType } from '../types';
-import { TicketCard } from '../components/Desk';
+import { TicketCard } from '../components/TicketCard';
 
 const POLL_MS = 500;
 

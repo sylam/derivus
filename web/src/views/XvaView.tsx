@@ -13,7 +13,7 @@ import {
 } from '../desk';
 import { clockOf, marketOf, useApp, useRead } from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
-import { Amount, OnStrip } from '../components/Desk';
+import { Amount, Money, OnStrip } from '../components/Desk';
 
 /** What a cell says of a done run whose row keeps no peaks. */
 const UNKEPT = 'this row was filed before rows kept a run\'s peaks: a recalc keeps them';
@@ -148,8 +148,9 @@ export function XvaView() {
               clients.map((client) => client.value)))}</b> {currency} · after collateral{' '}
             <b>{amount(summed(clients.map((client) => client.after)))}</b> {currency}
             {xvaTotals(view).sums.map((sum) => (
-              <span key={sum.currency ?? ''}> · CVA over the {sum.counted} run in{' '}
-                {sum.currency ?? '(currency unknown)'} <b>{formatNumber(sum.cva, 'money')}</b></span>
+              <span key={sum.currency ?? ''}> · CVA over the {sum.counted} run{' '}
+                <b>{formatNumber(sum.cva, 'money')}</b>{' '}
+                {sum.currency ?? '(currency unknown)'}</span>
             ))}
           </span>
         </div>
@@ -299,7 +300,7 @@ function LineCells({ line, reads }: { line: CreditLine; reads: Reads }) {
   const why = !run || run.status === 'never run' ? 'never run' : run.status === 'failed'
     ? 'run failed' : !run.peaks ? 'not kept' : 'no column';
   const amount = (peak: Peak, day: string): ReactNode => (
-    <div key={day}>{formatNumber(peak.value, 'whole')} <span className="unit">{run!.currency}</span>
+    <div key={day}><Money value={peak.value} currency={run!.currency} kind="whole" />
       <div className="hint">{day}</div></div>);
   const peak = (values: ReactNode[]) => (
     <td className="n">{values.length ? values : (
@@ -317,7 +318,7 @@ function LineCells({ line, reads }: { line: CreditLine; reads: Reads }) {
       <td className="n">
         {!line.collateralised ? <span className="hint">no CSA</span>
           : call?.balance !== null && call?.balance !== undefined ? (
-              <>{formatNumber(call.balance, 'whole')} <span className="unit">{call.currency}</span>
+              <><Money value={call.balance} currency={call.currency} kind="whole" />
                 <div className={call.direction ? 'call' : 'hint'}>
                   {!reads.recording ? 'as its terms state'
                     : call.direction === 'call' ? `calls ${formatNumber(call.call!, 'whole')}`

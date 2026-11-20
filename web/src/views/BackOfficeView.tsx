@@ -15,7 +15,7 @@ import {
   holdsFor, paperText, ticketWords, tradeAt, tradeName, waitedText, waitingElsewhere,
 } from '../trade';
 import type { CloseVerdict, Decided, PendingQuote, WorkRow, Worklist } from '../types';
-import { TicketCard } from '../components/Desk';
+import { TicketCard } from '../components/TicketCard';
 
 /** The three lists this seat clears, each by its own verb. */
 type List = 'payments' | 'unconfirmed' | 'calls';

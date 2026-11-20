@@ -15,7 +15,7 @@ import { curveOf, isObject, token } from '../tokens';
 import type {
   ConfigSection, CurveBlock, CurveOutcome, CurveRow, Descriptor, Schema, SeededCurve, Section,
 } from '../types';
-import { CREDIT, CreditCard } from '../components/Desk';
+import { CREDIT, CreditCard } from '../components/CreditCard';
 
 /** The family a curve block is - the one name this screen spells, and the one the service's own
  * answer is keyed by (`InterestRatePrices.<curve>`). Everything else here is a declaration. The

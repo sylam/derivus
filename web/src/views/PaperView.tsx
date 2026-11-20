@@ -5,7 +5,7 @@ import { openClient } from '../client';
 import { EmptyState } from '../components/EmptyState';
 import { type Agreement, type Entity, NO_PAPER } from '../positions';
 import { heldBack, opened, spineOf, standing, useApp } from '../state';
-import { AgreementForm, AgreementTerms, type Said } from '../components/Desk';
+import { AgreementForm, AgreementTerms, type Said } from '../components/AgreementForm';
 
 /** The paper the book trades under: every legal entity and agreement the record declares, each
  * agreement with where it stands on the desk and its terms rendered off the netting set's

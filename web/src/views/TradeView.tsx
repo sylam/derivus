@@ -20,7 +20,8 @@ import {
   unwindFill, unwindWords, wholeRecord, type Price,
 } from '../trade';
 import type { ActivityRow, QuoteGiven } from '../types';
-import { Back, DealEditor, OnStrip, Side, TicketCard, Value } from '../components/Desk';
+import { Back, DealEditor, Money, OnStrip, Side, Value } from '../components/Desk';
+import { TicketCard } from '../components/TicketCard';
 
 /** One trade's rows on the record, newest first, asked for by its path where the desk keeps one
  * and again whenever the record moves - the service's own sentence where the read is refused -
@@ -274,7 +275,7 @@ function Worth({ path, legs, shut }: { path: string; legs: number; shut: boolean
       <div className="stat" title={title}>
         <div className="label">{label}</div>
         <div className={`value${value < 0 ? ' neg' : ''}`}>
-          {formatNumber(value, 'money')} <span className="unit">{currency}</span>
+          <Money value={value} currency={currency} />
         </div>
       </div>
     );

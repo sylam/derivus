@@ -21,7 +21,9 @@ import { markOf, wholeRecord } from '../trade';
 import type {
   ActivityRow, BookRisk, BookXva, DealMark, Market, Schema, SettlementState, XvaSet,
 } from '../types';
-import { AgreementForm, Back, CreditCard, Side, SpreadTable, Value } from '../components/Desk';
+import { AgreementForm } from '../components/AgreementForm';
+import { CreditCard, SpreadTable } from '../components/CreditCard';
+import { Back, Money, Side, Value } from '../components/Desk';
 
 /** What the page reads beside the store: on a desk that keeps one the record's paper, the XVA
  * projection, and the consolidated risk for the marks. */
@@ -424,7 +426,7 @@ function XvaRow({ set, read, booked }: { set: XvaSet; read: string; booked: numb
   const age = ageOf(set.as_of, read);
   const chip = lastRunChip(set);
   const money = (value: number | null) => (value === null ? <span className="hint">—</span>
-    : <>{formatNumber(value, 'money')} <span className="unit">{set.currency ?? ''}</span></>);
+    : <Money value={value} currency={set.currency} />);
   return (
     <>
       <tr className={set.note ? 'muted' : undefined}>
