@@ -146,8 +146,7 @@ features kept ahead of their build, not rows to close.
   forward-over-reverse, for FVA's splits.
 - **Incremental XVA as risk-impact v2**: the quote's risk-impact step reading the increment
   `/book/price` answers under `xva_increment`, with a ratio-solve primitive for participating
-  forwards. A barrier and a TARF cannot be held at nothing - `pricing.pv_barrier_option` and
-  `pricing.pv_MC_Tarf` divide by the amount - so their increment refuses.
+  forwards.
 - **Service layer, what remains**: progress over SSE, a cost estimate from the real grid, per-seat
   budget caps, and screens for the dependency walk and the set-up, which only the MCP binding serves
   today. The Securities screen stays read-only: it names a knot quoted off a drifted or unmapped

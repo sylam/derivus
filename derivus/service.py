@@ -1591,7 +1591,7 @@ def book_price(request: dict):
 
     `xva_increment: true` asks what the candidate does to the CVA, FVA and peak exposure of the
     netting set it goes into, as the difference of that set's credit Monte Carlo with the candidate
-    and with it held at nothing (`xva_pair`, `IncrementJob`), the answer under `stats.Increment`.
+    and with its mirror beside it (`xva_pair`, `IncrementJob`), the answer under `stats.Increment`.
 
     THE CANDIDATE IS VALIDATED BEFORE IT QUEUES, through the seam a booking is refused at: a
     candidate naming market data the book does not carry would load, be DROPPED by discovery and
@@ -1622,7 +1622,7 @@ def book_price(request: dict):
         if models:
             structures.pin_models(document, pending['deal'], models)
         with_overrides(document, overrides)
-        jobs, terms = xva_pair(document, deal_path, parent) if increment else ([document], None)
+        jobs, terms = xva_pair(document, deal_path) if increment else ([document], None)
     except ValueError as error:
         raise HTTPException(422, str(error))
     contexts = [load(job) for job in jobs]
@@ -4290,27 +4290,32 @@ def book_xva(request: dict):
     return {'queued': queued}
 
 
-def xva_pair(document, deal_path, parent):
+def xva_pair(document, deal_path):
     """`([with, without], terms)`: the two credit Monte Carlo jobs an XVA increment is the
     difference of, and the set, counterparty and report currency it is answered for.
 
     Both are the netting set `deal_path` sits in, composed as its recalc composes it
-    (`xva_document`): once with the candidate as written, and once with it HELD AT NOTHING, every
-    amount it states times zero by the rule the record holds a position at a quantity by
-    (`spine.scaled`), so the second carries every date and factor of the first and none of its
-    value. A candidate under no netting set refuses in the recalc's words, and one that states no
-    amount in `spine.scaled`'s.
+    (`xva_document`): once with the candidate as written, and once with its MIRROR beside it, the
+    candidate held short by the rule the record holds a short position by (`spine.scaled` at -1).
+    The pair is worth nothing on every path, so the second run carries every date and factor of
+    the first and none of the trade's value, and no pricer is asked an amount of zero.
     """
-    zero = deepcopy(document)
-    held = deal_at(zero, deal_path)
-    held.update(spine.scaled(held, 0))
+    if deal_path is None:
+        raise ValueError('an XVA increment is asked of a candidate - state the `deal`, or the '
+                         '`quote_id` whose pending trade it prices')
     found = [(path, node) for path, node in netting_sets(document)
              if deal_path.startswith(path + '/')]
     if not found:
-        structures.check_netting_set(document, str(parent))
+        raise ValueError(
+            'a candidate is priced into the netting set it goes under, and this one goes under '
+            'none - name its client\'s set as the `parent_reference`: the book carries {}'.format(
+                ', '.join(structures.netting_set_references(document)) or 'none'))
     path, node = found[-1]
+    without = deepcopy(document)
+    deal_at(without, deal_path.rsplit('/', 1)[0])['Children'].append(
+        spine.scaled(deal_at(without, deal_path), -1))
     counterparty = set_terms(node['Instrument']['.Deal'])[0]
-    return [xva_document(job, deal_at(job, path), counterparty) for job in (document, zero)], {
+    return [xva_document(job, deal_at(job, path), counterparty) for job in (document, without)], {
         'netting_set': node['Instrument']['.Deal'].get('Reference'), 'counterparty': counterparty,
         'currency': document['Calc']['Calculation'].get('Currency')}
 
@@ -4339,7 +4344,8 @@ class IncrementJob:
                  for calc, _ in runs]
         if drawn[0] != drawn[1]:
             raise ValueError(
-                'the candidate held at nothing simulates {} dates on {} and as written {} on {}: '
+                'the run with the candidate beside its mirror simulates {} dates on {} and the run '
+                'with the candidate {} on {}: '
                 'the two runs draw different paths, so their difference is Monte Carlo noise and '
                 'not the trade'.format(len(drawn[1][0]), drawn[1][2], len(drawn[0][0]),
                                        drawn[0][2]))

@@ -707,9 +707,10 @@ async def xva_increment(deal: dict | None = None, parent_reference: str | None =
     Name the trade as `price_candidate` takes one - `deal`, with `parent_reference` the client's
     netting set or a node inside it - or pass the `quote_id` `solve_structure` answered, which
     prices what accepting that quote would book. The set is run twice on the SAME simulated paths,
-    with the trade and with it held at nothing, so the difference is the trade's and not Monte
-    Carlo noise; asked of the projection's last row instead, the noise can be as large as the
-    trade. Each of `cva`, `fva`, `EE` and every `PFE_` column comes back `with`, `without` and
+    with the trade and with the trade beside its mirror, a pair worth nothing on every path, so
+    the difference is the trade's and not the set's Monte Carlo noise; asked of the projection's
+    last row instead, that noise can be as large as the trade. The paths remove the set's noise;
+    the trade's own Monte Carlo error falls only with more paths. Each of `cva`, `fva`, `EE` and every `PFE_` column comes back `with`, `without` and
     `increment`, a peak with the day it falls, in the `currency` named; `paths` says what both
     runs drew. Nothing is booked or recorded. A trade under no netting set, or one the booking
     would refuse, is refused by name; a set whose counterparty has no credit curve fails in the
