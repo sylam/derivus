@@ -1,7 +1,7 @@
 // Drives the rules the Paper tab reads an agreement by, where the eye cannot: the sections a type's
 // own terms are, when a set's collateral is off and what then reads, what paper never states, the
-// currency an amount's description names, the terms a restatement moves, and where an agreement
-// stands in the book.
+// currency an amount's description names, the terms a restatement moves, where an agreement
+// stands in the book, and which parts of the paper a screen reads when the book moves.
 // Every check names the MUTATION it kills - the change that would still typecheck, still render,
 // and still be wrong.
 //
@@ -10,7 +10,7 @@
 import { check, done, load, node, support } from './check.mjs';
 
 const tokens = await load('tokens');
-const { standing } = await load('state');
+const { paperOwed, standing } = await load('state');
 
 // ---- the declaration, trimmed to what the rules turn on ------------------------------------------
 
@@ -128,5 +128,25 @@ check('an agreement stands where the book holds a set of its type under its id, 
        standing(null, null, { agreement: 'ISDA-1', terms: ISDA })],
       [{ path: '1', moved: [] }, { path: '2/0', moved: ['Netted'] }, { path: null, moved: [] },
        { path: null, moved: [] }]);
+
+// ---- which parts of the paper a screen reads ----------------------------------------------------
+
+const AT = { paper: 'e1', holdings: 'e1' };
+const HELD = { entities: [], agreements: [] };
+const owes = (tab, held, answered, clock) => {
+  const parts = paperOwed(tab, held, answered, clock);
+  return [parts.paper, parts.holdings];
+};
+check('a booking re-reads the paper on every screen naming clients, and the holdings only on '
+      + 'one showing them; a screen with none held reads it all, one showing no paper nothing',
+      'the holdings read on every screen naming a client, which sends the Paper tab four reads per '
+      + 'booking for two it shows; the whole read dropped, which shows a desk holding nothing on '
+      + 'the first screen that groups the book after the Paper tab; or a part read again under the '
+      + 'clock it was read at',
+      [owes('paper', HELD, AT, 'e2'), owes('portfolio', HELD, AT, 'e2'),
+       owes('portfolio', HELD, { paper: 'e2', holdings: 'e1' }, 'e2'),
+       owes('paper', null, {}, 'e2'), owes('portfolio', HELD, AT, 'e1'),
+       owes('settings', null, {}, 'e2')],
+      [[true, false], [true, true], [false, true], [true, true], [false, false], [false, false]]);
 
 done();

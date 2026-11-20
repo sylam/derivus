@@ -2,8 +2,9 @@
 // strip under a doorbell stream whose beats are dropped, duplicated and reordered, the verdict the
 // banner reads off the reconcile lists and the rows it opens, what a fold at the head is asked for,
 // the two transitions the store holds it by, the shape the markets panel renders, when the
-// worklist is asked for - at which head, for which seat - and what its banner says, and which
-// served book the poll asks at all. Every check names the MUTATION
+// worklist is asked for - at which head, for which seat - and what its banner says, which
+// served book the beat asks at all, when it fetches the book, that it runs one at a time, and the
+// one transition a beat is to the store. Every check names the MUTATION
 // it kills - the change to the module that would still typecheck, still render, and still be
 // wrong.
 //
@@ -17,6 +18,7 @@
 import { check, done, load } from './check.mjs';
 
 const spine = await load('spine');
+const state = await load('state');
 
 // ---- the service's shapes ------------------------------------------------------------------------
 
@@ -373,5 +375,57 @@ check("the desk's own book is asked every beat whether it moved, a document open
        spine.polled({ kind: 'book', etag: 'e', path: 'inbox/job.json', opened: 'job.json' }),
        spine.polled({ kind: 'local', name: 'job.json' }), spine.polled(null)],
       [true, false, false, false]);
+
+// --- bookOwed
+const SERVED = { kind: 'book', etag: ETAG, path: 'book.json' };
+check('a beat fetches the book only where the stamp the status read answers moved',
+      'the stamp test dropped, which sends the whole document every two seconds whatever moved; '
+      + 'or inverted, after which a deal another client books never reaches this screen; or the '
+      + "opened copy asked, which the status of the desk's own book says nothing about",
+      [spine.bookOwed(SERVED, ETAG), spine.bookOwed(SERVED, MOVED),
+       spine.bookOwed({ ...SERVED, opened: 'job.json' }, MOVED), spine.bookOwed(null, MOVED)],
+      [false, true, false, false]);
+
+// --- single
+const answers = [];
+const once = spine.single(() => new Promise((resolve) => { answers.push(resolve); }));
+const pair = [once(), once()];
+answers.forEach((resolve) => resolve('read'));
+const both = await Promise.all(pair);
+const next = once();
+answers.at(-1)('again');
+check('a beat asked while one is in flight answers that one, and the next is read afresh',
+      "the in-flight guard dropped, which stacks a beat's reads every two seconds behind a "
+      + 'stalled service; or never released, after which the desk stops beating at the first read',
+      [both, await next, answers.length], [['read', 'read'], 'again', 2]);
+
+// --- the store's BEAT: the book and the record in one step
+const DOC = (n) => ({ Calc: { Deals: { Deals: { Children: [] } }, n } });
+const LIVE = (etag) => ({ document: DOC(etag), etag, path: 'book.json' });
+const desk = { ...state.INITIAL, record: { ...state.INITIAL.record, spine: PINNED, rows: HELD } };
+const loaded = state.reducer(desk, state.bookLoaded(LIVE(ETAG)));
+const booked = state.reducer(loaded, { type: 'BEAT', etag: MOVED, live: LIVE(MOVED),
+                                       spine: BEHIND, page: PAGE });
+check('a booking moves the book and where the record stands in ONE transition',
+      'the document and the record dispatched as two transitions, which moves the clock twice and '
+      + 'reads every slice of the store twice per booking; or the page dropped from the beat',
+      [state.clockOf(loaded), state.clockOf(booked), booked.doc.Calc.n, lsns(booked.record.rows)],
+      ['e1@20/0/0', 'e2@20/2/2', MOVED, [18, 19, 20, 21, 22]]);
+check('a beat that moved nothing answers the store it was handed, the book it holds included',
+      'a fresh store every beat, which repaints every screen every two seconds; or the book held '
+      + "loaded again, which a write's read-back and a beat in flight both carry, and which reads "
+      + 'the market, the paths and the description twice for one write',
+      [state.reducer(booked, { type: 'BEAT', etag: MOVED, live: null, spine: { ...BEHIND },
+                               page: null }) === booked,
+       state.reducer(booked, { type: 'BEAT', etag: MOVED, live: LIVE(MOVED), spine: BEHIND,
+                               page: null }) === booked], [true, true]);
+check('a pin read against a book older than the one held waits a beat, and its rows land',
+      "the stamp test dropped, which lets a beat in flight across this screen's own write set "
+      + 'the pin back and move the clock twice more',
+      [state.clockOf(state.reducer(booked, { type: 'BEAT', etag: ETAG, live: null,
+                                             spine: PINNED, page: null })),
+       lsns(state.reducer(loaded, { type: 'BEAT', etag: MOVED, live: null, spine: BEHIND,
+                                    page: PAGE }).record.rows)],
+      ['e2@20/2/2', [18, 19, 20, 21, 22]]);
 
 done();

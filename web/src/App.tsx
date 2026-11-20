@@ -8,8 +8,8 @@ import { DocumentLoader } from './components/DocumentLoader';
 import { JobHeader } from './components/JobHeader';
 import { ActivityStrip, ReconcileBanner, SeatControl, WorklistBanner } from './components/Record';
 import { WORKSPACES } from './registry';
-import { polled, ringsAhead, worklistAt } from './spine';
-import { AppContext, INITIAL, bookLoaded, clockOf, reducer } from './state';
+import { bookOwed, polled, ringsAhead, single, worklistAt } from './spine';
+import { AppContext, INITIAL, PAPER_TABS, bookLoaded, clockOf, paperOwed, reducer } from './state';
 
 const BOOK_POLL_MS = 2000;
 
@@ -45,54 +45,52 @@ export function App() {
     return () => removeEventListener('visibilitychange', onVisibility);
   }, []);
 
-  // Where the record's strip has read up to. A ref rather than state: the beat below is
-  // recreated whenever the book moves, and a cursor that reset with it would re-read the history.
+  // Where the record's strip has read up to, and the source the beat compares the stamp with:
+  // refs, so the beat below is made once and never re-reads the history.
   const since = useRef(0);
+  const source = useRef(state.source);
+  source.current = state.source;
 
-  // The record's own read - the pin and how far the record has moved past it, then the events
-  // after the cursor. ONE FUNCTION on two clocks, the poll's beat and the doorbell's, so the two
-  // cannot read differently; held across renders, so the stream below is opened once. `spine` is
-  // read fresh every time, so a service restarted with a home appears without a reload and a box
-  // that keeps none is never read twice.
-  const readRecord = useRef(async () => {
-    const status = await getBookStatus();
-    const page = status.spine === null ? null : await getBookActivity(since.current || '');
-    if (page) since.current = page.lsn;
-    dispatch({ type: 'RECORD_READ', spine: status.spine, page });
-  }).current;
+  // THE BEAT, over the desk's own book and never a document opened from a file (`bookOwed`): the
+  // status read says where the book and the record stand, the book is fetched only where its
+  // stamp moved, and the strip's next page rides along - all of it ONE transition, so a deal
+  // booked by any client moves the clock once. One beat at a time (`single`), so a stalled
+  // service stacks nothing; `spine` is read fresh each time, so a service restarted with a home
+  // appears without a reload.
+  const beat = useRef(single(async () => {
+    try {
+      const status = await getBookStatus();
+      const [live, page] = await Promise.all([
+        bookOwed(source.current, status.etag) ? getBook() : null,
+        status.spine === null ? null : getBookActivity(since.current || '')]);
+      if (page) since.current = page.lsn;
+      dispatch({ type: 'BEAT', etag: status.etag, live, spine: status.spine, page });
+    } catch { /* the beat outlives a service restart */ }
+  })).current;
 
-  // the etag poll, over the desk's own book and never a document opened from a file (`polled`):
-  // a deal booked by ANY client (MCP, Excel, an editor on the file) appears within a tick, the
-  // user's place preserved, and a moved path is another document served and loads as one
+  // it beats while the window is shown, and once on being shown again to catch up
+  const beating = polled(state.source) && visible;
   useEffect(() => {
-    if (!polled(state.source)) return;
-    const { etag, path } = state.source;
-    const timer = setInterval(async () => {
-      try {
-        const live = await getBook();
-        if (live.etag !== etag || live.path !== path) {
-          dispatch(bookLoaded(live, live.path === path));
-        }
-        await readRecord();
-      } catch { /* the poll outlives a service restart */ }
-    }, BOOK_POLL_MS);
+    if (!beating) return;
+    beat();
+    const timer = setInterval(beat, BOOK_POLL_MS);
     return () => clearInterval(timer);
-  }, [state.source, readRecord]);
+  }, [beating, beat]);
 
-  // THE DOORBELL, where the service rings one: a beat per head move, and the same read. A beat is
-  // a NOTIFICATION AND NEVER A DELIVERY, so a stream a proxy closes, a beat that arrives twice and
-  // one that arrives out of order all cost latency and never an event - the poll above reaches
-  // every one of them on its own beat. Opened only on a desk that records: a box keeping no home
-  // 404s this, and the browser would reconnect to that forever.
+  // THE DOORBELL, where the service rings one: a beat per head move, and the same read. A ring is
+  // a NOTIFICATION AND NEVER A DELIVERY, so a stream a proxy closes, a ring that arrives twice and
+  // one that arrives out of order all cost latency and never an event - the beat above reaches
+  // every one of them on its own. Opened only on a shown desk that records: a box keeping no
+  // home 404s this, and the browser would reconnect to that forever.
   const recording = state.record.spine !== null;
   useEffect(() => {
-    if (!recording) return;
+    if (!recording || !visible) return;
     const bell = new EventSource(DOORBELL);
-    bell.onmessage = (beat) => {
-      if (ringsAhead(JSON.parse(beat.data), since.current)) readRecord();
+    bell.onmessage = (ring) => {
+      if (ringsAhead(JSON.parse(ring.data), since.current)) beat();
     };
     return () => bell.close();
-  }, [recording, readRecord]);
+  }, [recording, visible, beat]);
 
   // The desk's two data views ride the ONE clock (`bookClock`): the book's etag the poll above
   // moves, and where the record stands - a booking, an amendment or a tick moves the first, an
@@ -158,26 +156,31 @@ export function App() {
     return () => { live = false; };
   }, [state.source]);
 
-  // The positions and the paper they sit under, for every screen that groups the book by them,
-  // names its clients or signs its tickets: read while one is looked at on a desk that records,
-  // once per clock however often the tabs that show it are taken.
-  const paperWanted = ['portfolio', 'blotter', 'quote', 'trade', 'risk', 'xva', 'curves',
-    'backoffice', 'client', 'paper', 'pnl'].includes(state.tab) && visible && recording;
+  // The record's paper and the holdings under it, for every screen that names its clients,
+  // groups the book by them or signs its tickets: each part a screen shows read while it is looked
+  // at on a desk that records, once per clock however often the tabs that show it are taken.
+  const paperWanted = PAPER_TABS.includes(state.tab) && visible && recording;
   useEffect(() => {
-    if (clock === null || !paperWanted || !owed('paper', clock, state.paper.data)) return;
+    if (clock === null || !paperWanted) return;
+    const owes = paperOwed(state.tab, state.paper.data, answered.current, clock);
+    if (!owes.paper && !owes.holdings) return;
     let live = true;
     dispatch({ type: 'PAPER_FETCHING' });
-    Promise.all([getBookPositions(), getBookEntities(), getBookAgreements(), getBookPortfolios()])
-      .then(([held, legal, signed, tree]) => {
+    Promise.all([owes.paper && Promise.all([getBookEntities(), getBookAgreements()]),
+                 owes.holdings && Promise.all([getBookPositions(), getBookPortfolios()])])
+      .then(([signed, held]) => {
         if (!live) return;
         dispatch({ type: 'PAPER_LOADED', paper: {
-          positions: held.positions, entities: legal.entities, agreements: signed.agreements,
-          unstated: signed.settlement_state, nodes: tree.portfolios.map((node) => node.path) } });
-        answered.current.paper = clock;
+          ...(signed && { entities: signed[0].entities, agreements: signed[1].agreements,
+                          unstated: signed[1].settlement_state }),
+          ...(held && { positions: held[0].positions,
+                        nodes: held[1].portfolios.map((node) => node.path) }) } });
+        if (signed) answered.current.paper = clock;
+        if (held) answered.current.holdings = clock;
       })
       .catch((error) => { if (live) dispatch({ type: 'PAPER_FAILED', ...failure(error) }); });
     return () => { live = false; };
-  }, [clock, paperWanted]);
+  }, [clock, paperWanted, state.tab]);
 
   // What the seat may do, asked again where the seat or the record's head moved. A refusal - no
   // seat named, under grants - stands in its place; any other failure leaves acts to the service.

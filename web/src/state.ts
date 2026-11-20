@@ -3,9 +3,11 @@
 // etag moved - a booking made by any other client appears within a tick.
 
 import { createContext, useContext, useEffect, useState, type Dispatch } from 'react';
-import { SEAT, failure, getBook, getQuote, getQuotes, stored, type BookDealOutcome } from './api';
+import {
+  SEAT, failure, getBook, getBookStatus, getQuote, getQuotes, stored, type BookDealOutcome,
+} from './api';
 import { bookClock } from './desk';
-import type { Grouping, Paper } from './positions';
+import { NO_PAPER, type Grouping, type Paper } from './positions';
 import { pinnedAt, readRecord, reconciledRecord, type RecordHeld } from './spine';
 import { isObject } from './tokens';
 import { tradeAt } from './trade';
@@ -147,12 +149,15 @@ export type Action =
   | { type: 'PATHS_LOADED'; paths: PathsAnswer }
   | { type: 'PATHS_FAILED'; error: string; status: number | null }
   | { type: 'PAPER_FETCHING' }
-  | { type: 'PAPER_LOADED'; paper: Paper }
+  // the parts of the paper read (`paperOwed`), over the rest held
+  | { type: 'PAPER_LOADED'; paper: Partial<Paper> }
   | { type: 'PAPER_FAILED'; error: string; status: number | null }
   | { type: 'GROUP'; grouping: Grouping }
-  // the record, read on the book poll's own beat: where the file stands, and the strip's next
-  // page; then the reconcile answer, under the head and file it was read at (`reconcileAt`)
-  | { type: 'RECORD_READ'; spine: SpineBlock | null; page: ActivityPage | null }
+  // one beat, the book and the record in ONE step - the document where its stamp moved, where
+  // the file stands at `etag` and the strip's next page - so a booking moves the clock once; then
+  // the reconcile answer, under the head and file it was read at (`reconcileAt`)
+  | { type: 'BEAT'; etag: string; live: BookResponse | null; spine: SpineBlock | null;
+      page: ActivityPage | null }
   | { type: 'RECONCILED'; reconcile: Reconcile; at: string | null }
   // the one worklist every screen counts from, read at a head and seat (`worklistAt`)
   | { type: 'WORKLISTED'; at: string | null; worklist: Worklist | null; error: string | null }
@@ -265,7 +270,8 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'PAPER_FETCHING':
       return { ...state, paper: { ...state.paper, loading: true } };
     case 'PAPER_LOADED':
-      return { ...state, paper: { data: action.paper, error: null, status: null, loading: false } };
+      return { ...state, paper: { data: { ...(state.paper.data ?? NO_PAPER), ...action.paper },
+                                  error: null, status: null, loading: false } };
     case 'PAPER_FAILED':
       return {
         ...state,
@@ -273,11 +279,20 @@ export function reducer(state: AppState, action: Action): AppState {
       };
     case 'GROUP':
       return { ...state, grouping: action.grouping };
-    // both transitions are `web/src/spine.ts`'s, and both answer the record they were handed
-    // where nothing moved - the beat is two seconds and most beats of it bring nothing at all
-    case 'RECORD_READ': {
-      const record = readRecord(state.record, action.spine, action.page);
-      return record === state.record ? state : { ...state, record };
+    // both record transitions are `web/src/spine.ts`'s, and both answer the record they were
+    // handed where nothing moved - the beat is two seconds and most beats of it bring nothing.
+    // A book already held loads nothing - a write's read-back and a beat can both carry it - and
+    // a pin read against a book other than the one now held is behind it, and waits a beat.
+    case 'BEAT': {
+      const { live, etag, page } = action;
+      const held = state.source?.kind === 'book' ? state.source : null;
+      const same = held?.path === live?.path;
+      const moved = live && !(same && held?.etag === live.etag)
+        ? reducer(state, bookLoaded(live, same)) : state;
+      const spine = moved.source?.kind === 'book' && moved.source.etag !== etag
+        ? moved.record.spine : action.spine;
+      const record = readRecord(moved.record, spine, page);
+      return record === moved.record ? moved : { ...moved, record };
     }
     case 'RECONCILED': {
       const record = reconciledRecord(state.record, action.reconcile, action.at);
@@ -322,12 +337,29 @@ export function bookLoaded(live: BookResponse, refresh = false): Action {
 }
 
 /** One book WRITE as the answer an editing panel reads: the service's refusal verbatim, or null
- * once the re-read document has been dispatched. There is no client-side edit state anywhere -
- * the file is the truth, so a write is answered by reading it back. */
+ * once the book and where the record stands are read back in one step. There is no client-side
+ * edit state anywhere - the file is the truth, so a write is answered by reading it back. */
 export async function written(dispatch: Dispatch<Action>, outcome: BookDealOutcome) {
   if (!outcome.written) return outcome.refused ?? ['refused'];
-  dispatch(bookLoaded(await getBook(), true));
+  const [live, status] = await Promise.all([getBook(), getBookStatus()]);
+  dispatch({ type: 'BEAT', etag: status.etag, live, spine: status.spine, page: null });
   return null;
+}
+
+/** The screens showing the record's paper - the entities legal declares and their agreements -
+ * and, of those, the ones showing the holdings under it: the positions and the portfolio nodes. */
+export const PAPER_TABS = ['portfolio', 'blotter', 'quote', 'trade', 'risk', 'xva', 'curves',
+                           'backoffice', 'client', 'paper', 'pnl'];
+const HOLDING_TABS = ['portfolio', 'blotter', 'trade', 'risk', 'xva', 'backoffice', 'client'];
+
+/** Which parts of the paper `tab` owes a read at `clock`: all of it where none is held, else each
+ * part it shows whose answer in hand was read at another clock (`answered`). */
+export function paperOwed(tab: string, held: Paper | null, answered: Record<string, string>,
+                          clock: string): { paper: boolean; holdings: boolean } {
+  const shown = PAPER_TABS.includes(tab);
+  const holdings = HOLDING_TABS.includes(tab) && answered.holdings !== clock;
+  return { paper: shown && (!held || answered.paper !== clock),
+           holdings: shown && (!held || holdings) };
 }
 
 /** The clock every answer read off the live book is held against (`desk.bookClock`): the book's

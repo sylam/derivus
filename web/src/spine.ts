@@ -25,6 +25,18 @@ export function polled(source: Source | null): source is Source & { kind: 'book'
   return source?.kind === 'book' && !source.opened;
 }
 
+/** Whether a beat owes the desk's own book a read: the stamp the cheap status read answers has
+ * moved past the one on screen. */
+export const bookOwed = (held: Source | null, etag: string): boolean =>
+  polled(held) && held.etag !== etag;
+
+/** One read at a time: a call while one is in flight answers that one rather than sending a
+ * second, so a stalled service never stacks a beat's reads. */
+export function single<T>(read: () => Promise<T>): () => Promise<T> {
+  let pending: Promise<T> | null = null;
+  return () => pending ?? (pending = read().finally(() => { pending = null; }));
+}
+
 /** Where the file stands, as one comparable value - so a beat of the poll that moved nothing is
  * the same state and repaints nothing. Null throughout is a desk that records nothing. */
 export function pinnedAt(spine: SpineBlock | null): string | null {
