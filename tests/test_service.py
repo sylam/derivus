@@ -6146,7 +6146,7 @@ def test_a_booking_into_one_set_leaves_another_set_s_xva_run_where_it_was(record
              'parent_reference': 'NS_A', 'quantity': 1.0,
              'execution_reference': 'EXEC-' + reference}), headers=JSON).json()
         assert answer['written'] is True, answer
-        return service.BOOK.pinned()['lsn']
+        return service.pin_of(service.BOOK.read()[0])['lsn']
 
     try:
         assert booked('OPT_A2', 5000.0) == 5

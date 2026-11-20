@@ -627,13 +627,6 @@ class Book:
         with self.lock:
             return self._read()
 
-    def pinned(self):
-        """`{lsn, head}` the file was last hydrated at, or None where nothing pinned it - a file
-        written on a box that records nothing carries no pin at all."""
-        document, _ = self.read()
-        pin = document.get(SPINE_PIN) or {}
-        return {'lsn': pin['lsn'], 'head': pin['head']} if 'lsn' in pin else None
-
     def baseline(self, document, etag):
         """The WHOLE verdict the book already carries - every deal's messages and the factors it
         lacks - cached against the ETAG THE DOCUMENT WAS READ AT, a booking's before and after
@@ -971,7 +964,7 @@ def book():
     folder, name = os.path.split(os.path.abspath(live_book().path))
     if folder == os.path.abspath(os.path.join(dv_home(), INBOX)):
         answer['opened'] = name
-    pinned = live_book().pinned()
+    pinned = pin_of(document)
     return answer if pinned is None else dict(answer, lsn=pinned['lsn'])
 
 
@@ -2292,6 +2285,13 @@ def behind(pinned):
     return spine.folded(counted)
 
 
+def pin_of(document):
+    """`{lsn, head}` the book file was last hydrated at, or None where nothing pinned it - a file
+    written on a box that records nothing carries no pin at all."""
+    pin = document.get(SPINE_PIN) or {}
+    return {'lsn': pin['lsn'], 'head': pin['head']} if 'lsn' in pin else None
+
+
 def spine_block(document):
     """The record's position beside the file's, for the one read a client starts with: the LSN the
     file was hydrated at and how far the log has moved since.
@@ -2303,10 +2303,9 @@ def spine_block(document):
     """
     if not spine.configured():
         return None
-    pinned = document.get(SPINE_PIN) or {}
-    block = {'lsn': pinned.get('lsn'), 'head': pinned.get('head'),
-             'events_behind': None, 'positions_behind': None}
-    return block if 'lsn' not in pinned else dict(block, **behind(pinned))
+    pinned = pin_of(document)
+    block = {'lsn': None, 'head': None, 'events_behind': None, 'positions_behind': None}
+    return block if pinned is None else dict(block, **pinned, **behind(pinned))
 
 
 def answered(rows, lsn=None):
@@ -2519,7 +2518,7 @@ def book_reconcile(actor: str = None):
     fills (`POST /book/deals`).
     """
     document, _ = recording().read()
-    pinned = live_book().pinned()
+    pinned = pin_of(document)
     see = sighted(document, spine.sight(actor))
     return dict({name: [row for row in rows if see(row.get('instrument'))]
                  for name, rows in reconciled(document).items()},

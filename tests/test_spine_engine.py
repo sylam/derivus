@@ -3992,7 +3992,7 @@ def test_with_no_home_the_book_file_carries_no_pin_at_all(unrecorded, desk):
     assert set(json.loads(text)) == {'Calc'}
     assert 'lsn' not in CLIENT.get('/book').json()
     assert CLIENT.get('/book/status').json()['spine'] is None
-    assert service.BOOK.pinned() is None
+    assert service.pin_of(service.BOOK.read()[0]) is None
 
 
 def test_the_pin_cannot_move_the_plan_hash(recorded, booking):
