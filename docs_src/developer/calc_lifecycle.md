@@ -222,8 +222,9 @@ CRE52, `1.4 (RC + PFE)`, off its trades' values and their terms as each type dec
 `schema.OBSERVES` does `observes`): the fields its notional and its currency, or its units and the
 factor pricing a unit, its start and its long side are read off, an FX trade's amount in its other
 currency, and an option's strike, expiry and call; `schema.KNOWN_CASH`, amounts fixed today, reads
-no row and its value enters V alone; a strip, its amount dealt `per` row of a table (CRE52.37(4)),
-refuses by name, its fixings not read yet. A trade reads one or more rows (`SACCR.read`), its value
+no row and its value enters V alone; a strip, its amount dealt `per` row of a table, reads a row
+per leg at each fixing still to come (`SACCR.strip`, CRE52.43). A trade reads one or more rows
+(`SACCR.read`), its value
 counted once a trade: a type declaring a tuple of exposures, each stating its `end`, reads a row
 per component still to settle, named by that field (`FXSwapDeal`'s near and far forwards); a package - a type with children declaring none, neither settling in their
 place nor a netting set - reads its children's rows (`SACCR.package`), the child the row's
@@ -233,12 +234,15 @@ two currencies one FX row (`SACCR.crossed`), M the next reset of a leg its compi
 pair (`TensorCashFlows.FXResets`, a mark-to-market swap's), whose notional is stated in the other
 currency. A leg whose `amount` names a table is read off the schedule its compile bound
 (`SACCR.schedule`, through `walk_schedules` as the diary reads it, and `SACCR.mean` reads an energy
-option's samples the same way): S, E and M its periods' first start, last end and last pay day, its
+option's samples the same way): S and E its periods' first start and last end, its
 notional averaged over them as an amortising swap's (`SACCR.averaged`), a commodity leg's units each
 period's volume at its price multiplier (`FloatingEnergyDeal`), its side the sign of what it
-receives, and one its compile prices as caplets or floorlets refused by name; its end and maturity are the last day
-`schema.tenor_fields` names, its maturity its start where the `(field, value)` of `runs` does not
-hold, a trade settling its cash there (a swaption settled in cash, an FRA paid at its start). A trade's asset class is
+receives, and one its compile prices as caplets or floorlets a row per optionlet whose rate is still to be
+known (`SACCR.caplets`); a declared trade's end is the last day `schema.tenor_fields` names. Every
+row's M is its trade's last day (`SACCR.last_day`, CRE52.31): the latest day the trade's compile
+revalues it on, or a package's whose own compile reaches none the latest its children reach; a
+component its own `end`, and a trade's start where the `(field, value)` of `runs` does not hold, a
+trade settling its cash there (a swaption settled in cash, an FRA paid at its start). A trade's asset class is
 the `Asset_Class` the `Mapping`'s `SACCR` section states for its type, a credit entity's rating
 the `Rating` under its survival curve's `SACCR` entry, an
 equity an index where its SIMM bucket is 11 or 12, a commodity's type its SIMM bucket, whose row in
@@ -290,6 +294,7 @@ set's unmargined one. **Held by** `tests/test_saccr.py::test_the_rates_example_i
 `::test_legs_paying_two_currencies_are_one_fx_trade`,
 `::test_an_fx_swap_is_its_two_forwards_the_near_one_gone_once_settled`,
 `::test_a_floating_energy_leg_reads_the_units_it_has_still_to_pay`,
+`::test_every_row_of_a_trade_matures_on_the_trades_last_day`,
 `::test_a_trade_the_reader_cannot_read_is_refused_by_name`,
 `::test_a_parameters_file_stating_an_entry_amiss_is_refused_by_name`. **Not gated:** the MPOR floor
 of a set of more than 5,000 trades.

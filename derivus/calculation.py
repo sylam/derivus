@@ -5391,8 +5391,8 @@ class SACCR(NettingSetCalculation):
         'trade on the pair (CRE52.35; footnote 11 to CRE52.46, two floating legs no basis), held in that',
         'class alone (CRE52.28 lets a supervisor ask for more: a convention): $d$ the foreign leg\'s',
         'notional, the larger where both are, each leg\'s largest still to pay (a convention), long the',
-        'currency it receives, $M$ its last pay day or, where its compile resets a leg\'s notional on',
-        'the pair, as a mark-to-market swap\'s, its next reset (CRE52.37(5)), that leg\'s notional the',
+        'currency it receives, $M$ the trade\'s last day or, where its compile resets a leg\'s notional',
+        'on the pair, as a mark-to-market swap\'s, its next reset (CRE52.37(5)), that leg\'s notional the',
         'other currency\'s as its compile states it; legs of three currencies refuse the run by name. A',
         'leg on a factor beside its currency\'s rates, an inflation leg or a swaplet list, is none of',
         'these but its own row beside them (CRE52.42(4)). Inflation trades are rate trades in a',
@@ -5433,16 +5433,16 @@ class SACCR(NettingSetCalculation):
         'Per trade, its dates in years of 30/360 from the base date: the adjusted notional $d$',
         '(CRE52.34-52.37), an IR or credit trade\'s notional, averaged over time where it amortises -',
         'a floating or inflation leg\'s over the periods its compile binds still to pay (CRE52.37(2)),',
-        '$S$, $E$ and $M$ their first start, last end and last pay day, $\\delta$ $+1$ received - times',
+        '$S$ and $E$ their first start and last end, $\\delta$ $+1$ received - times',
         '$SD=(e^{-0.05S}-e^{-0.05E})/0.05$ floored at ten business days, an FX trade\'s foreign leg,',
         'the larger where both are (CRE52.35) - a forward\'s legs its two amounts, an option\'s its amount',
         'and that at its strike, a non-deliverable forward on the pair it buys and sells, its settlement',
         'currency outside it - and an equity or commodity trade\'s units at a unit\'s price, an',
         'average-price swap\'s all the units it references, fixed or to fix, a floating energy leg\'s',
-        'every period\'s its compile binds still to pay, its volume at its price multiplier, $M$ its last',
-        'pay day, long where it receives the average, an equity swaplet list\'s those of the period',
+        'every period\'s its compile binds still to pay, its volume at its price multiplier, long where',
+        'it receives the average, an equity swaplet list\'s those of the period',
         'still to end first, which the next resets and does not add to, its shares or the principal it',
-        'states with no unit priced, $M$ its last pay day, long where it receives the return, and none',
+        'states with no unit priced, long where it receives the return, and none',
         'once every period has ended, its value in $V$ alone (CRE52.36); the',
         'supervisory delta $\\delta$ (CRE52.38-52.40), $\\pm1$ by its long side or an option\'s Black',
         'delta on Table 2\'s vol at its underlying\'s forward $P$ (CRE52.40 FAQ1, the forward for the',
@@ -5478,7 +5478,10 @@ class SACCR(NettingSetCalculation):
         'digital at its barrier, Up a call and Down a put, a no-touch its negative (CRE52 states no',
         'touch\'s delta: a convention); the',
         'maturity factor (CRE52.48, CRE52.52), $\\sqrt{\\min(M,1)}$ with $M$ the last day the trade is',
-        'active, its start $S$ where it settles its cash there, as a swaption settled in cash and an FRA',
+        'active (CRE52.31), one $M$ for every row of a trade: the latest day its compile revalues it on',
+        'or, a package\'s whose own compile reaches none, the latest its children reach, a forward of an',
+        'FX swap its own, and its start $S$ where it settles its cash there, as a swaption settled in',
+        'cash and an FRA',
         'paid at its start do (CRE52.31-52.32 Table 1 and its FAQ2), floored at ten business days, or',
         '$1.5\\sqrt{\\mathrm{MPOR}/250}$ under a',
         'margined set; and',
@@ -5810,10 +5813,16 @@ class SACCR(NettingSetCalculation):
                        for currency, size, _, resets in found if currency != domestic)
         own = next((currency for currency, size, *_ in found if size > 0), None)
         maturity = min((day for *_, cash, resets in found if resets
-                        for day in cash[:, utils.CASHFLOW_INDEX_FXResetDate] if day > 0),
-                       default=max(cash[:, CASHFLOW_INDEX_Pay_Day].max() for *_, cash, _ in found))
+                        for day in cash[:, utils.CASHFLOW_INDEX_FXResetDate] if day > 0), default=self.ends[legs[0][1]])
         return self.entry('FX', '/'.join(pair), '', '', notional, 1.0 if own == pair[0] else -1.0,
                           self.years(maturity), mpor)
+
+    def last_day(self, node):
+        """The last day the trade `node` may be active (52.31): the latest its compile revalues it on, a
+        trade holding children whose own compile reaches none the latest its children reach."""
+        built = self.built.get(node['Instrument'])
+        dates = built.Instrument.get_reval_dates() if built else ()
+        return max(dates) if dates else max(filter(None, map(self.last_day, node.get('Children') or [])), default=None)
 
     def entry(self, asset, hedging, subclass, bucket, notional, delta, maturity, mpor):
         """A row of the trades frame: its MF sqrt(min(M, 1)), `maturity` M floored at ten business
@@ -5868,7 +5877,7 @@ class SACCR(NettingSetCalculation):
         currency, asset = deal.field[terms.currency], self.asset(deal)
         hedging = utils.check_rate_name(currency)[0]
         vol, shift = self.supervisory[asset, '']['option_volatility'], self.shifts.get(hedging, 0.0)
-        counts, last = cash.offsets[:, 0].astype(np.int64), self.years(max(self.trade_of[deal].get_reval_dates()))
+        counts, last = cash.offsets[:, 0].astype(np.int64), self.years(self.ends[deal])
         rows = []
         for flow, end, count in zip(cash.schedule, counts.cumsum(), counts):
             fixing, nominal = slice(end - count, end), flow[CASHFLOW_INDEX_Nominal]
@@ -5909,13 +5918,12 @@ class SACCR(NettingSetCalculation):
         fields, reference = deal.field, deal.field.get('Reference')
         asset, paid = self.asset(deal), terms.pays(fields)
         if isinstance(fields[terms.amount], dict):
-            # a leg: S, E and M its periods' first start, last end and last pay day; a commodity's
+            # a leg: S and E its periods' first start and last end; a commodity's
             # units each period's volume at its price multiplier, an equity's the period's still to end
             # first, the next resetting it (52.36); else its notional averaged as an amortising swap's (52.37(2))
             cash = self.schedule(deal).schedule
             starts, nominal = cash[:, utils.CASHFLOW_INDEX_Start_Day], cash[:, CASHFLOW_INDEX_Nominal]
-            start, end, last = (self.years(day) for day in (
-                starts.min(), cash[:, utils.CASHFLOW_INDEX_End_Day].max(), cash[:, CASHFLOW_INDEX_Pay_Day].max()))
+            start, end = self.years(starts.min()), self.years(cash[:, utils.CASHFLOW_INDEX_End_Day].max())
             if asset == 'Equity':
                 live = cash[cash[:, utils.CASHFLOW_INDEX_End_Day] > 0, utils.CASHFLOW_INDEX_FixedAmt]
                 if not live.size:
@@ -5926,7 +5934,7 @@ class SACCR(NettingSetCalculation):
                 amount = (nominal * cash[:, utils.CASHFLOW_INDEX_Start_Mult]).sum() if asset == 'Commodity' else (
                     self.averaged(nominal[0], zip(map(self.years, starts[1:]), -np.diff(nominal)), end))
         else:
-            end = last = self.years(fields[terms.end] if terms.end else max(day for *_, day in schema.settlement_days(
+            end = self.years(fields[terms.end] if terms.end else max(day for *_, day in schema.settlement_days(
                 fields, schema.tenor_fields(type(deal))) if day is not None))
             start = self.years(fields[terms.start]) if terms.start else 0.0
             amount = fields[terms.amount]
@@ -5970,8 +5978,10 @@ class SACCR(NettingSetCalculation):
                 1.0, fields[terms.currency])
             notional = size * price * self.fx(currency)
 
-        # M the last day, or the start a trade settles its cash at (Table 1, 52.32 FAQ2)
-        maturity = last if terms.runs is None or fields[terms.runs[0]] == terms.runs[1] else start
+        # M the trade's last day, a component's its own, or the start a trade settles its cash at (Table
+        # 1, 52.32 FAQ2)
+        maturity = start if terms.runs and fields[terms.runs[0]] != terms.runs[1] else end if terms.end else (
+            self.years(self.ends[deal]))
         if not terms.strike:
             return [self.entry(asset, hedging, subclass, bucket, notional, side, maturity, mpor)]
         strike, call = fields[terms.strike], terms.call is True or fields[terms.call[0]] == terms.call[1]
@@ -6101,14 +6111,14 @@ class SACCR(NettingSetCalculation):
     def report(self, base):
         """The run's results off the book's `base`: a row per netting set and per component of a
         trade it values, in book order, each deal read off its compile (`held`), a structure's parts
-        too (`beneath`), and known by the trade it is part of (`trade_of`), a pair's or a share's
+        too (`beneath`), and known by its trade's last day (`ends`, `last_day`), a pair's or a share's
         forward read off codes and a spot lag worked out once (`carried`)."""
         self.carried, under = {}, defaultdict(list)
         self.held = {key: deal.Factor_dep for key, deal in self.built.items()}
         self.beneath = {structure.obj.Instrument.resolved_from or structure.obj.Instrument: structure.dependencies
                         for structure in self.compiled.netting_sets.structures()}
-        self.trade_of = {part['Instrument']: node['Instrument'] for _, node in self.trades
-                         for _, part in schema.walk([node])}
+        self.ends = {part['Instrument']: day for _, node in self.trades for day in [self.last_day(node)]
+                     for _, part in schema.walk([node])}
         for index, (agreement, _) in enumerate(self.trades):
             under[id(agreement)].append(index)
         sets, trades = [], []

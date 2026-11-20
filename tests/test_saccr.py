@@ -578,6 +578,11 @@ STRIP['Cashflows']['Items'][0]['Resets'][0][-1] = utils.Percent(5.0)
 #: Caps on three legs: a year from a year out, a year from two years out and three months from three.
 CAP_LEGS = [optioned('Cap', 'FIRST', 'Buy', ONE_YEAR), optioned('Cap', 'SECOND', 'Buy', THREE_YEARS[1:3]),
             optioned('Cap', 'SHORT', 'Buy', every(3, 1, BASE + pd.DateOffset(months=3)))]
+#: The quarter from three months out capped at 4.5% on a million and the same leg uncapped, both
+#: received, beside a leg paid on a million quarterly for nine months from the base date.
+SHORT_LEGS = [optioned('Cap', 'CAPPED', 'Buy', every(3, 1, BASE + pd.DateOffset(months=3))),
+              cashflows(FLOATING, 'FLOAT', 'Buy', every(3, 1, BASE + pd.DateOffset(months=3)), 1e6),
+              cashflows(FLOATING, 'LONG', 'Sell', every(3, 3), 1e6)]
 
 
 def binary(reference, kind='Call', expiry=None, payoff='Payoff', **terms):
@@ -742,6 +747,8 @@ def world(tmp_path_factory):
             'STRIP': ({}, [node(STRIP)]),
             'BY_TERMS': ({}, [node(by_terms('CapDeal', 'CAP')), node(by_terms('FloorDeal', 'FLOOR'))]),
             'CAP_LEGS': ({}, [cap('CAP', 'Buy', CAP_LEGS)]),
+            'TRADE_PACKAGE': ({}, [package('TRADE', SHORT_LEGS)]),
+            'TRADE_CAP': ({}, [cap('TRADE', 'Buy', SHORT_LEGS)]),
             'COLLAR': ({}, [node(optioned('Cap', 'CAP', 'Buy', THREE_YEARS)),
                             node(optioned('Floor', 'FLOOR', 'Sell', THREE_YEARS))]),
             'COLLAR_LEG': ({}, [node(cashflows(FLOATING, 'LEG', 'Buy', THREE_YEARS, 1e6))]),
@@ -1736,6 +1743,39 @@ def test_a_cap_or_a_floor_stated_by_its_terms_reads_the_optionlet_it_compiles(wo
         leg = trades(output, twin).loc['LEG']
         assert list(rows.loc[reference, columns]) == list(leg[columns]), rows
         assert rows.loc[reference, 'Value'] == pytest.approx(leg['Value'], rel=1e-12), rows
+
+
+def test_every_row_of_a_trade_matures_on_the_trades_last_day(world):
+    """CRE52.31 AND CRE52.48: M IS THE TRADE'S. A package holding a cap at 4.5% on a million over the
+    quarter from three months out, the same leg uncapped and a leg paid on a million quarterly for
+    nine months, its own compile reaching no day, ends on the latest day its children reach, the
+    paid leg's last payment nine months out: every row's M is 270/360 = 0.75 years of 30/360 and its
+    maturity factor 0.75^0.5 = 0.866025, the capped and the uncapped leg's own half year unread. The
+    caplet on d 1,000,000 (e^(-0.0125) - e^(-0.025)) / 0.05 = 245,357.77 in bucket 1 is a call at
+    4.5% on P (e^(0.04 x 91/365) - 1) / (91/365) = 4.0200117% known in a quarter, 0.25 years, d1
+    -0.326170 and delta 0.372148; the uncapped leg +1 on the same d and the paid leg -1 on 1,000,000
+    (1 - e^(-0.0375)) / 0.05 = 736,111.65: the add-on 0.5% of 0.866025 |245,357.77 x 1.372148 -
+    736,111.65|, 1,729.65. Booked under a cap whose own terms run two years out, the cap's compile
+    reaches that day, so every row's maturity factor is one and the add-on 0.5% of |245,357.77 x
+    1.372148 - 736,111.65|, 1,997.22: the uncapped leg no longer reads its own half year, at
+    (1/2)^0.5, beside its capped twin at one.
+
+    Killing mutations: M read per child, each its own last day - the caplet and the uncapped leg at
+    (1/2)^0.5 under the package and under the cap, each add-on 1,997.16; a package's children
+    unread for its last day - the run fails, a `TypeError` on the package's M of none.
+    """
+    _, output = world
+    found, mf = netting_sets(output), math.sqrt(0.75)
+    adjusted = [1e6 * supervisory_duration(0.25, 0.5)] * 2 + [1e6 * supervisory_duration(0.0, 0.75)]
+    delta = black_delta(math.expm1(0.04 * 91 / 365) / (91 / 365), 0.045, 0.5, 0.25, True)
+    for name, factor in (('TRADE_PACKAGE', mf), ('TRADE_CAP', 1.0)):
+        rows = trades(output, name)
+        assert list(rows['Component']) == [name + '_CAPPED 2025-07-15', name + '_FLOAT', name + '_LONG'], rows
+        assert rows['MaturityFactor'].tolist() == pytest.approx([factor] * 3, rel=1e-15), rows
+        assert rows['AdjustedNotional'].tolist() == pytest.approx(adjusted, rel=1e-14), rows
+        assert rows['Delta'].tolist() == pytest.approx([delta, 1.0, -1.0], rel=1e-12), rows
+        assert found.loc[name, 'AddOn_IR'] == pytest.approx(0.005 * factor * abs(
+            adjusted[0] * (1.0 + delta) - adjusted[2]), rel=1e-12), found.loc[name]
 
 
 EQUITY_LEG = {'Object': 'EquitySwapLeg', 'Reference': 'LEG', 'Currency': 'USD',
