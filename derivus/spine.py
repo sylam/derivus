@@ -47,20 +47,19 @@ verbs' `except ValueError -> 422` handlers surface the library's own wording.
 """
 import contextlib
 import contextvars
-import hashlib
 import json
 import numbers
 import os
 import threading
 from copy import deepcopy
 
-from . import Context, content_hash, instruments, riskfactors, utils
+from . import Context, canonical, content_hash, instruments, riskfactors, utils
 from ._version import __version__
 from .calculation import BaseValuation, Diary, calculation_class
 from . import schema
 from .schema import (declared_fields, flipped, index_named, instrument_of, job_children, mapping,
                      tables_of, walk_job_deals, without_clocks)
-from .config import Config, CustomJsonEncoder, as_json
+from .config import Config, as_json
 from .structures import base_currency, market_of, timestamp
 
 #: The whole switch, the actor beside it, and the folder a reader's folds start from. Read per
@@ -437,18 +436,6 @@ def advancing(log, projector, lsn=None, folds=None):
     folds[projector.name] = {'projector': projector.name, 'version': projector.version,
                              'genesis': genesis, 'lsn': at, 'state': state}
     return state
-
-
-def canonical(obj):
-    """The bytes the engine hashes `obj` as: sorted keys, tight separators, `CustomJsonEncoder`.
-
-    This is why an engine hash can be a blob address: a blob is named by the SHA-256 of its bytes
-    and the engine's hashes are the SHA-256 of exactly these, so `values_hash` and the address of
-    the values vector are one number. The spine canonicalises its own objects under RFC 8785 and
-    addresses whatever bytes it is handed, so the two schemes compose.
-    """
-    return json.dumps(obj, sort_keys=True, separators=(',', ':'),
-                      cls=CustomJsonEncoder).encode('utf-8')
 
 
 def cashflow_key(instrument_hash, leg, kind, date):
@@ -1207,7 +1194,7 @@ def amend(deal, amended_to, actor_name=None, book_name=None, effective_time=None
     it amends to (`service.ticket_terms`) taken at every unit of every position it moves, and one
     that already landed is answered `{booked: {lsn}}` rather than filed again (`_restruck`)."""
     spine = package()
-    was, now = (hashlib.sha256(canonical(terms)).hexdigest() for terms in (deal, amended_to))
+    was, now = content_hash(deal), content_hash(amended_to)
     with writing() as log:
         subject = actor(actor_name, log)
         held = advancing(log, spine.projections.PROJECTORS['positions'], folds=folds)

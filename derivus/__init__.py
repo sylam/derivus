@@ -50,11 +50,17 @@ def getpath(pathlist):
             return path
 
 
+def canonical(obj):
+    """The bytes the engine hashes `obj` as: sorted keys, tight separators, and `CustomJsonEncoder`
+    for everything a config tree holds that JSON has no form for. A blob is named by the sha256 of
+    its bytes, so an engine hash of an object is the address of these bytes in the record's store."""
+    return json.dumps(obj, sort_keys=True, separators=(',', ':'),
+                      cls=CustomJsonEncoder).encode('utf-8')
+
+
 def content_hash(obj):
-    """sha256 over a CANONICAL dump - sorted keys, and `CustomJsonEncoder` for everything a config
-    tree holds that JSON has no form for: curves, deals, timestamps, offsets, model parameters."""
-    return hashlib.sha256(json.dumps(
-        obj, sort_keys=True, separators=(',', ':'), cls=CustomJsonEncoder).encode()).hexdigest()
+    """sha256 over `canonical(obj)`."""
+    return hashlib.sha256(canonical(obj)).hexdigest()
 
 
 def set_collateral(cfg, Agreement_Currency, Balance_Currency, Opening_Balance, Received_Threshold=0.0,
