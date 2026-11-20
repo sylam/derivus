@@ -5370,99 +5370,7 @@ class SIMM(NettingSetCalculation):
 class SACCR(NettingSetCalculation):
     """The standardised approach to counterparty credit risk (CRE52): each netting set's exposure
     at default, `alpha (RC + PFE)` (52.1), off one base valuation of the book and each trade's
-    declared terms.
-
-    A TRADE IS READ THROUGH ITS TYPE'S DECLARATION. Its asset class is the `Mapping`'s
-    `SACCR.Asset_Class` for its type, one class a trade (52.26-52.27; 52.28's allocation to several
-    is not built), and what its exposure is read off is its type's own `schema.Exposure`; a type
-    the mapping classes in none, or declaring none, refuses by name. A type declaring several
-    components reads a row each, named by its last day, one settled before the base date none: an
-    FX swap its near and far forwards, each with its own M (52.35; a convention). A package, a type
-    holding children and declaring nothing, neither settling in their place nor a netting set, is
-    read through them, each child's rows its own, the child its `Component` (52.42(4)); amounts
-    fixed today read none, their value V's alone (52.10, 52.26), so a fixed and a floating leg are
-    one swap the floating leg carries (52.1 FAQ3), and two floating legs of a currency, one received
-    and one paid on another index, one basis trade, long the index it receives in the hedging set of
-    the pair at half Table 2's factor (52.46, 52.72-52.73); legs paying two currencies are one FX
-    trade (52.35, footnote 11 to 52.46), in that class alone (52.28: a convention), M a resetting
-    swap's next reset (52.37(5)), and three refuse by name; a leg on a factor beside its currency's
-    rates, an inflation leg or a swaplet list, is none of these, its own row. A leg its compile
-    prices as caplets or floorlets, and a cap or a floor booked by its terms, reads a row per
-    optionlet whose rate is still to be known (52.43), named by its deal and its period's end, a
-    caplet a call and a floorlet a put on that rate, long where its value is, a cap over legs on
-    the legs' own sides as its pricer reads it; S and E its period's, T the day its rate is known,
-    its last fixing, M the trade's last day; one fixed reads none, its value V's alone, and a
-    digital one refuses by name.
-    A strip, a type dealing its amount `per` row of a table, is its fixings (52.43): a row per leg
-    it declares at each row whose first cell, the day it fixes and T, is still to come, named by the
-    deal, that day and the field the leg differs in, its strike or else its amount, one fixed none,
-    its value V's alone, M the trade's last day: a TARF or an accumulator buying an option of its
-    kind on its amount and selling one of the other kind on its geared amount, its target, knock-in
-    and knock-out unread (a convention: CRE52 states none, and a strip read to its end never
-    understates it), a range accrual a digital call bought at its lower bound and one sold at its
-    upper; an extendable forward, its extension an option on a strip of forwards, and a TARF
-    accruing on the reciprocal of its pair (`InvertedTarget`) refuse by name.
-    A credit entity's rating is the mapping's `SACCR.Rating` under its survival curve, AAA to CCC a
-    single name and IG or SG an index; an equity is an index where its price's SIMM bucket is 11 or
-    12, Risk_Equity's index buckets; a commodity's type is its price's SIMM bucket, whose
-    `commodity_sets` row in the `Parameters` names its hedging set and subclass. A reference price
-    is mapped under its forward curve and a composed price under its primary, a unit of it priced
-    with its bases' periods.
-
-    The netting set's terms, symbol by symbol:
-
-    - margined (52.2): `Collateralized` True.
-    - V (52.10): its trades' values in the calculation currency, each off its own structure, once
-      a trade whatever rows it reads.
-    - C (52.11, 52.18): a margined set's `Opening_Balance` as the engine's balance counts it.
-    - MPOR (52.50-52.51): `Liquidation_Period` in business days, floored as the file floors it.
-    - TH (52.18): `Received_Threshold` at its first value, crossed from `Agreement_Currency`.
-    - MTA (52.18): `Minimum_Received` at its first value, crossed from `Agreement_Currency`.
-    - NICA (52.17): `Independent_Amount` at its first value, received positive, crossed likewise.
-
-    A trade's dates count in years of 30/360 from the base date, a whole number of months exact as
-    the methodology's examples count a tenor: S its declared start, zero once started, E and M the
-    last day its type's tenor fields name (`schema.tenor_fields`), a leg's S, E and M its periods'
-    first start, last end and last pay day as its compile binds them, M a trade's S where it settles
-    its cash there, a swaption settled in cash or an FRA paid at its start (52.32 Table 1 and its
-    FAQ2), T its declared expiry, nothing once reached (52.31).
-    Its d is an IR or credit notional crossed times SD, averaged over its life where it amortises,
-    a leg's over its periods (52.37(2)), its delta by the sign of what it receives, an inflation
-    leg's in a hedging set of its own, its currency's and index's (52.57 FAQ1), an FX trade's
-    foreign leg, the larger where both are, a forward's legs its two amounts and an
-    option's its amount and that at its strike, or an equity or commodity trade's units at a unit's
-    price, a floating energy leg's every period's still to pay, its volume at its price multiplier,
-    a swaplet list's the period's still to end first, which the next resets and does not add to,
-    its shares or the principal it states, none once every period has ended, M its last pay day
-    (52.34-52.37); a non-deliverable forward is on the pair it buys and sells, its settlement
-    currency outside it (52.29, 52.45). Its delta plus or minus one by its long side and the amount's
-    sign, or an option's by Black on the supervisory vol at P, its underlying's forward at T off the
-    compiled factors (52.40 FAQ1), a reference price's for the delivery its fixing curve maps T to,
-    an option on an average its current value, each sample fixed at its level and each to come at
-    its forward (52.42(1)), a compo's the forward of S X in the currency it is struck in, a
-    quanto's of S, its unit the share at its own price (a convention: CRE52 states neither), a
-    barrier option's its vanilla's at its strike and expiry, the barrier unread (a convention: CRE52
-    states no barrier's delta, the US agencies' rule holding path-dependent options to it), a
-    digital paying Q at K the collar of 52.42(3), one row, a bought and a sold option of its kind at
-    0.95K and 1.05K each on Q / (0.1K) units, its delta theirs less, its effective notional,
-    margined and not, at most Q crossed over SF, one paying its units the vanilla on them, sold for
-    a put, and the cash digital of them at K, two rows named by the deal (52.42(4)), past its
-    expiry the cash it pays known and read by no row, its value V's alone, an FX digital on its
-    pair's currency it is not paid in, a barrier digital its digital's, its barrier unread,
-    an equity or commodity touch the digital at its barrier, Up a call and Down a put, a no-touch
-    its negative (a convention: CRE52 states no touch's delta), a
-    rate option's P and K shifted by its currency's `option_shift`
-    (52.38-52.40), an FX option's on the pair in the order its vol surface names it (52.59 FAQ1),
-    at T nothing the formula's limit, one in the money and none out, an FX option past its expiry
-    on the print it fixed; its MF sqrt(min(M, 1)), M floored at ten business days, or under a
-    margined set 1.5 sqrt(MPOR / 250) (52.48, 52.52).
-
-    Not built: CDO tranches (52.41); a leg paying digital optionlets, refused by name; an FX touch,
-    which may pay in the currency its barrier prices, declaring no exposure; volatility hedging
-    sets (52.47), a volatility trade sitting in its ordinary set; the non-daily, cleared, illiquid
-    and disputed MPOR floors (52.50(2)-(3), 52.51(2)-(3)), which a netting set declares nothing to
-    read off; several margin agreements to a set or sets to an agreement (52.74-52.76).
-    """
+    declared terms, read as `documentation` states."""
     documentation = ('Calculations', [
         'The exposure at default of each netting set under the standardised approach to counterparty',
         'credit risk [@bcbscre52], $\\mathrm{EAD}=\\alpha(\\mathrm{RC}+\\mathrm{PFE})$ (CRE52.1), off one base',
@@ -5497,8 +5405,8 @@ class SACCR(NettingSetCalculation):
         'its resets fold to off the forecast curve, averaged or compounded as its pricer folds them, and',
         '$K$ its strike, long where its value is: a cap or floor over legs is valued as its legs, each',
         'on its own side, its own side unread, and is read so; $M$ the trade\'s last day. A period whose',
-        'rate is fixed reads none, its value in $V$ alone. A leg paying digital optionlets refuses the',
-        'run by name. A strip, a type dealing its amount at every row of a table, is its fixings',
+        'rate is fixed reads none, its value in $V$ alone. A strip, a type dealing its amount at every',
+        'row of a table, is its fixings',
         '(CRE52.43): a row per leg it declares at each row still to fix, $T$ the day it fixes, its',
         '`Component` its deal, that day and the field the leg differs in, its strike or else its',
         'amount, a row fixed reading none, its value in $V$ alone, $M$ the trade\'s last day. A TARF or',
@@ -5538,7 +5446,8 @@ class SACCR(NettingSetCalculation):
         'once every period has ended, its value in $V$ alone (CRE52.36); the',
         'supervisory delta $\\delta$ (CRE52.38-52.40), $\\pm1$ by its long side or an option\'s Black',
         'delta on Table 2\'s vol at its underlying\'s forward $P$ (CRE52.40 FAQ1, the forward for the',
-        'rate and the dividends), a reference price\'s for the delivery its fixing curve maps $T$ to,',
+        'rate and the dividends), a rate option\'s $P$ and $K$ each shifted by its currency\'s option',
+        'shift (CRE52.40 FAQ2), a reference price\'s for the delivery its fixing curve maps $T$ to,',
         'an option on an average\'s $P$ that average\'s current value (CRE52.42(1)), each sample fixed at',
         'its level and each to come at its forward, by its weight - a discrete Asian\'s the rows of its',
         '**Sampling_Data**, an energy option\'s its samples as its compile',
@@ -5583,7 +5492,12 @@ class SACCR(NettingSetCalculation):
         '\\qquad\\mathrm{PFE}=\\mathrm{multiplier}\\cdot\\mathrm{AddOn}$$',
         '',
         'with $F$ 5% (CRE52.23); RC is $\\max(V-C,0)$ unmargined and $\\max(V-C,\\,TH+MTA-NICA,\\,0)$',
-        'margined (CRE52.10, CRE52.18), a margined set\'s EAD capped at its unmargined one (CRE52.2).',
+        'margined (CRE52.10, CRE52.18), a margined set\'s EAD capped at its unmargined one (CRE52.2). A',
+        'set is margined where it states `Collateralized` True, its MPOR its `Liquidation_Period` in',
+        'business days floored as the parameters file floors it (CRE52.50-52.51), $C$ its',
+        '`Opening_Balance` as the engine\'s balance counts it (CRE52.11), and $TH$, $MTA$ and $NICA$ its',
+        '`Received_Threshold`, `Minimum_Received` and `Independent_Amount` at their first values,',
+        'crossed from its `Agreement_Currency`, the independent amount received positive (CRE52.17-52.18).',
         '',
         'Not built: CDO tranches (CRE52.41); a leg paying digital optionlets, refusing the run by',
         'name; an FX touch, which may pay in the currency its barrier prices, declaring no exposure;',
