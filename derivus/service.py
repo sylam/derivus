@@ -3766,7 +3766,7 @@ def book_worklist(actor: str = None):
     rows = [row for row in spine.standing(folds=folds()) if row['book'] == book]
     names = named_trades(document, {row['instrument'] for row in rows if row['tickets']})
     clients = client_names()
-    moved = {row['subject']: row for row in spine.lifecycle()['transitions']}
+    confirmed_rows = {row['subject']: row for row in spine.lifecycle()['confirmations']}
     market = spine.designation(spine.PNL)
     closes = [] if market is None else spine.closes(market)
     marks = book_marks_on(book, closes)
@@ -3789,7 +3789,7 @@ def book_worklist(actor: str = None):
         return spine.fill_key(entry['instrument'], entry['execution_reference'])
 
     def unconfirmed(position, entry, key):
-        standing = moved.get(key, {})
+        standing = confirmed_rows.get(key, {})
         return standing.get('status') != confirmed or standing['lsn'] < entry['lsn']
 
     def ticketed(verb, kind, what, key, waiting, name=traded):

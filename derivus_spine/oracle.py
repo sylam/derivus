@@ -516,15 +516,17 @@ def the_diary_equals_the_filings(log, keys):
     keys, failures, filed = set(keys), [], 0
     clips = set(fill_key(clip['instrument'], clip['execution_reference'])
                 for row in POSITIONS.rows(fold(log, POSITIONS)) for clip in row['tickets'])
-    for subject, standing in fold(log, PROJECTORS['lifecycle'])['transitions'].items():
-        if not is_hash(subject):
-            continue
-        filed += 1
-        if subject not in keys | clips:
-            failures.append(
-                'LSN {}: a settlement was filed against {}, and neither the diary nor the record '
-                'names a row or a clip under that key - a status moves what the book owes or '
-                'holds, or it moves nothing'.format(standing['lsn'], subject))
+    state = fold(log, PROJECTORS['lifecycle'])
+    for bucket in ('transitions', 'confirmations'):
+        for subject, standing in state[bucket].items():
+            if not is_hash(subject):
+                continue
+            filed += 1
+            if subject not in keys | clips:
+                failures.append(
+                    'LSN {}: a settlement was filed against {}, and neither the diary nor the record '
+                    'names a row or a clip under that key - a status moves what the book owes or '
+                    'holds, or it moves nothing'.format(standing['lsn'], subject))
     return answer(failures, ['{} settlement(s) filed against {} diary key(s) and {} clip(s)'.format(
         filed, len(keys), len(clips))])
 

@@ -39,7 +39,7 @@ from .canon import canonical_bytes, content_hash
 from .errors import SpineRefusal
 from .log import as_of_key, parse_number
 from .policy import FIXINGS_POLICY, FIXINGS_SECTION, in_force
-from .verbs import HELD, PAYMENT, REPLAY_FIELDS, SETTLES
+from .verbs import CONFIRMED, HELD, PAYMENT, REPLAY_FIELDS, SETTLES
 from .vocabulary import is_hash
 
 #: Where a seed is filed, beside `log/` and `blobs/`. Not a blob: a blob is write-once and never
@@ -237,11 +237,11 @@ class Lifecycle(Projector):
     """
 
     name = 'lifecycle'
-    version = 2
+    version = 3
     reads = ('fixing_observed', 'election', 'determination', 'status_transition')
 
     def initial(self):
-        return {'fixings': {}, 'instruments': {}, 'transitions': {}}
+        return {'fixings': {}, 'instruments': {}, 'transitions': {}, 'confirmations': {}}
 
     def apply(self, state, frame, log):
         body = log.open_body(frame)
@@ -249,8 +249,11 @@ class Lifecycle(Projector):
             self._observe(state['fixings'], frame, body)
             return
         if frame['event_type'] == 'status_transition':
-            # Only what settles a row moves a state; a fee or a balance moved money and nothing else.
-            if body.get('kind', PAYMENT) in SETTLES:
+            # Confirmations and settlement statuses stand apart so confirm and settle cannot
+            # overwrite each other; a fee or collateral movement moves cash and no row state.
+            if body['status'] == CONFIRMED:
+                _stand(state['confirmations'], body['subject'], frame, {'status': body['status']})
+            elif body.get('kind', PAYMENT) in SETTLES:
                 _stand(state['transitions'], body['subject'], frame, {'status': body['status']})
             return
         row = state['instruments'].setdefault(
@@ -271,7 +274,9 @@ class Lifecycle(Projector):
             'instruments': [_shown(row, instrument=instrument)
                             for instrument, row in sorted(state['instruments'].items())],
             'transitions': [_shown(row, subject=subject)
-                            for subject, row in sorted(state['transitions'].items())]}
+                            for subject, row in sorted(state['transitions'].items())],
+            'confirmations': [_shown(row, subject=subject)
+                              for subject, row in sorted(state['confirmations'].items())]}
 
     @staticmethod
     def _observe(fixings, frame, body):

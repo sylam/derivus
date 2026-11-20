@@ -1716,3 +1716,29 @@ def test_a_consideration_carries_its_currency_and_rate_and_a_close_its_day(tmp_p
     for day in ('2026-8-28', '28/08/2026', '2026-08-28T00:00:00', ''):
         with pytest.raises(MalformedEvent):
             verbs.declare_close(log, MINT, 'official', VALUES, date=day)
+
+
+def test_confirm_and_settle_states_never_overwrite_each_other(tmp_path):
+    """Confirmations and settlement transitions stand in separate lifecycle tables, so a `settle`
+    seat filing `disputed` against a confirmed fill cannot clear its confirmation and a `confirm`
+    seat filing `confirmed` against a settled payment cannot clear its settlement.
+
+    Killing mutation: both written to one shared `transitions` map - the second transition replaces
+    the first seat's standing status.
+    """
+    home, log = minted(tmp_path)
+    confos, ops = 'subject-confos', 'subject-ops'
+    declare(log, MINT, document(grants=((confos, 'confirm', BOOK), (ops, 'settle', BOOK))))
+    fill_subject = verbs.fill_key('b' * 64, 'EXEC-1')
+    cash_subject = 'a' * 64
+
+    verbs.transition(log, confos, fill_subject, verbs.CONFIRMED, book=BOOK)
+    verbs.transition(log, ops, fill_subject, 'disputed', book=BOOK)
+    verbs.transition(log, ops, cash_subject, verbs.SETTLED, book=BOOK)
+    verbs.transition(log, confos, cash_subject, verbs.CONFIRMED, book=BOOK)
+
+    state = projections.fold(log, projections.PROJECTORS['lifecycle'])
+    assert state['confirmations'][fill_subject]['status'] == verbs.CONFIRMED
+    assert state['transitions'][cash_subject]['status'] == verbs.SETTLED
+    assert state['transitions'][fill_subject]['status'] == 'disputed'
+    assert state['confirmations'][cash_subject]['status'] == verbs.CONFIRMED
