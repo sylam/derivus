@@ -60,7 +60,7 @@ from . import schema
 from .schema import (declared_fields, flipped, index_named, instrument_of, job_children, mapping,
                      tables_of, walk_job_deals, without_clocks)
 from .config import Config, as_json
-from .structures import base_currency, market_of, timestamp
+from .structures import base_currency, market_of
 
 #: The whole switch, the actor beside it, and the folder a reader's folds start from. Read per
 #: call, like `DV_HOME` one module over.
@@ -626,7 +626,7 @@ def compiled_job(document, lsn=None, strict=True, runs=None, folds=None):
     observing = [(deal, terms, index_named(deal, terms, currency)) for deal, terms in observing]
     named = {index for _, _, indices in observing for index in indices}
     observed = (fixings(lsn, indices=named) if strict else observations(lsn, named)[0])
-    base = _base_day(filled)
+    base = base_day(filled)
     for deal, terms, indices in observing:
         deal[terms.table] = [_observed(row, terms, _level(indices, observed, _day(row))
                                        if _day(row) <= base else None)
@@ -673,7 +673,7 @@ def _balances(document, papers, lsn=None, folds=None):
     spine = package()
     cash = spine.projections.PROJECTORS['cash']
     held = spine.projections.CSA.held(folded(lambda log: cash.rows(advancing(
-        log, cash, lsn, folds))), _base_day(document))
+        log, cash, lsn, folds))), base_day(document))
     market = market_of(document)
     balances = {}
     for agreement, terms in sets.items():
@@ -855,8 +855,9 @@ def scaled(node, quantity):
     return held
 
 
-def _base_day(document):
-    """The ISO day this job is valued as of - what a print may not be dated after."""
+def base_day(document):
+    """The ISO day this job is valued as of - its `Calculation.Base_Date` - what a print may not
+    be dated after."""
     return _day([document['Calc']['Calculation']['Base_Date']])
 
 
@@ -2022,8 +2023,7 @@ class PnL:
                 job = json.loads(stored(row['job']).decode('utf-8'))
                 named = package().verbs.marks_of(job['Calc']['Deals'].get('Reference'))
                 cls.DAYS[(row['job'], book)] = None if named is None or named[0] != book else (
-                    timestamp(job['Calc']['Calculation']['Base_Date']).strftime('%Y-%m-%d'),
-                    named[1])
+                    base_day(job), named[1])
             if cls.DAYS[(row['job'], book)] is None:
                 continue
             day, cut = cls.DAYS[(row['job'], book)]

@@ -2583,8 +2583,7 @@ def book_positions(actor: str = None):
             document, lost, spine.stored)), None)
         diaried += [dict(row, instrument=legs.get(row['instrument'], row['instrument']))
                     for row in found]
-    ended = expiries(diaried, structures.timestamp(
-        document['Calc']['Calculation']['Base_Date']).strftime('%Y-%m-%d'))
+    ended = expiries(diaried, spine.base_day(document))
     rows = []
     for row in standing:
         expired, settles = ended.get(row['instrument'], (None, None))
@@ -3038,7 +3037,7 @@ def book_marks(request: dict):
                                  'declaration that is not a close - a book is marked at a close, so '
                                  'declare one (POST /book/close) and mark again'.format(
                                      spine.PNL, market['name']))
-    day = structures.timestamp(document['Calc']['Calculation']['Base_Date']).strftime('%Y-%m-%d')
+    day = spine.base_day(document)
     marks = PnL.marked(book, spine.closes(market['name']), spine.attestations(), spine.stored)
     if marks and day < max(marks):
         raise HTTPException(422, 'the book was last marked for {} and stands at {} - marks run '
@@ -3222,8 +3221,7 @@ def live_marks(document, book, since):
     job = PnL.marks_job(document, PnL.held_terms(document, wanted, spine.stored))
     context = load(spine.compiled_job(job, strict=False, folds=folds()))
     _, out = utils.run_whole(context.run_job)
-    return {'day': structures.timestamp(document['Calc']['Calculation']['Base_Date']).strftime(
-        '%Y-%m-%d'), 'lsn': spine.pin()['lsn'], 'units': PnL.unit_marks(as_json(out['Results'])),
+    return {'day': spine.base_day(document), 'lsn': spine.pin()['lsn'], 'units': PnL.unit_marks(as_json(out['Results'])),
         'values': context.market_patch(), 'live': True}
 
 
@@ -3442,8 +3440,7 @@ def book_collateral(date: str = None, actor: str = None):
     market = spine.designated_market(spine.PNL)['name']
     marks = PnL.marked(book_name(document), spine.closes(market), spine.attestations(),
                        spine.stored)
-    day = read_day(date) if date is not None else structures.timestamp(
-        document['Calc']['Calculation']['Base_Date']).strftime('%Y-%m-%d')
+    day = read_day(date) if date is not None else spine.base_day(document)
     if day not in marks:
         raise HTTPException(422, 'no marks stand for {} on {!r} - the days marked are {}; a call '
                                  'is read on a marked close, so mark the book at it with POST '
@@ -3745,7 +3742,7 @@ def book_worklist(actor: str = None):
     book, sight = book_name(document), spine.sight(actor)
     vocabulary, confirmed = spine.package().vocabulary, spine.package().verbs.CONFIRMED
     demands = spine.demands()
-    day = structures.timestamp(document['Calc']['Calculation']['Base_Date']).strftime('%Y-%m-%d')
+    day = spine.base_day(document)
     rows = [row for row in spine.standing(folds=folds()) if row['book'] == book]
     names = named_trades(document, {row['instrument'] for row in rows if row['tickets']})
     clients = client_names()
@@ -3942,8 +3939,7 @@ def book_close(request: dict):
     # both defaults are CONVENTIONS, so only an omitted key takes one: a date or a market that
     # names nothing is a value to refuse, and an empty day is one a string compare calls legal
     market = OFFICIAL_MARKET if request.get('market') is None else request['market']
-    day = (structures.timestamp(document['Calc']['Calculation']['Base_Date']).strftime('%Y-%m-%d')
-           if request.get('date') is None else read_day(request['date']))
+    day = spine.base_day(document) if request.get('date') is None else read_day(request['date'])
     verdict = close_verdict(announced(document, diary_of(document, request.get('actor'))['rows']),
                             day)
     if not verdict['legal']:
@@ -5316,7 +5312,7 @@ def book_status():
         # few for a simulated deal is NAMED here with the remedy rather than healed behind the desk
         'calculation': {'Object': calculation.get('Object'),
                         'Currency': calculation.get('Currency'),
-                        'Base_Date': read_stamp(calculation['Base_Date']).isoformat(),
+                        'Base_Date': spine.base_day(document),
                         'paths': calculation.get('MCMC_Simulations') or structures.declared_paths(),
                         'paths_note': structures.thin_paths(calculation)},
         'deals': sum(map(len, file_positions(document, ()).values())),
