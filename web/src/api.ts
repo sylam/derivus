@@ -211,7 +211,7 @@ export const runCalculation = (name: string, dealPath?: string) =>
 // where this workstation reads the files a job names: the two maps the service keeps on this box,
 // never in a job, beside a row per file the served book names; a save replaces both maps whole
 export const getPaths = () => call<PathsAnswer>('GET', '/paths');
-export const savePaths = (maps: PathMaps) => call<PathsAnswer>('POST', '/paths', maps);
+export const savePaths = (maps: PathMaps) => call<PathsAnswer>('POST', '/paths', signed(maps));
 // a quote: a structure priced against the book under the acting seat - queued and polled like an
 // execute, the quote landing under the run's `stats.Quote` - the pending trade its id names, the
 // spreadsheet a client is sent, and the acceptance that books it
