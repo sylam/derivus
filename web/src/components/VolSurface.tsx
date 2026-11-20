@@ -1,6 +1,5 @@
 import { Suspense, lazy, useCallback, useMemo, useState, type ComponentType } from 'react';
-import { GRADIENT, chartPalette, ramp } from '../charts/echarts';
-import { useChart } from '../charts/useChart';
+import { GRADIENT, chartPalette, ramp, useChart } from '../charts/useChart';
 import { axisText, formatNumber, tenorLabel } from '../tokens';
 import type { Descriptor } from '../types';
 import {

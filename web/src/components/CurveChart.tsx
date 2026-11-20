@@ -1,6 +1,5 @@
 import { useMemo } from 'react';
-import { chartPalette } from '../charts/echarts';
-import { useChart } from '../charts/useChart';
+import { chartPalette, useChart } from '../charts/useChart';
 import { axisText, formatNumber } from '../tokens';
 import { axisNames } from '../vols';
 

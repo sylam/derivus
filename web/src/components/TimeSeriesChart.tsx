@@ -1,6 +1,5 @@
 import { useMemo } from 'react';
-import { chartPalette } from '../charts/echarts';
-import { useChart } from '../charts/useChart';
+import { chartPalette, useChart } from '../charts/useChart';
 import { formatNumber, label } from '../tokens';
 import type { TablePage } from '../types';
 

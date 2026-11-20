@@ -1,8 +1,8 @@
 import { useMemo } from 'react';
 import { SurfaceChart } from 'echarts-gl/charts';
 import { Grid3DComponent } from 'echarts-gl/components';
-import echarts, { GRADIENT, chartPalette } from '../charts/echarts';
-import { useChart } from '../charts/useChart';
+import echarts from '../charts/echarts';
+import { GRADIENT, chartPalette, useChart } from '../charts/useChart';
 import { formatNumber, tenorLabel } from '../tokens';
 import type { Mesh } from '../vols';
 
