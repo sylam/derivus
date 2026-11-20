@@ -25,8 +25,8 @@ export function polled(source: Source | null): source is Source & { kind: 'book'
   return source?.kind === 'book' && !source.opened;
 }
 
-/** Whether a beat owes the desk's own book a read: the stamp the cheap status read answers has
- * moved past the one on screen. */
+/** Whether a beat owes the desk's own book a read: `/book/status` returns `etag` without a path
+ * (and `/book/open` is refused under a record), so a stamp change is the sole reload trigger. */
 export const bookOwed = (held: Source | null, etag: string): boolean =>
   polled(held) && held.etag !== etag;
 

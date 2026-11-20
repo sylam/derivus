@@ -326,7 +326,9 @@ table.data tr:hover td { background: var(--surface-2); }
 
 .blotterbar .spacer { flex: 1; }
 
-.blotterbar .hint { color: var(--text-muted); font-size: 12.5px; }
+.blotterbar .hint, .clientpage .hint, .tradepage .hint {
+  color: var(--text-muted); font-size: 12.5px;
+}
 
 .blotterbar .hint b { color: var(--text); }
 
@@ -336,7 +338,7 @@ button.chip {
   font: 550 12px var(--sans);
 }
 
-table.blotter { background: var(--surface); }
+:is(table.blotter, table.desk) { background: var(--surface); }
 
 table.blotter tbody tr { cursor: pointer; }
 
@@ -350,7 +352,8 @@ table.blotter tr.group td:first-child { font-weight: 600; }
 
 table.blotter tr.muted td { color: var(--text-muted); text-decoration: line-through; }
 
-table.blotter tr.selected td { background: var(--accent-soft); }
+:is(table.blotter, table.desk) tr.selected td,
+table.blotter tr.rolling.selected td { background: var(--accent-soft); }
 
 /* the roll-off emphasis: the scan target, so it reads before anything else on the row */
 table.blotter tr.rolling td:first-child { border-left-color: var(--warn); }
@@ -359,8 +362,6 @@ table.blotter tr.rolling td:first-child { border-left-color: var(--warn); }
 table.blotter td.rejected { color: var(--bad); }
 
 table.blotter tr.rolling td { background: color-mix(in srgb, var(--warn) 7%, transparent); }
-
-table.blotter tr.rolling.selected td { background: var(--accent-soft); }
 
 table.blotter td.days { font-weight: 600; }
 
@@ -374,7 +375,7 @@ table.blotter .caret {
   display: inline-block; width: 12px; color: var(--text-muted); font-size: 10px;
 }
 
-table.blotter .badge {
+:is(table.blotter, table.desk) .badge {
   margin-left: 6px; font-size: 10.5px; padding: 0 6px; border-radius: 999px;
   background: var(--surface-2); color: var(--text-muted);
 }
@@ -388,11 +389,11 @@ table.blotter .side.buy { background: color-mix(in srgb, var(--good) 14%, transp
 
 table.blotter .side.sell { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); }
 
-/* the opener rides the right edge: a panel opens without scrolling the references off the left */
-table.blotter td.opener {
+:is(table.blotter, table.desk) td.opener {
   text-align: right; color: var(--text-muted); width: 28px;
-  position: sticky; right: 0; background: var(--surface);
 }
+/* the blotter opener rides the right edge so references stay visible while scrolling */
+table.blotter td.opener { position: sticky; right: 0; background: var(--surface); }
 
 /* a long name keeps the row on the screen and reads whole on its hover */
 table.blotter td.clip { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
@@ -404,11 +405,13 @@ table.blotter td.ref { max-width: 230px; overflow: hidden; text-overflow: ellips
 table.blotter td.type { max-width: 130px; overflow: hidden; text-overflow: ellipsis; }
 table.blotter td.terms { white-space: normal; min-width: 160px; max-width: 190px; }
 
-table.blotter td.opener span { cursor: pointer; padding: 0 4px; }
+:is(table.blotter, table.desk) td.opener span { cursor: pointer; padding: 0 4px; }
 
-table.blotter tr.detail td { background: var(--bg); padding: 12px 16px; white-space: normal; }
+:is(table.blotter, table.desk) tr.detail td {
+  background: var(--bg); padding: 12px 16px; white-space: normal;
+}
 
-table.blotter tr.detail:hover td { background: var(--bg); }
+:is(table.blotter, table.desk) tr.detail:hover td { background: var(--bg); }
 
 /* ---- the desk's two data views: risk and xva ---- */
 
@@ -427,8 +430,6 @@ table.blotter tr.detail:hover td { background: var(--bg); }
   font-family: var(--mono); font-size: 12px; color: var(--accent);
 }
 
-table.desk { background: var(--surface); }
-
 table.desk th.sort { cursor: pointer; user-select: none; }
 
 table.desk th.sort:hover { color: var(--text); }
@@ -445,8 +446,6 @@ table.desk .family { color: var(--text-muted); }
 
 table.desk tr.pick { cursor: pointer; }
 
-table.desk tr.selected td { background: var(--accent-soft); }
-
 table.desk tr.muted td { color: var(--text-muted); }
 
 table.desk tr.total td {
@@ -459,19 +458,6 @@ table.desk td.age.stale { color: var(--warn); }
 
 /* no age at all - a set that has never run is not old, it is absent */
 table.desk td.age.none { color: var(--text-muted); }
-
-table.desk .badge {
-  margin-left: 6px; font-size: 10.5px; padding: 0 6px; border-radius: 999px;
-  background: var(--surface-2); color: var(--text-muted);
-}
-
-table.desk td.opener { text-align: right; color: var(--text-muted); width: 28px; }
-
-table.desk td.opener span { cursor: pointer; padding: 0 4px; }
-
-table.desk tr.detail td { background: var(--bg); padding: 12px 16px; white-space: normal; }
-
-table.desk tr.detail:hover td { background: var(--bg); }
 
 .chip.on { background: var(--accent-soft); color: var(--accent); }
 
@@ -685,8 +671,9 @@ table.credit tr.detail .card.profile > :is(.hint, .error-box, .tablenote) { marg
 
 .clienthead { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin: 0 0 12px; }
 .clienthead h2 { margin: 0; font-size: 19px; font-weight: 650; }
-.clientpage .hint { color: var(--text-muted); font-size: 12.5px; }
-.clientpage .card > :is(.note, .hint, .error-box) { margin: 10px 14px; }
+.card > .note,
+.clientpage .card > :is(.hint, .error-box),
+.card.credit > :not(h3) { margin: 10px 14px; }
 /* the verdict the page leads with, then each fact behind it marked by what it does to a booking */
 .verdict { padding: 10px 14px 2px; font-size: 14px; font-weight: 650; }
 .verdict.ready { color: var(--good); }
@@ -721,12 +708,9 @@ table.credit tr.detail .card.profile > :is(.hint, .error-box, .tablenote) { marg
 .stat.solved .value, table.blotter td.solved { color: var(--accent); font-weight: 650; }
 .card.acceptance.booked { border-color: color-mix(in srgb, var(--good) 45%, transparent); }
 .statusrow .refusal { color: var(--bad); font-size: 12px; }
-/* a strip's fixings under its leg, as its declaration names their columns */
+/* a strip's fixings under its leg, and credit curve tables, sized to their rows */
 table.blotter tr.schedule td { background: var(--bg); padding-top: 2px; padding-bottom: 8px; }
-table.blotter tr.schedule table.data { width: auto; min-width: 360px; }
-/* a credit curve's card: its lines inset as a field panel's, its tables as wide as their rows */
-.card.credit > :not(h3) { margin: 10px 14px; }
-.card.credit table.data { width: auto; min-width: 360px; }
+table.blotter tr.schedule table.data, .card.credit table.data { width: auto; min-width: 360px; }
 
 /* ---- a trade's own page ---- */
 
@@ -745,7 +729,6 @@ button.tradelink:hover { color: var(--accent); text-decoration-color: var(--acce
 .unwind .banner button { margin-left: 6px; }
 .tradetitle { margin: 6px 0 12px; font-size: 19px; font-weight: 650; }
 .tradetitle .hint { margin-left: 12px; font-size: 12.5px; font-weight: 400; color: var(--text-muted); }
-.tradepage .hint { color: var(--text-muted); font-size: 12.5px; }
 .tradepage div.hint { margin: 8px 0; }
 
 /* ---- a ticket to sign ---- */
@@ -773,6 +756,3 @@ div.hint.signing { padding: 10px 0 12px; font-size: 12.5px; color: var(--text-mu
 
 /* ---- a restrike's moved fields, under its row of a trade's history ---- */
 .signfacts.moved { margin: 6px 0 2px; }
-
-/* ---- what holds a seat from an act, said where its control would stand ---- */
-.card > .note { margin: 10px 14px; }
