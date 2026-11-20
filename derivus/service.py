@@ -737,7 +737,18 @@ async def bearer(request: Request):
             raise HTTPException(401, str(refused))
 
 
-app = FastAPI(title='derivus', version=__version__, dependencies=[Depends(bearer)])
+async def read_session(request: Request):
+    """Share one log handle, the book's advancing folds, and a per-read memo across a GET request.
+    Skips the streaming doorbell, which stays open across appends."""
+    if request.method != 'GET' or request.url.path == DOORBELL or not spine.configured():
+        yield
+        return
+    with spine.one_read(folds()):
+        yield
+
+
+app = FastAPI(title='derivus', version=__version__,
+              dependencies=[Depends(bearer), Depends(read_session)])
 app.add_middleware(CORSMiddleware, allow_origins=ORIGINS, allow_methods=['*'], allow_headers=['*'])
 EXECUTOR = ComputeExecutor()
 PLANS = PlanCache(32)

@@ -5415,3 +5415,63 @@ def test_a_bearer_token_names_the_seat_and_nothing_else_does(recorded, desk, tmp
     monkeypatch.setenv('DV_SPINE_JWKS', str(tmp_path / 'missing.json'))
     unread = CLIENT.get('/book', headers=signed)
     assert unread.status_code == 401 and 'does not read as a key set' in unread.json()['detail']
+
+
+def test_a_read_advances_its_folds_across_bookings_and_homes(recorded, desk, tmp_path,
+                                                             monkeypatch):
+    """A GET read advances the served book's folds and sees every booking immediately; a second
+    book or home served in the same process never reads the first's folds, and a historical read
+    does not regress the held head.
+
+    Killing mutations: Book.folds never advancing past its first read - the second booking is
+    absent from `/book/positions`; folds shared across homes without checking genesis - the second
+    home answers the first's positions; historical read regressing Book.folds head.
+    """
+    with_client(desk)
+    first = CLIENT.post('/book/deals', content=dump({
+        'action': 'add', 'deal': dict(CASHFLOW, Reference='FOLD-1', Amount=100_000.0),
+        'parent_reference': CLIENT_SET, 'quantity': 1.0, 'execution_reference': 'FOLD-1'}),
+        headers=JSON)
+    assert first.json()['written'] is True, first.text
+    seen_one = CLIENT.get('/book/positions').json()
+    assert len(seen_one['positions']) == 1
+    first_lsn = first.json()['recorded']['lsn']
+
+    second = CLIENT.post('/book/deals', content=dump({
+        'action': 'add', 'deal': dict(CASHFLOW, Reference='FOLD-2', Amount=200_000.0),
+        'parent_reference': CLIENT_SET, 'quantity': 1.0, 'execution_reference': 'FOLD-2'}),
+        headers=JSON)
+    assert second.json()['written'] is True, second.text
+    seen_two = CLIENT.get('/book/positions').json()
+    assert len(seen_two['positions']) == 2
+    second_lsn = second.json()['recorded']['lsn']
+
+    # A historical read must not regress the held head in Book.folds.
+    assert CLIENT.get('/book/diary', params={'lsn': first_lsn}).status_code == 200
+    assert service.BOOK.folds['positions']['lsn'] >= second_lsn
+    assert len(CLIENT.get('/book/positions').json()['positions']) == 2
+
+    # A fresh home in the same process starts clean, never seeing the first home's positions.
+    other = tmp_path / 'other_home'
+    spine.package().genesis.init_home(str(other), ACTOR)
+    monkeypatch.setenv('DV_SPINE_HOME', str(other))
+    assert CLIENT.get('/book/positions').json()['positions'] == []
+
+
+def test_compiled_job_with_no_observing_deal_skips_observations(recorded, desk):
+    """A book holding no deal that declares an observation compiles identically whether strict or
+    not, even when the record holds prints for an index no fixings policy orders.
+
+    Killing mutation: compiling with `indices=None` (or folding every print when nothing observes)
+    - strict compilation refuses the undeclared print's index.
+    """
+    with_client(desk)
+    with spine.writing() as log:
+        log.append('fixing_observed', {
+            'index': 'FxRate.UNDECLARED', 'date': '2024-06-20', 'value': 1.25, 'source': 'WM'},
+            actor=ACTOR, book='BOOK')
+    document, _ = service.BOOK.read()
+    strict_job = spine.compiled_job(document, strict=True, folds=service.folds())
+    loose_job = spine.compiled_job(document, strict=False, folds=service.folds())
+    assert derivus.content_hash(strict_job) == derivus.content_hash(loose_job)
+

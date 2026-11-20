@@ -317,12 +317,38 @@ def writing():
                 log.close()
 
 
+#: The active read session for a single GET request or `compiled_job`: holds the lazily opened log,
+#: the served book's advancing folds, and a per-read `(projector, lsn) -> state` memo.
+READ = contextvars.ContextVar('derivus_spine_read', default=None)
+
+
+@contextlib.contextmanager
+def one_read(folds=None):
+    """Share one read-only log handle, advancing `folds`, and a per-read projector memo across
+    every `folded` call inside the block."""
+    session = {'log': None, 'folds': folds, 'memo': {}}
+    token = READ.set(session)
+    try:
+        yield session
+    finally:
+        READ.reset(token)
+        if session['log'] is not None:
+            session['log'].close()
+
+
 def folded(fold):
     """Run the read-only `fold` over the home's log and return its answer.
 
     The read side of `writing`. Reading never claims the home, so this takes no lock and can run
     while another thread writes - asking the record a question never queues behind an append.
+    Inside `one_read`, reuses that session's open log handle rather than rescanning the segments.
     """
+    session = READ.get()
+    if session is not None:
+        with translating():
+            if session['log'] is None:
+                session['log'] = package().SpineLog(where())
+            return fold(session['log'])
     with translating():
         log = package().SpineLog(where())
         try:
@@ -394,11 +420,27 @@ def fold_from(log, projector, lsn=None):
     return package().projections.fold_from(log, projector, lsn=lsn, folder=seeds())
 
 
+def _state(log, projector, lsn=None, folds=None):
+    """`projector`'s state at `lsn`, memoised across an active `one_read` and advanced on `folds`
+    (else `READ`'s folds) where held."""
+    session = READ.get()
+    at = log.head()[0] if lsn is None else lsn
+    key = (projector.name, at)
+    if session is not None and key in session['memo']:
+        return session['memo'][key]
+    held = folds if folds is not None else (session['folds'] if session is not None else None)
+    state = advancing(log, projector, at, held) if held is not None else fold_from(log, projector, lsn)
+    if session is not None:
+        session['memo'][key] = state
+    return state
+
+
 def _rows(projector, lsn=None):
-    """One projector's rows at `lsn`, folded off the home - what every read below is made of."""
+    """One projector's rows at `lsn`, folded off the home - what every read below is made of.
+    Copied so callers cannot mutate state held in advancing folds or a read memo."""
     def fold(log):
         named = package().projections.PROJECTORS[projector]
-        return named.rows(fold_from(log, named, lsn))
+        return deepcopy(named.rows(_state(log, named, lsn)))
 
     return folded(fold)
 
@@ -417,11 +459,11 @@ def advancing(log, projector, lsn=None, folds=None):
     Bounded at the position it answers rather than at the end of the platter, so the pair says
     exactly what it covers and a frame appended mid-fold is not applied twice. A position BEHIND the
     pair, or one no pair is held for, folds from the newest seed at or behind it (genesis where
-    there is none), and a pair taken on another history is passed over - keyed on the GENESIS EVENT
-    HASH rather than on the path, the way `read_seed` checks a close's own hash, so a home re-minted
-    where the last one stood is a different record and not a fold that answers its predecessor's.
-    What comes back is the pair's own state, so a caller READS it and does not edit it - and a
-    caller at the position the pair stands at pays nothing.
+    there is none) without regressing the held head, and a pair taken on another history is passed
+    over - keyed on the GENESIS EVENT HASH rather than on the path, the way `read_seed` checks a
+    close's own hash, so a home re-minted where the last one stood is a different record and not a
+    fold that answers its predecessor's. What comes back is the pair's own state, so a caller READS
+    it and does not edit it - and a caller at the position the pair stands at pays nothing.
     """
     if folds is None:
         return fold_from(log, projector, lsn)
@@ -435,8 +477,9 @@ def advancing(log, projector, lsn=None, folds=None):
     state = projections.fold(log, projector, lsn=at,
                              seed=held if held and held['lsn'] <= at
                              else projections.latest_seed(log, projector, seeds(), at))
-    folds[projector.name] = {'projector': projector.name, 'version': projector.version,
-                             'genesis': genesis, 'lsn': at, 'state': state}
+    if held is None or at >= held['lsn']:
+        folds[projector.name] = {'projector': projector.name, 'version': projector.version,
+                                 'genesis': genesis, 'lsn': at, 'state': state}
     return state
 
 
@@ -545,7 +588,15 @@ def fixings(lsn=None, indices=None):
     order refuses for - a plan may not read a fixing nobody vouched for. A READ asks `observations`
     instead, which refuses nothing.
     """
-    return folded(lambda log: package().projections.fixings_at(log, lsn=lsn, indices=indices))
+    if indices is not None and not indices:
+        return {}
+
+    def read(log):
+        projections = package().projections
+        state = _state(log, projections.PROJECTORS['lifecycle'], lsn)
+        return projections.fixings_at(log, lsn=lsn, indices=indices, state=state)
+
+    return folded(read)
 
 
 def observations(lsn=None, indices=None):
@@ -556,13 +607,18 @@ def observations(lsn=None, indices=None):
     row that names it reads due rather than taking the verb down. A print for an index nothing here
     names is nothing to this read at all.
     """
+    named = set(indices or ())
+    if not named:
+        return {}, []
+
     def fold(log):
         spine = package()
         blob, document, _ = spine.policy.in_force(log, spine.policy.FIXINGS_POLICY, lsn)
         ordered = {} if blob is None else document[spine.policy.FIXINGS_SECTION]
-        named = set(indices or ())
+        wanted = named & set(ordered)
+        state = _state(log, spine.projections.PROJECTORS['lifecycle'], lsn) if wanted else None
         return (spine.projections.fixings_at(log, lsn=lsn, sources=ordered,
-                                             indices=named & set(ordered)),
+                                             indices=wanted, state=state),
                 sorted(named - set(ordered)))
 
     return folded(fold)
@@ -614,33 +670,34 @@ def compiled_job(document, lsn=None, strict=True, runs=None, folds=None):
         job_children(document)
     except ValueError:
         return document
-    held = _nets(lsn, book_name(document))
-    papers = _papers(document, lsn)
-    balances = {} if runs is False else _balances(document, papers, lsn, folds)
-    if (runs or document['Calc']['Calculation'].get('Object')) == BaseValuation.__name__:
-        balances = {}
-    if not held and not balances and not papers and not _observing(document):
-        return document
-    filled = deepcopy(document)
-    _hold(filled, held)
-    for _, node in netting_sets(filled):
-        deal = node['Instrument']['.Deal']
-        if deal.get('Reference') in papers:
-            node['Instrument']['.Deal'] = deal = _papered(deal, papers[deal['Reference']])
-        if deal.get('Reference') in balances:
-            deal['Opening_Balance'] = balances[deal['Reference']]
-    observing = _observing(filled)
-    # an index is named in the market's base currency, which only an observed deal asks
-    currency = base_currency(market_of(filled)) if observing else None
-    observing = [(deal, terms, index_named(deal, terms, currency)) for deal, terms in observing]
-    named = {index for _, _, indices in observing for index in indices}
-    observed = (fixings(lsn, indices=named) if strict else observations(lsn, named)[0])
-    base = base_day(filled)
-    for deal, terms, indices in observing:
-        deal[terms.table] = [_observed(row, terms, _level(indices, observed, _day(row))
-                                       if _day(row) <= base else None)
-                             for row in deal[terms.table]]
-    return filled
+    with (contextlib.nullcontext() if READ.get() is not None else one_read(folds)):
+        held = _nets(lsn, book_name(document))
+        papers = _papers(document, lsn)
+        balances = {} if runs is False else _balances(document, papers, lsn, folds)
+        if (runs or document['Calc']['Calculation'].get('Object')) == BaseValuation.__name__:
+            balances = {}
+        if not held and not balances and not papers and not _observing(document):
+            return document
+        filled = deepcopy(document)
+        _hold(filled, held)
+        for _, node in netting_sets(filled):
+            deal = node['Instrument']['.Deal']
+            if deal.get('Reference') in papers:
+                node['Instrument']['.Deal'] = deal = _papered(deal, papers[deal['Reference']])
+            if deal.get('Reference') in balances:
+                deal['Opening_Balance'] = balances[deal['Reference']]
+        observing = _observing(filled)
+        # an index is named in the market's base currency, which only an observed deal asks
+        currency = base_currency(market_of(filled)) if observing else None
+        observing = [(deal, terms, index_named(deal, terms, currency)) for deal, terms in observing]
+        named = {index for _, _, indices in observing for index in indices}
+        observed = (fixings(lsn, indices=named) if strict else observations(lsn, named)[0]) if named else {}
+        base = base_day(filled)
+        for deal, terms, indices in observing:
+            deal[terms.table] = [_observed(row, terms, _level(indices, observed, _day(row))
+                                           if _day(row) <= base else None)
+                                 for row in deal[terms.table]]
+        return filled
 
 
 def book_name(document):
@@ -680,7 +737,7 @@ def _balances(document, papers, lsn=None, folds=None):
         return {}
     spine = package()
     cash = spine.projections.PROJECTORS['cash']
-    held = spine.projections.CSA.held(folded(lambda log: cash.rows(advancing(
+    held = spine.projections.CSA.held(folded(lambda log: cash.rows(_state(
         log, cash, lsn, folds))), base_day(document))
     market = market_of(document)
     balances = {}
@@ -1186,7 +1243,7 @@ def agreements(lsn=None):
     def fold(log):
         projections = package().projections
         named = projections.PROJECTORS['agreements']
-        rows = named.rows(fold_from(log, named, lsn))
+        rows = named.rows(_state(log, named, lsn))
         return [dict(row, terms=json.loads(log.store.get(row['terms']).decode('utf-8')),
                      terms_hash=row['terms']) for row in rows]
 
@@ -1279,7 +1336,7 @@ def cash_standing(folds=None):
     def read(log):
         cash = package().projections.PROJECTORS['cash']
         head = log.head()[0]
-        return head, cash.rows(advancing(log, cash, head, folds))
+        return head, deepcopy(cash.rows(_state(log, cash, head, folds)))
 
     return folded(read)
 
@@ -1347,9 +1404,9 @@ def standing(lsn=None, folds=None):
 
     def read(log):
         projections = spine.projections
-        decisions = advancing(log, projections.PROJECTORS['decisions'], lsn, folds)
-        rows = projections.PROJECTORS['positions'].rows(
-            advancing(log, projections.PROJECTORS['positions'], lsn, folds))
+        decisions = _state(log, projections.PROJECTORS['decisions'], lsn, folds)
+        rows = deepcopy(projections.PROJECTORS['positions'].rows(
+            _state(log, projections.PROJECTORS['positions'], lsn, folds)))
         for row in rows:
             row['tickets'] = [dict(entry, status=status, waits_on=waits_on(entry, status, decisions))
                               for entry, status in zip(row['tickets'],

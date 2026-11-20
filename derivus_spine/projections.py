@@ -885,23 +885,26 @@ def close_on(log, date=None):
     return None if found is None else found[1]
 
 
-def fixings_at(log, lsn=None, sources=None, indices=None):
+def fixings_at(log, lsn=None, sources=None, indices=None, state=None):
     """`{(index, date): {value, source, effective_time, lsn}}` - the fixing in force per index and
     date, resolved across sources by the declared order.
 
-    One fold: the prints are the `lifecycle` projection's, and `sources` is the `fixings` policy in
-    force unless the caller states one. The first named source holding a print wins. `indices` is
-    what the caller needs resolved (default: every index the log holds prints of), and an index
-    among them that the document does not name REFUSES BY NAME - a fixing whose authority nobody
-    declared is not a fixing a plan may use - while an index nobody asked about is left alone. A
-    home declaring no policy at all has named an authority for nothing and answers nothing.
+    One fold: the prints are the `lifecycle` projection's (`state` where the caller already holds
+    it), and `sources` is the `fixings` policy in force unless the caller states one. The first
+    named source holding a print wins. `indices` is what the caller needs resolved (default: every
+    index the log holds prints of), and an index among them that the document does not name REFUSES
+    BY NAME - a fixing whose authority nobody declared is not a fixing a plan may use - while an
+    index nobody asked about is left alone. A home declaring no policy at all has named an authority
+    for nothing and answers nothing.
     """
+    if indices is not None and not indices:
+        return {}
     if sources is None:
         blob, document, _ = in_force(log, FIXINGS_POLICY, lsn)
         if blob is None:
             return {}
         sources = document[FIXINGS_SECTION]
-    observed = fold(log, PROJECTORS['lifecycle'], lsn=lsn)['fixings']
+    observed = (fold(log, PROJECTORS['lifecycle'], lsn=lsn) if state is None else state)['fixings']
     resolved = {}
     for index in sorted(observed if indices is None else set(indices) & set(observed)):
         order = sources.get(index)
