@@ -1356,7 +1356,7 @@ def ticket_terms(document, deal, values_hash, quantity=1.0):
     (`deal_expiry`), and null where it names none, which fails a tier that bounds the tenor.
     """
     market = market_of(document)
-    base = structures.timestamp(document['Calc']['Calculation']['Base_Date'])
+    base = pd.Timestamp(spine.base_day(document))
     scale = abs(quantity) if isinstance(quantity, (int, float)) else 0.0
     notional_in = {}
     for currency, amount in deal_size(market, base, deal).items():
@@ -4679,7 +4679,7 @@ def book_survival(request: dict):
                                  'recovered on default, 0.4 by convention'.format(recovery))
 
     def edit(document, etag):
-        base = structures.timestamp(document['Calc']['Calculation']['Base_Date'])
+        base = pd.Timestamp(spine.base_day(document))
         points = [[0.0, 0.0]]
         for row in rows:
             years = (base + utils.parse_period(row['tenor']) - base).days / 365.0
@@ -7121,8 +7121,8 @@ def spot_day(document, context, pair):
     """The day an accepted quote's premium settles: `pair`'s spot date for `document`'s base date
     on the calendars `context` loaded, the convention its legs are dated under
     (`structures.tenor_dates`)."""
-    day = structures.timestamp(document['Calc']['Calculation']['Base_Date']).normalize()
-    return structures.spot_date(day, structures.pair_convention(
+    day = pd.Timestamp(spine.base_day(document))
+    return structures.spot_date(day,structures.pair_convention(
         market_of(document), context.current_cfg.holidays, structures.split_pair(pair))).strftime(
         '%Y-%m-%d')
 
