@@ -6330,6 +6330,91 @@ def test_a_written_survival_curve_names_the_horizon_it_runs_on_to(book, monkeypa
         'curve': curve([0.0, 0.0], [ten, 0.01 * ten / 0.6], [sixty, 0.012 * sixty / 0.6])}
 
 
+#: Every verb that writes market data or its set-up, a body it would act on, and the act its denial
+#: names. The terminal verbs' bodies refuse on their own past the seat, so none can ever queue.
+MARKET_WRITES = (
+    ('/book/market', {'patch': {'FxRate.ZAR': {'Spot': 19.25}}}, 'market_tick'),
+    ('/book/configure', {'section': 'Price Factor Interpolation', 'entry': 'InterestRate',
+                         'fields': {'method': 'Hermite'}}, 'market_configuration'),
+    ('/book/curve', {'curve': 'ZAR', 'currency': 'ZAR', 'rows': CURVE_ROWS}, 'curve'),
+    ('/book/date', {'base_date': '2024-07-01'}, 'base_date'),
+    ('/book/survival', {'counterparty': 'GHOST', 'spread': 150.0}, 'survival_curve'),
+    ('/book/bloomberg', {}, 'terminal_tick'),
+    ('/book/setup', {}, 'market_setup'),
+    ('/book/model', {'pair': 'USDZAR'}, 'spot_model'),
+    ('/book/securities', {'block': 'fx_vol', 'key': 'pillars', 'entry': [0.25]},
+     'ticker_vocabulary'),
+    ('/book/securities/verify', {'block': 'nonsense'}, 'security_map'))
+
+
+def test_the_market_is_the_marking_seats_on_a_recorded_desk(recorded, book, tmp_path):
+    """ON A RECORDED DESK THE MARKET IS THE MARKING SEAT'S. Under a capabilities document a seat
+    holding `book` and `validate` but no `mark` asks each of the ten verbs that write market data or
+    its set-up, and each refuses in the record's one sentence naming what is not written, its denial
+    landed in turn - the book and the desk's seed untouched. A request naming no seat is refused at
+    each before anything is recorded. The marking seat then sets the curve up naming itself, and
+    patches the spot to 19.25.
+
+    The terminal verbs are asked of a book configuring no bootstrapper, for a vocabulary block the
+    seed does not carry and a pair with no built surface, so each refuses on its own before anything
+    queues even where the seat is not asked.
+
+    Killing mutations: `/book/market` asking no `mark`, which writes the spot the unscoped seat
+    patched; and `actor` read as a curve convention, which refuses the marking seat's own curve.
+    """
+    from derivus import spine
+    from derivus_spine import SpineLog
+    from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
+
+    desk, trader = 'subject-desk-one', 'subject-trader'
+    raw = canonical_document({'grants': [{'subject': desk, 'verb': verb, 'book': '*'} for verb in (
+        'admin', 'mark', 'book', 'validate')] + [{'subject': trader, 'verb': verb, 'book': '*'}
+                                                 for verb in ('book', 'validate')], 'read': []})
+    log = SpineLog(recorded)
+    try:
+        log.append('policy_declared', {'policy': CAPABILITIES_POLICY,
+                                       'blob': hashlib.sha256(raw).hexdigest()},
+                   actor=desk, pending=(raw,))
+    finally:
+        log.close()
+
+    def denials():
+        log = SpineLog(recorded)
+        try:
+            return [(frame['lsn'], log.open_body(frame)) for frame in log.frames()
+                    if frame['event_type'] == 'capability_denied']
+        finally:
+            log.close()
+
+    before = book.read_bytes()
+    said = [CLIENT.post(route, content=dump(dict(body, actor=trader)), headers=JSON)
+            for route, body, _ in MARKET_WRITES]
+    landed = denials()
+    assert [body for _, body in landed] == [
+        {'subject': trader, 'verb': 'mark', 'book': 'service', 'attempted_type': attempted}
+        for _, _, attempted in MARKET_WRITES]
+    assert [(answer.status_code, answer.json()['detail']) for answer in said] == [
+        (422, "actor 'subject-trader' holds no mark scope over 'service', so no {} is written. "
+              "Declare a document granting ('subject-trader', mark, 'service') through `DV_Spine "
+              "grant --file`. The refusal is itself recorded at LSN {}".format(
+                  attempted.replace('_', ' '), lsn))
+        for (_, _, attempted), (lsn, _) in zip(MARKET_WRITES, landed)]
+    unsigned = [CLIENT.post(route, content=dump(body), headers=JSON)
+                for route, body, _ in MARKET_WRITES]
+    assert {(answer.status_code, answer.json()['detail']) for answer in unsigned} == {
+        (422, spine.UNNAMED.format(spine.SPINE_ACTOR))}
+    assert denials() == landed, 'an unsigned call recorded a denial'
+    assert book.read_bytes() == before and not (tmp_path / 'seed.json').exists()
+
+    curve = CLIENT.post('/book/curve', content=dump(dict(MARKET_WRITES[2][1], actor=desk)),
+                        headers=JSON)
+    assert curve.status_code == 200 and curve.json()['block'] == CURVE_BLOCK, curve.json()
+    assert CLIENT.post('/book/market', content=dump(dict(MARKET_WRITES[0][1], actor=desk)),
+                       headers=JSON).json()['written'] is True
+    assert json.loads(book.read_text())['Calc']['MergeMarketData']['ExplicitMarketData'][
+        'Price Factors']['FxRate.ZAR']['Spot'] == 19.25
+
+
 def test_fva_is_a_column_of_the_same_row_off_the_same_run(desk_xva, tmp_path):
     """CVA and FVA are two columns of ONE row from ONE credit Monte Carlo, sharing the row's
     identity: one `as_of`, one `result_id`, one `plan_hash`. That is what makes them addable - two

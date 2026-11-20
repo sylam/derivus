@@ -1045,6 +1045,9 @@ QUEUED = (('price_candidate', {}), ('execute_book', {}),
 TERMINAL = (('setup_market', {'deal_path': '0'}), ('tick_market_from_bloomberg', {}),
             ('verify_securities', {'block': 'fx_spot'}))
 
+#: The queued tool whose run writes the market, so the seat it answers holds `mark` as well.
+MARKING = ('calibrate_spot_model',)
+
 
 @pytest.mark.parametrize('name, arguments, admitted', [
     (*tool, admitted) for tools, admitted in ((QUEUED, True), (TERMINAL, False)) for tool in tools],
@@ -1054,7 +1057,8 @@ def test_a_tool_that_asks_the_queue_answers_the_seat_it_names_and_refuses_none(
     """Under a capabilities document the queue admits a named seat or nothing, so each tool that
     puts work on the hub's compute, or values the book on the request thread, is refused naming no
     seat in the service's own words, refused by name as a seat holding no grant, and answers a seat
-    holding `validate`. A terminal's tools are asked only the two refusals, and a box whose
+    holding `validate` - and `mark`, for the fit that writes the market. A terminal's tools are
+    asked only the two refusals, and a box whose
     `blpapi` does not import, which refuses them for the terminal first, skips them. The book
     carries a netting set, the FX vol bootstrapper, a short spot-model ladder and a ticked surface,
     so every tool reaches the queue's question.
@@ -1078,9 +1082,10 @@ def test_a_tool_that_asks_the_queue_answers_the_seat_it_names_and_refuses_none(
             pytest.skip('the service refuses a box with no terminal before it asks the seat')
         log = SpineLog(recorded)
         try:
+            verbs = ('validate', 'mark') if name in MARKING else ('validate',)
             policy.declare_bytes(log, 'subject-desk-one', CAPABILITIES_POLICY, canonical_document(
-                {'grants': [{'subject': 'subject-desk-two', 'verb': 'validate', 'book': '*'}],
-                 'read': []}))
+                {'grants': [{'subject': 'subject-desk-two', 'verb': verb, 'book': '*'}
+                            for verb in verbs], 'read': []}))
         finally:
             log.close()
 
@@ -1157,7 +1162,7 @@ def test_a_curve_is_described_set_up_and_read_back(book):
     tools = {tool.name: tool for tool in asyncio.run(mcp_server.MCP.list_tools())}
     assert set(tools['describe_curve'].input_schema['properties']) == {'curve'}
     assert set(tools['configure_curve'].input_schema['properties']) == {
-        'curve', 'currency', 'rows', 'discount_rate', 'conventions', 'interpolation'}
+        'curve', 'currency', 'rows', 'discount_rate', 'conventions', 'interpolation', 'actor'}
 
     menu = mcp_server.describe_curve()
     assert menu['curves'] == {} and 'ZAR' in menu['seeded']
@@ -1200,7 +1205,7 @@ def test_the_date_is_set_by_name_and_the_curve_follows_it(book):
     from test_service import CURVE_ROWS
 
     tools = {tool.name: tool for tool in asyncio.run(mcp_server.MCP.list_tools())}
-    assert set(tools['set_base_date'].input_schema['properties']) == {'base_date'}
+    assert set(tools['set_base_date'].input_schema['properties']) == {'base_date', 'actor'}
     mcp_server.configure_curve('ZAR', 'ZAR', CURVE_ROWS)
     before = mcp_server.describe_curve('ZAR')
 
@@ -1237,7 +1242,7 @@ def test_the_ticker_vocabulary_and_its_evidence_are_one_read(book, tmp_path, mon
 
     assert set(tools['describe_securities'].input_schema['properties']) == {'block'}
     assert set(tools['configure_securities'].input_schema['properties']) == {
-        'block', 'key', 'entry'}
+        'block', 'key', 'entry', 'actor'}
     assert set(tools['verify_securities'].input_schema['properties']) == {
         'block', 'key', 'securities', 'actor', 'wait_seconds'}
     assert bare['provisioned'] is False and set(bare['seed']) == {'rates'}

@@ -769,7 +769,7 @@ async def run_calculation(name: str, deal_path: str | None = None, actor: str | 
 
 
 @MCP.tool()
-def update_market_quotes(quotes: dict, bootstrap: bool = True) -> dict:
+def update_market_quotes(quotes: dict, bootstrap: bool = True, actor: str | None = None) -> dict:
     """Tick the live book's market with quote blocks - `{name: block}` exactly as a quote source
     emits them (`derivus_bloomberg.to_market_prices_block` for an FX vol surface; any `Market
     Prices` family). An existing block may move ONLY its quoted values and timestamps - a changed
@@ -777,13 +777,15 @@ def update_market_quotes(quotes: dict, bootstrap: bool = True) -> dict:
     tick. With `bootstrap` (the default) the engine turns the quotes into the price factors the
     pricers read, and the book file gains everything in one atomic write; a bootstrap that
     complains refuses the WHOLE write and hands its messages back as `refused`. After a
-    successful tick, `solve_deal` and `price_candidate` price against the fresh market."""
-    return service().call('POST', '/book/market', json={
-        'quotes': quotes, 'bootstrap': 'Yes' if bootstrap else 'No'})
+    successful tick, `solve_deal` and `price_candidate` price against the fresh market. `actor` is
+    the seat writing it - on a recorded desk one holding `mark`, as for every verb that moves the
+    market."""
+    return service().call('POST', '/book/market', json=dict({
+        'quotes': quotes, 'bootstrap': 'Yes' if bootstrap else 'No'}, **_stated(actor=actor)))
 
 
 @MCP.tool()
-def configure_book(section: str, entry: str, fields: dict) -> dict:
+def configure_book(section: str, entry: str, fields: dict, actor: str | None = None) -> dict:
     """Set the dials the live book bootstraps its market with - `fields` MERGED into one entry
     `describe_configuration` declares, everything else in it standing.
 
@@ -799,9 +801,9 @@ def configure_book(section: str, entry: str, fields: dict) -> dict:
     a quote is read; the whole market is then re-bootstrapped in the same atomic write, and a
     bootstrap that complains refuses everything and hands its messages back as `refused` with the
     file untouched. On success the answer names the entry written, the dials it now carries, and
-    the price factors the re-bootstrap rewrote."""
-    return service().call('POST', '/book/configure',
-                          json={'section': section, 'entry': entry, 'fields': fields})
+    the price factors the re-bootstrap rewrote. `actor` is the seat writing it."""
+    return service().call('POST', '/book/configure', json=dict(
+        {'section': section, 'entry': entry, 'fields': fields}, **_stated(actor=actor)))
 
 
 @MCP.tool(annotations=READ_ONLY)
@@ -829,7 +831,8 @@ def describe_curve(curve: str = None) -> dict:
 
 @MCP.tool()
 def configure_curve(curve: str, currency: str, rows: list, discount_rate: str = None,
-                    conventions: dict = None, interpolation: str = None) -> dict:
+                    conventions: dict = None, interpolation: str = None,
+                    actor: str | None = None) -> dict:
     """Set a curve up in the live book from its BENCHMARK INSTRUMENTS, and solve it.
 
     `rows` are the benchmarks, `[{"tenor": "3M", "security": "JIBA3M Index", "quote": 7.41}, ...]`,
@@ -858,15 +861,14 @@ def configure_curve(curve: str, currency: str, rows: list, discount_rate: str = 
     and the price factors that moved. A row priced off the terminal carries the print's own clock,
     and where that is later than the day the book stands at the book ROLLS ONTO IT - both its dates
     - and every other curve is re-authored there too. Afterwards `tick_market_from_bloomberg` keeps
-    these rows valued off the terminal."""
+    these rows valued off the terminal. `actor` is the seat writing it."""
     return service().call('POST', '/book/curve', json=dict(
         conventions or {}, curve=curve, currency=currency, rows=rows,
-        **({} if discount_rate is None else {'discount_rate': discount_rate}),
-        **({} if interpolation is None else {'interpolation': interpolation})))
+        **_stated(discount_rate=discount_rate, interpolation=interpolation, actor=actor)))
 
 
 @MCP.tool()
-def set_base_date(base_date: str) -> dict:
+def set_base_date(base_date: str, actor: str | None = None) -> dict:
     """Set the live book's CALCULATION DATE - the day everything it holds is valued as of.
 
     `base_date` is an ISO day, `"2026-09-19"`. The book carries the date twice - the day its
@@ -881,23 +883,25 @@ def set_base_date(base_date: str) -> dict:
     `tick_market_from_bloomberg` and `configure_curve` already roll the date FORWARD onto the day
     their quotes were snapped. This is the verb that puts it anywhere - a back-valuation included -
     so call it to value the book as of a day of someone's choosing, never to catch up with a
-    tick."""
-    return service().call('POST', '/book/date', json={'base_date': base_date})
+    tick. `actor` is the seat writing it."""
+    return service().call('POST', '/book/date',
+                          json=dict({'base_date': base_date}, **_stated(actor=actor)))
 
 
 @MCP.tool()
-def patch_market_values(patch: dict) -> dict:
+def patch_market_values(patch: dict, actor: str | None = None) -> dict:
     """Move market VALUES in the live book - `{factor: {field: value}}`, e.g.
     `{"FxRate.ZAR": {"Spot": 19.25}}`. Only value-bound fields move (spots, rate columns, vols);
     a structural key - anything that would change the plan - is refused by the engine's own rule.
     A `Market Prices` block is refused here too, naming `update_market_quotes` as the remedy: a
     quote moves the book through the path that bootstraps, never through a values patch. One atomic
-    write; every client sees it on its next read."""
-    return service().call('POST', '/book/market', json={'patch': patch})
+    write; every client sees it on its next read. `actor` is the seat writing it."""
+    return service().call('POST', '/book/market',
+                          json=dict({'patch': patch}, **_stated(actor=actor)))
 
 
 @MCP.tool()
-def retire_market_overrides(paths: list[list[str]]) -> dict:
+def retire_market_overrides(paths: list[list[str]], actor: str | None = None) -> dict:
     """Put the market data FILE's entry back where the live book's own block states one over it -
     "take the spot back to the file's". Each path runs from the section down to the entry,
     `[["Price Factors", "FxRate.ZAR"]]`, or `["Price Factor Interpolation", ".ModelParams",
@@ -907,8 +911,10 @@ def retire_market_overrides(paths: list[list[str]]) -> dict:
     complains writes nothing and hands its messages back as `refused`. A path the block does not
     state refuses by name, the service's 422 naming the key it lacks. Retiring the block's system
     date, `["System Parameters", "Base_Date"]` or its section whole, is `set_base_date` back to the
-    file's day first: both the book's dates move and every curve block is re-authored there."""
-    return service().call('POST', '/book/market', json={'retire': paths})
+    file's day first: both the book's dates move and every curve block is re-authored there.
+    `actor` is the seat writing it."""
+    return service().call('POST', '/book/market',
+                          json=dict({'retire': paths}, **_stated(actor=actor)))
 
 
 @MCP.tool()
@@ -986,7 +992,8 @@ def describe_securities(block: str = None) -> dict:
 
 
 @MCP.tool()
-def configure_securities(block: str, key: str, entry: dict | list | None = None) -> dict:
+def configure_securities(block: str, key: str, entry: dict | list | None = None,
+                         actor: str | None = None) -> dict:
     """Set one entry of the desk's own ticker vocabulary - the seed `describe_securities` reads
     back, in the same shape.
 
@@ -1002,9 +1009,10 @@ def configure_securities(block: str, key: str, entry: dict | list | None = None)
     The merged seed is validated by SPELLING every candidate it now names, so a malformed entry is
     refused before anything is written and the answer carries the tickers that block now spells.
     THIS CHANGES NO NUMBER: a seed names candidates, and `verify_securities` is what asks the
-    terminal about them and writes the map a curve is then set up off."""
-    return service().call('POST', '/book/securities',
-                          json={'block': block, 'key': key, 'entry': entry})
+    terminal about them and writes the map a curve is then set up off. `actor` is the seat writing
+    it."""
+    return service().call('POST', '/book/securities', json=dict(
+        {'block': block, 'key': key, 'entry': entry}, **_stated(actor=actor)))
 
 
 @MCP.tool()

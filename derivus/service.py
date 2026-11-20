@@ -4586,8 +4586,9 @@ def book_market(request: dict):
     retired moves both the book's dates to the file's, as `POST /book/date` moves them.
 
     A `patch` naming a `Market Prices` block is refused with the remedy, the one place the book is
-    stricter than the engine: see `QUOTE_NOT_A_PATCH`.
+    stricter than the engine: see `QUOTE_NOT_A_PATCH`. `actor` is the seat writing it (`marking`).
     """
+    marking(request, 'market_tick')
     live = live_book()
 
     def edit(document, etag):
@@ -4598,6 +4599,16 @@ def book_market(request: dict):
         return live.mutate(edit)
     except (ValueError, KeyError) as error:
         raise HTTPException(422, str(error))
+
+
+def marking(request, attempted):
+    """Let the seat `request` names write the market - market data and its set-up are the marking
+    seat's, `mark` over the book served, over the firm where none is - or refuse in the record's own
+    words, the denial of `attempted` landed. Every seat where no home is configured."""
+    if spine.configured():
+        spine.entitled(spine.package().vocabulary.MARK, request.get('actor'),
+                       None if BOOK is None else book_name(BOOK.read()[0]), attempted,
+                       'no {} is written'.format(attempted.replace('_', ' ')))
 
 
 #: Where a survival curve the desk writes ends: fifty years, past any exposure a book carries - the
@@ -4615,19 +4626,18 @@ def book_survival(request: dict):
     row's line to `SURVIVAL_HORIZON`, which the answer names as `horizon`: a flat spread is a flat
     hazard to fifty years. Nothing here looks a spread up.
 
-    Under a home the seat holds `mark` over the book - market data is the marking seat's - its
-    refusal landed, and the counterparty is an entity the record declares. A counterparty that
-    names nobody, a spread that is not a positive number, a recovery outside [0, 1) and tenors that
-    do not rise each refuse in a sentence of their own, the first three opening with the field
-    they are about and what it stated. One atomic write, as every market verb.
+    Under a home the seat holds `mark` over the book (`marking`) and the counterparty is an entity
+    the record declares. A counterparty that names nobody, a spread that is not a positive number, a
+    recovery outside [0, 1) and tenors that do not rise each refuse in a sentence of their own, the
+    first three opening with the field they are about and what it stated. One atomic write, as
+    every market verb.
     """
     live, counterparty, recovery = live_book(), request.get('counterparty'), request.get(
         'recovery', 0.4)
     spread = request.get('spread')
     rows = spread if isinstance(spread, list) else [{'tenor': '1Y', 'spread': spread}]
+    marking(request, 'survival_curve')
     if spine.configured():
-        spine.entitled(spine.package().vocabulary.MARK, request.get('actor'),
-                       book_name(live.read()[0]), 'survival_curve', 'no survival curve is written')
         declared = sorted(row['entity'] for row in spine.entities())
         if counterparty not in declared:
             raise HTTPException(422, 'counterparty {!r} is no legal entity the record declares - '
@@ -4819,8 +4829,10 @@ def book_configure(request: dict):
     the family is read over it. The change is validated by building what reads it - a malformed
     dial refuses by name before a quote is read - and the whole market is then re-bootstrapped in
     the same atomic write, so a bootstrap that complains writes NOTHING and hands its messages back
-    as `refused`. `/schema`'s `Configuration` store declares what each entry may carry.
+    as `refused`. `/schema`'s `Configuration` store declares what each entry may carry. `actor` is
+    the seat writing it (`marking`).
     """
+    marking(request, 'market_configuration')
     live = live_book()
 
     def edit(document, etag):
@@ -4833,9 +4845,10 @@ def book_configure(request: dict):
         raise HTTPException(422, str(error))
 
 
-#: What a curve request states about the CURVE. Everything else it carries is a convention, which
-#: the seed's entry completes and `curve_conventions` refuses by name where nothing reads it.
-CURVE_FIELDS = ('curve', 'currency', 'discount_rate', 'rows', 'interpolation')
+#: What a curve request states about the CURVE, and the seat writing it. Everything else it carries
+#: is a convention, which the seed's entry completes and `curve_conventions` refuses by name where
+#: nothing reads it.
+CURVE_FIELDS = ('curve', 'currency', 'discount_rate', 'rows', 'interpolation', 'actor')
 
 #: The quote blocks a curve verb and the tick both read, and the `Bootstrapper Configuration` entry
 #: that solves one - the family's own declarations, so neither can drift from what it writes.
@@ -5099,8 +5112,9 @@ def book_curve(request: dict):
     curve block is re-authored there too, in the same write. Rows a desk states by hand carry no
     print and are authored as of the day the book already stands at. A book that rolled PAST that
     day while the terminal was answering refuses by name rather than going back, and only
-    `POST /book/date` moves it anywhere else.
+    `POST /book/date` moves it anywhere else. `actor` is the seat writing it (`marking`).
     """
+    marking(request, 'curve')
     live = live_book()
     document, _ = live.read()
     try:
@@ -5315,8 +5329,10 @@ def book_date(request: dict):
     nothing to re-roll under: it is named in `held_out` and left standing, as the tick leaves it.
 
     THIS IS THE VERB THAT GOES ANYWHERE - back as readily as forward. The curve verb and the tick
-    roll the date FORWARD onto the day their quotes were snapped and never off it.
+    roll the date FORWARD onto the day their quotes were snapped and never off it. `actor` is the
+    seat writing it (`marking`).
     """
+    marking(request, 'base_date')
     live = live_book()
     try:
         base_date = read_stamp(request['base_date'])
@@ -5548,8 +5564,10 @@ def book_bloomberg(request: dict):
     Answers `{result_id, status}` like `/execute`, a terminal round trip being minutes of work:
     `/results/{result_id}` carries `progress` while it runs and the outcome under `stats.Bloomberg`.
     The id names the ACT rather than the numbers, so two ticks are two fetches. `actor` is the seat
-    the queue admits it under, as for every job a request queues.
+    the queue admits it under, as for every job a request queues, and first the seat writing the
+    market (`marking`).
     """
+    marking(request, 'terminal_tick')
     return submit_bloomberg(
         {key: request[key] for key in ('pairs', 'expiries', 'pillars') if key in request},
         actor=spine.actor(request.get('actor')) if spine.configured() else None)
@@ -5715,10 +5733,12 @@ def book_securities_entry(request: dict):
     The desk's file is `DV_HOME/seed.json`, and a desk that has none starts from the packaged
     questionnaire, which is never written; the file this replaces is kept beside it as
     `seed.json.bak_<stamp>`. A SEED NAMES CANDIDATES AND NOTHING MORE - the map is what a terminal
-    verified, and `POST /book/securities/verify` is the only thing that writes one.
+    verified, and `POST /book/securities/verify` is the only thing that writes one. `actor` is the
+    seat writing it (`marking`).
     """
     from derivus_bloomberg.errors import BloombergFXError
 
+    marking(request, 'ticker_vocabulary')
     block, key = request.get('block'), request.get('key')
     if not block or not key:
         raise HTTPException(422, 'a vocabulary entry is named by its `block` and its `key` - '
@@ -5864,10 +5884,12 @@ def book_securities_verify(request: dict):
 
     Answers `{result_id, status}` like `/execute`: `/results/{result_id}` carries `progress` while
     it runs and the outcome under `stats.Securities`. A workstation with no terminal refuses by
-    name HERE - the map is evidence and only a terminal writes one.
+    name HERE - the map is evidence and only a terminal writes one - after the seat writing it
+    (`marking`).
     """
     from derivus_bloomberg.errors import BloombergFXError
 
+    marking(request, 'security_map')
     if not terminal_status()['present']:
         raise HTTPException(422, NO_TERMINAL)
     try:
@@ -6497,10 +6519,11 @@ def book_setup(request: dict):
     it runs and the outcome under `stats.Setup`. Refused 422 AT SUBMISSION where this workstation
     has no terminal, where the book declares no `Bootstrapper Configuration`, where the request
     names a pair this desk's vocabulary does not spell, and where a `deal` is one the booking verb
-    would itself refuse, in its words.
+    would itself refuse, in its words - each after the seat writing it (`marking`).
     """
     from derivus_bloomberg.errors import BloombergFXError
 
+    marking(request, 'market_setup')
     live = live_book()
     document, etag = live.read()
     if not market_of(document)['Bootstrapper Configuration']:
@@ -6665,10 +6688,11 @@ def book_model(request: dict):
     There is no GET side: the written factor IS the projection and `GET /book` serves it.
 
     REFUSED HERE, on the request thread, on a pair the book carries no built surface for and on a
-    family that calibrates nothing off one. The job re-authors the block against the document it
-    locks, so a book that moved between the check and the write is fitted as it is rather than as
-    it was.
+    family that calibrates nothing off one, each after the seat writing it (`marking`). The job
+    re-authors the block against the document it locks, so a book that moved between the check and
+    the write is fitted as it is rather than as it was.
     """
+    marking(request, 'spot_model')
     live = live_book()
     document, etag = live.read()
     pair, family = request.get('pair'), request.get('family') or structures.Structure.spot_model

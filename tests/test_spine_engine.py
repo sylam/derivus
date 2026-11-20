@@ -4892,8 +4892,9 @@ def test_the_consolidated_risk_and_the_explain_ask_the_queue_s_question(recorded
 def test_the_tick_and_the_verification_queue_under_the_seat_that_asked(recorded, quoting):
     """A POSTED TICK AND A VERIFICATION ARE THE CALLER'S; the metronome's beat alone is the
     deployment's. Under a document granting the hub's seat `validate`, a tick posted for a seat
-    holding nothing is refused naming it, the denial's attempted type the TELEMETRY lane, and so is
-    a verification queued for it, whose job names no book and so asks over `*`; a tick or a
+    holding `mark` alone - the market's own question passed - is refused naming it, the denial's
+    attempted type the TELEMETRY lane, and so is a verification queued for it, whose job names no
+    book and so asks over `*`; a tick or a
     verification naming no seat is refused by name rather than run as the hub; and the executor's
     store is exactly what it was. The beat, which names no seat, is still admitted under
     `DV_SPINE_ACTOR` and runs, refusing the unprovisioned home before it opens a session. The
@@ -4903,7 +4904,8 @@ def test_the_tick_and_the_verification_queue_under_the_seat_that_asked(recorded,
     Killing mutations: the helper ignoring its `actor`, which queues the stranger's verification
     under the hub; and the verb passing the hub's seat, which admits the stranger's tick.
     """
-    entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate')])
+    entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate')]
+            + [(STRANGER, 'mark', '*')])
     service.EXECUTOR.queue.join()
     before = dict(service.EXECUTOR.results)
 

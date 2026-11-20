@@ -185,7 +185,7 @@ def a_late_fixing_after_the_close(table):
     """
     table.file(roles.PRODUCT_CONTROL, 'fixing_observed',
                {'index': HEARTBEAT, 'date': roles.D2, 'source': 'GAME', 'value': LATE_SPOT})
-    binding.patch_market_values({'FxRate.ZAR': {'Spot': LATE_SPOT}})
+    binding.patch_market_values({'FxRate.ZAR': {'Spot': LATE_SPOT}}, actor=roles.PRODUCT_CONTROL)
     restated = binding.declare_close(date=roles.D2, actor=roles.PRODUCT_CONTROL)
     table.did(roles.PRODUCT_CONTROL, 'declare_close (restated)',
               recorded=restated['recorded']['lsn'], supersedes_lsn=restated['supersedes_lsn'])

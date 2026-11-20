@@ -332,13 +332,13 @@ def open_the_day(day, spot=None):
         if day == D1:
             from test_service import dump, fx_vol_quotes
 
-            binding.update_market_quotes(json.loads(dump(fx_vol_quotes())))
+            binding.update_market_quotes(json.loads(dump(fx_vol_quotes())), actor=PRODUCT_CONTROL)
             table.did(PRODUCT_CONTROL, 'update_market_quotes FXVolPrices.USD.ZAR')
         if day != D0:
-            rolled = binding.set_base_date(day)
+            rolled = binding.set_base_date(day, actor=PRODUCT_CONTROL)
             table.did(PRODUCT_CONTROL, 'set_base_date ' + day, written=rolled.get('written'))
         if spot is not None:
-            binding.patch_market_values({'FxRate.ZAR': {'Spot': spot}})
+            binding.patch_market_values({'FxRate.ZAR': {'Spot': spot}}, actor=PRODUCT_CONTROL)
             table.did(PRODUCT_CONTROL, 'patch_market_values FxRate.ZAR {}'.format(spot))
         marked = binding.declare_market(OFFICIAL, actor=PRODUCT_CONTROL)
         table.did(PRODUCT_CONTROL, 'declare_market ' + OFFICIAL,
