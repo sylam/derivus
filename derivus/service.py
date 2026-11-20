@@ -576,6 +576,9 @@ class Book:
         # the record's folds a booking or a read advances rather than re-walks (`spine.advancing`),
         # kept as long as the book is served
         self.folds = {}
+        # the result id a recalc of each netting set would file, by what it is worked out from
+        # (`recalc_ids`): an XVA read with nothing moved works nothing out
+        self.recalcs = utils.LRUCache(2)
         # each file the book names parsed once per content, for every context a request builds
         # over it (`load`): the newest of the market data and the calendar and the ones before
         self.parses = utils.LRUCache(4)
@@ -4137,7 +4140,10 @@ def xva_document(document, node, counterparty):
     deflation or risk-free curve is written: the engine reads both as the base currency's own, so
     nothing here reads the market.
     """
-    run = deepcopy(document)
+    # cut to the set before the copy: the book's other sets are no part of this job
+    deals = document['Calc']['Deals']
+    run = deepcopy(dict(document, Calc=dict(document['Calc'], Deals=dict(
+        deals, Deals=dict(deals['Deals'], Children=[])))))
     # the pin moves on a booking into any set, so one set's plan does not carry it
     run.pop(SPINE_PIN, None)
     job_children(run)[:] = [node]
@@ -4405,14 +4411,26 @@ class IncrementJob:
                       'Stats': {'Increment': answer}}
 
 
-def projection_entry(row, recalc_id=None, **book):
+def recalc_ids(live, document, etag):
+    """`{reference: id}` - the result id a recalc of each netting set of the book would file now.
+    Kept on the book by what they are worked out from - its text, the record's head and the
+    digests of the files it names - so a read with nothing moved works nothing out."""
+    files = content_hash(Context().files(document))
+    key = (etag, spine.folded(lambda log: log.head()[0]) if spine.configured() else None, files)
+    kept = live.recalcs.get(key)
+    if kept is None:
+        pricing = priced(document, 'CreditMonteCarlo')
+        kept = live.recalcs.put(key, {
+            node['Instrument']['.Deal'].get('Reference'): content_hash(
+                xva_stamp(pricing, node, files)[2]) for _, node in netting_sets(pricing)})
+    return kept
+
+
+def projection_entry(row, **book):
     """One row of the XVA view: what the BOOK says the set is now, over what the last RUN said
     about it. Every field is always present - a never-run set reads `status: 'never run'` with
-    nulls beside it - so a blotter renders one table rather than branching per row.
-
-    `current` says whether a recalc now would be the row's own run: `recalc_id` is the result id
-    one would file the set under, and the row's equals it, or not - false for a set the book no
-    longer holds, null for one never run.
+    nulls beside it - so a blotter renders one table rather than branching per row. `current` is
+    the view's, null where it is not stated.
 
     A row filed before a column existed is still a row: `fva` is read like every other field, so a
     CVA-only row reads `done` with a null `fva`, one filed before `currency` a null currency
@@ -4421,13 +4439,13 @@ def projection_entry(row, recalc_id=None, **book):
     recalc an old `as_of` takes."""
     row = row or {}
     entry = dict({'reference': None, 'deal_path': None, 'counterparty': row.get('counterparty'),
-                  'collateralized': row.get('collateralized'), 'note': None}, **book)
+                  'collateralized': row.get('collateralized'), 'note': None, 'current': None},
+                 **book)
     entry.update(status=row.get('status', 'never run'), cva=row.get('cva'), fva=row.get('fva'),
                  currency=row.get('currency'), as_of=row.get('as_of'),
                  result_id=row.get('result_id'),
                  plan_hash=row.get('plan_hash'), values_hash=row.get('values_hash'),
                  seed=row.get('seed'), quasi_seed=row.get('quasi_seed'), error=row.get('error'),
-                 current=row.get('result_id') == recalc_id if row else None,
                  peaks=row.get('peaks'), profile=row.get('profile'), recalc=None)
     pending = XVA_PENDING.get(entry['reference'])
     outcome = EXECUTOR.result(pending) if pending is not None else None
@@ -4456,30 +4474,30 @@ def book_xva_view():
     STALENESS IS DATA. The rows carry different `as_of` stamps on purpose - that is what a partial
     recalc means - so the view never blocks, never runs a CMC, and never hides a number's age.
     `currency` is the one the row's own run reported in, and `current` whether a recalc now would
-    price what the row priced - the book as it prices for one, each set's stamp hashed, no compile.
+    be the row's own run: the result id it would file the set under (`recalc_ids`) against the
+    row's - false for a set the book no longer holds, null for one never run.
 
     What a credit officer reads off a run's profile is kept on its row: `peaks` the largest `EE`
     and each `PFE_<percentile>` with the day each falls, `{value, day}`, and `profile` the table
     itself, `{columns, index, data}`, so neither goes with the service's memory.
     """
-    document, _ = live_book().read()
+    live = live_book()
+    document, etag = live.read()
     rows = read_projection().get('sets') or {}
-    pricing = priced(document, 'CreditMonteCarlo')
-    files = content_hash(Context().files(pricing))
-    stamped = {node['Instrument']['.Deal'].get('Reference'): node
-               for _, node in netting_sets(pricing)}
+    ids = recalc_ids(live, document, etag)
     entries, seen = [], set()
     for deal_path, node in netting_sets(document):
         deal = node['Instrument']['.Deal']
         reference = deal.get('Reference')
         counterparty, collateralized = set_terms(deal)
         seen.add(reference)
+        row = rows.get(reference)
         entries.append(projection_entry(
-            rows.get(reference), content_hash(xva_stamp(pricing, stamped[reference], files)[2]),
-            reference=reference, deal_path=deal_path, counterparty=counterparty,
-            collateralized=collateralized))
+            row, reference=reference, deal_path=deal_path, counterparty=counterparty,
+            collateralized=collateralized,
+            current=row['result_id'] == ids[reference] if row else None))
     for reference in sorted(set(rows) - seen):
-        entries.append(projection_entry(rows[reference], reference=reference, note=(
+        entries.append(projection_entry(rows[reference], reference=reference, current=False, note=(
             'no NettingCollateralSet called {!r} is in the book any more - this row is the last '
             'run of a set that has since left it'.format(reference))))
     return {'as_of': as_of(), 'path': xva_path(), 'sets': entries}

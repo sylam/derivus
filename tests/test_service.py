@@ -6545,6 +6545,68 @@ def test_an_xva_row_says_whether_it_is_the_books_and_keeps_its_profile(desk_xva,
         'current': False, 'peaks': None, 'profile': None}
 
 
+def collateral_desk(path):
+    """A recorded desk of two one-option sets on a market file of its own: NS_A, and NS_COL,
+    collateralised under an agreement the record declares with CPTY_B."""
+    market = path / 'market.json'
+    market.write_text(dump({'MarketData': {
+        'System Parameters': {'Base_Currency': 'USD', 'Base_Date': BASE}, 'Price Factors': {}}}))
+    held = netting_set('NS_COL', 'CPTY_B', [dict(VANILLA, Reference='OPT_C')])
+    held['Instrument']['.Deal']['Collateralized'] = 'True'
+    book = xva_book(path, [netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')]),
+                           held])
+    document = json.loads(book.read_text())
+    document['Calc']['MergeMarketData']['MarketDataFile'] = str(market)
+    book.write_text(json.dumps(document, indent=2), newline='\n')
+    for route, body in (('/book/entities', {'entity': 'CPTY_B', 'name': 'Client B'}),
+                        ('/book/agreements', {'agreement': 'NS_COL', 'entity': 'CPTY_B',
+                                              'kind': 'ISDA 2002 with CSA',
+                                              'terms': held['Instrument']['.Deal']})):
+        assert CLIENT.post(route, content=dump(body), headers=JSON).status_code == 200
+    return book, market
+
+
+def held_under(agreement, asset, amount):
+    """Collateral of `asset` the record holds under `agreement` from the book's own day."""
+    assert CLIENT.post('/book/transition', content=dump({
+        'subject': agreement, 'status': 'settled', 'amount': amount, 'asset': asset,
+        'kind': 'collateral', 'reference': 'MOVE-' + asset, 'value_date': '2024-06-28'}),
+        headers=JSON).status_code == 200
+
+
+def test_a_recalc_s_id_is_kept_by_the_book_its_record_and_its_files(recorded, tmp_path):
+    """WHAT A RECALC WOULD FILE IS WORKED OUT ONCE PER STATE, and the state is the book's text, the
+    record's head and the digests of the files it names. Recalced, both sets read `current`. The
+    record moves under an unmoved file - 1,000 dollars of collateral held under NS_COL from the
+    book's day, which its plan now carries as a balance - and NS_COL reads stale while NS_A, whose
+    plan nothing moved, stays current. The market file moves under an unmoved book - a factor
+    nothing reads written into it - and NS_A reads stale too, every set's `values_hash` being the
+    files' digests.
+
+    Killing mutations: the record's head left out of what the ids are kept by, which reads NS_COL
+    as current past the collateral; and the files' digests left out, which reads NS_A as current
+    past the file.
+    """
+    book, market = collateral_desk(tmp_path)
+    try:
+        recalc()
+
+        def current():
+            return [xva_rows()[reference]['current'] for reference in ('NS_A', 'NS_COL')]
+
+        assert current() == [True, True]
+        etag = CLIENT.get('/book').json()['etag']
+        held_under('NS_COL', 'USD', 1000.0)
+        assert current() == [True, False] and CLIENT.get('/book').json()['etag'] == etag
+        market.write_text(dump({'MarketData': {
+            'System Parameters': {'Base_Currency': 'USD', 'Base_Date': BASE},
+            'Price Factors': {'FxRate.EUR': {'Domestic_Currency': None, 'Interest_Rate': 'USD',
+                                             'Spot': 1.1}}}}))
+        assert current() == [False, False] and CLIENT.get('/book').json()['etag'] == etag
+    finally:
+        service.BOOK = None
+
+
 def test_the_cva_column_reads_the_same_whether_or_not_fva_ran(desk_xva):
     """One run serving both adjustments must not make the credit one a different number.
 
