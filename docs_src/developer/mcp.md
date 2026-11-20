@@ -62,6 +62,7 @@ structure takes it as `name`. **Held by**
 | `validate_book`, `describe_book` | `POST /validate`, `/describe` over the live book |
 | `describe_portfolios`, `declare_portfolio` | `GET`/`POST /book/portfolios`: the declared tree |
 | `price_candidate`, `execute_book` | `POST /book/price`: the book with a candidate, or alone; nothing written |
+| `xva_increment` | `POST /book/price` with `xva_increment`: what a candidate or a quote adds to its netting set's CVA, FVA and peak exposure, both runs on the same paths; nothing written |
 | `describe_calculations`, `configure_calculation`, `run_calculation` | `GET`/`POST /calculations`, `POST /calculations/run`: the desk's named calculations |
 | `solve_deal` | `POST /book/solve`: one field solved to a target, the deal ready to book |
 | `solve_structure`, `book_quote` | `POST /book/structure`, `/book/quote`: a quote filed pending; its acceptance |
@@ -157,10 +158,10 @@ every write files under the seat in `actor`. They are optional in the schema bec
 serves a desk with a record and one without; the service's refusal names a missing one. A delete
 records nothing, so it takes no seat. Under a capabilities document the queue admits only a named
 seat, so every tool whose endpoint asks one takes `actor` as `run_calculation` does
-(`price_candidate`, `execute_book`, `solve_deal`, `book_risk_summary`, `recalc_xva`,
-`calibrate_spot_model`, `setup_market`, `tick_market_from_bloomberg`, `verify_securities`), and one
-naming none is refused in the service's words; a terminal's tools are gated on the two refusals
-alone, never on an admitted trip.
+(`price_candidate`, `xva_increment`, `execute_book`, `solve_deal`, `book_risk_summary`,
+`recalc_xva`, `calibrate_spot_model`, `setup_market`, `tick_market_from_bloomberg`,
+`verify_securities`), and one naming none is refused in the service's words; a terminal's tools are
+gated on the two refusals alone, never on an admitted trip.
 `describe_instrument_type` marks the fields a position scales (`sized`), flips (`side`) and settles
 cash on (`settles`). **Held by** `test_a_recorded_desk_books_and_accepts_through_the_binding`,
 `test_a_tool_that_asks_the_queue_answers_the_seat_it_names_and_refuses_none`; **Not gated:** those
@@ -187,7 +188,9 @@ than 500 rows. **Held by** `test_a_run_comes_back_as_shapes_never_cells`,
 Risk is whole-book and counterparty-blind, one base valuation cached on the book's content; XVA is
 a projection per netting set in `DV_HOME/xva.json`, each row with its `as_of`, moved only by
 `recalc_xva` because a credit Monte Carlo is too slow to ride a tick. The docstrings say so, so a
-model neither reads an old CVA as live nor runs a simulation to answer a delta.
+model neither reads an old CVA as live nor runs a simulation to answer a delta. What one trade adds
+to its client's XVA is `xva_increment`, never a difference against a row: the row's run draws on
+another grid. **Held by** `test_the_increment_tool_answers_the_services_own_increment`.
 
 ### Solves run in the service
 
@@ -227,9 +230,9 @@ tier wanting a second seat books the trade pending until `approve_quote`. **Held
 
 A desktop host cuts a call that stays quiet for about a minute and resets that clock on every
 progress notification, and several runs take minutes. So each tool that sits on a run
-(`price_candidate`, `execute_book`, `run_calculation`, `solve_deal`, `solve_structure`,
-`recalc_xva`, `calibrate_spot_model`, `tick_market_from_bloomberg`, `verify_securities`,
-`setup_market`) is `async`, threads its blocking calls, and waits in `_await_result`, which reports
+(`price_candidate`, `xva_increment`, `execute_book`, `run_calculation`, `solve_deal`,
+`solve_structure`, `recalc_xva`, `calibrate_spot_model`, `tick_market_from_bloomberg`,
+`verify_securities`, `setup_market`) is `async`, threads its blocking calls, and waits in `_await_result`, which reports
 the seconds waited, the `wait_seconds` and the run's own `progress` note on every poll: a quarter
 second apart for two seconds, then a second. `ctx` never appears in a schema, since a host would try
 to fill it. Past `wait_seconds` the answer is `{result_id, status, hint}` and the run carries on.

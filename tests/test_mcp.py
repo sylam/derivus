@@ -82,8 +82,8 @@ def test_every_tool_is_registered_and_carries_its_contract():
     expected = {'list_instrument_types', 'describe_instrument_type', 'describe_calculation_type',
                 'describe_factor_type', 'describe_configuration', 'job_skeleton', 'desk_status',
                 'read_book', 'read_deal', 'book_deal', 'amend_deal', 'delete_deal',
-                'price_candidate', 'solve_deal', 'execute_book', 'validate_book', 'describe_book',
-                'poll_result', 'fetch_table', 'deal_values', 'configure_book',
+                'price_candidate', 'xva_increment', 'solve_deal', 'execute_book', 'validate_book',
+                'describe_book', 'poll_result', 'fetch_table', 'deal_values', 'configure_book',
                 'describe_curve', 'configure_curve', 'set_base_date', 'update_market_quotes',
                 'patch_market_values', 'retire_market_overrides', 'describe_securities',
                 'configure_securities',
@@ -105,8 +105,8 @@ def test_every_tool_is_registered_and_carries_its_contract():
         assert tool.description and len(tool.description) > 60, f'{name} has no real contract'
     writers = {name for name, tool in tools.items()
                if not (tool.annotations and tool.annotations.read_only_hint)}
-    assert writers == {'book_deal', 'amend_deal', 'delete_deal', 'price_candidate', 'solve_deal',
-                       'execute_book', 'update_market_quotes', 'patch_market_values',
+    assert writers == {'book_deal', 'amend_deal', 'delete_deal', 'price_candidate', 'xva_increment',
+                       'solve_deal', 'execute_book', 'update_market_quotes', 'patch_market_values',
                        'retire_market_overrides', 'tick_market_from_bloomberg', 'solve_structure',
                        'book_quote', 'approve_quote', 'reject_quote', 'approve_ticket',
                        'reject_ticket',
@@ -513,7 +513,7 @@ def test_the_fx_strike_axis_is_published_on_the_field_a_model_fills_in():
 
 
 #: The tools that sit on a run and therefore have to speak while they sit.
-WAITING = ('price_candidate', 'execute_book', 'solve_deal', 'solve_structure',
+WAITING = ('price_candidate', 'xva_increment', 'execute_book', 'solve_deal', 'solve_structure',
            'calibrate_spot_model', 'recalc_xva', 'tick_market_from_bloomberg',
            'verify_securities', 'setup_market')
 
@@ -746,6 +746,33 @@ def test_booking_a_deal_prices_it(book):
     assert run['status'] == 'done' and run['waited'] is True
     values = mcp_server.deal_values(run['result_id'])
     assert values['CF2'] == pytest.approx(BOOKED['Amount'] * SPOT * np.exp(-RATE * 2.0), rel=1e-3)
+
+
+def test_the_increment_tool_answers_the_services_own_increment(tmp_path, monkeypatch):
+    """`xva_increment` is the what-if verb asked for an increment: its answer is the service's own
+    `stats.Increment` for the same question, a real CVA increment among it, and the book file does
+    not move.
+
+    Killing mutation: the tool posting the candidate without `xva_increment`, which prices the book
+    plus the call and answers no increment.
+    """
+    from test_service import SHORT_CALL, netting_set, xva_book
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    path = xva_book(tmp_path, [netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')],
+                                           funding_rate='FUND')])
+    try:
+        before = path.read_bytes()
+        answer = asyncio.run(mcp_server.xva_increment(
+            deal=json.loads(dump(SHORT_CALL)), parent_reference='NS_A'))
+        submitted = CLIENT.post('/book/price', content=dump(
+            {'deal': SHORT_CALL, 'parent_reference': 'NS_A', 'xva_increment': True}),
+            headers=JSON).json()
+        service.EXECUTOR.queue.join()
+        assert answer == CLIENT.get('/results/{}'.format(
+            submitted['result_id'])).json()['stats']['Increment']
+        assert answer['cva']['increment'] > 0.0 and path.read_bytes() == before
+    finally:
+        service.BOOK = None
 
 
 def test_the_risk_summary_ranks_by_the_move_each_row_is_read_per(book):
@@ -1010,6 +1037,7 @@ def test_a_recorded_desk_books_and_accepts_through_the_binding(recorded, tmp_pat
 QUEUED = (('price_candidate', {}), ('execute_book', {}),
           ('solve_deal', {'deal': json.loads(dump(BOOKED)), 'field': 'Amount'}),
           ('book_risk_summary', {}), ('recalc_xva', {'netting_sets': ['CLIENT_A']}),
+          ('xva_increment', {'deal': json.loads(dump(BOOKED)), 'parent_reference': 'CLIENT_A'}),
           ('calibrate_spot_model', {'pair': 'USDZAR'}))
 
 #: The tools whose admitted run is a trip to the terminal, which no test makes: each is asked only
@@ -1031,7 +1059,7 @@ def test_a_tool_that_asks_the_queue_answers_the_seat_it_names_and_refuses_none(
     carries a netting set, the FX vol bootstrapper, a short spot-model ladder and a ticked surface,
     so every tool reaches the queue's question.
 
-    Killing mutation: any one of the nine not forwarding its `actor`, which the service refuses
+    Killing mutation: any one of the ten not forwarding its `actor`, which the service refuses
     as unnamed.
     """
     from derivus_spine import SpineLog, policy

@@ -6487,6 +6487,311 @@ def test_a_row_filed_before_the_fva_column_existed_still_reads(desk_xva, tmp_pat
     assert rows['NS_B'] == old['NS_B'], 'a partial recalc upgraded a row it was not asked for'
 
 
+#: Seven months out: NS_A's year-long call never settles there, so a candidate dated on it adds a
+#: day to the grid a run of the set alone simulates on.
+SEVEN_MONTHS = BASE + pd.DateOffset(months=7)
+SHORT_CALL = dict(VANILLA, Reference='OPT_C', Expiry_Date=SEVEN_MONTHS)
+
+#: Dollars on the dollar curve, which no model drives: worth the same on every path.
+SURE_CASH = {'Object': 'FixedCashflowDeal', 'Reference': 'CF_C', 'Currency': 'USD',
+             'Discount_Rate': 'USD', 'Calendars': None, 'Amount': 10_000.0,
+             'Payment_Date': SEVEN_MONTHS}
+
+#: The unit roundoff of the float32 a credit Monte Carlo runs in.
+FLOAT32_U = 2.0 ** -24
+
+
+def rounding(paths):
+    """gamma_n = n u / (1 - n u), the most a run's reported CVA or FVA is off in float32 relative
+    to itself: every term is non-negative, and one passes n = B + T + 8 roundings - 9 per path and
+    date, B over the paths' mean, T - 2 over the dates and the recovery's one."""
+    n = paths['count'] + paths['dates'] + 8
+    return n * FLOAT32_U / (1.0 - n * FLOAT32_U)
+
+
+def increment(**body):
+    """An XVA increment asked through the what-if verb, the worker drained: `(result_id, result)`."""
+    submitted = CLIENT.post('/book/price', content=dump(dict(body, xva_increment=True)),
+                            headers=JSON).json()
+    service.EXECUTOR.queue.join()
+    return submitted['result_id'], CLIENT.get('/results/{}'.format(
+        submitted['result_id'])).json()
+
+
+def answered(**body):
+    """The increment's answer, the run having succeeded."""
+    _, result = increment(**body)
+    assert result['status'] == 'done', result.get('error')
+    return result['stats']['Increment']
+
+
+def test_both_runs_of_an_increment_draw_one_grid_on_one_factor_list(desk_xva):
+    """SAME PATHS. A credit Monte Carlo draws its normals in one block shaped by the factors it
+    simulates and the days it simulates on, so a candidate settling on a day NS_A's own call never
+    reaches moves every path a run of the set alone draws: the recalc's row runs on 26 days, the
+    set with the seven-month call on 27. Both runs of the increment draw those 27 days on the one
+    factor, `EquityPrice.EQ`, at one seed and one path count, the call held at nothing still
+    carrying its days - read off the two runs' own exposure profiles, the same 27 days, the row's
+    plus the call's one.
+
+    Killing mutation: the candidate removed from the 'without' run rather than held at nothing,
+    which refuses naming 26 days against 27.
+    """
+    recalc(['NS_A'])
+    alone = fetch(xva_rows()['NS_A']['result_id'], 'exposure_profile')['index']
+    result_id, result = increment(deal=SHORT_CALL, parent_reference='NS_A')
+    assert result['status'] == 'done', result.get('error')
+    days = {run: fetch(result_id, run + '/exposure_profile')['index']
+            for run in ('with', 'without')}
+
+    assert result['stats']['Increment']['paths'] == {
+        'seed': 5120, 'count': service.XVA_BATCH_SIZE, 'dates': 27, 'factors': ['EquityPrice.EQ']}
+    assert days['with'] == days['without'] and len(days['with']) == 27
+    assert len(alone) == 26 and len([day for day in days['with'] if day not in alone]) == 1
+
+
+def test_an_increment_is_linear_in_the_trade_on_a_set_that_never_goes_negative(desk_xva):
+    """LINEARITY ON THE SAME PATHS. NS_A holds a bought call and the candidate is a bought call: a
+    bought option is worth its premium or more on every path, so the set is never negative,
+    `max(V, 0)` is `V`, and CVA - (1 - R) times the deflated trapezoid of the expected positive
+    value against the default probabilities - is linear in what the set holds; so is FVA, its
+    benefit reading `max(-V, 0) = 0`. On one set of paths the call at twice its units therefore
+    adds twice what it adds at its units.
+
+    THE BOUND IS FLOAT32'S, NOT 1e-12: the run reduces in float32, the precision
+    `CreditMonteCarlo.run` defaults to and no calculation field sets, so each reported number is
+    off by at most gamma (`rounding`: n = 1024 + 27 + 8, gamma = 6.31e-5) of itself, and the
+    residual by at most gamma times C(S + 2Q) + 2 C(S + Q) + C(S): 0.0436 for the CVA, 7.6e-6
+    measured; 0.109 for the FVA, 0 measured.
+
+    Killing mutation: the two runs on different seeds, which leaves the set's own seed-to-seed
+    noise in the residual: 2.45 at seeds 5120 and 99, on a CVA of 118.
+    """
+    once = answered(deal=SHORT_CALL, parent_reference='NS_A')
+    twice = answered(deal=dict(SHORT_CALL, Units=2 * SHORT_CALL['Units']), parent_reference='NS_A')
+    assert once['cva']['increment'] > 1.0 and once['fva']['increment'] > 1.0, 'a vacuous identity'
+    for name in ('cva', 'fva'):
+        bound = rounding(once['paths']) * (
+            twice[name]['with'] + 2.0 * once[name]['with'] + once[name]['without'])
+        residual = twice[name]['increment'] - 2.0 * once[name]['increment']
+        assert abs(residual) <= bound, (name, residual, bound)
+
+
+def test_an_increment_of_nothing_is_nothing(desk_xva):
+    """The call at no units: with it and without it are one document, so every number the answer
+    carries is 0.0 exactly and every peak falls on one day both ways.
+
+    Killing mutation: the candidate removed from the 'without' run rather than held at nothing,
+    which refuses - the run with it simulates its settlement day and the run without does not.
+    """
+    answer = answered(deal=dict(SHORT_CALL, Units=0.0), parent_reference='NS_A')
+    for name in ('cva', 'fva', 'EE', 'PFE_95'):
+        assert answer[name]['increment'] == 0.0 and (
+            answer[name]['with'] == answer[name]['without']), name
+
+
+@pytest.fixture
+def one_set(tmp_path, monkeypatch):
+    """NS_A alone: a what-if over the whole book is then a run of that one set, as a desk asks it."""
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    yield xva_book(tmp_path, [netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')],
+                                          funding_rate='FUND')])
+    service.BOOK = None
+
+
+def test_the_increment_on_a_second_seed_moves_by_rounding_and_the_two_runs_by_monte_carlo(
+        one_set):
+    """THE NOISE IS GONE, by hand. The candidate is a dollar cash flow no model moves, so it is
+    worth the same on every path and its own CVA has no Monte Carlo error; the set is a bought call
+    and the flow is received, so the set never goes negative and the CVA is linear. On one set of
+    paths the set's part cancels, and the increment is the flow's CVA, one number on every seed:
+    what is left between two seeds is float32 rounding, at most `rounding` times the four runs'
+    CVAs - 0.040 here, against 7.6e-6 measured, one float32 step at 118.
+
+    The two unrelated runs are the what-if and the set's row. The what-if's run IS the increment's
+    'with', to the bit, and the row is the set alone on its own grid, so the two differ from the
+    increment by the 'without' run less the row: the set's own CVA drawn twice, which is Monte
+    Carlo and not rounding - 1.0007 between the two seeds. "Far less" is therefore: the increment
+    moves within the rounding bound, and the two unrelated runs beyond it.
+
+    Killing mutation: the 'without' run on a seed of its own, which puts the set's noise back into
+    the increment: 8.98 between the seeds.
+    """
+    block = {'Object': 'CreditMonteCarlo', 'Batch_Size': service.XVA_BATCH_SIZE,
+             'Simulation_Batches': service.XVA_SIMULATION_BATCHES,
+             'Credit_Valuation_Adjustment': dict(
+                 service.XVA_CVA_BLOCK, Calculate='Yes', Counterparty='CPTY_A'),
+             'Funding_Valuation_Adjustment': dict(
+                 service.XVA_FVA_BLOCK, Calculate='Yes', Counterparty='CPTY_A',
+                 Funding_Cost_Interest_Curve='FUND', Funding_Benefit_Interest_Curve='FUND')}
+
+    def cva_of(response):
+        assert response.status_code == 200, response.json()
+        service.EXECUTOR.queue.join()
+        return fetch(response.json()['result_id'], 'cva')['data'][0]
+
+    same, unrelated, runs = {}, {}, 0.0
+    for seed in (5120, 77):
+        answer = answered(deal=SURE_CASH, parent_reference='NS_A', calculation_overrides={
+            'Object': 'CreditMonteCarlo', 'Random_Seed': seed})
+        whatif = cva_of(CLIENT.post('/book/price', content=dump({
+            'deal': SURE_CASH, 'parent_reference': 'NS_A',
+            'calculation_overrides': dict(block, Random_Seed=seed)}), headers=JSON))
+        CLIENT.post('/calculations', content=json.dumps(
+            {'name': 'row', 'calculation': dict(block, Random_Seed=seed)}), headers=JSON)
+        row = cva_of(CLIENT.post('/calculations/run', content=json.dumps(
+            {'name': 'row', 'deal_path': '0'}), headers=JSON))
+        assert whatif == answer['cva']['with'], 'the what-if is not the increment\'s own run'
+        same[seed], unrelated[seed] = answer['cva']['increment'], whatif - row
+        runs += answer['cva']['with'] + answer['cva']['without']
+
+    bound = rounding(answer['paths']) * runs
+    assert abs(same[5120] - same[77]) <= bound < abs(unrelated[5120] - unrelated[77]), (
+        same, unrelated, bound)
+
+
+@pytest.fixture
+def credit_client(tmp_path, monkeypatch):
+    """The quoting desk's client with a credit run to price: `CLIENT_SET` empty, CPTY_A's survival
+    curve, a funding curve over the dollar curve, and the rand on a GBM - a credit Monte Carlo
+    simulates nothing a book gives no model."""
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    factors = dict(FACTORS, **{
+        'SurvivalProb.CPTY_A': {'Recovery_Rate': 0.4,
+                                'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.2]])},
+        'InterestRate.FUND': {'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
+                              'Curve': utils.Curve([], [[0.0, FUNDING_RATE], [5.0, FUNDING_RATE]])}})
+    document = job(factors=factors, sections={
+        'Bootstrapper Configuration': {'FXVol': {}},
+        'Price Models': {'GBMAssetPriceModel.ZAR': {'Vol': 0.15, 'Drift': 0.0}},
+        'Model Configuration': {'.ModelParams': {
+            'modeldefaults': {'FxRate': 'GBMAssetPriceModel'}, 'modelfilters': {}}}})
+    document['Calc']['Deals']['Deals']['Children'].append(
+        netting_set(CLIENT_SET, 'CPTY_A', [], funding_rate='FUND'))
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(json.loads(dump(document)), indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    ticked = CLIENT.post('/book/market', content=dump({'quotes': fx_vol_quotes()}),
+                         headers=JSON).json()
+    assert ticked['written'] is True, ticked
+    yield path
+    service.BOOK = None
+
+
+def test_a_quotes_increment_is_the_increment_of_what_its_acceptance_books(credit_client):
+    """A collar quoted for the client, its increment asked by quote id and asked of the deal its
+    acceptance books - the mirror of the pending deal under the quote's set - is one question: one
+    result id, one answer. Accepted, the trade is in the set, and the set's recalc reads the
+    increment's 'with' CVA and FVA to the bit: the increment priced what the book now holds.
+
+    Killing mutation: the quote's candidate taken as quoted, client paper, rather than its mirror -
+    another trade, another id, and a 'with' the recalc does not read.
+    """
+    quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
+    pending = CLIENT.get('/book/quote/{}'.format(quote['quote_id'])).json()
+    by_quote = increment(quote_id=quote['quote_id'])
+    by_deal = increment(deal=structures.mirror(pending['deal']), parent_reference=CLIENT_SET)
+    answer = by_quote[1]['stats']['Increment']
+    assert by_quote == by_deal and answer['netting_set'] == CLIENT_SET
+    assert answer['cva']['increment'] > 0.0 and answer['fva']['increment'] != 0.0, answer
+
+    assert CLIENT.post('/book/quote', json={'quote_id': quote['quote_id']}).json()['written']
+    recalc([CLIENT_SET])
+    row = xva_rows()[CLIENT_SET]
+    assert (row['cva'], row['fva']) == (answer['cva']['with'], answer['fva']['with']), row
+
+
+#: An outright the desk deals by hand: a million dollars bought for their rand at today's rate.
+OUTRIGHT = {'Object': 'FXForwardDeal', 'Reference': 'FWD_C', 'Buy_Currency': 'USD',
+            'Buy_Amount': AMOUNT, 'Buy_Discount_Rate': 'USD', 'Sell_Currency': 'ZAR',
+            'Sell_Amount': AMOUNT / SPOT, 'Sell_Discount_Rate': 'ZAR',
+            'Settlement_Date': BASE + pd.DateOffset(months=6)}
+
+
+def test_each_type_a_desk_quotes_is_held_at_nothing_or_refused_by_name(credit_client):
+    """The client's set is empty, so held at nothing a trade leaves a set worth nothing on every
+    path, and the 'without' run reads 0.0 exactly in every number. So it does for the FX options of
+    a collar, an accumulator, a range accrual and an outright forward, each 'with' a number.
+
+    Two cannot be held at nothing, and the increment refuses them in `utils.run_whole`'s words
+    rather than answer: a barrier's pricer divides its rebate by its amount
+    (`pricing.pv_barrier_option`, a Python division by zero), and a TARF's its remaining target by
+    its amount (`pricing.pv_MC_Tarf`, a NaN the credit Monte Carlo skips the set for).
+
+    Killing mutation: `xva_pair` holding the candidate at its own size, which answers 'without'
+    numbers that are not zero and prices the barrier and the TARF.
+    """
+    target = {'pair': 'USDZAR', 'expiry': '3M', 'notional': AMOUNT, 'notional_currency': 'USD',
+              'buy_currency': 'USD', 'target': USDZAR * 0.1, 'fixing_frequency': '1M'}
+    tiers = {'pair': 'USDZAR', 'expiry': '3M', 'notional': AMOUNT, 'notional_currency': 'ZAR',
+             'fixing_frequency': '1M', 'tiers': [[USDZAR * 0.95, USDZAR * 1.05, 5.0]]}
+    asked = {name: {'quote_id': quote_of(name, params, netting_set=CLIENT_SET)['quote_id']}
+             for name, params in (('ZeroCostCollar', COLLAR), ('Accumulator', ACCUMULATOR),
+                                  ('RangeAccrual', tiers), ('ForwardExtra', IMPORTER),
+                                  ('TargetRedemptionForward', target))}
+    asked['FXForwardDeal'] = {'deal': OUTRIGHT, 'parent_reference': CLIENT_SET}
+    results = {name: increment(**body)[1] for name, body in asked.items()}
+
+    for name in ('ZeroCostCollar', 'Accumulator', 'RangeAccrual', 'FXForwardDeal'):
+        assert results[name]['status'] == 'done', (name, results[name].get('error'))
+        answer = results[name]['stats']['Increment']
+        for number in ('cva', 'fva', 'EE', 'PFE_95'):
+            without = answer[number]['without']
+            assert (without['peak'] if isinstance(without, dict) else without) == 0.0, name
+            assert np.isfinite(answer[number]['increment']), (name, number)
+    assert results['ForwardExtra']['status'] == 'error'
+    assert 'float division by zero' in results['ForwardExtra']['error']
+    assert results['TargetRedemptionForward']['status'] == 'error'
+    assert 'its value holds NaN' in results['TargetRedemptionForward']['error']
+
+
+def test_an_increment_refuses_as_the_recalc_and_the_booking_refuse_and_writes_nothing(
+        recorded, tmp_path):
+    """Asked of a candidate at the book's root, the increment refuses in the recalc's words - the
+    book carries no NettingCollateralSet called it, naming the sets it does; of a candidate naming
+    market data the book lacks, in the booking's; and of a set whose counterparty has no survival
+    curve, its run fails naming the counterparty, as that set's recalc row does. An increment that
+    answers and every one that does not leave the book's bytes, the record's head and the
+    projection where they were.
+
+    Killing mutation: the set check dropped from `xva_pair`, which answers a candidate at the root
+    with a 500.
+    """
+    from derivus_spine import SpineLog
+
+    path = xva_book(tmp_path, [
+        netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')]),
+        netting_set('NS_GHOST', 'GHOST', [dict(VANILLA, Reference='OPT_G')])])
+
+    def head():
+        log = SpineLog(recorded)
+        try:
+            return log.head()[0]
+        finally:
+            log.close()
+
+    try:
+        before, lsn = path.read_bytes(), head()
+        root = CLIENT.post('/book/price', content=dump(
+            {'deal': SHORT_CALL, 'xva_increment': True}), headers=JSON)
+        absent = CLIENT.post('/book/price', content=dump(
+            {'deal': dict(SHORT_CALL, Discount_Rate='USD-SWAP'), 'parent_reference': 'NS_A',
+             'xva_increment': True}), headers=JSON)
+        _, ghost = increment(deal=SHORT_CALL, parent_reference='NS_GHOST')
+        _, standing = increment(deal=SHORT_CALL, parent_reference='NS_A')
+
+        assert root.status_code == 422 and root.json()['detail'] == (
+            "the book carries no NettingCollateralSet called 'None' - its sets are NS_A, NS_GHOST")
+        assert absent.status_code == 422
+        assert absent.json()['detail'] == 'no market data for InterestRate.USD-SWAP'
+        assert ghost['status'] == 'error' and 'GHOST' in ghost['error'], ghost
+        assert standing['status'] == 'done', standing.get('error')
+        assert (path.read_bytes(), head()) == (before, lsn)
+        assert not (tmp_path / 'xva.json').exists(), 'an increment filed a projection row'
+    finally:
+        service.BOOK = None
+
+
 # --------------------------------------------------------------------------------------------
 # the XVA tab over a market data file and a calendar the book names
 # --------------------------------------------------------------------------------------------

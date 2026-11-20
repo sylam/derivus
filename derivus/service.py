@@ -37,7 +37,7 @@ verb on `Context`, not an endpoint that reaches inside.
 | `GET /book/status` | the desk in ONE read - the book's date and currency, its curves and surfaces with when each was snapped, the calibrated models, the netting sets and the last XVA per set, and whether this workstation has a terminal |
 | `GET /book/market` | the market the book PRICES on - the file it names with its explicit block merged over it - and the `stamp` of what it is read from, no market where `?stamp=` names the current one |
 | `POST /book/deals` | book, amend or delete one deal, or take on one the file already holds (`action: 'fill'`) - validated BEFORE an atomic write, refusal writes nothing |
-| `POST /book/price` | price the book, optionally with a candidate deal spliced in - a what-if, validated before it queues, writes nothing |
+| `POST /book/price` | price the book, optionally with a candidate deal or a quote's pending trade spliced in, or what the candidate does to its netting set's XVA - a what-if, validated before it queues, writes nothing |
 | `POST /book/solve` | solve one field of a candidate deal to a target value - a root find over base valuations, writes nothing |
 | `POST /book/market` | tick the book's market: quote blocks installed or value-updated, a values patch applied, the block's own entries retired, the bootstrap run - one atomic write |
 | `POST /book/configure` | set one bootstrapping dial - validated by building what reads it, then the whole market re-bootstrapped |
@@ -1577,12 +1577,21 @@ def with_overrides(document, overrides):
 
 @app.post('/book/price', summary='Price the book, with an optional candidate deal - writes nothing')
 def book_price(request: dict):
-    """The what-if verb: `{deal?, parent_reference?, calculation_overrides?}` prices the book plus
-    an optional candidate on an in-memory copy - the file never moves. Overrides merge into
-    `Calc.Calculation` against the calculation's own declarations - an undeclared field or a value
-    that is not what it declares refuses 422 - so "with Greeks" or "as a CMC" needs no second write
-    surface and a misspelt dial is not silently ignored. Answers `{result_id, status}` exactly like
-    `/execute`, and the same content addressing applies: the same what-if twice is one run.
+    """The what-if verb: `{deal?, parent_reference?, quote_id?, calculation_overrides?,
+    xva_increment?}` prices the book plus an optional candidate on an in-memory copy - the file
+    never moves. Overrides merge into `Calc.Calculation` against the calculation's own declarations
+    - an undeclared field or a value that is not what it declares refuses 422 - so "with Greeks" or
+    "as a CMC" needs no second write surface and a misspelt dial is not silently ignored. Answers
+    `{result_id, status}` exactly like `/execute`, and the same content addressing applies: the
+    same what-if twice is one run.
+
+    `quote_id` names the candidate as a quote's pending trade, priced as its acceptance would book
+    it: the mirror of its deal (`structures.mirror`) under the netting set the quote names, the
+    spot model it pinned merged.
+
+    `xva_increment: true` asks what the candidate does to the CVA, FVA and peak exposure of the
+    netting set it goes into, as the difference of that set's credit Monte Carlo with the candidate
+    and with it held at nothing (`xva_pair`, `IncrementJob`), the answer under `stats.Increment`.
 
     THE CANDIDATE IS VALIDATED BEFORE IT QUEUES, through the seam a booking is refused at: a
     candidate naming market data the book does not carry would load, be DROPPED by discovery and
@@ -1593,22 +1602,37 @@ def book_price(request: dict):
     mints nothing whether or not a spine home is configured. A candidate that becomes a trade is
     quoted through `/book/structure` and booked through `/book/quote`."""
     document, etag = live_book().read()
-    baseline = live_book().baseline(document, etag) if request.get('deal') is not None else None
-    document = priced(document, (request.get('calculation_overrides') or {}).get('Object'))
+    deal, parent, models = request.get('deal'), request.get('parent_reference'), None
+    if request.get('quote_id'):
+        pending = book_quote_pending(request['quote_id'])
+        quoted = pending['quote']
+        deal, parent = structures.mirror(pending['deal']), quoted.get('netting_set')
+        models = quoted.get('valuation_configuration')
+    baseline = live_book().baseline(document, etag) if deal is not None else None
+    overrides, increment = request.get('calculation_overrides') or {}, request.get('xva_increment')
+    document = priced(document, 'CreditMonteCarlo' if increment else overrides.get('Object'))
+    deal_path = None
     try:
-        if request.get('deal') is not None:
-            written, outcome = deal_edit(document, request['deal'],
-                                         request.get('parent_reference'), baseline)
+        if deal is not None:
+            materialised(document, parent)
+            written, outcome = deal_edit(document, deal, parent, baseline)
             if not written:
                 raise HTTPException(422, '; '.join(outcome['refused']))
-        with_overrides(document, request.get('calculation_overrides', {}))
+            deal_path = outcome['deal_path']
+        if models:
+            structures.pin_models(document, pending['deal'], models)
+        with_overrides(document, overrides)
+        jobs, terms = xva_pair(document, deal_path, parent) if increment else ([document], None)
     except ValueError as error:
         raise HTTPException(422, str(error))
-    context = load(document)
-    stamp = replay(context)
-    submitted = Job(content_hash(stamp), context, stamp, spine.CURIOSITY,
-                    actor=request.get('actor'), book=book_name(document))
-    calculation = context.current_cfg.deals['Calculation']
+    contexts = [load(job) for job in jobs]
+    replayed = [replay(context) for context in contexts]
+    run, stamp = contexts[0], replayed[0]
+    if increment:
+        run, stamp = IncrementJob(contexts, terms), dict(zip(('with', 'without'), replayed))
+    submitted = Job(content_hash(stamp), run, stamp, spine.CURIOSITY, actor=request.get('actor'),
+                    book=book_name(document))
+    calculation = contexts[0].current_cfg.deals['Calculation']
     return {'result_id': submitted.result_id,
             'status': EXECUTOR.submit(submitted, cost(calculation)['class'])}
 
@@ -4264,6 +4288,77 @@ def book_xva(request: dict):
                 write_row(reference, run.landed(EXECUTOR.result(result_id)))
         queued.append({'reference': reference, 'result_id': result_id})
     return {'queued': queued}
+
+
+def xva_pair(document, deal_path, parent):
+    """`([with, without], terms)`: the two credit Monte Carlo jobs an XVA increment is the
+    difference of, and the set, counterparty and report currency it is answered for.
+
+    Both are the netting set `deal_path` sits in, composed as its recalc composes it
+    (`xva_document`): once with the candidate as written, and once with it HELD AT NOTHING, every
+    amount it states times zero by the rule the record holds a position at a quantity by
+    (`spine.scaled`), so the second carries every date and factor of the first and none of its
+    value. A candidate under no netting set refuses in the recalc's words, and one that states no
+    amount in `spine.scaled`'s.
+    """
+    zero = deepcopy(document)
+    held = deal_at(zero, deal_path)
+    held.update(spine.scaled(held, 0))
+    found = [(path, node) for path, node in netting_sets(document)
+             if deal_path.startswith(path + '/')]
+    if not found:
+        structures.check_netting_set(document, str(parent))
+    path, node = found[-1]
+    counterparty = set_terms(node['Instrument']['.Deal'])[0]
+    return [xva_document(job, deal_at(job, path), counterparty) for job in (document, zero)], {
+        'netting_set': node['Instrument']['.Deal'].get('Reference'), 'counterparty': counterparty,
+        'currency': document['Calc']['Calculation'].get('Currency')}
+
+
+class IncrementJob:
+    """What a candidate does to its netting set's XVA, as ONE unit of queued work: the two runs
+    `xva_pair` composes, one after the other, and their difference.
+
+    SAME PATHS OR NO ANSWER. A run draws its normals in one block shaped by the factors it
+    simulates and the dates it simulates on, so a date or a factor one run has and the other lacks
+    hands every path a different draw and the difference is Monte Carlo noise, not the trade. The
+    two runs are compared on what they compiled to and a pair that differs fails naming both.
+
+    THE ANSWER IS WITH LESS WITHOUT, in the run's report currency, under `stats.Increment`: CVA,
+    FVA and the peak of the expected exposure and of each PFE column with the day it falls, beside
+    the paths both runs drew. Each run's own results stay under `with` and `without`.
+    """
+
+    def __init__(self, contexts, terms):
+        self.contexts, self.terms = contexts, terms
+
+    def run_job(self):
+        runs = [utils.run_whole(context.run_job) for context in self.contexts]
+        drawn = [(sorted(calc.time_grid.scenario_dates), sorted(calc.time_grid.mtm_dates),
+                  [utils.check_tuple_name(factor) for factor in calc.stoch_factors])
+                 for calc, _ in runs]
+        if drawn[0] != drawn[1]:
+            raise ValueError(
+                'the candidate held at nothing simulates {} dates on {} and as written {} on {}: '
+                'the two runs draw different paths, so their difference is Monte Carlo noise and '
+                'not the trade'.format(len(drawn[1][0]), drawn[1][2], len(drawn[0][0]),
+                                       drawn[0][2]))
+        results, stats = [out['Results'] for _, out in runs], runs[0][1]['Stats']
+        answer = dict(self.terms, paths={
+            'seed': stats['Random_Seed'], 'dates': len(drawn[0][0]), 'factors': drawn[0][2],
+            'count': stats['Batch_Size'] * stats['Simulation_Batches']})
+        for name in ('cva', 'fva'):
+            numbers = [float(result[name]) for result in results]
+            answer[name] = {'with': numbers[0], 'without': numbers[1],
+                            'increment': numbers[0] - numbers[1]}
+        profiles = [result['exposure_profile'] for result in results]
+        for column in profiles[0].columns.drop('ENE'):
+            peaks = [{'peak': float(profile[column].max()),
+                      'day': profile[column].idxmax().strftime('%Y-%m-%d')} for profile in profiles]
+            answer[column] = {'with': peaks[0], 'without': peaks[1],
+                              'increment': peaks[0]['peak'] - peaks[1]['peak']}
+        return None, {'Results': {'with': results[0], 'without': results[1]},
+                      'Stats': {'Increment': answer}}
 
 
 def projection_entry(row, **book):

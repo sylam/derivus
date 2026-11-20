@@ -366,7 +366,13 @@ netting set and a CACHED PROJECTION: a credit Monte Carlo simulates the whole se
 ride a tick, so `DV_HOME/xva.json` holds the last run of each set — written atomically, one row at
 a time — and a desk asks for a FULL or PARTIAL recalc when it wants the file to move. The
 projection is a mosaic on purpose: each row carries its own `as_of`, a partial recalc moves only
-the rows it names, and staleness is data rather than a failure.
+the rows it names, and staleness is data rather than a failure. What ONE trade does to a set's
+XVA is the what-if's question instead - `POST /book/price` with `xva_increment: true` and a
+candidate or a `quote_id` - answered under `stats.Increment` as with, without and the increment
+for the CVA, the FVA and the peak of each exposure column: the set's credit Monte Carlo run twice
+on the same paths, with the trade and with it held at nothing, every amount it states times zero.
+Against the set's row the difference would carry the set's own Monte Carlo noise, a trade dated
+where the set's grid has no row reshaping every path the run draws.
 
 The book's FILE is the source of truth: every client — the web UI, an MCP tool, the Excel add-in —
 reads and writes it through these verbs, so a deal booked by one appears to the others on their

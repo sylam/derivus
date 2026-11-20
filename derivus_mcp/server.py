@@ -72,7 +72,8 @@ A WORKING DAY: read_book to see what is held; describe_instrument_type before bo
 you have not booked; book_deal for a plain instrument; for FX options solve_structure and then
 book_quote, which take market terms and handle the axis; book_risk_summary for the mark and
 its gradient; execute_book or price_candidate for a what-if; solve_deal for a par amount or a
-strike to a target; recalc_xva ONLY on request, it is minutes, and xva_view for what stands.
+strike to a target; xva_increment for what one trade would add to its client's CVA, FVA and
+peak exposure; recalc_xva ONLY on request, it is minutes, and xva_view for what stands.
 The desk keeps its own NAMED CALCULATIONS - a credit Monte Carlo at another path count, a PFE
 grid, a base valuation with Greeks: describe_calculations lists them, configure_calculation saves
 one, run_calculation prices the live book (or one subtree) under it. They are this workstation's:
@@ -693,6 +694,34 @@ async def price_candidate(deal: dict | None = None, parent_reference: str | None
                       calculation_overrides=calculation_overrides or None, actor=actor)
     submitted = await asyncio.to_thread(service().call, 'POST', '/book/price', json=request)
     return await _await_result(submitted['result_id'], wait_seconds, ctx)
+
+
+@MCP.tool()
+async def xva_increment(deal: dict | None = None, parent_reference: str | None = None,
+                        quote_id: str | None = None, calculation_overrides: dict | None = None,
+                        actor: str | None = None, wait_seconds: float = 600.0,
+                        ctx: Context = None) -> dict:
+    """What a trade would do to the client's credit charge before anyone books it: how it moves
+    the CVA, the FVA and the peak exposure of the netting set it would go into.
+
+    Name the trade as `price_candidate` takes one - `deal`, with `parent_reference` the client's
+    netting set or a node inside it - or pass the `quote_id` `solve_structure` answered, which
+    prices what accepting that quote would book. The set is run twice on the SAME simulated paths,
+    with the trade and with it held at nothing, so the difference is the trade's and not Monte
+    Carlo noise; asked of the projection's last row instead, the noise can be as large as the
+    trade. Each of `cva`, `fva`, `EE` and every `PFE_` column comes back `with`, `without` and
+    `increment`, a peak with the day it falls, in the `currency` named; `paths` says what both
+    runs drew. Nothing is booked or recorded. A trade under no netting set, or one the booking
+    would refuse, is refused by name; a set whose counterparty has no credit curve fails in the
+    engine's words, as `recalc_xva` does. `calculation_overrides` merges into the run's credit
+    Monte Carlo (`{"Object": "CreditMonteCarlo", "Random_Seed": 7}`). Waits up to `wait_seconds`.
+    """
+    request = _stated(deal=deal, parent_reference=parent_reference, quote_id=quote_id,
+                      calculation_overrides=calculation_overrides or None, actor=actor)
+    submitted = await asyncio.to_thread(service().call, 'POST', '/book/price',
+                                        json=dict(request, xva_increment=True))
+    outcome = await _await_result(submitted['result_id'], wait_seconds, ctx)
+    return outcome.get('stats', {}).get('Increment') or outcome
 
 
 @MCP.tool(annotations=READ_ONLY)
