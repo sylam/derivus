@@ -6459,6 +6459,64 @@ def test_fva_is_a_column_of_the_same_row_off_the_same_run(desk_xva, tmp_path):
     assert after['NS_B'] == before['NS_B'], 'a partial recalc touched a row it was not asked for'
 
 
+def test_an_xva_row_says_whether_it_is_the_books_and_keeps_its_profile(desk_xva, tmp_path):
+    """A ROW SAYS WHETHER A RECALC NOW WOULD PRICE WHAT IT PRICED, AND KEEPS WHAT ITS RUN SHOWED.
+    Recalced, both sets read `current`; a deal booked into NS_A moves NS_A's plan and leaves NS_B's,
+    so NS_A reads stale with its last numbers standing and NS_B current; a spot moved under both
+    reads both stale, and recalcing NS_A makes it current again. Each row keeps its run's
+    `exposure_profile` - on this desk 26 days by `EE`, `ENE` and `PFE_95` - written to the
+    projection's file, and its `peaks`: the largest `EE` and `PFE_95` with the first day each falls
+    on, read here off the run's own table cell for cell, so nothing a credit officer reads off a
+    profile goes with the service's memory. A row filed before its exposure reads null for both.
+
+    Killing mutations: `current` read off the row being done rather than off its stamp, which reads
+    a row priced before the market moved as the book's; and the exposure left off a fresh run's
+    row, which loses the peaks with the service's memory.
+    """
+    queued = {entry['reference']: entry['result_id'] for entry in recalc()['queued']}
+
+    def held(reference):
+        page = fetch(queued[reference], 'exposure_profile')
+        peaks = {column: {'value': max(row[at] for row in page['data']),
+                          'day': page['index'][[row[at] for row in page['data']].index(
+                              max(row[at] for row in page['data']))]['.Timestamp']}
+                 for at, column in enumerate(page['columns']) if column != 'ENE'}
+        return peaks, {'columns': page['columns'], 'data': page['data'],
+                       'index': [label['.Timestamp'] for label in page['index']]}
+
+    rows, filed = xva_rows(), json.loads((tmp_path / 'xva.json').read_text())['sets']
+    for reference in ('NS_A', 'NS_B'):
+        peaks, profile = held(reference)
+        assert (len(profile['index']), profile['columns']) == (26, ['EE', 'ENE', 'PFE_95'])
+        assert (rows[reference]['current'], rows[reference]['peaks'], rows[reference]['profile'],
+                filed[reference]['peaks'], filed[reference]['profile']) == (
+            True, peaks, profile, peaks, profile), reference
+
+    assert CLIENT.post('/book/deals', content=dump(
+        {'action': 'add', 'deal': dict(VANILLA, Reference='OPT_A2', Units=5000.0),
+         'parent_reference': 'NS_A'}), headers=JSON).json()['written'] is True
+    moved = xva_rows()
+    assert (moved['NS_A']['current'], moved['NS_B']['current']) == (False, True)
+    assert {key: value for key, value in moved['NS_A'].items() if key != 'current'} == {
+        key: value for key, value in rows['NS_A'].items() if key != 'current'}
+    assert CLIENT.post('/book/market', json={'patch': {'EquityPrice.EQ': {'Spot': 101.0}}}
+                       ).json()['written'] is True
+
+    def current():
+        return [xva_rows()[reference]['current'] for reference in ('NS_A', 'NS_B')]
+
+    assert current() == [False, False]
+    recalc(['NS_A'])
+    assert current() == [True, False]
+
+    # a row filed before rows kept their exposure, for a set the book no longer holds
+    projection = json.loads((tmp_path / 'xva.json').read_text())
+    projection['sets']['NS_OLD'] = {'status': 'done', 'cva': 1.0, 'result_id': 'f' * 64}
+    (tmp_path / 'xva.json').write_text(json.dumps(projection), newline='\n')
+    assert {key: xva_rows()['NS_OLD'][key] for key in ('current', 'peaks', 'profile')} == {
+        'current': False, 'peaks': None, 'profile': None}
+
+
 def test_the_cva_column_reads_the_same_whether_or_not_fva_ran(desk_xva):
     """One run serving both adjustments must not make the credit one a different number.
 

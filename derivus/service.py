@@ -4154,6 +4154,31 @@ def xva_document(document, node, counterparty):
     return run
 
 
+def xva_stamp(document, node, files):
+    """`(job, terms, stamp)` - what a recalc of the netting set `node` of the book as it prices
+    runs (`xva_document`) and the replay tuple its row is filed under: the job's content hash,
+    `files` the hash of the digests of the files it names, the engine version and its seeds."""
+    terms = set_terms(node['Instrument']['.Deal'])
+    job = xva_document(document, node, terms[0])
+    return job, terms, dict(plan_hash=content_hash(job), values_hash=files,
+                            engine_version=__version__,
+                            **spine.replay_seeds(job['Calc']['Calculation']))
+
+
+def exposure(profile):
+    """`{peaks, profile}` off a run's `exposure_profile` table in wire form: the largest number of
+    its `EE` and of each `PFE_` column with the day it first falls on, and the table itself as
+    `{columns, index, data}`, every day `YYYY-MM-DD`."""
+    frame = profile['.DataFrame']
+    days = [plain(label) for label in frame['index']]
+    peaks = {}
+    for at, column in enumerate(frame['columns']):
+        if column == 'EE' or column.startswith('PFE_'):
+            values = [row[at] for row in frame['data']]
+            peaks[column] = {'value': max(values), 'day': days[values.index(max(values))]}
+    return {'peaks': peaks, 'profile': dict(frame, index=days)}
+
+
 class XvaJob:
     """One netting set's CVA and FVA as ONE unit of queued work, and the projection row it lands as.
 
@@ -4190,11 +4215,11 @@ class XvaJob:
         content hash of the set's document, `values_hash` that of the digests of the market data
         and calendar files it names, and `currency` the one the run reported in.
 
-        Both adjustment columns are in the BASE dict as nulls, so a row is never filed missing one:
-        a failure path states its error and nothing else, and every row the file carries has the
-        same keys whatever happened to it."""
+        Both adjustment columns, `peaks` and `profile` (`exposure`) are in the BASE dict as nulls,
+        so a row is never filed missing one: a failure path states its error and nothing else, and
+        every row the file carries has the same keys whatever happened to it."""
         return dict({'counterparty': self.counterparty, 'collateralized': self.collateralized,
-                     'cva': None, 'fva': None,
+                     'cva': None, 'fva': None, 'peaks': None, 'profile': None,
                      'currency': self.document['Calc']['Calculation'].get('Currency'),
                      'result_id': self.result_id, 'plan_hash': self.stamp['plan_hash'],
                      'values_hash': self.stamp['values_hash'], 'seed': self.stamp['seed'],
@@ -4225,14 +4250,16 @@ class XvaJob:
         """
         if result['status'] != 'done':
             return self.row(status='failed', error=result.get('error'))
-        return self.row(status='done', **self.adjustments(result['tables'], stored=True))
+        return self.row(status='done', **self.adjustments(result['tables'], stored=True),
+                        **exposure(result['tables']['exposure_profile']))
 
     def run_job(self):
         try:
             session = EXECUTOR.session_for(self.document, self.stamp['values_hash'])
             session.held = self.held
             _, out = utils.run_whole(lambda: load(self.document, session).run_job())
-            landed = self.adjustments(out['Results'])
+            landed = dict(self.adjustments(out['Results']),
+                          **exposure(as_json(out['Results']['exposure_profile'])))
         except Exception as error:
             write_row(self.reference, self.row(status='failed', error=str(error)))
             raise
@@ -4278,11 +4305,7 @@ def book_xva(request: dict):
                    for name in Context.named(document).values() if name}
     queued, files = [], content_hash(reader.files(document))
     for reference in references:
-        node = found[reference]
-        terms = set_terms(node['Instrument']['.Deal'])
-        job = xva_document(document, node, terms[0])
-        stamp = dict(plan_hash=content_hash(job), values_hash=files, engine_version=__version__,
-                     **spine.replay_seeds(job['Calc']['Calculation']))
+        job, terms, stamp = xva_stamp(document, found[reference], files)
         result_id = content_hash(stamp)
         run = XvaJob(job, reference, terms, result_id, stamp, reader.held)
         status = EXECUTOR.submit(
@@ -4378,15 +4401,20 @@ class IncrementJob:
                       'Stats': {'Increment': answer}}
 
 
-def projection_entry(row, **book):
+def projection_entry(row, recalc_id=None, **book):
     """One row of the XVA view: what the BOOK says the set is now, over what the last RUN said
     about it. Every field is always present - a never-run set reads `status: 'never run'` with
     nulls beside it - so a blotter renders one table rather than branching per row.
 
+    `current` says whether a recalc now would be the row's own run: `recalc_id` is the result id
+    one would file the set under, and the row's equals it, or not - false for a set the book no
+    longer holds, null for one never run.
+
     A row filed before a column existed is still a row: `fva` is read like every other field, so a
-    CVA-only row reads `done` with a null `fva`, and one filed before `currency` a null currency
-    rather than the open book's. The projection is a mosaic in TIME as well as across sets, and the
-    remedy for a null column is the recalc an old `as_of` takes."""
+    CVA-only row reads `done` with a null `fva`, one filed before `currency` a null currency
+    rather than the open book's, and one filed before its exposure null `peaks` and `profile`. The
+    projection is a mosaic in TIME as well as across sets, and the remedy for a null column is the
+    recalc an old `as_of` takes."""
     row = row or {}
     entry = dict({'reference': None, 'deal_path': None, 'counterparty': row.get('counterparty'),
                   'collateralized': row.get('collateralized'), 'note': None}, **book)
@@ -4395,7 +4423,8 @@ def projection_entry(row, **book):
                  result_id=row.get('result_id'),
                  plan_hash=row.get('plan_hash'), values_hash=row.get('values_hash'),
                  seed=row.get('seed'), quasi_seed=row.get('quasi_seed'), error=row.get('error'),
-                 recalc=None)
+                 current=row.get('result_id') == recalc_id if row else None,
+                 peaks=row.get('peaks'), profile=row.get('profile'), recalc=None)
     pending = XVA_PENDING.get(entry['reference'])
     outcome = EXECUTOR.result(pending) if pending is not None else None
     if outcome is not None and outcome['status'] in ('queued', 'running'):
@@ -4422,10 +4451,19 @@ def book_xva_view():
 
     STALENESS IS DATA. The rows carry different `as_of` stamps on purpose - that is what a partial
     recalc means - so the view never blocks, never runs a CMC, and never hides a number's age.
-    `currency` is the one the row's own run reported in.
+    `currency` is the one the row's own run reported in, and `current` whether a recalc now would
+    price what the row priced - the book as it prices for one, each set's stamp hashed, no compile.
+
+    What a credit officer reads off a run's profile is kept on its row: `peaks` the largest `EE`
+    and each `PFE_<percentile>` with the day each falls, `{value, day}`, and `profile` the table
+    itself, `{columns, index, data}`, so neither goes with the service's memory.
     """
     document, _ = live_book().read()
     rows = read_projection().get('sets') or {}
+    pricing = priced(document, 'CreditMonteCarlo')
+    files = content_hash(Context().files(pricing))
+    stamped = {node['Instrument']['.Deal'].get('Reference'): node
+               for _, node in netting_sets(pricing)}
     entries, seen = [], set()
     for deal_path, node in netting_sets(document):
         deal = node['Instrument']['.Deal']
@@ -4433,8 +4471,9 @@ def book_xva_view():
         counterparty, collateralized = set_terms(deal)
         seen.add(reference)
         entries.append(projection_entry(
-            rows.get(reference), reference=reference, deal_path=deal_path,
-            counterparty=counterparty, collateralized=collateralized))
+            rows.get(reference), content_hash(xva_stamp(pricing, stamped[reference], files)[2]),
+            reference=reference, deal_path=deal_path, counterparty=counterparty,
+            collateralized=collateralized))
     for reference in sorted(set(rows) - seen):
         entries.append(projection_entry(rows[reference], reference=reference, note=(
             'no NettingCollateralSet called {!r} is in the book any more - this row is the last '
