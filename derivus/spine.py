@@ -588,6 +588,23 @@ def pin():
         datetime.timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')}
 
 
+def platter():
+    """Where the home's log stands, read without opening it (`log.platter`); None where no home is
+    configured."""
+    return package().log.platter(where()) if configured() else None
+
+
+def papered(lsn=None):
+    """The LSN of the last entity or agreement declaration standing at `lsn`, 0 where none is:
+    what moves when the paper does, and only then."""
+    def read(log):
+        projectors = package().projections.PROJECTORS
+        return max((row['lsn'] for name in ('entities', 'agreements')
+                    for row in _state(log, projectors[name], lsn).values()), default=0)
+
+    return folded(read)
+
+
 def fixings(lsn=None, indices=None):
     """`{(index, date): {value, source, effective_time, lsn}}` - the fixing in force per index and
     date at `lsn`, resolved across sources by the order the `fixings` policy declares.

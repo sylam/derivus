@@ -1461,6 +1461,39 @@ def test_a_compile_copies_the_deal_tree_alone_and_loads_a_market_only_for_collat
     assert job['Calc']['MergeMarketData'] is document['Calc']['MergeMarketData']
 
 
+def test_a_status_poll_is_answered_anew_once_the_record_moves_and_the_paper_has_its_own_stamp(
+        recorded, desk):
+    """Under a home a poll's key carries where the record's log stands, `spine.platter`: the home
+    and each segment's size, by hand. The status is kept under it and a second poll is answered
+    what the first kept. A declaration lands a frame, so the status is asked anew: its
+    `spine.paper`, 0 on a record declaring no paper, is an entity's LSN once one is declared and
+    an agreement's after it, while a fixings policy declared between them moves the key and not
+    the paper.
+
+    Killing mutations: the platter left out of a poll's key, where the key by hand differs and the
+    status reads the paper where the first poll found it; the paper stamped with the head, where
+    it reads 4 on a record declaring none and the policy moves it.
+    """
+    def paper():
+        return CLIENT.get('/book/status').json()['spine']['paper']
+
+    log, started = recorded / 'log', head(recorded)
+    key = service.poll_key(service.BOOK, service.xva_path())
+    assert spine.platter() == key[4] == (str(recorded),) + tuple(
+        (name, (log / name).stat().st_size) for name in sorted(os.listdir(log)))
+    assert paper() == 0 and service.BOOK.polls.get(('status',) + key)['spine']['paper'] == 0
+    terms = netting_set(CLIENT_SET, 'LEI-A')['Instrument']['.Deal']
+    CLIENT.post('/book/entities', content=dump({'entity': 'LEI-A', 'name': 'Client A'}),
+                headers=JSON)
+    assert service.poll_key(service.BOOK, service.xva_path()) != key and paper() == started + 1
+    declare(recorded, policy.FIXINGS_POLICY, {policy.FIXINGS_SECTION: {}})
+    assert paper() == started + 1 and head(recorded) == started + 2
+    CLIENT.post('/book/agreements', content=dump({
+        'agreement': CLIENT_SET, 'entity': 'LEI-A', 'kind': 'ISDA 2002', 'terms': terms}),
+        headers=JSON)
+    assert paper() == head(recorded) == started + 3
+
+
 def test_a_position_is_read_where_it_sits_and_where_the_file_holds_it(recorded, desk):
     """`/book/positions` is the fold at the head joined to the FILE: every position standing under
     its agreement and portfolio, beside the nodes carrying its instrument under that agreement's

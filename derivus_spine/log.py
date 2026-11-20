@@ -216,6 +216,14 @@ def drop_claim(handle):
         pass
 
 
+def platter(home):
+    """`(home, (segment, bytes), ...)` - where the log under `home` stands, read off its directory
+    alone. A segment is appended to and never rewritten, so this moves exactly when a frame lands:
+    what a poll keys on before it opens anything."""
+    return (str(home),) + tuple((path.name, path.stat().st_size)
+                                for path in sorted((Path(home) / 'log').glob(SEGMENT_GLOB)))
+
+
 def parse_number(text):
     """`json.loads`' `parse_int` hook for canonical bytes: an integer literal past 2**53 comes back
     as a `float`, per canon.py's declared limitation."""

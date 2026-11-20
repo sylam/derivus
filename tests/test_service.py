@@ -1739,6 +1739,74 @@ def test_the_status_counts_the_trades_a_book_holds(tmp_path, monkeypatch):
         service.BOOK = None
 
 
+def test_a_status_poll_with_nothing_moved_is_a_lookup_and_all_it_reads_is_in_its_key(file_book):
+    """`GET /book/status` is kept on the book under `poll_key`, worked by hand: the text's hash,
+    the book it names, the sha256 of the market data file it names and of no calendar, the XVA
+    file with its stamp - none yet - no record on a desk keeping none, and today. A second poll is
+    answered what the first was kept as, its `terminal` read beside it. Each thing the answer reads
+    is in that key, so moving it is a new answer: the market data file restated a day on with its
+    size and modified time held; `paths.json` mapping its name to a file a day further on; a row
+    landing in the XVA file; and an edit of the book. An XVA file inside a clock tick of its last
+    write has no stamp, and a poll over it keeps nothing.
+
+    Killing mutations: an answer never kept, where the lookup finds none; a named file keyed by
+    its name and not its bytes, where the key by hand differs and the market's day would stay
+    2024-06-28 through both moves; the XVA file's stamp left out, where its row never shows; the
+    day left out, where the key by hand has one part more; the tick not waited for, where a file
+    written this instant is stamped.
+    """
+    book, market = file_book
+
+    def status():
+        return CLIENT.get('/book/status').json()
+
+    def rested(path):
+        """`path` stamped a minute ago, as a file nothing is still writing."""
+        stamp = time.time_ns() - 60_000_000_000
+        os.utime(path, ns=(stamp, stamp))
+
+    xva = service.xva_path()
+    key = service.poll_key(service.BOOK, xva)
+    assert key == (derivus.content_hash(book.read_text()), 'service', (
+        ('CalendDataFile', None),
+        ('MarketDataFile', hashlib.sha256(market.read_bytes()).hexdigest())), ((xva, ()),), None,
+        datetime.date.today().isoformat())
+    first = status()
+    kept = service.BOOK.polls.get(('status',) + key)
+    assert kept == {name: value for name, value in first.items() if name != 'terminal'}
+    assert status() == first and service.BOOK.polls.get(('status',) + key) is kept
+    assert first['base_date'] == '2024-06-28'
+
+    held, text = os.stat(market), market.read_text()
+    assert text.count('"Base_Date": {".Timestamp": "2024-06-28') == 1
+    market.write_text(text.replace('"Base_Date": {".Timestamp": "2024-06-28',
+                                   '"Base_Date": {".Timestamp": "2024-06-29'))
+    os.utime(market, ns=(held.st_atime_ns, held.st_mtime_ns))
+    assert status()['base_date'] == '2024-06-29'
+
+    market.with_name('other.json').write_text(text.replace(
+        '"Base_Date": {".Timestamp": "2024-06-28', '"Base_Date": {".Timestamp": "2024-06-30'))
+    (market.parent / derivus.PATHS_FILE).write_text(json.dumps(
+        {'path_transform': {}, 'file_transform': {'market.json': 'other.json'}}))
+    assert status()['base_date'] == '2024-06-30'
+
+    service.write_row('GONE', {'status': 'done', 'cva': 1.5})
+    rested(xva)
+    assert [(row['reference'], row['cva']) for row in status()['xva']] == [('GONE', 1.5)]
+    assert service.poll_key(service.BOOK, xva)[3] == ((xva, (
+        os.stat(xva).st_mtime_ns, os.stat(xva).st_size)),)
+
+    amended = CLIENT.post('/book/deals', json={'action': 'amend', 'deal_path': '0',
+                                               'fields': {'Amount': 2e6}}).json()
+    assert amended['written'] is True and status()['etag'] == amended['etag'] != first['etag']
+
+    count = len(service.BOOK.polls.entries)
+    now = time.time_ns()
+    os.utime(xva, ns=(now + 1_000_000_000, now + 1_000_000_000))
+    assert service.settled(xva) is None and service.poll_key(service.BOOK, xva) is None
+    assert status()['etag'] == amended['etag'] and len(service.BOOK.polls.entries) == count
+
+
 def test_the_curve_verb_refuses_by_name_and_the_file_stands_still(book, monkeypatch):
     """THREE REFUSALS, each naming the thing to fix, each writing nothing.
 

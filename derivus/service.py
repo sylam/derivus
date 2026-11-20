@@ -575,6 +575,7 @@ class Book:
         self.path = path
         self.lock = threading.Lock()
         self._cache = (None, 0, None, None)  # (stamp and size, read at, etag, last parsed text)
+        self._named = (None, {})  # the book that text names and the file its `Calc` names per key
         self._verdict = (None, None)  # (etag, verdict) - the last validate of that text
         # the consolidated risk by `risk_etag`, and the book-alone vol risk a quote measures
         # against by `structures.book_risk`'s hash: a standing book pays one greeks run for each
@@ -596,6 +597,8 @@ class Book:
         self.parses = utils.LRUCache(4)
         # the market a document prices on by its `market_stamp`, pickled as the parses are
         self.markets = utils.LRUCache(4)
+        # what a poll was last answered, by the read and its `poll_key`
+        self.polls = utils.LRUCache(8)
 
     def _current(self, strict=False):
         """The etag of the file as it stands. Its text is read where the stamp or the size moved,
@@ -615,7 +618,7 @@ class Book:
                 with open(self.path, encoding='utf-8') as handle:
                     text = handle.read()
                 if text != self._cache[3]:
-                    json.loads(text)
+                    self._named = self.facts(json.loads(text))
                     self._cache = (None, 0, content_hash(text), text)
                 self._cache = (key, now) + self._cache[2:]
                 break
@@ -642,6 +645,19 @@ class Book:
         """`(wire document, etag)` - a fresh parse, safe for the caller to mutate."""
         with self.lock:
             return self._read()
+
+    @staticmethod
+    def facts(document):
+        """`(book, files)` of a document: the book it names and the file its `Calc` names under
+        each key - what is asked of the text between its parses. A text that is no job names none."""
+        job = isinstance(document, dict) and isinstance(document.get('Calc'), dict)
+        return (book_name(document), Context.named(document)) if job else (None, {})
+
+    def named(self):
+        """`(etag, book, files)` of the text as it stands (`facts`), with nothing parsed where it
+        has not moved."""
+        with self.lock:
+            return (self._current(),) + self._named
 
     def baseline(self, document, etag):
         """The WHOLE verdict the book already carries - every deal's messages and the factors it
@@ -711,7 +727,7 @@ class Book:
             handle.write(text)
         os.replace(temporary, self.path)
         # no stamp: the next read takes this text's stamp off the file, and a write after it
-        self._cache = (None, 0, content_hash(text), text)
+        self._cache, self._named = (None, 0, content_hash(text), text), self.facts(document)
         self._verdict = (self._cache[2], validated) if validated is not None else (None, None)
         return dict(outcome, etag=self._cache[2])
 
@@ -982,6 +998,46 @@ def folds():
     """The pairs the served book keeps the record's folds advanced in, or None where no book is
     served, which folds from the newest seed (`spine.advancing`)."""
     return None if BOOK is None else BOOK.folds
+
+
+def settled(path):
+    """`(modified, bytes)` of a file the service itself writes at `path`, `()` where there is none,
+    and None inside a clock tick of its last write, when a second write can still land on the same
+    stamp (`Book._current`)."""
+    try:
+        stat = os.stat(path)
+    except FileNotFoundError:
+        return ()
+    tick = TICK_NS if stat.st_mtime_ns % 1_000_000_000 else COARSE_TICK_NS
+    return (stat.st_mtime_ns, stat.st_size) if time.time_ns() >= stat.st_mtime_ns + tick else None
+
+
+def poll_key(live, *own):
+    """What a poll of the book `live` is keyed on before anything is parsed or opened:
+    `(etag, book, files, stamps, platter, day)` - the text's hash and the book it names
+    (`Book.named`), the sha256 of each file it names as this box reads it, each of the service's
+    `own` files with its stamp (`settled`), where the record stands (`spine.platter`) and today.
+    None while one of `own` is inside a tick of its last write."""
+    etag, book, named = live.named()
+    stamps = tuple((path, settled(path)) for path in own)
+    if any(stamp is None for _, stamp in stamps):
+        return None
+    reader = Context()
+    files = tuple(sorted((key, name and reader.digest(name)[1]) for key, name in named.items()))
+    return etag, book, files, stamps, spine.platter(), time.strftime('%Y-%m-%d')
+
+
+def polled(live, read, answer, *own):
+    """`answer(document, etag)` for the book `live` as it stands, kept on it (`Book.polls`) under
+    `read` and its `poll_key` over `own`, so a poll with nothing moved is a lookup. An answer is
+    kept only where the key it was asked under still stands once it is worked out."""
+    key = poll_key(live, *own)
+    kept = key and live.polls.get((read,) + key)
+    if kept is None:
+        kept = answer(*live.read())
+        if key is not None and key == poll_key(live, *own):
+            live.polls.put((read,) + key, kept)
+    return kept
 
 
 @app.get('/book', summary='The live job document this service serves')
@@ -2336,7 +2392,8 @@ def spine_block(document):
     if not spine.configured():
         return None
     pinned = pin_of(document)
-    block = {'lsn': None, 'head': None, 'events_behind': None, 'positions_behind': None}
+    block = {'lsn': None, 'head': None, 'events_behind': None, 'positions_behind': None,
+             'paper': spine.papered()}
     return block if pinned is None else dict(block, **pinned, **behind(pinned))
 
 
@@ -4461,7 +4518,12 @@ def book_xva_view():
     `PFE_<percentile>` the run's exposure profile reached, `{value, day}`. The profile itself is
     kept on the row and read one set at a time (`/book/xva/{reference}/profile`).
     """
-    document, _ = live_book().read()
+    return {'as_of': as_of(), 'path': xva_path(), 'sets': xva_entries(live_book().read()[0])}
+
+
+def xva_entries(document):
+    """The projection's rows joined with `document`'s own set list (`projection_entry`): every set
+    the book carries, then each row whose set has left it."""
     rows = read_projection().get('sets') or {}
     entries, seen = [], set()
     for deal_path, node in netting_sets(document):
@@ -4476,7 +4538,7 @@ def book_xva_view():
         entries.append(projection_entry(rows[reference], reference=reference, note=(
             'no NettingCollateralSet called {!r} is in the book any more - this row is the last '
             'run of a set that has since left it'.format(reference))))
-    return {'as_of': as_of(), 'path': xva_path(), 'sets': entries}
+    return entries
 
 
 @app.get('/book/xva/{reference}/profile', summary="One netting set's exposure profile, off its row")
@@ -4660,7 +4722,7 @@ def marking(request, attempted):
     seat's, `mark` over the book served, over the firm where none is - or refuse in the record's own
     words, the denial of `attempted` landed. Every seat where no home is configured."""
     spine.entitled(spine.MARK, request.get('actor'),
-                   None if BOOK is None else book_name(BOOK.read()[0]), attempted,
+                   None if BOOK is None else BOOK.named()[1], attempted,
                    'no {} is written'.format(attempted.replace('_', ' ')))
 
 
@@ -4941,10 +5003,11 @@ def read_stamp(stated):
         raise ValueError('{!r} is no date - a date is YYYY-MM-DD'.format(stated))
 
 
-def book_base_date(document):
+def book_base_date(document, market=None):
     """The book's own base date as a `datetime.date` - what a curve's benchmarks are rolled off. A
-    block authored on it moves its values alone; one authored before it re-rolls."""
-    return read_stamp(market_of(document)['System Parameters']['Base_Date'])
+    block authored on it moves its values alone; one authored before it re-rolls. Read off
+    `market` where the caller holds the document's."""
+    return read_stamp((market or market_of(document))['System Parameters']['Base_Date'])
 
 
 def stamp_base_date(document, base_date):
@@ -5220,31 +5283,17 @@ def book_curves(curve: str = None):
     document, etag = live_book().read()
     market = market_of(document)
     seed = {'rates': security_map.seeded_rates()}
-    answer = {'etag': etag, 'base_date': book_base_date(document).isoformat(), 'curves': {}}
-    for name in sorted(market.get('Market Prices', {})):
-        named = name.split('.', 1)[1] if name.startswith(CURVE_FAMILY + '.') else None
-        if named is None or curve not in (None, named):
-            continue
-        instrument = market['Market Prices'][name]['instrument']
-        method, source = curve_interpolation(market, named)
-        entry = {
-            'curve': named, 'currency': instrument['Currency'],
-            'discount_rate': instrument['Discount_Rate'],
-            'interpolation': method, 'interpolation_source': source,
-            'snapped': max([(row.get('Timestamp') or {}).get('.Timestamp', '')
-                            for row in instrument['Points']], default=''),
-            'rows': [{'tenor': row.get('Tenor', ''), 'security': row.get('Security', ''),
-                      'quote': row.get('Quoted_Market_Value'), 'use': row.get('Use', 'Yes')}
-                     for row in instrument['Points']]}
+    answer = {'etag': etag, 'base_date': book_base_date(document, market).isoformat(),
+              'curves': curve_blocks(market, curve)}
+    for name, entry in answer['curves'].items():
         try:
-            entry['conventions'] = dict(
-                ir_curve.block_conventions(instrument, seed, named).__dict__,
-                interpolation=method)
+            entry['conventions'] = dict(ir_curve.block_conventions(
+                market['Market Prices'][name]['instrument'], seed, entry['curve']).__dict__,
+                interpolation=entry['interpolation'])
         except KeyError as missing:
             # a block authored before it carried its definition: its quotes read, it cannot re-roll
             entry['note'] = 'authored without {} - set it up again through POST /book/curve'.format(
                 missing)
-        answer['curves'][name] = entry
     if curve is not None:
         return answer
     answer['seeded'] = {}
@@ -5256,6 +5305,29 @@ def book_curves(curve: str = None):
         except BloombergFXError as error:
             answer['seeded'][name] = {'refused': str(error)}
     return answer
+
+
+def curve_blocks(market, curve=None):
+    """`{block: entry}` for each `InterestRatePrices` block of `market`, or the one called `curve`:
+    what the block itself states - its curve, currencies, rows and latest print - and the
+    interpolation its solved factor carries (`curve_interpolation`)."""
+    blocks = {}
+    for name in sorted(market.get('Market Prices', {})):
+        named = name.split('.', 1)[1] if name.startswith(CURVE_FAMILY + '.') else None
+        if named is None or curve not in (None, named):
+            continue
+        instrument = market['Market Prices'][name]['instrument']
+        method, source = curve_interpolation(market, named)
+        blocks[name] = {
+            'curve': named, 'currency': instrument['Currency'],
+            'discount_rate': instrument['Discount_Rate'],
+            'interpolation': method, 'interpolation_source': source,
+            'snapped': max([(row.get('Timestamp') or {}).get('.Timestamp', '')
+                            for row in instrument['Points']], default=''),
+            'rows': [{'tenor': row.get('Tenor', ''), 'security': row.get('Security', ''),
+                      'quote': row.get('Quoted_Market_Value'), 'use': row.get('Use', 'Yes')}
+                     for row in instrument['Points']]}
+    return blocks
 
 
 #: The price factor types that ARE a vol surface, read off the engine's own declarations - so a new
@@ -5303,20 +5375,29 @@ def book_status():
     last XVA per set, trimmed to the columns a desk reads staleness off.
 
     Under a configured home `spine` says which LSN the file was hydrated at and how far the record
-    has moved since - in events, and in the fills and amendments among them. What the two disagree
-    ABOUT is `/book/reconcile`, which folds the record and is asked for on purpose.
+    has moved since - in events, and in the fills and amendments among them - and `paper`, the LSN
+    of the last entity or agreement declaration standing, which moves when the paper does. What
+    the two disagree ABOUT is `/book/reconcile`, which folds the record and is asked for on purpose.
+
+    A POLL WITH NOTHING MOVED IS A LOOKUP: the answer is kept on the book under its `poll_key`
+    over the XVA file (`polled`), and `terminal` is read beside it on every poll.
 
     ORIENTATION, NOT NUMBERS: the mark is `/book/risk`, the projection `/book/xva`, the curve
     definitions `/book/curve`. Every field here answers what is set up and how old it is. A
     sandboxed desk reads `terminal.present` False and prices on the market it last snapped.
     """
-    document, etag = live_book().read()
+    return dict(polled(live_book(), 'status', status_of, xva_path()), terminal=terminal_status())
+
+
+def status_of(document, etag):
+    """`GET /book/status`'s answer for `document` at `etag`, less its `terminal`: one parse and
+    one market, every part read off them, the XVA file and the record."""
     market = market_of(document)
     factors = market.get('Price Factors', {})
     calculation = document['Calc']['Calculation']
     return {
         'etag': etag,
-        'base_date': book_base_date(document).isoformat(),
+        'base_date': book_base_date(document, market).isoformat(),
         'base_currency': market.get('System Parameters', {}).get('Base_Currency'),
         # the inner path count is the one number a quote and a mark share, so a book stating too
         # few for a simulated deal is NAMED here with the remedy rather than healed behind the desk
@@ -5332,15 +5413,14 @@ def book_status():
                     'snapped': entry['snapped'], 'interpolation': entry['interpolation'],
                     'knots': [row['tenor'] for row in entry['rows'] if row['use'] == 'Yes'],
                     'held_out': [row['tenor'] for row in entry['rows'] if row['use'] != 'Yes']}
-                   for entry in book_curves()['curves'].values()],
+                   for entry in curve_blocks(market).values()],
         'surfaces': [{'name': name, 'snapped': wire_stamp(factors[name].get('Quote_Timestamp'))}
                      for name in sorted(factors) if name.split('.')[0] in VOL_SURFACES],
         'models': [{'name': name, 'family': name.split('.')[0][:-len(MODEL_SUFFIX)]}
                    for name in sorted(factors) if name.split('.')[0].endswith(MODEL_SUFFIX)],
         'xva': [{key: row[key] for key in ('reference', 'status', 'as_of', 'cva', 'fva')}
-                for row in book_xva_view()['sets']],
-        'spine': spine_block(document),
-        'terminal': terminal_status()}
+                for row in xva_entries(document)],
+        'spine': spine_block(document)}
 
 
 @app.get('/book/market', summary='The market the book prices on - its file, its block over it')
