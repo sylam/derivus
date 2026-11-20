@@ -285,7 +285,8 @@ pays and append no event, so the service asks their verb itself (`spine.entitled
 through `POST /book/deals` asks `book` at the deepest node holding the position, anywhere under
 the book where the record holds none; `POST /paths` and each beat of the scheduled tick ask
 `mark`, the tick of the hub's own seat; `POST /book/settlements` asks `settle` over the book.
-`POST /book/close` asks `mark` over the firm before it compiles anything. The close and the
+`POST /book/close` asks, over the firm and before it compiles anything, the verb its
+declaration demands under the map in force, `mark` unless a document moves the act. The close and the
 settlement file read the diary as the hub compiles it (`hub_diary`), so neither seat needs
 `validate`. A tick the hub's seat may not mark submits nothing: the cadence warns once a beat,
 naming the grant to declare, and beats on. **Held by**

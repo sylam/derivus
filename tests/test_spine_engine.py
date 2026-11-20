@@ -5759,11 +5759,14 @@ def test_a_close_asks_mark_over_the_firm_before_its_verdict_and_never_validate(r
     """`POST /book/close` ASKS `mark` OVER THE FIRM, FIRST. A seat holding `validate` alone is
     refused in the service's own sentence before anything is compiled - on a day the close is not
     legal too, so it is never told what the day waits on - and the seat holding `mark` over `*` and
-    no `validate` declares the close, the diary it stands behind being the hub's.
+    no `validate` declares the close, the diary it stands behind being the hub's. The verb asked
+    is the one the declaration demands under the map in force: where a document moves the act to
+    `approve`, the seat holding `approve` declares and the one holding `mark` is refused first.
 
     Killing mutations: the gate removed, which answers the seat holding `validate` alone with what
-    the illegal day waits on; and the diary compiled under the requester's seat, which refuses the
-    marking seat for want of `validate`.
+    the illegal day waits on; the diary compiled under the requester's seat, which refuses the
+    marking seat for want of `validate`; and the gate asking `mark` whatever the map says, which
+    refuses the seat the record would take.
     """
     with_client(desk)
     assert ticketed('CLOSE-1').json()['written'] is True
@@ -5784,6 +5787,13 @@ def test_a_close_asks_mark_over_the_firm_before_its_verdict_and_never_validate(r
     assert declared.status_code == 200, declared.text
     assert [body['date'] for _, _, body in facts(recorded, 'official_close_declared')] == [
         '2024-06-28']
+
+    entitle(recorded, [(ACTOR, 'admin', '*'), (ACTOR, 'validate', '*'), (VIEWER, 'approve', '*'),
+                       (MARKER, 'mark', '*')], verbs={'official_close_declared': 'approve'})
+    moved = close(MARKER, '2024-06-28')
+    assert moved.status_code == 422, moved.text
+    assert "holds no approve scope over '*', so no close is declared" in moved.json()['detail']
+    assert close(VIEWER, '2024-06-28').status_code == 200
 
 
 def test_a_settlement_file_asks_settle_over_the_book_and_never_validate(recorded, desk):

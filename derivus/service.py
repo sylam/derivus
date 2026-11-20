@@ -4001,8 +4001,9 @@ def book_close(request: dict):
     never unseats a later day's. 404 where no home is configured.
     """
     document, _ = recording().read()
-    spine.entitled(spine.MARK, request.get('actor'), None, 'official_close_declared',
-                   'no close is declared')
+    # the verb the declaration itself demands under the map in force, asked before the diary
+    spine.entitled(spine.demands()['official_close_declared'], request.get('actor'), None,
+                   'official_close_declared', 'no close is declared')
     # both defaults are CONVENTIONS, so only an omitted key takes one: a date or a market that
     # names nothing is a value to refuse, and an empty day is one a string compare calls legal
     market = OFFICIAL_MARKET if request.get('market') is None else request['market']
@@ -4039,8 +4040,8 @@ def book_settlements(request: dict):
     under, refuses before anything is compiled and is told what to declare.
 
     The rows are the DIARY's, compiled and cached exactly as `GET /book/diary` compiles them - one
-    job on the compute queue at a base valuation's cost class, admitted under this request's own
-    seat before the cache is read, and two asks over an unmoved book are one compile - with the
+    job on the compute queue at a base valuation's cost class, compiled as the hub's own once the
+    seat asking holds `settle`, and two asks over an unmoved book are one compile - with the
     premiums its fills move (`announced`), each row saying the `kind` it settles as. A row whose
     amount is not determined, and a row naming no currency, refuse BY NAME rather than instructing a
     payment of zero.
