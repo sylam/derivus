@@ -688,8 +688,8 @@ def saccr(mapping, parameters=PARAMETERS):
 
 @pytest.fixture(scope='module')
 def world(tmp_path_factory):
-    """`(mapping path, output)`: the five examples beside their hedging sets alone and the
-    module's other sets, one SA-CCR run over one book."""
+    """`(sets, output)`: the five examples beside their hedging sets alone and the module's other
+    sets, `{reference: (agreement terms, [trade node])}`, one SA-CCR run over one book."""
     mapping = mapping_file(tmp_path_factory.mktemp('saccr') / 'mapping.json')
     linear = at_market(LINEAR)
     rates, credit = [node(deal) for deal in linear[:2]] + [RECEIVER], [node(deal) for deal in linear[2:]]
@@ -772,7 +772,7 @@ def world(tmp_path_factory):
             'SWAPLETS': ({}, [node(deal) for deal in SWAPLETS]), 'SWAPLETS_ENDED': ({}, [node(ENDED)]),
             'SWAPLET_PACKAGE': ({}, [package('TRS', [SWAPLETS[0], cashflows(
                 FLOATING, 'FUNDING', 'Sell', HALVES, 4e6)])])}
-    return mapping, run(document(sets, saccr(mapping), receiver_vol()))
+    return sets, run(document(sets, saccr(mapping), receiver_vol()))
 
 
 def netting_sets(output):
@@ -1374,10 +1374,10 @@ def test_amounts_fixed_today_read_no_row_and_enter_v_alone(world):
 
     Killing mutation: the fee's type declaring no exposure - the run refused by name.
     """
-    _, output = world
+    sets, output = world
     found, frame = netting_sets(output), output['Results']['SACCR']['trades']
     assert frame[frame['NettingSet'].isin(['KNOWN', 'KNOWN_PACKAGE'])].empty
-    worth = valued([node(deal) for deal in KNOWN] + [package('PACKAGE', KNOWN[:2])])
+    worth = valued(sets['KNOWN'][1] + sets['KNOWN_PACKAGE'][1])
     assert worth['BOOK_FEE'] == pytest.approx(1e5 * math.exp(-0.04 * 730 / 365), rel=1e-12), worth
     for name, value in (('KNOWN', sum(worth['BOOK_' + deal['Reference']] for deal in KNOWN)),
                         ('KNOWN_PACKAGE', worth['BOOK_PACKAGE'])):
@@ -1422,7 +1422,7 @@ def test_a_swap_booked_as_its_legs_reads_as_the_swap(world):
     Killing mutation: the fixed leg read as a floating one, its paid notional short the rate - the
     package two rows, long and short 44,239,843.39, its add-on nothing.
     """
-    _, output = world
+    sets, output = world
     found, rows, legs = netting_sets(output), trades(output, 'SWAP_ALONE'), trades(output, 'SWAP_LEGS')
     adjusted = 1e7 * supervisory_duration(0.0, 5.0)
     assert rows.loc['SWAP', 'AdjustedNotional'] == pytest.approx(adjusted, rel=1e-14), rows
@@ -1438,7 +1438,7 @@ def test_a_swap_booked_as_its_legs_reads_as_the_swap(world):
     amounts = trades(output, 'SWAP_AMOUNTS')
     assert list(amounts[columns[:-1]].itertuples(index=False)) == list(rows[columns[:-1]].itertuples(index=False))
     assert found.loc['SWAP_AMOUNTS', 'AddOn_IR'] == found.loc['SWAP_ALONE', 'AddOn_IR'], found.loc['SWAP_AMOUNTS']
-    assert found.loc['SWAP_AMOUNTS', 'V'] == pytest.approx(valued([package('SWAP', SWAP_LEGS + AMOUNTS)])[
+    assert found.loc['SWAP_AMOUNTS', 'V'] == pytest.approx(valued(sets['SWAP_AMOUNTS'][1])[
         'BOOK_SWAP'], rel=1e-12), found.loc['SWAP_AMOUNTS']
 
 
@@ -1453,15 +1453,14 @@ def test_a_trade_enters_v_once_whatever_rows_it_reads(world):
     Killing mutation: V summed over the rows, each carrying its trade's value - the first package's
     V twice its value, the second's nothing.
     """
-    _, output = world
+    sets, output = world
     found, rows = netting_sets(output), trades(output, 'TWO_ROWS')
     adjusted = [1e7 * supervisory_duration(0.0, 5.0), 5e6 * supervisory_duration(0.0, 2.0)]
     assert list(rows['Component']) == ['TWO_ROWS_FIVE', 'TWO_ROWS_TWO'], rows
     assert rows['AdjustedNotional'].tolist() == pytest.approx(adjusted, rel=1e-14), rows
     assert list(rows['Delta']) == [1.0, -1.0] and list(rows['Bucket']) == ['2', '2'], rows
     assert found.loc['TWO_ROWS', 'AddOn_IR'] == pytest.approx(0.005 * (adjusted[0] - adjusted[1]), rel=1e-14)
-    worth = valued([package('PACKAGE', [cashflows(FLOATING, 'FIVE', 'Buy', every(12, 5), 1e7),
-                                        cashflows(FLOATING, 'TWO', 'Sell', every(12, 2), 5e6)])])
+    worth = valued(sets['TWO_ROWS'][1])
     assert found.loc['TWO_ROWS', 'V'] == pytest.approx(worth['BOOK_PACKAGE'], rel=1e-12), found.loc['TWO_ROWS']
     assert rows['Value'].iloc[0] == found.loc['TWO_ROWS', 'V'] and math.isnan(rows['Value'].iloc[1]), rows
 
@@ -1577,7 +1576,7 @@ def test_a_floating_energy_leg_reads_the_units_it_has_still_to_pay(world):
     Killing mutations: the price multiplier unread - 4,500 units, 360,000, the add-on 33,287.84; a
     payer read long - its delta +1.
     """
-    _, output = world
+    sets, output = world
     found = netting_sets(output)
     for name, delta in (('ENERGY_SWAP', 1.0), ('ENERGY_PAYER', -1.0)):
         rows = trades(output, name)
@@ -1586,7 +1585,7 @@ def test_a_floating_energy_leg_reads_the_units_it_has_still_to_pay(world):
         assert rows['AdjustedNotional'].tolist() == pytest.approx([3.5e3 * 80.0], rel=1e-15), rows
         assert rows['MaturityFactor'].tolist() == pytest.approx([math.sqrt(95 / 360)], rel=1e-15), rows
         assert found.loc[name, 'AddOn_Commodity'] == pytest.approx(0.18 * 2.8e5 * math.sqrt(95 / 360), rel=1e-14)
-    worth = valued([node(energy_leg('FLOATING', 'Receiver')), node(dict(KNOWN[2], Payer_Receiver='Payer'))])
+    worth = valued(sets['ENERGY_SWAP'][1])
     assert found.loc['ENERGY_SWAP', 'V'] == pytest.approx(worth['BOOK_FLOATING'] + worth['BOOK_FIXED_ENERGY'],
                                                           rel=1e-12), found.loc['ENERGY_SWAP']
 
@@ -1657,7 +1656,7 @@ def test_a_cap_reads_a_caplet_per_period_still_to_fix_each_in_its_own_bucket(wor
     Killing mutations: the fixed period read as an option - four rows; the bucket taken from the
     cap's end - all three in bucket 2, the add-on 3,324.3377.
     """
-    _, output = world
+    sets, output = world
     found, rows = netting_sets(output).loc['STRIP'], trades(output, 'STRIP')
     periods = ((183, 0.25, 0.75), (182, 0.75, 1.25), (183, 1.25, 1.75))
     deltas = [black_delta(math.expm1(0.04 * days / 365) / (days / 365), 0.045, 0.5, start, True)
@@ -1670,7 +1669,8 @@ def test_a_cap_reads_a_caplet_per_period_still_to_fix_each_in_its_own_bucket(wor
     first, second = adjusted[0] * deltas[0], adjusted[1] * deltas[1] + adjusted[2] * deltas[2]
     assert found['AddOn_IR'] == pytest.approx(0.005 * math.sqrt(
         first * first + second * second + 1.4 * first * second), rel=1e-12), found
-    worth = valued([node(STRIP), node(optioned('Cap', 'LIVE', 'Buy', every(6, 3, BASE + pd.DateOffset(months=3))))])
+    worth = valued(sets['STRIP'][1] + [
+        node(optioned('Cap', 'LIVE', 'Buy', every(6, 3, BASE + pd.DateOffset(months=3))))])
     assert found['V'] == pytest.approx(worth['BOOK_LEG'], rel=1e-12), found
     assert worth['BOOK_LEG'] - worth['BOOK_LIVE'] == pytest.approx(
         1e6 * 182 / 365 * 0.005 * math.exp(-0.04 * 90 / 365), rel=1e-12), worth
@@ -1710,13 +1710,13 @@ def test_a_cap_over_its_legs_enters_v_once_and_matures_on_its_last_day(world):
     Killing mutations: V summed over the rows, each carrying the cap's value - V three times it; M
     read per leg - the short leg's maturity factor 0.5^0.5.
     """
-    _, output = world
+    sets, output = world
     found, rows = netting_sets(output).loc['CAP_LEGS'], trades(output, 'CAP_LEGS')
     assert list(zip(rows['Component'], rows['Bucket'], rows['MaturityFactor'])) == [
         ('CAP_LEGS_FIRST 2027-01-15', '2', 1.0), ('CAP_LEGS_SECOND 2028-01-15', '2', 1.0),
         ('CAP_LEGS_SHORT 2025-07-15', '1', 1.0)], rows
     assert rows['AdjustedNotional'].iloc[2] == pytest.approx(1e6 * supervisory_duration(0.25, 0.5), rel=1e-14)
-    assert found['V'] == pytest.approx(valued([cap('CAP', 'Buy', CAP_LEGS)])['BOOK_CAP'], rel=1e-12), found
+    assert found['V'] == pytest.approx(valued(sets['CAP_LEGS'][1])['BOOK_CAP'], rel=1e-12), found
     assert rows['Value'].iloc[0] == found['V'] and rows['Value'].iloc[1:].isna().all(), rows
 
 
@@ -1736,39 +1736,6 @@ def test_a_cap_or_a_floor_stated_by_its_terms_reads_the_optionlet_it_compiles(wo
         leg = trades(output, twin).loc['LEG']
         assert list(rows.loc[reference, columns]) == list(leg[columns]), rows
         assert rows.loc[reference, 'Value'] == pytest.approx(leg['Value'], rel=1e-12), rows
-
-
-@pytest.mark.parametrize('held_node, said', [
-    (package('PACKAGE', [SWAP_LEGS[0], optioned('Cap', 'CAPPED', 'Buy', every(12, 3), utils.Percent(1.0))]),
-     'SET_CAPPED is a CFFloatingInterestListDeal paying a digital on its rate, whose collar of '
-     'CRE52.42\\(3\\) is not built'),
-    (node(optioned('Floor', 'CAPPED', 'Buy', every(12, 3), utils.Percent(1.0))),
-     'SET_CAPPED is a CFFloatingInterestListDeal paying a digital on its rate'),
-    (dict(package('INNER', [SWAP_LEGS[1]]), Instrument={'.Deal': {
-        'Object': 'NettingCollateralSet', 'Reference': 'INNER', 'Netted': 'True', 'Collateralized': 'False'}}),
-     'SET_INNER is a NettingCollateralSet, which declares no exposure CRE52 reads'),
-    (dict(package('PRICE_SWAP', [KNOWN[3]]), Instrument={'.Deal': {
-        'Object': 'PriceSwapDeal', 'Reference': 'PRICE_SWAP', 'Currency': 'USD', 'Buy_Sell': 'Buy',
-        'Strike_Amount': 9e5, 'Maturity_Date': years(1)}}),
-     'SET_PRICE_SWAP is a PriceSwapDeal, which declares no exposure CRE52 reads'),
-    (package('THREE', [cashflows(FLOATING, 'USD', 'Buy', every(12, 3), 1.25e6),
-                       cashflows(FIXED, 'EUR', 'Sell', every(12, 3), 1e6, currency='EUR'),
-                       cashflows(FIXED, 'GBP', 'Sell', every(12, 3), 9e5, currency='GBP')]),
-     'SET_THREE is a package whose legs pay in EUR, GBP, USD, no one pair CRE52.35 reads')])
-def test_a_container_or_leg_the_reader_cannot_read_is_refused_by_name(tmp_path, held_node, said):
-    """CRE52.35, CRE52.42(3) AND CRE52.74-52.76. A floating leg paying digital caplets or
-    floorlets, alone or in a package, is a strip of digitals, whose collars are not built; a netting
-    set inside a netting set is several sets to one agreement, not built; a price swap settles in
-    its children's place, a trade on their value that its children's own rows do not read; and a
-    package whose legs pay in three currencies is no one pair: each refuses the run by name.
-
-    Killing mutations: a digital optionlet read as the plain one its strike states - the capped
-    package valued and its EAD written; a container read through its children whatever it is - the
-    price swap's bond read as amounts fixed today, its add-on nothing; legs of three currencies left unrefused - the
-    package read as its rate legs and the run valued.
-    """
-    with pytest.raises(ValueError, match='SACCR: trade ' + said):
-        run(document({'SET': ({}, [held_node])}, saccr(mapping_file(tmp_path / 'mapping.json'))))
 
 
 EQUITY_LEG = {'Object': 'EquitySwapLeg', 'Reference': 'LEG', 'Currency': 'USD',
@@ -2181,39 +2148,62 @@ def test_a_swaplet_list_beside_its_funding_leg_reads_each_its_own_row(world):
     assert rows['Value'].iloc[0] == found['V'] and math.isnan(rows['Value'].iloc[1]), rows
 
 
-@pytest.mark.parametrize('deal, drop, said', [
-    (EQUITY_LEG, (), 'SET_LEG is a EquitySwapLeg, which declares no exposure CRE52 reads'),
-    (STRIPS[2], (), 'SET_EXTENDABLE is a FXExtendableForwardDeal, whose extension is an option on a strip of '
-                    'forwards CRE52 states no delta for'),
-    (dict(STRIPS[0], InvertedTarget='Yes'), (), "SET_TARF is a FXTARFOptionDeal whose accrual is on the reciprocal "
-                                                "of its pair, where CRE52's reading at its strike as stated does not hold"),
-    *[(touch(kind, 'TOUCH', 1.4, Underlying_Currency='EUR', FX_Volatility='EUR.USD', Delivery_Date=years(1)), (),
-       'SET_TOUCH is a {}, which declares no exposure CRE52 reads'.format(kind))
+@pytest.mark.parametrize('held_node, drop, said', [
+    (package('PACKAGE', [SWAP_LEGS[0], optioned('Cap', 'CAPPED', 'Buy', every(12, 3), utils.Percent(1.0))]), (),
+     'SET_CAPPED is a CFFloatingInterestListDeal paying a digital on its rate, whose collar of '
+     'CRE52.42\\(3\\) is not built'),
+    (node(optioned('Floor', 'CAPPED', 'Buy', every(12, 3), utils.Percent(1.0))), (),
+     'SET_CAPPED is a CFFloatingInterestListDeal paying a digital on its rate'),
+    (dict(package('INNER', [SWAP_LEGS[1]]), Instrument={'.Deal': {
+        'Object': 'NettingCollateralSet', 'Reference': 'INNER', 'Netted': 'True', 'Collateralized': 'False'}}), (),
+     'SET_INNER is a NettingCollateralSet, which declares no exposure CRE52 reads'),
+    (dict(package('PRICE_SWAP', [KNOWN[3]]), Instrument={'.Deal': {
+        'Object': 'PriceSwapDeal', 'Reference': 'PRICE_SWAP', 'Currency': 'USD', 'Buy_Sell': 'Buy',
+        'Strike_Amount': 9e5, 'Maturity_Date': years(1)}}), (),
+     'SET_PRICE_SWAP is a PriceSwapDeal, which declares no exposure CRE52 reads'),
+    (package('THREE', [cashflows(FLOATING, 'USD', 'Buy', every(12, 3), 1.25e6),
+                       cashflows(FIXED, 'EUR', 'Sell', every(12, 3), 1e6, currency='EUR'),
+                       cashflows(FIXED, 'GBP', 'Sell', every(12, 3), 9e5, currency='GBP')]), (),
+     'SET_THREE is a package whose legs pay in EUR, GBP, USD, no one pair CRE52.35 reads'),
+    (node(EQUITY_LEG), (), 'SET_LEG is a EquitySwapLeg, which declares no exposure CRE52 reads'),
+    (node(STRIPS[2]), (), 'SET_EXTENDABLE is a FXExtendableForwardDeal, whose extension is an option on a strip of '
+                          'forwards CRE52 states no delta for'),
+    (node(dict(STRIPS[0], InvertedTarget='Yes')), (), "SET_TARF is a FXTARFOptionDeal whose accrual is on the "
+                                                      "reciprocal of its pair, where CRE52's reading at its strike "
+                                                      "as stated does not hold"),
+    *[(node(touch(kind, 'TOUCH', 1.4, Underlying_Currency='EUR', FX_Volatility='EUR.USD', Delivery_Date=years(1))),
+       (), 'SET_TOUCH is a {}, which declares no exposure CRE52 reads'.format(kind))
       for kind in ('FXOneTouchOption', 'FXNoTouchOption')],
-    (MIXED[2], ('EquityForwardDeal',), 'SET_INDEX_FWD is a EquityForwardDeal, and the mapping '
-                                       'classes it under no SACCR.Asset_Class'),
-    (default_swap('CDS', 'UNRATED', years(5), 'Buy'), (),
+    (node(MIXED[2]), ('EquityForwardDeal',), 'SET_INDEX_FWD is a EquityForwardDeal, and the mapping '
+                                             'classes it under no SACCR.Asset_Class'),
+    (node(default_swap('CDS', 'UNRATED', years(5), 'Buy')), (),
      'SET_CDS reads SurvivalProb.UNRATED, and the mapping states no SACCR.Rating for it')])
-def test_a_trade_whose_exposure_the_declarations_do_not_state_is_refused_by_name(
-        tmp_path, deal, drop, said):
-    """A TRADE IS READ THROUGH ITS DECLARATIONS. An equity swap leg, whose type declares no
-    exposure; an extendable forward, whose right to extend its strip of forwards is an option CRE52
-    states no delta for; a TARF stating `InvertedTarget`, whose fixings pay N1 max(c(1/K - 1/S), 0)
-    on the reciprocal of its pair, not the option at its strike (its calls alone on a million
-    euros struck at 1.0 are worth 392,309.89 stated so and 491,715.33 blank, the vanilla's
-    1,000,000 sum (F - 1) DF); an FX one-touch and no-touch, whose payout may be in the currency
-    their barrier prices, which no collar of a cash digital reads; an equity forward, which does
-    declare one, under a mapping classing its type in no asset class; and a default swap on a
-    survival curve the mapping rates nothing: each refuses the run by name.
+def test_a_trade_the_reader_cannot_read_is_refused_by_name(tmp_path, held_node, drop, said):
+    """A TRADE IS READ THROUGH ITS DECLARATIONS; CRE52.35, CRE52.42(3) AND CRE52.74-52.76. A
+    floating leg paying digital caplets or floorlets, alone or in a package, is a strip of digitals,
+    whose collars are not built; a netting set inside a netting set is several sets to one
+    agreement, not built; a price swap settles in its children's place, a trade on their value that
+    its children's own rows do not read; a package whose legs pay in three currencies is no one
+    pair; an equity swap leg's type declares no exposure; an extendable forward's right to extend
+    its strip of forwards is an option CRE52 states no delta for; a TARF stating `InvertedTarget`
+    pays N1 max(c(1/K - 1/S), 0) at each fixing on the reciprocal of its pair, not the option at its
+    strike (its calls alone on a million euros struck at 1.0 are worth 392,309.89 stated so and
+    491,715.33 blank, the vanilla's 1,000,000 sum (F - 1) DF); an FX one-touch's and no-touch's
+    payout may be in the currency their barrier prices, which no collar of a cash digital reads; an
+    equity forward, which does declare one, is booked under a mapping classing its type in no asset
+    class; and a default swap is on a survival curve the mapping rates nothing: each refuses the run
+    by name.
 
-    Killing mutations: a type declaring no exposure skipped - the leg's set valued and its EAD
-    written, nothing refused; a strip of no options read as its fixings - a `KeyError` on the
-    expiry its declaration leaves unstated; the reciprocal TARF read at its strike - its set valued,
-    nothing refused.
+    Killing mutations: a digital optionlet read as the plain one its strike states - the capped
+    package valued and its EAD written; a container read through its children whatever it is - the
+    price swap's bond read as amounts fixed today, its add-on nothing; legs of three currencies left
+    unrefused - the package read as its rate legs and the run valued; a type declaring no exposure
+    skipped - the leg's set valued and its EAD written, nothing refused; a strip of no options read
+    as its fixings - a `KeyError` on the expiry its declaration leaves unstated; the reciprocal TARF
+    read at its strike - its set valued, nothing refused.
     """
-    mapping = mapping_file(tmp_path / 'mapping.json', drop)
     with pytest.raises(ValueError, match='SACCR: trade ' + said):
-        run(document({'SET': ({}, [node(deal)])}, saccr(mapping)))
+        run(document({'SET': ({}, [held_node])}, saccr(mapping_file(tmp_path / 'mapping.json', drop))))
 
 
 @pytest.mark.parametrize('broken, said', [
