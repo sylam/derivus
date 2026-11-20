@@ -81,7 +81,6 @@ def desk(tmp_path):
     service.BOOK = service.Book(str(path))
     yield path
     service.BOOK = None
-    service.BOOK_DIARY_CACHE.clear()
 
 
 def booked(deal, quantity, reference, portfolio, price=None, currency=None, parent=CLIENT_SET,
@@ -947,7 +946,6 @@ def test_a_book_written_before_its_record_is_taken_on_as_if_it_were_booked(recor
     body['Calc']['Deals']['Deals']['Children'][0]['Children'] = []
     (native / 'book.json').write_text(json.dumps(body, indent=2), newline='\n')
     service.BOOK = service.Book(str(native / 'book.json'))
-    service.BOOK_DIARY_CACHE.clear()
     designated(home, fixings=False)
     for deal in LEGACY:
         booked(deal, 1.0, deal['Reference'], BOOK, DONE_AT[deal['Reference']])
@@ -1789,7 +1787,6 @@ def filed(tmp_path):
     service.BOOK = service.Book(str(path))
     yield path, market
     service.BOOK = None
-    service.BOOK_DIARY_CACHE.clear()
 
 
 #: A cashflow paying inside the window, so the window's P&L reads the start's diary and its base.
@@ -1908,7 +1905,7 @@ def test_the_explain_and_the_call_of_a_past_close_read_the_files_its_marks_read(
     market.write_text(json.dumps(data), newline='\n')
     assert CLIENT.get('/book/files').json()['files'][0]['matches'] is None, 'the file did not move'
     # the explain is kept by the two marks it reads, so the read after the rewrite is run again
-    service.EXPLAIN_CACHE.clear()
+    service.BOOK.explains.entries.clear()
     assert between('2024-06-28', '2024-07-01', explain=True)['explain'] == told
     assert called('2024-07-01')['CSA-A'] == call
 

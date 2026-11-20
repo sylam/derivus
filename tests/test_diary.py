@@ -227,7 +227,6 @@ def serving(tmp_path, nodes, factors=None):
     path = tmp_path / 'book.json'
     path.write_text(json.dumps(json.loads(dump(job(nodes, factors))), indent=2), newline='\n')
     service.BOOK = service.Book(str(path))
-    service.BOOK_DIARY_CACHE.clear()
     return path
 
 
@@ -235,7 +234,6 @@ def serving(tmp_path, nodes, factors=None):
 def closed():
     yield
     service.BOOK = None
-    service.BOOK_DIARY_CACHE.clear()
 
 
 def settle(home, key):
@@ -1440,7 +1438,6 @@ def test_a_book_saying_no_reads_as_one_saying_yes_and_its_valuation_keeps_the_de
         path = tmp_path / 'book.json'
         path.write_text(json.dumps(json.loads(dump(document)), indent=2), newline='\n')
         service.BOOK = service.Book(str(path))
-        service.BOOK_DIARY_CACHE.clear()
         answers[switch] = (diary_rows()['rows'], CLIENT.get(
             '/book/close/check', params={'date': '2020-01-01'}).json())
     assert answers['No'] == answers['Yes']
@@ -1550,12 +1547,12 @@ def test_a_close_is_declared_only_on_a_day_the_check_calls_legal(recorded, tmp_p
                    actor=ACTOR, blob_refs=(blob,))
     finally:
         log.close()
-    service.BOOK_DIARY_CACHE.clear()
+    service.BOOK.diaries.entries.clear()
     stranger = CLIENT.post('/book/close', json={'actor': 'subject-nobody-at-all'})
     assert stranger.status_code == 422, stranger.text
     said = stranger.json()['detail']
     assert 'subject-nobody-at-all' in said and 'validate' in said, said
-    assert not service.BOOK_DIARY_CACHE, 'the box compiled a diary for a close it then refused'
+    assert not service.BOOK.diaries.entries, 'the box compiled a diary for a close it then refused'
 
 
 def test_the_settlement_file_is_struck_on_the_market_the_record_designates(recorded, tmp_path):
@@ -1592,7 +1589,7 @@ def test_the_settlement_file_is_struck_on_the_market_the_record_designates(recor
     assert undesignated.status_code == 422, undesignated.text
     for said in ('settlement_export', policy.DESIGNATIONS_SECTION, policy.TIERS_POLICY):
         assert said in undesignated.json()['detail'], said
-    assert service.EXECUTOR.results == stored and not service.BOOK_DIARY_CACHE, \
+    assert service.EXECUTOR.results == stored and not service.BOOK.diaries.entries, \
         'an undesignated home paid for the compile before it was told what to declare'
 
     log = SpineLog(recorded)
@@ -1605,7 +1602,7 @@ def test_the_settlement_file_is_struck_on_the_market_the_record_designates(recor
     unmarked = CLIENT.post('/book/settlements', json={'due_before': ever})
     assert unmarked.status_code == 422 and 'official' in unmarked.json()['detail'], unmarked.text
     assert CLIENT.post('/book/settlements', json={}).status_code == 422, 'due_before had a default'
-    assert not service.BOOK_DIARY_CACHE, 'a refused export compiled a diary'
+    assert not service.BOOK.diaries.entries, 'a refused export compiled a diary'
 
     marked = CLIENT.post('/book/markets', json={'name': 'official'}).json()
     exported = CLIENT.post('/book/settlements',
@@ -1641,7 +1638,7 @@ def test_the_settlement_file_is_struck_on_the_market_the_record_designates(recor
         log.close()
     assert CLIENT.post('/book/settlements',
                        json={'due_before': ever, 'actor': other}).status_code == 200
-    assert service.BOOK_DIARY_CACHE, 'nothing was cached, so the next ask proves nothing'
+    assert service.BOOK.diaries.entries, 'nothing was cached, so the next ask proves nothing'
     unnamed = CLIENT.post('/book/settlements', json={'due_before': ever})
     assert unnamed.status_code == 422, unnamed.text
     assert 'no actor for this act' in unnamed.json()['detail'], unnamed.text

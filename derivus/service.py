@@ -107,7 +107,7 @@ import shutil
 import threading
 import time
 
-from collections import Counter, namedtuple, OrderedDict
+from collections import Counter, namedtuple
 from copy import deepcopy
 from functools import reduce
 from itertools import count, islice
@@ -339,7 +339,7 @@ def plain(label):
     return next(iter(label.values())) if tagged else label
 
 
-class PlanCache:
+class PlanCache(utils.LRUCache):
     """The parsed job, kept under the name of its plan, so EXECUTE can be plan plus values patch.
 
     What is cached is the PARSE - decoding a job document and building its Deals, Curves and
@@ -351,26 +351,14 @@ class PlanCache:
     record of anything - the replay tuple is.
     """
 
-    def __init__(self, size=32):
-        self.size = size
-        self.plans = OrderedDict()
-        self.lock = threading.Lock()
-
     def put(self, context):
-        with self.lock:
-            plan_id = context.plan_hash()
-            self.plans[plan_id] = context
-            self.plans.move_to_end(plan_id)
-            if len(self.plans) > self.size:
-                self.plans.popitem(last=False)
-            return plan_id
+        plan_id = context.plan_hash()
+        super().put(plan_id, context)
+        return plan_id
 
     def get(self, plan_id):
-        with self.lock:
-            if plan_id not in self.plans:
-                return None
-            self.plans.move_to_end(plan_id)
-            return deepcopy(self.plans[plan_id])
+        kept = super().get(plan_id)
+        return None if kept is None else deepcopy(kept)
 
 
 class ComputeExecutor:
@@ -575,6 +563,11 @@ class Book:
         # the record's folds a booking or a read advances rather than re-walks (`spine.advancing`),
         # kept as long as the book is served
         self.folds = {}
+        # the diary of each deal tree by `diary_etag` (`diary_of`), the explain's three runs by
+        # what they read (`explaining`), each marks job's day (`PnL.marked`), and the recalc in
+        # flight per netting set, `{Reference: result_id}`, as `POST /book/xva` filed it
+        self.diaries, self.explains, self.days, self.xva_pending = (
+            utils.LRUCache(8), utils.LRUCache(8), {}, {})
         # each file the book names parsed once per content, for every context a request builds
         # over it (`load`): the newest of the market data and the calendar and the ones before
         self.parses = utils.LRUCache(4)
@@ -733,7 +726,7 @@ async def bearer(request: Request):
 app = FastAPI(title='derivus', version=__version__, dependencies=[Depends(bearer)])
 app.add_middleware(CORSMiddleware, allow_origins=ORIGINS, allow_methods=['*'], allow_headers=['*'])
 EXECUTOR = ComputeExecutor()
-PLANS = PlanCache()
+PLANS = PlanCache(32)
 
 #: Where a long job has got to, under the result id it will be filed as: `{done, total, note}`, and
 #: `/results/{result_id}` merges it while the job is queued or running. The worker thread is the only
@@ -2040,11 +2033,6 @@ def book_risk(actor: str = None):
 # The record's own readings. Every verb below is a READ: nothing here appends, and a divergence
 # between the file and the log is a reading the desk acts on rather than a refusal that blocks it.
 
-#: The diary keyed by everything a compile reads - `/book/risk`'s own key - and the wall the cache
-#: is bounded at. A standing book pays for ONE deal setup and every later ask is a dict lookup.
-BOOK_DIARY_CACHE = OrderedDict()
-BOOK_DIARY_LIMIT = 8
-
 #: How long a diary request waits on the one worker before it says so instead of hanging a client.
 DIARY_SECONDS = 300.0
 
@@ -2386,7 +2374,8 @@ def diary_of(document, actor):
     spine.admit(spine.TELEMETRY, actor, book_name(document))
     etag = diary_etag(document)
     result_id = content_hash({'diary': etag})
-    if etag not in BOOK_DIARY_CACHE:
+    kept = live_book().diaries.get(etag)
+    if kept is None:
         submitted = Job(result_id, DiaryJob(document), {}, spine.TELEMETRY, actor=actor,
                         book=book_name(document))
         EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])
@@ -2398,11 +2387,9 @@ def diary_of(document, actor):
             EXECUTOR.forget(result_id)
             raise HTTPException(422, 'the book will not compile a diary: {}'.format(
                 stored.get('error')))
-        if len(BOOK_DIARY_CACHE) >= BOOK_DIARY_LIMIT:
-            BOOK_DIARY_CACHE.popitem(last=False)
-        BOOK_DIARY_CACHE[etag] = dict(stored['stats']['Diary'], etag=etag, result_id=result_id)
-    BOOK_DIARY_CACHE.move_to_end(etag)
-    return BOOK_DIARY_CACHE[etag]
+        kept = live_book().diaries.put(etag, dict(stored['stats']['Diary'], etag=etag,
+                                                  result_id=result_id))
+    return kept
 
 
 def hub_diary(document):
@@ -3039,7 +3026,7 @@ def book_marks(request: dict):
                                  'declare one (POST /book/close) and mark again'.format(
                                      spine.PNL, market['name']))
     day = spine.base_day(document)
-    marks = PnL.marked(book, spine.closes(market['name']), spine.attestations(), spine.stored)
+    marks = book_marks_on(book, spine.closes(market['name']))
     if marks and day < max(marks):
         raise HTTPException(422, 'the book was last marked for {} and stands at {} - marks run '
                                  'forward, a day already struck never moves, and a day behind the '
@@ -3070,10 +3057,15 @@ def book_marked_days():
     between. Refused where no market is designated. 404 where no home is configured."""
     document, _ = recording().read()
     market = spine.designated_market(spine.PNL)
-    marks = PnL.marked(book_name(document), spine.closes(market['name']), spine.attestations(),
-                       spine.stored)
+    marks = book_marks_on(book_name(document), spine.closes(market['name']))
     return {'market': market['name'],
             'days': [{'day': day, 'lsn': marks[day]['lsn']} for day in sorted(marks)]}
+
+
+def book_marks_on(book, closes):
+    """`{day: marks}` - the latest standing marks of `book` on each of `closes` (`PnL.marked`),
+    each marks job's day kept on the served book."""
+    return PnL.marked(book, closes, spine.attestations(), spine.stored, live_book().days)
 
 
 def marked_instruments(book, since, head=None):
@@ -3125,7 +3117,7 @@ def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreemen
         raise HTTPException(422, 'portfolio {!r} is not under book {!r} - a portfolio is a path '
                                  'whose top node is the book'.format(portfolio, book))
     market = spine.designated_market(spine.PNL)
-    marks = PnL.marked(book, spine.closes(market['name']), spine.attestations(), spine.stored)
+    marks = book_marks_on(book, spine.closes(market['name']))
     days = sorted(marks)
     end_day = None if end is None else read_day(end)
     start_day = read_day(start) if start is not None else max(
@@ -3226,12 +3218,6 @@ def live_marks(document, book, since):
         'values': context.market_patch(), 'live': True}
 
 
-#: The explain's three runs keyed by what they read - the two marks and the positions valued - so
-#: a screen asking again pays a lookup. Bounded, like every cache here.
-EXPLAIN_CACHE = OrderedDict()
-EXPLAIN_LIMIT = 8
-
-
 def explaining(first, last, document):
     """`quantities -> (opened, closed, rolled, note)` - the runs `PnL.explain` asks for: the
     positions valued on the start's close with first-order sensitivities in its quotes, the same
@@ -3242,7 +3228,8 @@ def explaining(first, last, document):
     def run(quantities):
         key = content_hash({'start': first['job'], 'end': last.get('job') or risk_etag(document),
                             'quantities': quantities})
-        if key not in EXPLAIN_CACHE:
+        kept = live_book().explains.get(key)
+        if kept is None:
             terms = PnL.held_terms(document, set(quantities), spine.stored)
             start, ending = first['document'], last.get('document') or document
             reading = spine.reading(start, first['files'])
@@ -3250,11 +3237,9 @@ def explaining(first, last, document):
             opened, note = sensed(opening, reading)
             closed, _ = sensed(held_job(ending, terms, quantities),
                                spine.reading(ending, last.get('files')))
-            if len(EXPLAIN_CACHE) >= EXPLAIN_LIMIT:
-                EXPLAIN_CACHE.popitem(last=False)
-            EXPLAIN_CACHE[key] = (opened, closed, carried(opening, last['day'], reading), note)
-        EXPLAIN_CACHE.move_to_end(key)
-        return EXPLAIN_CACHE[key]
+            kept = live_book().explains.put(key, (opened, closed, carried(
+                opening, last['day'], reading), note))
+        return kept
 
     return run
 
@@ -3448,8 +3433,7 @@ def book_collateral(date: str = None, actor: str = None):
     """
     document, _ = recording().read()
     market = spine.designated_market(spine.PNL)['name']
-    marks = PnL.marked(book_name(document), spine.closes(market), spine.attestations(),
-                       spine.stored)
+    marks = book_marks_on(book_name(document), spine.closes(market))
     day = read_day(date) if date is not None else spine.base_day(document)
     if day not in marks:
         raise HTTPException(422, 'no marks stand for {} on {!r} - the days marked are {}; a call '
@@ -3753,7 +3737,7 @@ def book_worklist(actor: str = None):
     moved = {row['subject']: row for row in spine.lifecycle()['transitions']}
     market = spine.designation(spine.PNL)
     closes = [] if market is None else spine.closes(market)
-    marks = PnL.marked(book, closes, spine.attestations(), spine.stored)
+    marks = book_marks_on(book, closes)
     see = sighted(document, sight, demands['status_transition'], rows)
 
     def row(kind, what, key, lsn, when):
@@ -4030,11 +4014,6 @@ XVA_CVA_BLOCK = {'Calculate': 'Yes', 'Counterparty': '', 'Bank': '',
 XVA_FVA_BLOCK = {'Calculate': 'Yes', 'Counterparty': '', 'Bank': '',
                  'Deflate_Stochastically': 'No', 'Stochastic_Funding': 'No', 'Gradient': 'No'}
 
-#: The recalc in flight per netting set, as the POST filed it: `{Reference: result_id}`. The row in
-#: `xva.json` names the run that PRODUCED it, never the one still running, so the view reads the
-#: pending id here. Never cleaned: a settled id simply stops reading `queued`/`running`.
-XVA_PENDING = {}
-
 #: What one run files on its set's row beside its status, each a null where the run said nothing.
 XVA_COLUMNS = ('cva', 'fva', 'peaks', 'currency', 'as_of', 'result_id', 'plan_hash', 'values_hash',
                'seed', 'quasi_seed')
@@ -4305,7 +4284,7 @@ def book_xva(request: dict):
         status = EXECUTOR.submit(
             Job(result_id, run, stamp, spine.CURIOSITY, actor=request.get('actor'),
                 book=book_name(document)), HEAVY)
-        XVA_PENDING[reference] = result_id
+        live_book().xva_pending[reference] = result_id
         # a queued or running job writes its own row when it lands; one that has already run writes
         # here only where the row is missing or names a different run, `as_of` meaning when the
         # number was COMPUTED
@@ -4410,7 +4389,8 @@ def projection_entry(row, **book):
                   'collateralized': row.get('collateralized'), 'note': None}, **book)
     entry.update({key: row.get(key) for key in XVA_COLUMNS + ('error',)},
                  status=row.get('status', 'never run'), recalc=None)
-    pending = XVA_PENDING.get(entry['reference'])
+    # the row names the run that PRODUCED it, never one still running: a pending id is the book's
+    pending = live_book().xva_pending.get(entry['reference'])
     outcome = EXECUTOR.result(pending) if pending is not None else None
     if outcome is not None and outcome['status'] in ('queued', 'running'):
         entry['recalc'] = {'result_id': pending, 'status': outcome['status']}

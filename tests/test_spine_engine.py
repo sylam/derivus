@@ -4911,7 +4911,7 @@ def test_the_poll_paths_own_jobs_are_admitted_under_the_deployments_seat(recorde
     admitted unconditionally, which leaves the whole poll path outside the document a desk
     declared.
     """
-    service.BOOK_DIARY_CACHE.clear()
+    service.BOOK.diaries.entries.clear()
     entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate')])
     assert CLIENT.get('/book/diary').status_code == 200, 'the compile was refused its own seat'
 

@@ -1908,10 +1908,6 @@ class PnL:
     no close stands on - is NAMED, never read as zero.
     """
 
-    #: `{(job address, book): day}` - the day a marks job valued its book as of, or None for a job
-    #: that marks no book of that name. A job is immutable, so each is opened once per process.
-    DAYS = {}
-
     #: A row's figures, in the order a reader sees them, and the ones a total sums.
     FIGURES = ('value_start', 'value_end', 'premiums', 'payments', 'fees', 'existing', 'trading',
                'pnl', 'realised', 'unrealised')
@@ -2013,24 +2009,25 @@ class PnL:
                 for row in table['data'][1:] if row[column['Parent']] == root}
 
     @classmethod
-    def marked(cls, book, closes, attestations, stored):
+    def marked(cls, book, closes, attestations, stored, days):
         """`{day: marks}` - the LATEST standing marks run of `book` on each of `closes`, keyed by
         the day it valued the book as of: the position of the record it read the book at, which
         closes that business day, the values it stood on, the addresses of the job it attested
         and the result, and the `files` that job read, null where its attestation says none.
-        `loaded` reads a marks' numbers."""
+        `loaded` reads a marks' numbers. `days` keeps `{(job address, book): (day, cut)}`, None
+        for a job marking no book of that name: a job is immutable, so each is opened once."""
         values, found = {row['values_hash'] for row in closes}, {}
         for row in attestations:
             if row['values_hash'] not in values:
                 continue
-            if (row['job'], book) not in cls.DAYS:
+            if (row['job'], book) not in days:
                 job = json.loads(stored(row['job']).decode('utf-8'))
                 named = package().verbs.marks_of(job['Calc']['Deals'].get('Reference'))
-                cls.DAYS[(row['job'], book)] = None if named is None or named[0] != book else (
+                days[(row['job'], book)] = None if named is None or named[0] != book else (
                     base_day(job), named[1])
-            if cls.DAYS[(row['job'], book)] is None:
+            if days[(row['job'], book)] is None:
                 continue
-            day, cut = cls.DAYS[(row['job'], book)]
+            day, cut = days[(row['job'], book)]
             if day not in found or row['lsn'] > found[day]['attested']:
                 # a marks job naming no cut read the book where it was attested
                 found[day] = {'day': day, 'lsn': row['lsn'] if cut is None else cut,
