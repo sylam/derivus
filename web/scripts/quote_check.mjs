@@ -357,8 +357,10 @@ check('a quote stands booked, accepted, firm until its window closes, past it, o
 
 const LISTED = [given({ quote_id: 'q3' }), given({ quote_id: 'q2', booked: { lsn: 30, deal_path: '0/20' } }),
                 given({ quote_id: 'q1', booked: { lsn: null, deal_path: '0/2' } }),
-                given({ quote_id: 'q4', booked: { lsn: 41, deal_path: '2', reference: 'COLLAR-A' } }),
-                given({ quote_id: 'q5', booked: { lsn: 42, deal_path: '3', reference: 'COLLAR-B' } })];
+                given({ quote_id: 'q4',
+                        booked: { lsn: 41, deal_path: '2', reference: 'COLLAR-A' } }),
+                given({ quote_id: 'q5',
+                        booked: { lsn: 42, deal_path: '3', reference: 'COLLAR-B' } })];
 check('a trade\'s quote is the one whose booking names its reference, wherever the file now holds '
         + 'it, and the one that landed at its path only where the booking names none',
       'a path matched by its start, so the trade at 0/2 takes the quote booked at 0/20; the first '
@@ -369,8 +371,9 @@ check('a trade\'s quote is the one whose booking names its reference, wherever t
        quote.quoteAt(LISTED, '3', 'COLLAR-C')],
       ['q1', 'q2', undefined, 'q5', undefined]);
 
-const QUOTED_BOOK = [{ Instrument: { '.Deal': { Object: 'NettingCollateralSet', Reference: 'ISDA-K' } },
-  Children: [{ Instrument: { '.Deal': { Object: 'FXOptionDeal', Reference: 'CALL' } } }] },
+const QUOTED_BOOK = [
+  { Instrument: { '.Deal': { Object: 'NettingCollateralSet', Reference: 'ISDA-K' } }, Children: [
+    { Instrument: { '.Deal': { Object: 'FXOptionDeal', Reference: 'CALL' } } }] },
   { Instrument: { '.Deal': { Object: 'StructuredDeal', Reference: 'COLLAR-B' } }, Children: [
     { Instrument: { '.Deal': { Object: 'FXOptionDeal', Reference: 'COLLAR-A' } } }] }];
 check('a booked quote lands where the file holds its trade now: the trade under its reference, a '
