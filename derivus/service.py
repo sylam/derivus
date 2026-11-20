@@ -742,6 +742,11 @@ app.add_middleware(CORSMiddleware, allow_origins=ORIGINS, allow_methods=['*'], a
 EXECUTOR = ComputeExecutor()
 PLANS = PlanCache(32)
 
+
+def queued(job, cost_class=COST_CLASS['BaseValuation']):
+    """Submit `job` onto `EXECUTOR` in `cost_class` and answer `{result_id, status}`."""
+    return {'result_id': job.result_id, 'status': EXECUTOR.submit(job, cost_class)}
+
 #: Where a long job has got to, under the result id it will be filed as: `{done, total, note}`, and
 #: `/results/{result_id}` merges it while the job is queued or running. The worker thread is the only
 #: writer and drops its entry as the job leaves, so a reader tolerates absence.
@@ -879,9 +884,7 @@ def executed(job, book):
     except spine.SpineRefused as refused:
         raise HTTPException(422, str(refused))
     submitted = Job(content_hash(stamp), context, stamp, lane, evidence, job.get('actor'), book)
-    calculation = context.current_cfg.deals['Calculation']
-    answer = {'result_id': submitted.result_id,
-              'status': EXECUTOR.submit(submitted, cost(calculation)['class'])}
+    answer = queued(submitted, cost(context.current_cfg.deals['Calculation'])['class'])
     # a standing run whose numbers already exist still attests - the lane is about standing rather
     # than arithmetic. One that coalesced onto a queued or running run was promoted in `submit`
     if attests(submitted) and answer['status'] == 'done':
@@ -1641,11 +1644,9 @@ def book_price(request: dict):
     run, stamp = contexts[0], replay(contexts[0])
     if increment:
         run, stamp = IncrementJob(contexts, terms), {'with': stamp, 'without': replay(contexts[1])}
-    submitted = Job(content_hash(stamp), run, stamp, spine.CURIOSITY, actor=request.get('actor'),
-                    book=book_name(document))
-    calculation = contexts[0].current_cfg.deals['Calculation']
-    return {'result_id': submitted.result_id,
-            'status': EXECUTOR.submit(submitted, cost(calculation)['class'])}
+    return queued(Job(content_hash(stamp), run, stamp, spine.CURIOSITY, actor=request.get('actor'),
+                      book=book_name(document)),
+                  cost(contexts[0].current_cfg.deals['Calculation'])['class'])
 
 
 #: The desk's own named calculations in `DV_HOME` beside its book, `{"calculations": {name: block}}`
@@ -1721,11 +1722,9 @@ def run_calculation(request: dict):
         raise HTTPException(422, str(error))
     context = load(document)
     stamp = replay(context)
-    submitted = Job(content_hash(stamp), context, stamp, spine.CURIOSITY,
-                    actor=request.get('actor'), book=book_name(document))
-    calculation = context.current_cfg.deals['Calculation']
-    return {'result_id': submitted.result_id,
-            'status': EXECUTOR.submit(submitted, cost(calculation)['class'])}
+    return queued(Job(content_hash(stamp), context, stamp, spine.CURIOSITY,
+                      actor=request.get('actor'), book=book_name(document)),
+                  cost(context.current_cfg.deals['Calculation'])['class'])
 
 
 def as_of():
@@ -2396,9 +2395,8 @@ def diary_of(document, actor):
     result_id = content_hash({'diary': etag})
     kept = live_book().diaries.get(etag)
     if kept is None:
-        submitted = Job(result_id, DiaryJob(document), {}, spine.TELEMETRY, actor=actor,
-                        book=book_name(document))
-        EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])
+        queued(Job(result_id, DiaryJob(document), {}, spine.TELEMETRY, actor=actor,
+                   book=book_name(document)))
         stored = waited(result_id)
         if stored['status'] != 'done':
             # SUCCESSES ONLY, the `/book/risk` discipline: a compile that failed for a reason
@@ -5549,12 +5547,9 @@ def submit_bloomberg(scope, routine=False, actor=None):
     # clock names it: two ticks against an unmoved book are two trips, never one coalesced result
     result_id = content_hash({'book': etag, 'bloomberg': scope, 'at': time.perf_counter()})
     # the tick is TELEMETRY - a repaint superseded by the next one before anything could cite it -
-    # and the lane is declared rather than left blank so the absence is a readable decision
-    submitted = Job(result_id, BloombergJob(live, scope, result_id, routine), {}, spine.TELEMETRY,
-                    actor=actor or spine.hub(), book=book_name(document))
     # light, or the book stops ticking for a whole-book recalc and then drains a burst of stale beats
-    return {'result_id': result_id,
-            'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
+    return queued(Job(result_id, BloombergJob(live, scope, result_id, routine), {}, spine.TELEMETRY,
+                      actor=actor or spine.hub(), book=book_name(document)))
 
 
 @app.post('/book/bloomberg', summary="Fetch the desk's surfaces and curve rows and tick the book")
@@ -5881,9 +5876,7 @@ def submit_verify(scope, actor=None):
     # a verification is an ACT against the terminal rather than a function of the files, so the
     # submission clock names it: two verifications of one scope are two trips
     result_id = content_hash({'securities': scope, 'at': time.perf_counter()})
-    submitted = Job(result_id, VerifyJob(scope, result_id), {}, spine.TELEMETRY, actor=actor)
-    return {'result_id': result_id,
-            'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
+    return queued(Job(result_id, VerifyJob(scope, result_id), {}, spine.TELEMETRY, actor=actor))
 
 
 @app.post('/book/securities/verify', summary='Re-verify the ticker vocabulary against the terminal')
@@ -6561,10 +6554,8 @@ def book_setup(request: dict):
     # a set-up is an ACT against the terminal rather than a function of the book, so the submission
     # clock names it: two set-ups of one pair are two trips
     result_id = content_hash({'book': etag, 'setup': scope, 'at': time.perf_counter()})
-    submitted = Job(result_id, SetupJob(live, scope, result_id), {}, spine.TELEMETRY,
-                    actor=request.get('actor'), book=book_name(document))
-    return {'result_id': result_id,
-            'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
+    return queued(Job(result_id, SetupJob(live, scope, result_id), {}, spine.TELEMETRY,
+                      actor=request.get('actor'), book=book_name(document)))
 
 
 def spot_model_family(family):
@@ -6740,10 +6731,9 @@ def book_model(request: dict):
     # content addressed on the book it fits: the same calibration over an unmoved book is one
     # execution, and a tick moves the etag, so asking again after one genuinely refits
     result_id = content_hash({'book': etag, 'model': [family, pair]})
-    submitted = Job(result_id, SpotModelJob(live, pair, family, result_id), {}, spine.CURIOSITY,
-                    actor=request.get('actor'), book=book_name(document))
-    return {'result_id': result_id, 'factor': spot_model_factor(family, block_name),
-            'status': EXECUTOR.submit(submitted, HEAVY)}
+    return dict(queued(Job(result_id, SpotModelJob(live, pair, family, result_id), {},
+                           spine.CURIOSITY, actor=request.get('actor'), book=book_name(document)),
+                       HEAVY), factor=spot_model_factor(family, block_name))
 
 
 class Metronome:
@@ -6922,14 +6912,12 @@ def book_solve(request: dict):
         except ValueError as error:
             raise HTTPException(422, str(error))
         solve['target'] = margin['value']
-    # the identity is the request against this exact book state - the same solve twice is one run
-    submitted = Job(content_hash({'book': etag, 'solve': solve, 'deal': request['deal'],
-                                  'calculation': document['Calc']['Calculation']}),
-                    SolveJob(document, deal_path, solve, margin), {}, spine.CURIOSITY,
-                    actor=request.get('actor'), book=book_name(document))
-    # a solve is base valuations under the hood - light, so it jumps a draining recalc
-    return {'result_id': submitted.result_id,
-            'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
+    # the identity is the request against this exact book state - the same solve twice is one run;
+    # a solve is base valuations under the hood, so light to jump a draining recalc
+    return queued(Job(content_hash({'book': etag, 'solve': solve, 'deal': request['deal'],
+                                    'calculation': document['Calc']['Calculation']}),
+                      SolveJob(document, deal_path, solve, margin), {}, spine.CURIOSITY,
+                      actor=request.get('actor'), book=book_name(document)))
 
 
 def quote_dir():
@@ -7386,12 +7374,10 @@ def book_structure(request: dict):
                               'at': time.perf_counter()})
     # the seat is resolved HERE, where a request's token is: the worker thread carries none
     seat = spine.actor(request.get('actor')) if spine.configured() else request.get('actor')
-    submitted = Job(result_id, StructureJob(document, structure, params, netting_set,
-                                            request.get('request'), margin, seat, portfolio), {},
-                    spine.CURIOSITY, actor=seat, book=book_name(document))
     # base valuations under the hood, so a salesperson's ask jumps every XVA set still waiting
-    return {'result_id': result_id,
-            'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
+    return queued(Job(result_id, StructureJob(document, structure, params, netting_set,
+                                              request.get('request'), margin, seat, portfolio), {},
+                      spine.CURIOSITY, actor=seat, book=book_name(document)))
 
 
 def pending_written(path, pending, **facts):
