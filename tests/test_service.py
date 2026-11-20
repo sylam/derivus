@@ -6487,24 +6487,22 @@ def test_fva_is_a_column_of_the_same_row_off_the_same_run(desk_xva, tmp_path):
     assert after['NS_B'] == before['NS_B'], 'a partial recalc touched a row it was not asked for'
 
 
-def test_an_xva_row_says_whether_it_is_the_books_and_keeps_its_profile(desk_xva, tmp_path):
-    """A ROW SAYS WHETHER A RECALC NOW WOULD PRICE WHAT IT PRICED, AND KEEPS WHAT ITS RUN SHOWED.
-    Recalced, both sets read `current`; a deal booked into NS_A moves NS_A's plan and leaves NS_B's,
-    so NS_A reads stale with its last numbers standing and NS_B current; a spot moved under both
-    reads both stale, and recalcing NS_A makes it current again. Each row keeps its run's
-    `exposure_profile` - on this desk 26 days by `EE`, `ENE` and `PFE_95` - written to the
+def test_an_xva_row_keeps_its_peaks_and_one_set_s_profile_is_read_by_itself(desk_xva, tmp_path):
+    """A ROW KEEPS WHAT ITS RUN SHOWED, AND THE LIST CARRIES ITS PEAKS ALONE. Each row a run files
+    keeps its `exposure_profile` - on this desk 26 days by `EE`, `ENE` and `PFE_95` - in the
     projection's file, and its `peaks`: the largest `EE` and `PFE_95` with the first day each falls
-    on, read here off the run's own table cell for cell, so nothing a credit officer reads off a
-    profile goes with the service's memory. A row filed before its exposure reads null for both.
+    on, read here off the run's own table cell for cell. The list answers each row's peaks and no
+    profile; the profile read answers one set's table under the run it came from. A set never run,
+    and a row filed before rows kept their exposure, read null peaks on the list and 404 on the
+    profile read.
 
-    Killing mutations: `current` read off the row being done rather than off its stamp, which reads
-    a row priced before the market moved as the book's; and the exposure left off a fresh run's
-    row, which loses the peaks with the service's memory.
+    Killing mutations: the exposure left off a fresh run's row, which loses the peaks with the
+    service's memory; the list carrying each row's profile, which every screen's poll pays for; and
+    the profile read asking only whether the set has a row, which fails a row filed before rows
+    kept one with a 500 rather than saying so.
     """
-    queued = {entry['reference']: entry['result_id'] for entry in recalc()['queued']}
-
-    def held(reference):
-        page = fetch(queued[reference], 'exposure_profile')
+    def held(result_id):
+        page = fetch(result_id, 'exposure_profile')
         peaks = {column: {'value': max(row[at] for row in page['data']),
                           'day': page['index'][[row[at] for row in page['data']].index(
                               max(row[at] for row in page['data']))]['.Timestamp']}
@@ -6512,136 +6510,37 @@ def test_an_xva_row_says_whether_it_is_the_books_and_keeps_its_profile(desk_xva,
         return peaks, {'columns': page['columns'], 'data': page['data'],
                        'index': [label['.Timestamp'] for label in page['index']]}
 
+    def profile_of(reference):
+        return CLIENT.get('/book/xva/{}/profile'.format(reference))
+
+    unrun = ("no exposure profile is filed for {!r}: it has no run that completed, or its row was "
+             "filed before rows kept one - recalc the set")
+    (first,) = recalc(['NS_A'])['queued']
+    assert xva_rows()['NS_B']['peaks'] is None
+    assert (profile_of('NS_B').status_code, profile_of('NS_B').json()['detail']) == (
+        404, unrun.format('NS_B'))
+    (second,) = recalc(['NS_B'])['queued']
+
     rows, filed = xva_rows(), json.loads((tmp_path / 'xva.json').read_text())['sets']
-    for reference in ('NS_A', 'NS_B'):
-        peaks, profile = held(reference)
+    for entry in (first, second):
+        reference = entry['reference']
+        peaks, profile = held(entry['result_id'])
         assert (len(profile['index']), profile['columns']) == (26, ['EE', 'ENE', 'PFE_95'])
-        assert (rows[reference]['current'], rows[reference]['peaks'], rows[reference]['profile'],
-                filed[reference]['peaks'], filed[reference]['profile']) == (
-            True, peaks, profile, peaks, profile), reference
-
-    assert CLIENT.post('/book/deals', content=dump(
-        {'action': 'add', 'deal': dict(VANILLA, Reference='OPT_A2', Units=5000.0),
-         'parent_reference': 'NS_A'}), headers=JSON).json()['written'] is True
-    moved = xva_rows()
-    assert (moved['NS_A']['current'], moved['NS_B']['current']) == (False, True)
-    assert {key: value for key, value in moved['NS_A'].items() if key != 'current'} == {
-        key: value for key, value in rows['NS_A'].items() if key != 'current'}
-    assert CLIENT.post('/book/market', json={'patch': {'EquityPrice.EQ': {'Spot': 101.0}}}
-                       ).json()['written'] is True
-
-    def current():
-        return [xva_rows()[reference]['current'] for reference in ('NS_A', 'NS_B')]
-
-    assert current() == [False, False]
-    recalc(['NS_A'])
-    assert current() == [True, False]
+        assert 'profile' not in rows[reference], 'the list carries a whole profile per row'
+        assert (rows[reference]['peaks'], filed[reference]['peaks'],
+                filed[reference]['profile']) == (peaks, peaks, profile), reference
+        assert profile_of(reference).json() == {
+            'reference': reference, 'result_id': entry['result_id'],
+            'as_of': rows[reference]['as_of'], 'profile': profile}
 
     # a row filed before rows kept their exposure, for a set the book no longer holds
     projection = json.loads((tmp_path / 'xva.json').read_text())
-    projection['sets']['NS_OLD'] = {'status': 'done', 'cva': 1.0, 'result_id': 'f' * 64}
+    projection['sets']['NS_OLD'] = {'status': 'done', 'cva': 1.0, 'result_id': 'f' * 64,
+                                    'as_of': '2026-11-01T18:00:00.000+02:00'}
     (tmp_path / 'xva.json').write_text(json.dumps(projection), newline='\n')
-    assert {key: xva_rows()['NS_OLD'][key] for key in ('current', 'peaks', 'profile')} == {
-        'current': False, 'peaks': None, 'profile': None}
-
-
-def collateral_desk(path):
-    """A recorded desk of two one-option sets on a market file of its own: NS_A, and NS_COL,
-    collateralised under an agreement the record declares with CPTY_B."""
-    market = path / 'market.json'
-    market.write_text(dump({'MarketData': {
-        'System Parameters': {'Base_Currency': 'USD', 'Base_Date': BASE}, 'Price Factors': {}}}))
-    held = netting_set('NS_COL', 'CPTY_B', [dict(VANILLA, Reference='OPT_C')])
-    held['Instrument']['.Deal']['Collateralized'] = 'True'
-    book = xva_book(path, [netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')]),
-                           held])
-    document = json.loads(book.read_text())
-    document['Calc']['MergeMarketData']['MarketDataFile'] = str(market)
-    book.write_text(json.dumps(document, indent=2), newline='\n')
-    for route, body in (('/book/entities', {'entity': 'CPTY_B', 'name': 'Client B'}),
-                        ('/book/agreements', {'agreement': 'NS_COL', 'entity': 'CPTY_B',
-                                              'kind': 'ISDA 2002 with CSA',
-                                              'terms': held['Instrument']['.Deal']})):
-        assert CLIENT.post(route, content=dump(body), headers=JSON).status_code == 200
-    return book, market
-
-
-def held_under(agreement, asset, amount):
-    """Collateral of `asset` the record holds under `agreement` from the book's own day."""
-    assert CLIENT.post('/book/transition', content=dump({
-        'subject': agreement, 'status': 'settled', 'amount': amount, 'asset': asset,
-        'kind': 'collateral', 'reference': 'MOVE-' + asset, 'value_date': '2024-06-28'}),
-        headers=JSON).status_code == 200
-
-
-def test_a_recalc_s_id_is_kept_by_the_book_its_record_and_its_files(recorded, tmp_path):
-    """WHAT A RECALC WOULD FILE IS WORKED OUT ONCE PER STATE, and the state is the book's text, the
-    record's head and the digests of the files it names. Recalced, both sets read `current`. The
-    record moves under an unmoved file - 1,000 dollars of collateral held under NS_COL from the
-    book's day, which its plan now carries as a balance - and NS_COL reads stale while NS_A, whose
-    plan nothing moved, stays current. The market file moves under an unmoved book - a factor
-    nothing reads written into it - and NS_A reads stale too, every set's `values_hash` being the
-    files' digests.
-
-    Killing mutations: the record's head left out of what the ids are kept by, which reads NS_COL
-    as current past the collateral; and the files' digests left out, which reads NS_A as current
-    past the file.
-    """
-    book, market = collateral_desk(tmp_path)
-    try:
-        recalc()
-
-        def current():
-            return [xva_rows()[reference]['current'] for reference in ('NS_A', 'NS_COL')]
-
-        assert current() == [True, True]
-        etag = CLIENT.get('/book').json()['etag']
-        held_under('NS_COL', 'USD', 1000.0)
-        assert current() == [True, False] and CLIENT.get('/book').json()['etag'] == etag
-        market.write_text(dump({'MarketData': {
-            'System Parameters': {'Base_Currency': 'USD', 'Base_Date': BASE},
-            'Price Factors': {'FxRate.EUR': {'Domestic_Currency': None, 'Interest_Rate': 'USD',
-                                             'Spot': 1.1}}}}))
-        assert current() == [False, False] and CLIENT.get('/book').json()['etag'] == etag
-    finally:
-        service.BOOK = None
-
-
-def test_a_read_serves_its_rows_where_current_cannot_be_worked_out(recorded, tmp_path):
-    """A READ NEVER REFUSES FOR `current`. Recalced, then one ounce of gold held under NS_COL, which
-    the book carries no spot for: the book will not price as a recalc prices it, so `/book/xva`
-    serves both rows exactly as before but for `current`, null on each, beside
-    `current_unknown`, the record's own sentence; a row whose set left the book still reads false,
-    which needs no plan; and `/book/status` reads the rows too. Before the gold the same read says
-    nothing is unknown.
-
-    Killing mutation: the record's refusal let through, which answers both reads with its 422.
-    """
-    book, _ = collateral_desk(tmp_path)
-    try:
-        recalc()
-        projection = json.loads((tmp_path / 'xva.json').read_text())
-        projection['sets']['NS_OLD'] = {'status': 'done', 'cva': 1.0, 'result_id': 'f' * 64}
-        (tmp_path / 'xva.json').write_text(json.dumps(projection), newline='\n')
-        before = CLIENT.get('/book/xva').json()
-        assert before['current_unknown'] is None
-
-        held_under('NS_COL', 'XAU', 1.0)
-        after = CLIENT.get('/book/xva')
-        assert after.status_code == 200, after.text
-        assert after.json()['current_unknown'] == (
-            "the record holds XAU as collateral under 'NS_COL' and this book carries no spot for "
-            "it into USD, its Balance_Currency: a balance in an asset the book carries no spot for "
-            "is a market the book lacks; install the spot")
-        assert [dict(row, current=None) if row['reference'] != 'NS_OLD' else row
-                for row in before['sets']] == after.json()['sets']
-        assert [row['current'] for row in after.json()['sets']] == [None, None, False]
-        status = CLIENT.get('/book/status')
-        assert status.status_code == 200, status.text
-        assert [(row['reference'], row['status']) for row in status.json()['xva']] == [
-            ('NS_A', 'done'), ('NS_COL', 'done'), ('NS_OLD', 'done')]
-    finally:
-        service.BOOK = None
+    assert xva_rows()['NS_OLD']['peaks'] is None
+    assert (profile_of('NS_OLD').status_code, profile_of('NS_OLD').json()['detail']) == (
+        404, unrun.format('NS_OLD'))
 
 
 def test_the_cva_column_reads_the_same_whether_or_not_fva_ran(desk_xva):
