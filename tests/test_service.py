@@ -951,6 +951,21 @@ def test_a_calculation_override_is_judged_against_its_own_declarations(book):
         declared.json()['result_id'])).json()['status'] == 'done'
 
 
+def test_a_saved_calculation_is_judged_as_a_run_reads_its_wire_tags(tmp_path, monkeypatch):
+    """A saved block is judged as a run decodes it: a `Base_Date` posted as `{".Timestamp": ...}`,
+    the form `/book` answers it in, is a date, while a tag naming nothing is refused by name.
+
+    Killing mutation: the block judged as posted with its tags undecoded, which refuses the date.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    dated = {'Object': 'BaseValuation', 'Base_Date': {'.Timestamp': '2024-06-28'}}
+    answer = CLIENT.post('/calculations', json={'name': 'dated', 'calculation': dated}).json()
+    assert answer['written'] is True, answer
+    junk = dict(dated, Base_Date={'.Nonsense': '2024-06-28'})
+    answer = CLIENT.post('/calculations', json={'name': 'junk', 'calculation': junk}).json()
+    assert answer['written'] is False and 'Base_Date' in answer['refused'][0], answer
+
+
 def test_a_calculation_stating_no_currency_is_refused_by_validate():
     """`/validate` says what a job's `Calculation` block's own declarations say against it under
     `calculation`, and walks no factor for a block stating no `Currency`, the walk having no report

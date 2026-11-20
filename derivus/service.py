@@ -1563,13 +1563,18 @@ def booked_again(outcome, booked, written, what):
     return written, dict(outcome, _validated=outcome['validate'], **answer) if written else answer
 
 
+def decoded(block):
+    """`block` as a run reads it: each wire tag the object it stands for, a deal as written."""
+    return json.loads(json.dumps(block), object_hook=lambda wire: decode_wire(
+        wire, lambda deal: deal))
+
+
 def judge_calculation(calculation, stated):
     """Refuse by name what the calculation `calculation` names declares against what `stated`
     states, decoded as a run reads it (`schema.stated_messages`), `Object` being the type token."""
     cls = calculation_class(calculation.get('Object'))
-    decoded = json.loads(json.dumps(stated), object_hook=lambda wire: decode_wire(
-        wire, lambda deal: deal))
-    refused = stated_messages(cls.__name__, declared_fields(cls).values(), decoded, ('Object',))
+    refused = stated_messages(cls.__name__, declared_fields(cls).values(), decoded(stated),
+                              ('Object',))
     if refused:
         raise ValueError('; '.join(refused))
 
@@ -3507,9 +3512,7 @@ def agreement_terms(terms, agreement, entity):
                                  'settlement state, arriving through the settlement interface, '
                                  'never terms of the paper - state the eligible collateral with no '
                                  'amounts'.format(agreement, '; '.join(state)))
-    decoded = json.loads(json.dumps(stated), object_hook=lambda wire: decode_wire(
-        wire, lambda deal: deal))
-    said = validate_instrument(construct_instrument(decoded, {}))
+    said = validate_instrument(construct_instrument(decoded(stated), {}))
     if said:
         raise HTTPException(422, 'the terms of {!r} are not a netting set the engine can compile: '
                                  '{}'.format(agreement, '; '.join(said)))
