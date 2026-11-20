@@ -114,14 +114,15 @@ class Positions(Projector):
     never dropped - a position closed out is a fact about the book, not an absence.
 
     `tickets` are its clips under the ticket that books each - its fill's, or the restrike's that
-    restruck it, with the tier that routed it - every clip keeping the instrument and execution
-    reference it was filled under, the key its confirmation is filed against, and the LSN of that
-    fill: `{ticket, tier, lsn, actor, at, quantity, instrument, execution_reference, fill}`. So
-    what a position reads is a fold and no fill is reopened.
+    restruck it, with the tier that routed it and the sentences of the tiers it fell past - every
+    clip keeping the instrument and execution reference it was filled under, the key its
+    confirmation is filed against, and the LSN of that fill: `{ticket, tier, fell_past, lsn, actor,
+    at, quantity, instrument, execution_reference, fill}`. So what a position reads is a fold and
+    no fill is reopened.
     """
 
     name = 'positions'
-    version = 4
+    version = 5
     reads = ('fill', 'amendment')
 
     def initial(self):
@@ -985,9 +986,11 @@ def _position(state, instrument, agreement, portfolio, frame, moved=None):
 
 def _ticketed(frame, body, clip):
     """One entry of a position's `tickets`: a clip under the ticket the fill or restrike `body`
-    carries and the tier it fell in, who filed that and when it is true."""
-    return dict(clip, ticket=body.get('ticket'), tier=body.get('tier'), lsn=frame['lsn'],
-                actor=frame['actor'], at=as_of_key(frame)[0])
+    carries, the tier it fell in and the sentences it fell past, who filed that and when it is
+    true."""
+    return dict(clip, ticket=body.get('ticket'), tier=body.get('tier'),
+                fell_past=body.get('fell_past'), lsn=frame['lsn'], actor=frame['actor'],
+                at=as_of_key(frame)[0])
 
 
 def _cost_row(state, instrument, agreement, portfolio):

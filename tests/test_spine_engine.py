@@ -2884,7 +2884,7 @@ def with_client(path):
 
 def test_every_booking_is_a_ticket_the_tiers_route(recorded, desk):
     """EVERY BOOKING IS A TICKET. A direct booking's fill carries a ticket over the plan the book
-    has WITH it and the fill as filed, the tier its route fell in aside, and where a tiers policy
+    has WITH it and the fill as filed, its route's tier and sentences aside, and where a tiers policy
     is in force it is routed on the size and the tenor its terms name, as an acceptance is: under
     the cap - 250,000 rand, 4,625,000 dollars on this book's axis - the hub signs in its own voice
     and then the fill lands, approved; over it - 5,000,000 rand - the fill lands PENDING under four
@@ -2907,7 +2907,8 @@ def test_every_booking_is_a_ticket_the_tiers_route(recorded, desk):
     assert signed['tier'] == {'name': 'auto', 'four_eyes': False, 'approval_lsn': fill[0] - 1}
     assert fill[2]['ticket'] == signed['ticket'] == spine.ticket(
         service.load(json.loads(desk.read_text())).plan_hash(), {
-            field: value for field, value in fill[2].items() if field not in ('ticket', 'tier')}), \
+            field: value for field, value in fill[2].items()
+            if field not in ('ticket', 'tier', 'fell_past')}), \
         'the ticket is not the plan the book has with this booking'
     assert facts(recorded, 'approval')[-1][2] == {'plan_hash': signed['ticket']}
 
@@ -3512,11 +3513,17 @@ def test_a_booker_reads_why_its_ticket_waits_on_the_position(recorded, desk):
     restrike's ticket under the four-eyes tier and waits too. A seat acting only at another node
     sees no position. Signed by the second seat, a ticket waits on nothing; refused by it, it
     stands rejected and waits on nothing either, as does a ticket booked before any tier stood.
+    Each ticket says what it fell past: 5,000,000 rand is 92,500,000 dollars at 18.5 on this
+    book's axis, past the automatic tier's 5,000,000 cap, and the restrike 300,000 x 18.5 =
+    5,550,000; the 250,000 fell in the first tier read, past nothing, and the trade booked before
+    any tier stood says nothing at all.
 
     Killing mutations: a restruck clip keeping the tier its fill fell in, which reads the restrike
-    as signed automatically while it waits; and the tier's sentence asked of every ticket whatever
+    as signed automatically while it waits; the tier's sentence asked of every ticket whatever
     its status, which reads the refused restrike as waiting on an approval and the ticket booked
-    before the tiers as wanting a second seat under a tier named None.
+    before the tiers as wanting a second seat under a tier named None; and the route's sentences
+    filed only where no tier admits the ticket, which reads the pending one as falling to four
+    eyes for no reason.
     """
     booker, elsewhere = 'subject-booker', 'subject-desk-fx'
     with_client(desk)
@@ -3536,23 +3543,30 @@ def test_a_booker_reads_why_its_ticket_waits_on_the_position(recorded, desk):
                 for row in CLIENT.get('/book/positions', params={'actor': seat}).json()[
                     'positions']}
 
-    def ticket(booked, execution, tier, status, waits_on, by=None, actor=booker):
+    def ticket(booked, execution, tier, status, waits_on, by=None, actor=booker, fell_past=()):
         return [{'quantity': 1.0, 'instrument': booked['recorded']['instrument'],
                  'execution_reference': execution, 'fill': booked['recorded']['lsn'],
                  'ticket': (by or booked)['ticket'], 'tier': tier,
+                 'fell_past': None if fell_past is None else list(fell_past),
                  'lsn': (by or booked)['recorded']['lsn'], 'actor': actor, 'status': status,
                  'waits_on': waits_on}]
 
+    def capped(dollars):
+        return ["the 'auto' tier caps max_notional at 5000000 USD and this ticket is {} of it - "
+                "book it under a tier that admits the size, or split the clip".format(dollars)]
+
     waits = ("no verdict is filed against this ticket, and the 'desk' tier wants a seat other "
              "than the booker to sign it")
-    before = ticket(early, 'EXEC-EARLY', None, 'unticketed', None, actor=ACTOR)
+    before = ticket(early, 'EXEC-EARLY', None, 'unticketed', None, actor=ACTOR, fell_past=None)
     assert CLIENT.get('/book/worklist', params={'actor': booker}).json()['pending'] == []
     assert tickets(booker) == tickets(DESK_TWO) == {
         'EXEC-EARLY': before,
         'EXEC-SMALL': ticket(small, 'EXEC-SMALL', 'auto', 'approved', None),
-        'EXEC-BIG': ticket(big, 'EXEC-BIG', 'desk', 'pending', waits)}
+        'EXEC-BIG': ticket(big, 'EXEC-BIG', 'desk', 'pending', waits,
+                           fell_past=capped(92_500_000.0))}
     (row,) = CLIENT.get('/book/worklist', params={'actor': DESK_TWO}).json()['pending']
-    assert (row['key'], row['tier'], row['waits_on']) == (big['ticket'], 'desk', waits)
+    assert (row['key'], row['tier'], row['fell_past'], row['waits_on']) == (
+        big['ticket'], 'desk', capped(92_500_000.0), waits)
     assert tickets(elsewhere) == {}
 
     amended = CLIENT.post('/book/deals', content=dump({
@@ -3563,13 +3577,15 @@ def test_a_booker_reads_why_its_ticket_waits_on_the_position(recorded, desk):
                        ).json()['status'] == 'approved'
     assert tickets(booker) == {
         'EXEC-EARLY': before,
-        'EXEC-SMALL': ticket(small, 'EXEC-SMALL', 'desk', 'pending', waits, by=amended),
-        'EXEC-BIG': ticket(big, 'EXEC-BIG', 'desk', 'approved', None)}
+        'EXEC-SMALL': ticket(small, 'EXEC-SMALL', 'desk', 'pending', waits, by=amended,
+                             fell_past=capped(5_550_000.0)),
+        'EXEC-BIG': ticket(big, 'EXEC-BIG', 'desk', 'approved', None,
+                           fell_past=capped(92_500_000.0))}
     assert CLIENT.post('/book/reject', json={'ticket': amended['ticket'], 'actor': DESK_TWO,
                                              'reason': 'over the line'}
                        ).json()['status'] == 'rejected'
     assert tickets(booker)['EXEC-SMALL'] == ticket(small, 'EXEC-SMALL', 'desk', 'rejected', None,
-                                                   by=amended)
+                                                   by=amended, fell_past=capped(5_550_000.0))
 
 
 def test_a_deal_booked_again_as_it_was_is_the_trade_the_record_holds(recorded, desk):

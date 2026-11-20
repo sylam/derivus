@@ -1855,8 +1855,9 @@ def book_positions(actor: str | None = None) -> dict:
     day it settles - `expired` and `settles` say when - and rolls off on that day. `status` is what
     its tickets read - `rejected`, `pending`, `approved` or `unticketed` - and `pending` the
     quantity awaiting a second seat; a pending trade prices and settles all the same. Each of its
-    `tickets` names the `tier` it fell in and, while pending, `waits_on`, why it waits. `actor` is
-    the seat reading. 404 on a box that records nothing.
+    `tickets` names the `tier` it fell in, `fell_past` why it fell there - the sentence of each
+    check an earlier tier failed on - and, while pending, `waits_on`, why it waits. `actor` is the
+    seat reading. 404 on a box that records nothing.
     """
     return service().call('GET', '/book/positions', params=_stated(actor=actor))
 
@@ -1875,8 +1876,9 @@ def worklist(actor: str | None = None) -> dict:
     `collateral` or `margin`, the agreement as subject; `unmarked` closes (`mark_book`, for a mark
     seat); and `rejected` trades still standing, which a book seat closes out. `counts` says how
     many each list holds; each list answers the newest 200. A ticket's row names its trade -
-    `reference`, `deal_path`, `client`, `agreement`, `booker` - and a pending one its `tier`, the
-    `price` and `currency` it was booked at and `waits_on`, why it waits. `seat` is the seat the
+    `reference`, `deal_path`, `client`, `agreement`, `booker` - and a pending one its `tier`,
+    `fell_past` why it fell there, the `price` and `currency` it was booked at and `waits_on`, why
+    it waits. `seat` is the seat the
     lists wait on, null where none was named and they are everything waiting on anyone. 404 on a
     box that records nothing.
     """

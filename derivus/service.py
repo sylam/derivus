@@ -2557,10 +2557,12 @@ def book_positions(actor: str = None):
     `settles` saying when, and rolls off on that day - read off the record's own terms where the
     file has lost it, and null on a box whose store lacks those too.
 
-    `tickets` are what books it, each with its own status, the `tier` it fell in and, while
-    pending, `waits_on`, that tier's sentence for the seat it wants - a restrike's in place of the
-    clips it restruck - `status` the first of `spine.STATUSES` among them and `pending` the
-    quantity awaiting a second seat: a pending trade prices, settles and exports all the same -
+    `tickets` are what books it, each with its own status, the `tier` it fell in, `fell_past` the
+    sentence of each check an earlier tier failed on - empty where it fell in the first tier read,
+    null where it was routed before they were filed - and, while pending, `waits_on`, that tier's
+    sentence for the seat it wants - a restrike's in place of the clips it restruck - `status` the
+    first of `spine.STATUSES` among them and `pending` the quantity awaiting a second seat: a
+    pending trade prices, settles and exports all the same -
     the status is workflow, not economics. `actor` is the seat reading, which sees the positions
     under the nodes it holds any grant at (`spine.visible`), its own tickets' waits among them.
     404 where no home is configured.
@@ -3732,8 +3734,8 @@ def book_worklist(actor: str = None):
 
     A ticket's row - `pending`, `unconfirmed`, `rejected` - names its trade: the `reference` and
     `deal_path` the file holds it at, the `client`, the `agreement` and its `booker`; a pending
-    one also its `tier`, the `price` and `currency` it was booked at, and `waits_on`, the tier's
-    own sentence for what it wants.
+    one also its `tier` and `fell_past`, as its position's ticket reads them, the `price` and
+    `currency` it was booked at, and `waits_on`, the tier's own sentence for what it wants.
     """
     document, _ = recording().read()
     book, sight = book_name(document), spine.sight(actor)
@@ -3794,7 +3796,8 @@ def book_worklist(actor: str = None):
         reporting = reporting_currency(document)
         return [dict(row, price=booked[row['lsn']].get('price'),
                      currency=booked[row['lsn']].get('currency') or reporting,
-                     tier=entries[row['lsn']]['tier'], waits_on=entries[row['lsn']]['waits_on'])
+                     tier=entries[row['lsn']]['tier'], fell_past=entries[row['lsn']]['fell_past'],
+                     waits_on=entries[row['lsn']]['waits_on'])
                 for row in found]
 
     # a seat that posts collateral nowhere pays nothing for calls it cannot see

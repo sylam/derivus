@@ -100,6 +100,11 @@ def is_digests(value):
                     for name, digest in value.items()))
 
 
+def is_texts(value):
+    """Whether `value` is a list of non-empty strings - sentences in their order, perhaps none."""
+    return isinstance(value, list) and all(is_text(text) for text in value)
+
+
 #: `(description, predicate)` per field kind, spelled once so every refusal words it the same way.
 #: Appended to, never reordered - the constants below are indexes into this tuple.
 KINDS = (
@@ -111,8 +116,9 @@ KINDS = (
     ('an object of name -> finite number', is_coordinates),
     ('a path of named segments', is_path),
     ('an object of name -> content hash or null', is_digests),
+    ('a list of non-empty strings', is_texts),
 )
-HASH, TEXT, NUMBER, INTEGER, MAYBE_INTEGER, COORDINATES, PATH, DIGESTS = range(8)
+HASH, TEXT, NUMBER, INTEGER, MAYBE_INTEGER, COORDINATES, PATH, DIGESTS, TEXTS = range(9)
 #: The optional field a keyed declaration names the declaration it replaced by.
 SUPERSEDES = ('supersedes', INTEGER)
 
@@ -172,20 +178,22 @@ FACT_TYPES = {
     # fact by construction while two identical clips are two facts. `agreement` and `portfolio` are
     # where the position sits and `price` what it was done at, with the `currency` it was stated in
     # and the `rate` the booking crossed it at where that is not the book's own and the
-    # `value_date` its consideration settles on, `ticket` the plan an approval of it signs and
-    # `tier` the tier its route fell in; a body carrying none of them validates as it did before.
+    # `value_date` its consideration settles on, `ticket` the plan an approval of it signs, `tier`
+    # the tier its route fell in and `fell_past` the sentences each tier read before it failed on;
+    # a body carrying none of them validates as it did before.
     'fill': _validator('fill', (
         ('instrument', HASH), ('quantity', NUMBER), ('counterparty', TEXT),
         ('netting_set', TEXT), ('execution_reference', TEXT)),
         optional=(('price', NUMBER), ('agreement', TEXT), ('portfolio', PATH),
                   ('currency', TEXT), ('rate', NUMBER), ('value_date', TEXT), ('ticket', HASH),
-                  ('tier', TEXT))),
+                  ('tier', TEXT), ('fell_past', TEXTS))),
     # Economics are never edited: an amendment is a new instrument hash linked to the old one,
-    # judged at the deepest node holding every position in it, and a trade of its own - `ticket`
-    # and `tier`, as a fill's.
+    # judged at the deepest node holding every position in it, and a trade of its own - `ticket`,
+    # `tier` and `fell_past`, as a fill's.
     'amendment': _validator('amendment', (
         ('instrument', HASH), ('amended_to', HASH)),
-        optional=(('portfolio', PATH), ('ticket', HASH), ('tier', TEXT), SUPERSEDES)),
+        optional=(('portfolio', PATH), ('ticket', HASH), ('tier', TEXT), ('fell_past', TEXTS),
+                  SUPERSEDES)),
     'election': _validator('election', (
         ('instrument', HASH), ('choice', TEXT))),
     # Keyed by (index, date, source), so an administrator's print and a vendor snap are different

@@ -1065,7 +1065,7 @@ def book(deal, quantity, counterparty, netting_set, execution_reference,
 def _booked(log, body, folds=None):
     """`{booked: {lsn, instrument}}` for the fill standing under `body`'s key - its instrument
     and execution reference - where it files the fields `body` does, the rate its price was
-    crossed at and the tier it was routed in aside, `instrument` being the terms its position
+    crossed at and its route's tier and sentences aside, `instrument` being the terms its position
     stands in now; None where none stands; and refused by name where one stands with other
     fields."""
     key = (body['instrument'], body['execution_reference'])
@@ -1077,7 +1077,7 @@ def _booked(log, body, folds=None):
         return None
     filed = log.open_body(log.frame_at(held[1]))
     moved = sorted(field for field in set(filed) | set(body) if field not in (
-        'ticket', 'rate', 'tier') and filed.get(field) != body.get(field))
+        'ticket', 'rate', 'tier', 'fell_past') and filed.get(field) != body.get(field))
     if moved:
         raise SpineRefused(
             'execution {!r} is booked at LSN {} with other terms - {} - so this is not that '
@@ -1099,8 +1099,9 @@ def routed(log, event_type, body, subject, book_name, effective_time, plan, term
     the caller built the body, which asserted its shape, and `SpineLog.admits` asks the vocabulary
     and the seat's scope with nothing written, so the hub signs nothing a refusal then strands.
     Then, with a tiers policy in force (`terms`, what it reads of the trade), the FIRST tier
-    covering where it books whose every check passes applies, the event carrying its name as `tier`:
-    an automatic one is the hub's own approval, filed before the event; one under four eyes lets it
+    covering where it books whose every check passes applies, the event carrying its name as `tier`
+    and, as `fell_past`, the sentence of every check an earlier tier failed on: an automatic one is
+    the hub's own approval, filed before the event; one under four eyes lets it
     land PENDING, `waits_on` saying on whom; and one no tier admits answers `refused` with every
     sentence the route collected. A crash between the approval and the event is the one way an
     approval stands alone, which the oracle names until the act is retried. A seat the scope
@@ -1121,7 +1122,7 @@ def routed(log, event_type, body, subject, book_name, effective_time, plan, term
     if route is not None:
         if route['tier'] is None:
             return dict(answer, refused=route['refusals'])
-        body['tier'] = route['tier']
+        body['tier'], body['fell_past'] = route['tier'], route['refusals']
         answer['tier'] = {'name': route['tier'], 'four_eyes': bool(route['four_eyes']),
                           'approval_lsn': route['approval_lsn']}
         if not route['four_eyes']:
