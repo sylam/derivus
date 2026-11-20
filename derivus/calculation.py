@@ -23,6 +23,7 @@ import itertools
 import traceback
 import pandas as pd
 import numpy as np
+import scipy.special
 import scipy.stats
 import torch
 import torch.multiprocessing as mp
@@ -5851,7 +5852,7 @@ class SACCR(NettingSetCalculation):
         expiry `spread`, sigma sqrt(T); at T nothing the formula's limit, one in the money, none out."""
         d1 = (moneyness + 0.5 * spread * spread) / spread if spread else math.copysign(
             math.inf, moneyness) if moneyness else 0.0
-        return side * (scipy.stats.norm.cdf(d1) if call else -scipy.stats.norm.cdf(-d1))
+        return side * (scipy.special.ndtr(d1) if call else -scipy.special.ndtr(-d1))
 
     def caplets(self, deal, terms, mpor):
         """A row per optionlet of `deal`'s schedule whose rate is still to be known (52.43), its
