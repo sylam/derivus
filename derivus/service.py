@@ -211,13 +211,27 @@ def load(job, context=None):
                                             parses=BOOK and BOOK.parses)
 
 
-def market_stamp(document):
-    """The hash of what the market `document` prices on is read from: its `Calc` less its deals,
-    the sha256 of each file it names, and today, the day a base date no file states reads as
+#: The section of a job's `Calc` naming each file a load reads.
+FILE_SECTIONS = {'MarketDataFile': 'MergeMarketData', 'CalendDataFile': 'CalendDataFile'}
+
+
+def stamp(document, *sections, today=False, reading=Context):
+    """The hash of what an answer worked out from `document` read: the named sections of its
+    `Calc` - every one where none is named - with the sha256 of each file they name, as a context
+    `reading` makes reads it, and with `today` the day a base date no file states reads as
     (`Context.load_config`)."""
-    calc = {key: value for key, value in document['Calc'].items() if key != 'Deals'}
-    return content_hash({'calc': calc, 'files': Context().files(document),
-                         'today': time.strftime('%Y-%m-%d')})
+    calc = document['Calc']
+    named = sections or tuple(calc)
+    read = {'calc': {key: calc[key] for key in named if key in calc},
+            'files': {key: digest for key, digest in reading().files(document).items()
+                      if FILE_SECTIONS[key] in named}}
+    return content_hash(dict(read, today=time.strftime('%Y-%m-%d')) if today else read)
+
+
+def market_stamp(document):
+    """The `stamp` of what the market `document` prices on is read from: its `Calc` less its
+    deals, and today."""
+    return stamp(document, *(key for key in document['Calc'] if key != 'Deals'), today=True)
 
 
 def market_of(document, context=None, stamp=None):
@@ -1728,14 +1742,11 @@ def as_of():
 def risk_etag(document):
     """What a consolidated risk run READS, hashed - the cache key, and the etag the answer carries.
 
-    The whole `Deals` section, the whole `MergeMarketData`, the sha256 of each file it names
-    (`Context.files`) and the `Calculation` block. Anything less serves yesterday's vector: a
-    rolled `Base_Date` over an unmoved deal tree, or a file rewritten on disk, is a different risk.
+    The whole `Calc`, the sha256 of each file it names and today (`stamp`). Anything less serves
+    yesterday's vector: a rolled `Base_Date` over an unmoved deal tree, a file rewritten on disk,
+    or a market stating no date read on a new day, is a different risk.
     """
-    return content_hash({'deals': document['Calc']['Deals'],
-                         'market': document['Calc']['MergeMarketData'],
-                         'files': Context().files(document),
-                         'calculation': document['Calc']['Calculation']})
+    return stamp(document, today=True)
 
 
 def priced_paths(children, under=''):
@@ -1889,7 +1900,7 @@ def quote_run(run, reading=Context):
     blocks = sorted(quote_blocks(loaded.current_cfg.params, universe))
     if not blocks:
         return utils.run_whole(loaded.run_job)[1], [], [], None
-    key = content_hash({'market': run['Calc']['MergeMarketData'], 'files': reading().files(run),
+    key = content_hash({'market': stamp(run, 'MergeMarketData', reading=reading),
                         'blocks': blocks})
     kept = BOOK and BOOK.calibrations.get(key)
     if kept:
@@ -2349,12 +2360,12 @@ def announced(document, rows):
 def diary_etag(document):
     """What a DIARY compile reads, hashed - its cache key and the etag the answer carries.
 
-    The deals and the calculation, which is where the base date is. NOT the market: a schedule is
-    built from terms and a day, so a tick that moves every value moves no row, and keying on the
-    market would throw the compile away on every beat of the cadence.
+    The deals, the calculation, which is where the base date is, and the calendar the schedules
+    roll on, by its bytes (`stamp`). NOT the market: a schedule is built from terms and a day, so
+    a tick that moves every value moves no row, and keying on the market would throw the compile
+    away on every beat of the cadence.
     """
-    return content_hash({'deals': document['Calc']['Deals'],
-                         'calculation': document['Calc']['Calculation']})
+    return stamp(document, 'Deals', 'Calculation', 'CalendDataFile')
 
 
 def diary_of(document, actor):

@@ -951,6 +951,48 @@ def test_a_calculation_override_is_judged_against_its_own_declarations(book):
         declared.json()['result_id'])).json()['status'] == 'done'
 
 
+def test_a_calendar_rewritten_on_disk_is_not_answered_from_the_diary_s_cache(tmp_path):
+    """The diary compile reads the calendar the book names, so its cache is keyed by that file's
+    bytes as well as the deals and the calculation: a holiday added to the calendar under the
+    same path moves the diary's etag and the diary is compiled anew.
+
+    Killing mutation: the diary keyed by the deals and the calculation alone, which answers the
+    old calendar's compile under the old etag.
+    """
+    calendar = tmp_path / 'calendars.xml'
+
+    def written(holidays):
+        calendar.write_text('<Calendars>\n  <Calendar Location="Testland" Weekends="Saturday '
+                            'and Sunday" Holidays="{}"/>\n</Calendars>\n'.format(holidays))
+
+    written('')
+    document = json.loads(dump(job()))
+    document['Calc']['CalendDataFile'] = str(calendar)
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(document, indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    try:
+        before = CLIENT.get('/book/diary').json()['etag']
+        written('2025-01-01|New Year')
+        after = CLIENT.get('/book/diary').json()['etag']
+    finally:
+        service.BOOK = None
+    assert before != after
+
+
+def test_the_risk_is_kept_under_today_beside_all_it_reads(book):
+    """A market stating no `Base_Date` is read as of today (`Context.load_config`), so the
+    consolidated risk is kept under the hash of the whole `Calc`, the digest of the market file it
+    names - none here - and today's date, worked by hand below, and a new day is a new key.
+
+    Killing mutation: the risk keyed without the day, which serves yesterday's vector.
+    """
+    document = json.loads(book.read_text())
+    hand = derivus.content_hash({'calc': document['Calc'], 'files': {'MarketDataFile': None},
+                                 'today': datetime.date.today().isoformat()})
+    assert CLIENT.get('/book/risk').json()['etag'] == hand
+
+
 def test_a_saved_calculation_is_judged_as_a_run_reads_its_wire_tags(tmp_path, monkeypatch):
     """A saved block is judged as a run decodes it: a `Base_Date` posted as `{".Timestamp": ...}`,
     the form `/book` answers it in, is a date, while a tag naming nothing is refused by name.
