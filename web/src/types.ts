@@ -124,14 +124,15 @@ export type PendingQuote = {
 export type QuoteGiven = Pick<Quote, 'quote_id' | 'structure' | 'variation' | 'netting_set' | 'net'
   | 'currency'> & Pick<PendingQuote, 'quoted_at' | 'quoted_by' | 'accepted' | 'booked'>;
 
-/** What `POST /book/quote` answers short of a 422: a booking, a refusal in words, or the quote
- * already booked; on a desk keeping a record, the tier it was routed through. */
+/** What `POST /book/quote` answers short of a 422 - and a booking, a restrike or an unwind through
+ * `POST /book/deals`: a booking, a refusal in words, or the quote already booked; on a desk keeping
+ * a record, the tier it was routed through and the sentence of each check it `fell_past` first. */
 export type Acceptance = {
   written: boolean; deal_path?: string; refused?: string[]; note?: string;
   accepted?: { lsn: number; ticket: string } | null;
   booked?: { lsn: number | null; deal_path: string };
   recorded?: { lsn: number };
-  tier?: { name: string; four_eyes: boolean }; waits_on?: string;
+  tier?: { name: string; four_eyes: boolean; fell_past: string[] }; waits_on?: string;
   firmness?: { plan?: { pinned: string; current: string; moved: boolean } };
 };
 
@@ -432,13 +433,15 @@ export type Reconcile = {
  * against - a ticket, a diary key, a fill's own key, an agreement, a day; a payment carries its
  * amount, currency and the agreement it is due under where it is one, a call the amount and
  * currency it calls, and a call nobody can work out what is not known. A ticket's row names its
- * trade, and a pending one its tier, what it was booked at and why it waits. */
+ * trade, and a pending one its tier, what it fell past first as its ticket reads it, what it was
+ * booked at and why it waits. */
 export type WorkRow = {
   kind: string; what: string; key: string; lsn: number | null; since: string | null;
   amount?: number | null; currency?: string | null; agreement?: string | null;
   unknown?: { instrument: string | null; what: string }[];
   reference?: string | null; deal_path?: string | null; client?: string | null;
-  booker?: string; tier?: string | null; price?: number | null; waits_on?: string | null;
+  booker?: string; tier?: string | null; fell_past?: string[] | null; price?: number | null;
+  waits_on?: string | null;
 };
 
 /** What an agreement's terms never state, `GET /book/agreements` names: the netting set's `fields`

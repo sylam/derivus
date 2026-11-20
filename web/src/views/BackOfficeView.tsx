@@ -163,12 +163,6 @@ function Tickets({ worklist }: { worklist: Worklist }) {
           )}
           {worklist.pending.map((row) => signing(row, holdsFor(row, worklist.seat, true)))}
           {!worklist.pending.length && nothing(hold, 'nothing waits on this seat to sign')}
-          {worklist.pending.length > 0 && (
-            <div className="hint signing">
-              Which check sent a ticket past the tiers above its own - its size, its tenor, where it
-              books - is not on the record's reads: a ticket names only the tier it fell in.
-            </div>
-          )}
         </div>
       </section>
       {elsewhere.length > 0 && (
@@ -187,9 +181,9 @@ function Tickets({ worklist }: { worklist: Worklist }) {
 
 /** One pending ticket as its signer reads it: the client and the trade in one line, its reference
  * opening its page; who booked it, when and how long it has waited; why it waits, in the tier's own
- * words; what it was quoted at, its ticket a click away; the paper it books under - then its two
- * verdicts, or what holds for this seat, blank where its card says it. Either refusal is the
- * service's sentence, verbatim. */
+ * words, and each check that sent it past an earlier tier, a line each; what it was quoted at, its
+ * ticket a click away; the paper it books under - then its two verdicts, or what holds for this
+ * seat, blank where its card says it. Either refusal is the service's sentence, verbatim. */
 function Signing({ row, trade, now, hold, execution, quote, onSaid }: {
   row: WorkRow; trade?: BlotterRow; now: number; hold: string | null; execution?: string;
   quote?: PendingQuote | null; onSaid: (said: Said) => void;
@@ -253,6 +247,12 @@ function Signing({ row, trade, now, hold, execution, quote, onSaid }: {
             row.currency ?? ''}`} · <b>waiting {waitedText(row.since, now)}</b></dd>
         <dt>waits</dt>
         <dd>{row.tier ? <>tier <b>{row.tier}</b>: {row.waits_on}</> : 'on a second seat'}</dd>
+        {!!row.fell_past?.length && (
+          <>
+            <dt>fell past</dt>
+            <dd>{row.fell_past.map((sentence) => <div key={sentence}>{sentence}</div>)}</dd>
+          </>
+        )}
         <dt>quoted</dt>
         <dd>{quoted()}</dd>
         <dt>paper</dt>

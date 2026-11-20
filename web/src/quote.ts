@@ -243,17 +243,20 @@ export function firmText(seconds: number | null, recording: boolean): string {
     + 'booked.';
 }
 
-/** An acceptance as a desk reads it: where the trade landed, the service's own words, and whether
- * quoting again is the thing to do - never where the client's price already stands on the record
- * and the desk's own tiers declined it. */
+/** An acceptance as a desk reads it - a booking, a restrike or an unwind alike: where the trade
+ * landed, the service's own words, and whether quoting again is the thing to do - never where the
+ * client's price already stands on the record and the desk's own tiers declined it. */
 export type Verdict = {
   booked?: { deal_path: string; lsn: number | null }; words: string[]; requote: boolean;
 };
 
+/** A written answer's words: on whom it waits, then each check an earlier tier failed it on, a
+ * line each - none where it fell in the first tier the desk reads. */
 export function verdictOf(answer: Acceptance): Verdict {
   if (answer.written) {
     return { booked: { deal_path: answer.deal_path!, lsn: answer.recorded?.lsn ?? null },
-             words: answer.waits_on ? [`Booked pending a second seat: ${answer.waits_on}`] : [],
+             words: [...answer.waits_on ? [`Booked pending a second seat: ${answer.waits_on}`] : [],
+                     ...(answer.tier?.fell_past ?? []).map((sentence) => `Fell past: ${sentence}`)],
              requote: false };
   }
   if (answer.booked) return { booked: answer.booked, words: [answer.note ?? ''], requote: false };

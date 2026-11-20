@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { amendDeal } from '../api';
 import { quoted, toRows } from '../blotter';
 import { DealPanels, DescriptorPanel, type AmendField } from '../components/FieldView';
@@ -6,6 +7,7 @@ import {
   GROUPINGS, NO_PAPER, POSITION, byId, byPath, clientName, clientTree, closed, nodeAt,
   portfolioTree, type Paper, type Position,
 } from '../positions';
+import { verdictOf } from '../quote';
 import { heldBack, marketOf, openTrade, useApp, written } from '../state';
 import { tradeAt } from '../trade';
 import type { DealNode, Descriptor } from '../types';
@@ -108,10 +110,12 @@ const RESTRIKE = 'Filing this restrikes the trade: its new terms are filed under
 
 /** The deal at `path` in its panels, each level box saying how the market quotes it by the
  * blotter's rule, and every scalar amendable over the LIVE BOOK - a local file has nothing
- * server-side to amend - a restrike under a record asked first. A filed amendment re-reads the
- * book at once rather than waiting a poll tick. */
+ * server-side to amend - a restrike under a record asked first, its answer read above the
+ * panels as a booking's is. A filed amendment re-reads the book at once rather than waiting a poll
+ * tick. */
 export function DealEditor({ path, node }: { path: string; node: DealNode }) {
   const { state, dispatch } = useApp();
+  const [said, setSaid] = useState<string[]>([]);
   const recording = state.source?.kind === 'book' && state.record.spine !== null;
   const read = quoted(toRows([node], state.schema?.Instrument.containers ?? [], undefined)[0],
                       marketOf(state));
@@ -126,12 +130,18 @@ export function DealEditor({ path, node }: { path: string; node: DealNode }) {
         a {read.sense} on {String(read.on.value)} as the market quotes it</span>);
   };
   const onAmend: AmendField | undefined = state.source?.kind === 'book'
-    ? async (key, wireValue) => written(dispatch, await amendDeal(path, { [key]: wireValue }))
-    : undefined;
+    ? async (key, wireValue) => {
+      const answer = await amendDeal(path, { [key]: wireValue });
+      setSaid(answer.written ? verdictOf(answer).words : []);
+      return written(dispatch, answer);
+    } : undefined;
   return (
-    <DealPanels deal={node.Instrument['.Deal']} schema={state.schema} onAmend={onAmend}
-                hold={heldBack(state, 'book')}
-                beside={beside} ask={recording ? RESTRIKE : undefined} />
+    <>
+      {said.map((words) => <div key={words} className="note">{words}</div>)}
+      <DealPanels deal={node.Instrument['.Deal']} schema={state.schema} onAmend={onAmend}
+                  hold={heldBack(state, 'book')}
+                  beside={beside} ask={recording ? RESTRIKE : undefined} />
+    </>
   );
 }
 

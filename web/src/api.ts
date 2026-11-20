@@ -104,7 +104,7 @@ export const openBook = (name?: string, document?: JobDoc) =>
 const postDeal = <T>(body: Record<string, unknown>) =>
   call<T>('POST', '/book/deals', signed(body));
 export const amendDeal = (dealPath: string, fields: Record<string, unknown>) =>
-  postDeal<BookDealOutcome>({ action: 'amend', deal_path: dealPath, fields });
+  postDeal<Acceptance>({ action: 'amend', deal_path: dealPath, fields });
 // the market the book prices on: the file it names with its explicit block merged over it, named
 // by a stamp - asked with the one held, it answers no market while that one is current
 export const getBookMarket = (stamp = '') =>

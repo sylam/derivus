@@ -290,9 +290,17 @@ check('what holds between a quote and its acceptance is said per desk',
        'This desk declares no firm window: a quote books while the book has not moved under it.',
        'This desk declares no firm window: a quote stays bookable until it is booked.']);
 
-check('an acceptance reads as where it landed, the service\'s words, and whether to quote again',
+const SIZE = "the 'desk-auto' tier caps max_notional at 5000000 USD and this ticket is "
+  + '6560000.0 of it - book it under a tier that admits the size, or split the clip';
+const TENOR = "the 'by-size' tier caps max_tenor_years at 1 years and this ticket runs 2.25 - "
+  + 'book it under a tier that admits the tenor';
+check('an acceptance reads as where it landed, the service\'s words, and whether to quote '
+        + 'again; a booking under a tier says on whom it waits, then each check an earlier tier '
+        + 'failed it on, a line each, and nothing where it fell in the first',
       'every refusal offered a re-quote, which re-prices a client\'s price the desk\'s own tiers '
-      + 'declined; or a booking pending a second seat read as booked and done',
+      + 'declined; a booking pending a second seat read as booked and done; the checks it fell '
+      + 'past dropped, or joined into one line, or an automatic tier\'s left off; or a ticket that '
+      + 'fell in the first tier given a blank line',
       [quote.verdictOf({ written: true, deal_path: '0/0', recorded: { lsn: 25 } }),
        quote.verdictOf({ written: true, deal_path: '1/1' }),
        quote.verdictOf({ written: true, deal_path: '0/1', recorded: { lsn: 31 },
@@ -301,14 +309,26 @@ check('an acceptance reads as where it landed, the service\'s words, and whether
                          note: 'booked at 1/1' }),
        quote.verdictOf({ written: false, refused: ['the book would not take it'] }),
        quote.verdictOf({ written: false, refused: ['no tier admits it'],
-                         accepted: { lsn: 40, ticket: 't' } })],
+                         accepted: { lsn: 40, ticket: 't' } }),
+       quote.verdictOf({ written: true, deal_path: '0/1', waits_on: 'a second seat holding approve',
+                         tier: { name: 'second-seat', four_eyes: true,
+                                 fell_past: [SIZE, TENOR] } }),
+       quote.verdictOf({ written: true, deal_path: '0/2',
+                         tier: { name: 'desk-auto', four_eyes: false, fell_past: [] } }),
+       quote.verdictOf({ written: true, deal_path: '0/3',
+                         tier: { name: 'by-size', four_eyes: false, fell_past: [SIZE] } })],
       [{ booked: { deal_path: '0/0', lsn: 25 }, words: [], requote: false },
        { booked: { deal_path: '1/1', lsn: null }, words: [], requote: false },
        { booked: { deal_path: '0/1', lsn: 31 },
          words: ['Booked pending a second seat: a second seat holding approve'], requote: false },
        { booked: { lsn: null, deal_path: '1/1' }, words: ['booked at 1/1'], requote: false },
        { words: ['the book would not take it'], requote: true },
-       { words: ['no tier admits it'], requote: false }]);
+       { words: ['no tier admits it'], requote: false },
+       { booked: { deal_path: '0/1', lsn: null },
+         words: ['Booked pending a second seat: a second seat holding approve',
+                 `Fell past: ${SIZE}`, `Fell past: ${TENOR}`], requote: false },
+       { booked: { deal_path: '0/2', lsn: null }, words: [], requote: false },
+       { booked: { deal_path: '0/3', lsn: null }, words: [`Fell past: ${SIZE}`], requote: false }]);
 
 check('a re-quote made here is kept with the quote it changes, once, the newest first',
       'a re-quote kept twice where it is made again, or its link dropped for the newest',

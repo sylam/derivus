@@ -224,8 +224,8 @@ export function paperText(set: string, agreements: Agreement[], schema: Schema |
 
 /** The tickets awaiting a second seat that `listed` - the seat's own worklist - leaves out, oldest
  * first and each once, though a restrike books several positions under one, as rows of the
- * worklist's shape - the tier each fell in and what it waits on among them: what a seat that cannot
- * sign them reads of what waits. */
+ * worklist's shape - the tier each fell in, what it fell past first and what it waits on among
+ * them: what a seat that cannot sign them reads of what waits. */
 export function waitingElsewhere(positions: Position[], listed: WorkRow[]): WorkRow[] {
   const seen = new Set(listed.map((row) => row.key));
   const rows: WorkRow[] = [];
@@ -236,7 +236,7 @@ export function waitingElsewhere(positions: Position[], listed: WorkRow[]): Work
       rows.push({ kind: 'pending', what: '', key: ticket.ticket, lsn: ticket.lsn, since: ticket.at,
                   booker: ticket.actor, reference: position.reference, agreement: position.agreement,
                   deal_path: position.deal_paths[0] ?? null, client: position.counterparty,
-                  tier: ticket.tier, waits_on: ticket.waits_on });
+                  tier: ticket.tier, fell_past: ticket.fell_past, waits_on: ticket.waits_on });
     }
   }
   return rows.sort((a, b) => a.lsn! - b.lsn!);

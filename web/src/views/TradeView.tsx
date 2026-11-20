@@ -178,7 +178,8 @@ const CHIP: Record<string, string> = { approved: 'done', pending: 'running', rej
 
 /** Where the trade came from: the quote that landed at it, on any desk, its ticket a click away;
  * and where the desk records, who booked it and when, and every clip with what its ticket reads -
- * the tier it fell in and, while pending, what it waits on in the service's words. */
+ * the tier it fell in, while pending what it waits on, and each check it fell past, a line each, in
+ * the service's words. */
 function Origin({ recording, held, history, quote }: {
   recording: boolean; held: Position[]; history: ActivityRow[] | string | null;
   quote: QuoteGiven | null | undefined;
@@ -248,6 +249,9 @@ function Origin({ recording, held, history, quote }: {
                       <span className={`chip ${CHIP[ticket.status] ?? ''}`}>{ticket.status}</span>
                       {ticket.tier && <span className="hint"> tier <b>{ticket.tier}</b></span>}
                       {ticket.waits_on && <span className="hint">: {ticket.waits_on}</span>}
+                      {(ticket.fell_past ?? []).map((sentence) => (
+                        <div key={sentence} className="hint">fell past: {sentence}</div>
+                      ))}
                     </td>
                   </tr>
                 ))}
@@ -413,11 +417,15 @@ function Actions({ row, held, recording }: {
             : 'Nothing of this trade is held on the record'}, so there is nothing to unwind.</div>
         )}
         {verdict && (verdict.booked ? (
-          <div className="statusrow">
-            <span className="chip done">filed</span>
-            <span>the unwind is on the record at position {verdict.booked.lsn ?? '—'}</span>
-            {verdict.words.filter(Boolean).map((words) => <span key={words}>{words}</span>)}
-          </div>
+          <>
+            <div className="statusrow">
+              <span className="chip done">filed</span>
+              <span>the unwind is on the record at position {verdict.booked.lsn ?? '—'}</span>
+            </div>
+            {verdict.words.filter(Boolean).map((words) => (
+              <div key={words} className="note">{words}</div>
+            ))}
+          </>
         ) : verdict.words.map((words) => <div key={words} className="error-box">{words}</div>))}
       </div>
     </section>
