@@ -5773,6 +5773,30 @@ def test_the_consolidated_risk_is_read_on_the_quotes_the_curves_are_built_from(t
     assert bare['greeks'] and bare['mtm'] == pytest.approx(risk['mtm'], rel=1e-9)
 
 
+def test_the_consolidated_risk_writes_nothing_on_the_document_it_values(tmp_path):
+    """The consolidated risk run restates the calculation and switches `Quote_Sensitivity` on in
+    each block it refits, both on copies of the levels it writes at and of nothing else: the
+    document it is handed hashes after the run as before it, on a book whose curves are built from
+    quotes, and the answer is the one `/book/risk` gives over the same file.
+
+    Killing mutations, each red on the hash: the calculation updated where it stands, which leaves
+    the document a base valuation with greeks on; the `Market Prices` written into the document's
+    own explicit block, which leaves its quotes carrying the switch.
+    """
+    curve_book(tmp_path / 'book.json')
+    service.BOOK = service.Book(str(tmp_path / 'book.json'))
+    try:
+        document = service.BOOK.read()[0]
+        before = derivus.content_hash(document)
+        answer = service.consolidated_risk(document)
+        assert derivus.content_hash(document) == before, 'the risk run wrote the document it read'
+        read = CLIENT.get('/book/risk').json()
+    finally:
+        service.BOOK = None
+    assert answer['quotes'] and {key: value for key, value in read.items() if key not in (
+        'as_of', 'etag')} == {key: value for key, value in answer.items() if key != 'as_of'}
+
+
 def cold_read(path):
     """`/book/risk` off a newly served book over `path`, which keeps no refit yet, `as_of` aside."""
     service.BOOK = service.Book(str(path))

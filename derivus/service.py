@@ -1862,10 +1862,12 @@ def connected_run(run, blocks, universe, carried, reading=Context):
     whose family declares `Quote_Sensitivity` whether it is on, so one backward leaves `dV/dq` on
     every carried quote beside `dV/dtheta` on every factor. The switch is worth zero forward, so
     the marks are the book's own whichever blocks carry it."""
-    quoted = deepcopy(run)
-    quoted['Calc']['MergeMarketData']['ExplicitMarketData']['Market Prices'] = {
-        name: dict(block, instrument=dict(block['instrument'], Quote_Sensitivity=carried[name]))
-        if name in carried else block for name, block in sorted(blocks.items())}
+    # only the path down to `Market Prices` is written, so the rest of the market is shared
+    merged = run['Calc']['MergeMarketData']
+    quoted = dict(run, Calc=dict(run['Calc'], MergeMarketData=dict(
+        merged, ExplicitMarketData=dict(merged['ExplicitMarketData'], **{'Market Prices': {
+            name: dict(block, instrument=dict(block['instrument'], Quote_Sensitivity=carried[name]))
+            if name in carried else block for name, block in sorted(blocks.items())}}))))
     context = load(quoted, reading())
     context.current_cfg.bootstrap(wanted=universe)
     return context, utils.run_whole(context.run_job)[1]
@@ -1991,9 +1993,8 @@ def consolidated_risk(document):
     stand for, and `greeks` every factor's own row beside them; `quote_note` names each block
     read on its factors instead, and why.
     """
-    run = deepcopy(document)
-    run['Calc']['Calculation'] = dict(run['Calc']['Calculation'],
-                                      Object='BaseValuation', Greeks='First')
+    run = dict(document, Calc=dict(document['Calc'], Calculation=dict(
+        document['Calc']['Calculation'], Object='BaseValuation', Greeks='First')))
     answer = {'as_of': as_of(), 'currency': run['Calc']['Calculation'].get('Currency'),
               'mtm': 0.0, 'per_deal': [], 'in_sets': [], 'greeks': [], 'quotes': [],
               'quoted': [], 'quote_note': None}
