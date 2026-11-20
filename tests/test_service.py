@@ -6099,6 +6099,29 @@ def test_the_xva_projection_is_a_mosaic_a_partial_recalc_moves_one_row_of(desk_x
     assert after['NS_B'] == before['NS_B'], 'a partial recalc touched a row it was not asked for'
 
 
+def test_a_set_reads_collateralised_exactly_as_a_run_prices_it(tmp_path):
+    """A set's `Collateralized` is declared text and a run collateralises it on `'True'` alone, so
+    the XVA list reads a set authored `'True'` collateralised and one authored `'true'` - which the
+    run prices uncollateralised - not, the row saying what the run prices.
+
+    Killing mutation: the text read case-insensitively, which calls the `'true'` set collateralised.
+    """
+    document = json.loads(dump(job(deals=())))
+    document['Calc']['Deals']['Deals']['Children'] = [
+        dict(node, Instrument={'.Deal': dict(node['Instrument']['.Deal'], Collateralized=said)})
+        for said, node in (('True', netting_set('UPPER', 'CP', [])),
+                           ('true', netting_set('LOWER', 'CP', [])))]
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(document, indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    try:
+        sets = {row['reference']: row['collateralized']
+                for row in CLIENT.get('/book/xva').json()['sets']}
+    finally:
+        service.BOOK = None
+    assert sets == {'UPPER': True, 'LOWER': False}
+
+
 def test_an_xva_row_says_the_currency_its_own_run_reported_in(desk_xva, tmp_path):
     """A row states the currency ITS OWN run reported in. NS_A run on the USD book reads USD and
     NS_B, never run, none. The book opened again in ZAR and NS_B run there reads ZAR beside NS_A's

@@ -4086,11 +4086,11 @@ def set_terms(deal):
     `Credit_Support_Amounts.Counterparty` is the one the engine reads too - the `SurvivalProb`
     factor the CVA discounts by - so the recalc and the row cannot name two different
     counterparties. `Collateralized` is declared as 'True'/'False' TEXT and the string "False" is
-    truthy in every browser, so the row carries the READING rather than the spelling.
+    truthy in every browser, so the row carries the READING rather than the spelling - the one
+    every run reads, where only 'True' collateralises a set.
     """
     support = deal.get('Credit_Support_Amounts') or {}
-    return (support.get('Counterparty') or '',
-            str(deal.get('Collateralized', 'False')).lower() == 'true')
+    return support.get('Counterparty') or '', deal.get('Collateralized', 'False') == 'True'
 
 
 def funding_curves(deal):
