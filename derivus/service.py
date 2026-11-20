@@ -4152,13 +4152,12 @@ def xva_document(document, node, counterparty):
     deflation or risk-free curve is written: the engine reads both as the base currency's own, so
     nothing here reads the market.
     """
-    # cut to the set before the copy: the book's other sets are no part of this job
+    # only the root of the tree and the calculation are written, so the market is shared, not copied
     deals = document['Calc']['Deals']
-    run = deepcopy(dict(document, Calc=dict(document['Calc'], Deals=dict(
-        deals, Deals=dict(deals['Deals'], Children=[])))))
+    run = dict(document, Calc=dict(document['Calc'], Deals=dict(
+        deals, Deals=dict(deals['Deals'], Children=[node]))))
     # the pin moves on a booking into any set, so one set's plan does not carry it
     run.pop(SPINE_PIN, None)
-    job_children(run)[:] = [node]
     calculation = dict(run['Calc']['Calculation'], Object='CreditMonteCarlo')
     calculation.setdefault('Batch_Size', XVA_BATCH_SIZE)
     calculation.setdefault('Simulation_Batches', XVA_SIMULATION_BATCHES)

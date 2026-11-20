@@ -6194,6 +6194,31 @@ def test_an_xva_row_says_the_currency_its_own_run_reported_in(desk_xva, tmp_path
     assert xva_rows()['NS_A']['currency'] is None
 
 
+def test_a_set_s_xva_job_shares_the_book_s_market_and_writes_none_of_the_book(desk_xva):
+    """A set's XVA job is composed over the document it is handed and copies only what it writes,
+    the root of the deal tree and the calculation: its market IS the document's, it hashes as the
+    job composed over a copy of the document does, the row its recalc files names that hash as its
+    plan, and composing it leaves the document as it was read.
+
+    Killing mutation: the calculation updated where it stands rather than copied, which leaves the
+    book's own calculation a `CreditMonteCarlo` and moves the document's hash; or the document
+    copied whole again, where the market is no longer the document's own.
+    """
+    import copy
+
+    document = service.BOOK.read()[0]
+    before = derivus.content_hash(document)
+    rows = (recalc(), xva_rows())[1]
+    for _, node in service.netting_sets(document):
+        counterparty = service.set_terms(node['Instrument']['.Deal'])[0]
+        job = service.xva_document(document, node, counterparty)
+        assert job['Calc']['MergeMarketData'] is document['Calc']['MergeMarketData']
+        assert derivus.content_hash(job) == derivus.content_hash(service.xva_document(
+            copy.deepcopy(document), copy.deepcopy(node), counterparty)) == rows[
+                node['Instrument']['.Deal']['Reference']]['plan_hash']
+        assert derivus.content_hash(document) == before, 'composing a set\'s job wrote the book'
+
+
 def test_a_booking_into_one_set_leaves_another_set_s_xva_run_where_it_was(recorded, tmp_path):
     """On a recording desk every write pins the record's head beside `Calc`: genesis is four
     events and each booking one fill, so the file reads LSN 5 at the first full recalc and 6 at the
