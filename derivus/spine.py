@@ -323,10 +323,10 @@ READ = contextvars.ContextVar('derivus_spine_read', default=None)
 
 
 @contextlib.contextmanager
-def one_read(folds=None):
-    """Share one read-only log handle, advancing `folds`, and a per-read projector memo across
-    every `folded` call inside the block."""
-    session = {'log': None, 'folds': folds, 'memo': {}}
+def one_read(folds=None, market=None):
+    """Share one read-only log handle, advancing `folds`, a per-read projector memo, and an
+    optional `market(document)` loader across every `folded` call inside the block."""
+    session = {'log': None, 'folds': folds, 'memo': {}, 'market': market}
     token = READ.set(session)
     try:
         yield session
@@ -334,6 +334,14 @@ def one_read(folds=None):
         READ.reset(token)
         if session['log'] is not None:
             session['log'].close()
+
+
+def _market(document):
+    """`document`'s market through the active read session's loader (`Book.markets`) if one is
+    bound, else `structures.market_of`."""
+    session = READ.get()
+    loader = session['market'] if session is not None else None
+    return loader(document) if loader is not None else market_of(document)
 
 
 def folded(fold):
@@ -624,7 +632,7 @@ def observations(lsn=None, indices=None):
     return folded(fold)
 
 
-def compiled_job(document, lsn=None, strict=True, runs=None, folds=None):
+def compiled_job(document, lsn=None, strict=True, runs=None, folds=None, market=None):
     """The job the plan hashes, with every position the record holds at `lsn` written at its net
     and every declared observation filled. Unchanged where no home is configured.
 
@@ -670,7 +678,7 @@ def compiled_job(document, lsn=None, strict=True, runs=None, folds=None):
         job_children(document)
     except ValueError:
         return document
-    with (contextlib.nullcontext() if READ.get() is not None else one_read(folds)):
+    with (contextlib.nullcontext() if READ.get() is not None else one_read(folds, market)):
         held = _nets(lsn, book_name(document))
         papers = _papers(document, lsn)
         balances = {} if runs is False else _balances(document, papers, lsn, folds)
@@ -688,7 +696,7 @@ def compiled_job(document, lsn=None, strict=True, runs=None, folds=None):
                 deal['Opening_Balance'] = balances[deal['Reference']]
         observing = _observing(filled)
         # an index is named in the market's base currency, which only an observed deal asks
-        currency = base_currency(market_of(filled)) if observing else None
+        currency = base_currency(_market(filled)) if observing else None
         observing = [(deal, terms, index_named(deal, terms, currency)) for deal, terms in observing]
         named = {index for _, _, indices in observing for index in indices}
         observed = (fixings(lsn, indices=named) if strict else observations(lsn, named)[0]) if named else {}
@@ -739,7 +747,7 @@ def _balances(document, papers, lsn=None, folds=None):
     cash = spine.projections.PROJECTORS['cash']
     held = spine.projections.CSA.held(folded(lambda log: cash.rows(_state(
         log, cash, lsn, folds))), base_day(document))
-    market = market_of(document)
+    market = _market(document)
     balances = {}
     for agreement, terms in sets.items():
         holding = held.get(agreement, spine.projections.CSA.NOTHING)[spine.verbs.COLLATERAL]
@@ -2710,13 +2718,13 @@ class Collateral:
     """
 
     @staticmethod
-    def paid_today(document, files=None):
+    def paid_today(document, files=None, market=None):
         """Whether the netting sets of `document` hold the day's payments in the exposure their
         recursion reads: `Exclude_Paid_Today` off - the engine's default - as a set reads it off the
         job's `Valuation Configuration`, each file the job names read as its marks run read it
-        (`files`, `reading`)."""
-        options = market_of(document, context=reading(document, files)())[
-            'Valuation Configuration']
+        (`files`, `reading`), or `market` where the caller already loaded it."""
+        options = (market_of(document, context=reading(document, files)())
+                   if market is None else market)['Valuation Configuration']
         return not options.get('NettingCollateralSet', {}).get('Exclude_Paid_Today', False)
 
     @staticmethod
@@ -2748,7 +2756,7 @@ class Collateral:
         return [row for row in agreements if everywhere or row['agreement'] in held]
 
     @classmethod
-    def calls(cls, close, valued, agreements, movements, until):
+    def calls(cls, close, valued, agreements, movements, until, market=None):
         """`[{agreement, entity, currency, exposure, fx, held, margin, required, balance, call,
         direction, minimum_transfer, unknown}]` - the call of each of the `collateralised`
         agreements on the marks `close` (`{day, rates, document, files}`), in the agreement's
@@ -2762,8 +2770,8 @@ class Collateral:
         dial the terms state none of - is named under `unknown`, and the call is null over it.
         """
         record, rates, answer = package().projections.CSA, close['rates'], []
-        balances, today = record.held(movements, until), cls.paid_today(close['document'],
-                                                                          close['files'])
+        balances, today = record.held(movements, until), cls.paid_today(
+            close['document'], close['files'], market=market)
         for declared in agreements:
             dials = record.of(declared['terms'])
             agreement, currency = declared['agreement'], dials['Agreement_Currency']

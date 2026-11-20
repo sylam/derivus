@@ -236,16 +236,25 @@ def market_stamp(document):
 
 def market_of(document, context=None, stamp=None):
     """`structures.market_of` the document, each file it names taken from the live book's parses
-    where a book is served, loaded on `context` where one is handed (`spine.reading`). With none
-    handed and a book served it is the book's, kept pickled by its `market_stamp` (`stamp`, where
-    the caller holds it) and unpickled into a copy of the reader's own."""
-    if context is not None or BOOK is None:
+    where a book is served, loaded on `context` where one is handed (`spine.reading`). Cached
+    pickled on `Book.markets` under `stamp` (or `market_stamp(document)` when no custom `context`
+    is handed) and unpickled into a copy of the reader's own."""
+    if BOOK is None or (context is not None and stamp is None):
         return structures.market_of(document, BOOK and BOOK.parses, context)
     stamp = stamp or market_stamp(document)
     kept = BOOK.markets.get(stamp)
     if kept is None:
-        kept = BOOK.markets.put(stamp, pickle.dumps(structures.market_of(document, BOOK.parses)))
+        kept = BOOK.markets.put(stamp, pickle.dumps(
+            structures.market_of(document, BOOK.parses, context)))
     return pickle.loads(kept)
+
+
+def close_market(marks_of):
+    """The market a stored close (`PnL.loaded`) was marked on, cached on `Book.markets` by its
+    immutable job digest and file map."""
+    return market_of(marks_of['document'],
+                     context=spine.reading(marks_of['document'], marks_of['files'])(),
+                     stamp=content_hash({'job': marks_of['job'], 'files': marks_of['files']}))
 
 
 #: What `/execute` does with a lane it was never given. A run is recorded IFF its output will be
@@ -738,12 +747,12 @@ async def bearer(request: Request):
 
 
 async def read_session(request: Request):
-    """Share one log handle, the book's advancing folds, and a per-read memo across a GET request.
-    Skips the streaming doorbell, which stays open across appends."""
+    """Share one log handle, the book's advancing folds, a per-read memo, and the book's market
+    cache across a GET request. Skips the streaming doorbell, which stays open across appends."""
     if request.method != 'GET' or request.url.path == DOORBELL or not spine.configured():
         yield
         return
-    with spine.one_read(folds()):
+    with spine.one_read(folds(), market_of):
         yield
 
 
@@ -1127,7 +1136,7 @@ def priced(document, runs=None):
     where it `runs` as a calculation that reads one - and the file as it stands where no home is
     configured. A read never refuses a print nobody ordered, so the compile is not strict; a
     balance in an asset the book carries no spot for refuses it all the same."""
-    return spine.compiled_job(document, strict=False, runs=runs, folds=folds())
+    return spine.compiled_job(document, strict=False, runs=runs, folds=folds(), market=market_of)
 
 
 def enclosing_set(document, deal_path):
@@ -3180,19 +3189,18 @@ def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreemen
                    for side, marks_of in (('start', first), ('end', last))})
 
 
-def valued_between(first, last, document, marks, market, scope, through=False):
+def valued_between(first, last, document, marks, market, scope, through=False, close_mkt=None):
     """`(answer, last_days)` - `PnL.pnl` over `scope` between the marks `first` and `last` of the
     book `document` names, `marks` every one it has on `market`: each close's spots, the business
     days its marks cut, what the record held and moved at each end, and every payment the window's
     positions meet (`window_payments`), with the last day of each instrument that has one. `through`
     holds a position whose last day is `last`'s through it rather than closing it there, as a
     netting set holds a deal until its cash moves. The base currency is the start's job's, off the
-    files it read as they stood."""
+    files it read as they stood (`close_mkt` where the caller already loaded it)."""
     book = book_name(document)
     calculation = first['document']['Calc']['Calculation']
     reporting = calculation.get('Currency')
-    base = structures.base_currency(market_of(first['document'], spine.reading(
-        first['document'], first['files'])()))
+    base = structures.base_currency(close_mkt if close_mkt is not None else close_market(first))
     for marks_of in (first, last):
         marks_of['rates'] = PnL.rates(marks_of.pop('values', None) or json.loads(
             spine.stored(marks_of['values_hash']).decode('utf-8')), reporting, base)
@@ -3480,10 +3488,12 @@ def collateral_calls(document, marks, day, market, sight, verb=None, positions=N
     calls = []
     if agreements:
         close = PnL.loaded(marks[day], spine.stored)
+        mkt = close_market(close)
         valued, _ = valued_between(close, close, document, marks, market, {
             'portfolio': book_name(document), 'agreement': None, 'clients': None, 'sight': None},
-            through=True)
-        calls = Collateral.calls(close, valued, agreements, movements, None if filed else day)
+            through=True, close_mkt=mkt)
+        calls = Collateral.calls(close, valued, agreements, movements, None if filed else day,
+                                 market=mkt)
     return {'date': day, 'marks': marks[day]['lsn'], 'lsn': head, 'calls': calls}
 
 
