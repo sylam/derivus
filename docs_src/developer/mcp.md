@@ -190,7 +190,10 @@ a projection per netting set in `DV_HOME/xva.json`, each row with its `as_of`, m
 `recalc_xva` because a credit Monte Carlo is too slow to ride a tick. The docstrings say so, so a
 model neither reads an old CVA as live nor runs a simulation to answer a delta. What one trade adds
 to its client's XVA is `xva_increment`, never a difference against a row: the row's run draws on
-another grid. **Held by** `test_the_increment_tool_answers_the_services_own_increment`.
+another grid. Its two runs are one market under two deal trees, so the second is loaded over the
+market the first read (`service.beside`). **Held by**
+`test_the_increment_tool_answers_the_services_own_increment`,
+`test_service.py::test_the_second_job_of_an_increment_is_loaded_over_the_market_the_first_read`.
 
 ### Solves run in the service
 

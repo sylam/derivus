@@ -20,61 +20,17 @@ notebook and an Excel add-in are all clients of these endpoints, so nothing clie
 enter the surface: anything a client needs that the calculation verbs cannot answer is a missing
 verb on `Context`, not an endpoint that reaches inside.
 
-| | |
-| --- | --- |
-| `GET /schema` | every declaration a front end renders from, plus the engine version |
-| `GET /schema/job` | the job ENVELOPE the declarations sit inside, as a skeleton that loads |
-| `POST /validate` | what would stop this job running, without running it |
-| `POST /describe` | what the engine parsed, and what running it would cost, without running it |
-| `POST /prepare` | `{plan_id}` — the parsed job, named by its plan hash and cached under it |
-| `POST /execute` | `{result_id, status}` — always, for every calculation |
-| `GET /results/{result_id}` | status, the replay tuple, the run's stats, and the SHAPE of each table |
-| `GET /results/{result_id}/{table}` | one table, paged by rows and capped by leading columns, or with `format=csv` the same page as a file |
-| `GET /ui` | a built web UI, when `DV_Service --ui` mounted one - a client, not a verb |
-| `GET /book` | the live job document the service serves - `DV_HOME/book.json` unless `--book` names another - and the etag naming its state, `opened` its name where `POST /book/open` filed it |
-| `GET /book/document` | the served book as the file it is, byte for byte - what a client saves |
-| `POST /book/open` | serve a document from another system as the book - filed in `DV_HOME/inbox` and served from there - or the desk's own again; refused under a spine home |
-| `GET /book/status` | the desk in ONE read - the book's date and currency, its curves and surfaces with when each was snapped, the calibrated models, the netting sets and the last XVA per set, and whether this workstation has a terminal |
-| `GET /book/market` | the market the book PRICES on - the file it names with its explicit block merged over it - and the `stamp` of what it is read from, no market where `?stamp=` names the current one |
-| `POST /book/deals` | book, amend or delete one deal, or take on one the file already holds (`action: 'fill'`) - validated BEFORE an atomic write, refusal writes nothing |
-| `POST /book/price` | price the book, optionally with a candidate deal or a quote's pending trade spliced in, or what the candidate does to its netting set's XVA - a what-if, validated before it queues, writes nothing |
-| `POST /book/solve` | solve one field of a candidate deal to a target value - a root find over base valuations, writes nothing |
-| `POST /book/market` | tick the book's market: quote blocks installed or value-updated, a values patch applied, the block's own entries retired, the bootstrap run - one atomic write |
-| `POST /book/configure` | set one bootstrapping dial - validated by building what reads it, then the whole market re-bootstrapped |
-| `POST /book/bloomberg` | provision the security map, fetch the desk's FX vol surfaces off the terminal, re-cross its spots and tick the book |
-| `GET /book/dependencies` | what the book - or the deals under one node of it - needs from the market, and which seed entry would supply what is missing |
-| `POST /book/dependencies` | the same walk over a CANDIDATE deal spliced in the way a what-if splices one - writes nothing |
-| `POST /book/setup` | build the market a trade needs: discover only what is unknown, install the surface, each new currency's spot and curve, bootstrap - one atomic write |
-| `GET /book/securities` | the desk's ticker vocabulary and its terminal evidence - the seed's candidates, the verified map and its rejection ledger, and the IPV join: every curve row with the print behind it |
-| `POST /book/securities` | set one entry of the desk's own seed - validated by spelling the candidates it now names, written atomically with the file it replaces kept beside it |
-| `POST /book/securities/verify` | re-verify the named scope against the terminal - the map's entries re-probed for drift, the rejected asked again, the seed's new names probed once and ledgered, the map rewritten |
-| `POST /book/model` | calibrate one pair's spot-model parameters off its built surface - on request, never on the tick |
-| `POST /book/structure` | quote a named structure against the book - legs solved, the pending trade filed under its quote id |
-| `POST /book/quote` | ACCEPT a quote already given and book it, refused exactly as a booking is |
-| `POST /book/approve` | sign the ticket a booking carries - the second pair of eyes - filed where it books |
-| `POST /book/reject` | refuse that ticket, with the reason on the row |
-| `GET /book/worklist` | what waits on somebody - tickets, payments, confirmations, marks, rejected trades |
-| `GET /book/portfolios` | the book's declared tree |
-| `POST /book/portfolios` | declare a node of it, judged at its parent |
-| `GET /book/files` | the files the record declares, each beside the file the book names that holds its content |
-| `POST /book/files` | declare a market data file or a calendar a job names, by the bytes it holds |
-| `GET /paths` | where this workstation reads each file the served book names - the two maps `DV_HOME/paths.json` states, and per file its folder, name, path and digest, or the refusal to read it |
-| `POST /paths` | replace the workstation's two maps whole, the served book opened anew |
-| `GET /book/quotes` | every quote the desk has given, newest first - what it was, for whom, its net, when and by whom, and where it stands |
-| `GET /book/quote/{quote_id}` | the pending trade filed under a quote id - what was quoted, the deal that books it, and when |
-| `GET /book/quote/{quote_id}/sheet` | the quote sheet itself, streamed as the `.xlsx` a client is handed |
-| `GET /book/risk` | the book's CONSOLIDATED risk - one greeks run over every counterparty at once, in the quotes its factors are built from and in the factors themselves, cached on what it reads |
-| `GET /calculations` | the desk's own named calculations - one `Calculation` block per name, kept in `DV_HOME` |
-| `POST /calculations` | save one named calculation, judged against its type's declarations, or remove it |
-| `POST /calculations/run` | the live book, whole or one subtree, under one named calculation - curiosity, nothing recorded |
-| `POST /book/xva` | recalculate the XVA projection - one queued CMC per netting set, every set or the named ones |
-| `GET /book/xva` | the XVA projection as it stands - the last run per netting set, joined with the book's own set list |
+Every route states its method, its path and what it does where it is declared, in its
+decorator's `summary`: `derivus_docs.py` writes the HTTP API page from those and a running
+service serves them at `/docs` and `/openapi.json`, so no table of them is kept here.
 
 THE BLOTTER'S TWO DATA VIEWS are deliberately different kinds of thing. `/book/risk` is WHOLE-BOOK
 and counterparty-blind: one base valuation with `Greeks: 'First'`, answered inline and cached on the
-content of everything the run reads. `/book/xva` is PER NETTING SET and a cached projection, a
-credit Monte Carlo being minutes of device time that must never ride a tick - `DV_HOME/xva.json`
-holds the last run of each set and a desk asks for a recalc. The projection is a MOSAIC: each row
+content of everything the run reads, a poll with nothing moved answered before that under the
+poll's own key (`polled`), as `/book/status` is. `/book/xva` is PER NETTING SET and a cached
+projection, a credit Monte Carlo being minutes of device time that must never ride a tick -
+`DV_HOME/xva.json` holds the last run of each set and a desk asks for a recalc. The projection is
+a MOSAIC: each row
 carries its own `as_of`, a partial recalc moves only the rows it names, and staleness is data rather
 than a failure. `cva` and `fva` are columns of one run, both reductions of the same exposure cube.
 There is no `kva`: no calculation in the engine computes one.

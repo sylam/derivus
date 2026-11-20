@@ -418,6 +418,14 @@ the record holds. `/execute`, `/prepare`, the diary, the marks and every valuing
 so a plan named once is the plan that runs and an auditor recompiles from what was printed.
 **Held by** `test_spine_engine.py::test_the_plan_compiles_from_the_fold_rather_than_from_what_was_typed`.
 
+Every write of a compile lands inside the deal tree, so it copies `Calc.Deals` alone: the compiled
+job shares its market with the document it was handed, which it leaves as read, and a caller that
+edits the job copies the level it writes at, as `service.xva_document` and
+`service.consolidated_risk` do. **Held by**
+`test_spine_engine.py::test_a_compile_copies_the_deal_tree_alone_and_loads_a_market_only_for_collateral_held`,
+`test_service.py::test_a_set_s_xva_job_shares_the_book_s_market_and_writes_none_of_the_book`,
+`::test_the_consolidated_risk_writes_nothing_on_the_document_it_values`.
+
 - **Nets.** Each node the record holds a position in is written at its net over the agreement's
   set by `spine.scaled`: declared `sized` fields multiplied, a negative net taken as the mirror (a
   declared `side` flipped, else sizes signed). A swaption's underlying is its terms, never flipped.
@@ -517,6 +525,23 @@ filed under; a premium due on no day is never instructed.
 `test_pnl.py::test_a_premium_announced_and_settled_moves_no_figure_of_the_p_and_l`.
 
 ## The record's readers on the desk {#readers}
+
+`GET /book/status` and `GET /book/risk` are polled, so each answer is kept on the served book
+(`Book.polls`) under `service.poll_key`, read before anything is parsed or opened: the text's hash
+and the book it names (`Book.named`), the sha256 of each file it names, the service's own files a
+read names with their modification time and size - the XVA file for the status, keyed only once a
+clock tick has passed since its last write - `spine.platter`, and today. `spine.platter` is the
+home and the size of each log segment: a segment is appended to and never rewritten, so it moves
+exactly when a frame lands and costs no open. A poll with nothing moved is a lookup
+(`service.polled`), and an answer is kept only where its key still stands once it is worked out.
+The risk asks admission before either of its two levels on every poll, and keeps its second level,
+the hash of all the run reads, so a frame that moves none of it runs nothing. The status's
+`spine.paper` is the LSN of the last entity or agreement declaration standing (`spine.papered`):
+what a client holding the paper re-reads it on. **Held by**
+`test_service.py::test_a_status_poll_with_nothing_moved_is_a_lookup_and_all_it_reads_is_in_its_key`,
+`test_spine_engine.py::test_a_status_poll_is_answered_anew_once_the_record_moves_and_the_paper_has_its_own_stamp`,
+`::test_a_risk_poll_with_nothing_moved_is_a_lookup_and_a_frame_that_moves_no_number_runs_nothing`,
+`::test_the_consolidated_risk_and_the_explain_ask_the_queue_s_question`.
 
 `GET /book/activity` is the strip: with `?since=` the oldest rows after it, the cursor the last
 delivered, so a capped walk loses nothing. The fold reads envelopes alone; the service opens the
@@ -619,13 +644,16 @@ A trade sent again under its key is answered `{written: false, booked}`, other f
 ## Quotes and acceptance {#acceptance}
 
 A quote records nothing; the record cares about the price a client takes. Under a home the pending
-file ([Structures](structures.md#the-quote-lifecycle)) adds `pinned`: the book's two hashes and its
-values, taken before the live spot lands, and the board's age at `quoted_at`. On every desk it pins
-`terms` (`service.quoted_terms`): the mirror, the netting set and the model pin the acceptance
+file ([Structures](structures.md#the-quote-lifecycle)) adds `pinned`: the book's two hashes, taken
+before the live spot lands, and the board's age at `quoted_at`. The values vector behind
+`values_hash` is kept once per market under that hash beside the pending files, and read through
+`service.pinned_values`, which also reads a pending file filed with its vector on it. On every
+desk it pins `terms` (`service.quoted_terms`): the mirror, the netting set and the model pin the acceptance
 books. `values_hash` drops every clock (`schema.without_clocks`), so a board re-read
 at the same prices is one market, and the age is the oldest of those clocks. **Held by**
 `test_spine_engine.py::test_a_quote_records_nothing_and_files_what_the_acceptance_will`,
-`::test_a_quote_pins_the_book_before_the_live_spot_lands_on_its_copy`.
+`::test_a_quote_pins_the_book_before_the_live_spot_lands_on_its_copy`,
+`::test_a_pending_quote_keeps_its_vector_apart_and_one_filed_with_it_still_books`.
 
 `POST /book/quote` checks, in order and before anything appends: `firm_seconds`, the desk's promise;
 the `terms`, refused where the file no longer hashes to them (an edited file, or one filed before
