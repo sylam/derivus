@@ -471,6 +471,41 @@ check('nothing is held back off a desk that records, before the grants of the se
        state.heldBack(seated(null, '', { grants: { asked: '', read: null, refused: NO_SEAT } }),
                       'book')],
       [null, null, null, null, null, NO_SEAT]);
+// --- every write of the market or its set-up names the seat: the requests a fetch stub catches,
+// so nothing leaves this process - no tick, no verification and no set-up is ever sent
+const api = await import('data:text/javascript;base64,' + Buffer.from((await build({
+  entryPoints: [fileURLToPath(new URL('../src/api.ts', import.meta.url))],
+  bundle: true, format: 'esm', write: false, logLevel: 'silent',
+})).outputFiles[0].text).toString('base64'));
+const caught = [];
+globalThis.fetch = async (url, options) => {
+  caught.push([url, JSON.parse(options.body ?? 'null')?.actor ?? null]);
+  return { ok: true, json: async () => ({ written: false }) };
+};
+const asking = async (seat) => {
+  globalThis.localStorage = { getItem: (key) => (key === 'derivus.seat' ? seat : null) };
+  caught.length = 0;
+  await api.patchMarket('FxRate.GBP', { Spot: 1.3 });
+  await api.tickMarket({ 'FXVolPrices.USD.ZAR': {} });
+  await api.retireMarket([['System Parameters', 'Base_Date']]);
+  await api.tickBloomberg();
+  await api.configureBook('Bootstrapper Configuration', 'FXVol', {});
+  await api.configureCurve({ curve: 'ZAR', currency: 'ZAR', rows: [] });
+  await api.stateSurvival({ counterparty: 'KESTREL', spread: 120 });
+  await api.configureSecurities({ block: 'rates', key: 'ZAR', entry: null });
+  await api.verifySecurities({ block: 'rates' });
+  return [...caught];
+};
+const MARKET_WRITES = ['/book/market', '/book/market', '/book/market', '/book/bloomberg',
+  '/book/configure', '/book/curve', '/book/survival', '/book/securities',
+  '/book/securities/verify'];
+check('every write of the market or its set-up names the seat the settings control holds, and '
+      + 'none where no seat is set',
+      "a market write sent unsigned - postMarket's patch, tick or retire, the bootstrap's dial, "
+      + "the curve's set-up or the vocabulary's entry - which a recording desk refuses outright",
+      [await asking('marker'), await asking('')],
+      [MARKET_WRITES.map((path) => [path, 'marker']), MARKET_WRITES.map((path) => [path, null])]);
+
 const NETTED = { Calc: { Deals: { Deals: { Children: [
   { Instrument: { '.Deal': { Object: 'NettingCollateralSet', Credit_Support_Amounts: {
     Counterparty: 'KESTREL' } } }, Children: [{ Instrument: { '.Deal': { Object: 'FXOptionDeal' } } },
@@ -514,7 +549,7 @@ check("a profile's peaks are each column's largest number on the day it falls, t
       [{ ee: { value: 5, day: '2026-12-16' }, pfe: { value: 9, day: '2027-02-16', quantile: 97.5 } },
        { ee: { value: 5, day: '2026-12-16' } }]);
 
-console.log(`\n${ran} checks over 36 functions, ${missed.length} missed`);
+console.log(`\n${ran} checks over 45 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

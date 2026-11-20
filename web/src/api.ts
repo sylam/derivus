@@ -111,9 +111,10 @@ export const getBookMarket = (stamp = '') =>
   call<BookMarket>('GET', `/book/market?stamp=${stamp}`);
 // the market tick, one endpoint and three vocabularies: a price factor's values, whole quote
 // blocks - which the verb value-updates and bootstraps in the same atomic write - or the block's
-// own entries retired, each by its path from the section down, so the file's stands again
+// own entries retired, each by its path from the section down, so the file's stands again. Every
+// write of the market or its set-up below is signed: a recording desk takes it from `mark` alone
 const postMarket = (body: Record<string, unknown>) =>
-  call<BookDealOutcome>('POST', '/book/market', body);
+  call<BookDealOutcome>('POST', '/book/market', signed(body));
 export const patchMarket = (factor: string, fields: Record<string, unknown>) =>
   postMarket({ patch: { [factor]: fields } });
 export const tickMarket = (quotes: Record<string, unknown>) => postMarket({ quotes });
@@ -123,13 +124,13 @@ export const tickBloomberg = () =>
   call<{ result_id: string; status: string }>('POST', '/book/bloomberg', signed({}));
 // the bootstrap's own dials: merged into one declared entry, then the market re-bootstrapped
 export const configureBook = (section: string, entry: string, fields: Record<string, unknown>) =>
-  call<BookDealOutcome>('POST', '/book/configure', { section, entry, fields });
+  call<BookDealOutcome>('POST', '/book/configure', signed({ section, entry, fields }));
 // the curves: the book's blocks read back as the definitions they are beside the ones this
 // workstation's seed could set up, and one request that authors a curve from its benchmark rows,
 // solves it and bootstraps - or refuses in its own words with the file untouched
 export const getCurves = () => call<CurvesAnswer>('GET', '/book/curve');
 export const configureCurve = (request: Record<string, unknown>) =>
-  call<CurveOutcome>('POST', '/book/curve', request);
+  call<CurveOutcome>('POST', '/book/curve', signed(request));
 // a counterparty's credit curve from its spread, written under the acting seat, and the years its
 // last spread is run on to
 export const stateSurvival = (request: SpreadRequest) =>
@@ -140,7 +141,7 @@ export const stateSurvival = (request: SpreadRequest) =>
 // terminal round trip that rewrites the map, queued and polled like an execute
 export const getSecurities = () => call<SecuritiesAnswer>('GET', '/book/securities');
 export const configureSecurities = (request: Record<string, unknown>) =>
-  call<SeedOutcome>('POST', '/book/securities', request);
+  call<SeedOutcome>('POST', '/book/securities', signed(request));
 export const verifySecurities = (scope: Record<string, unknown>) =>
   call<{ result_id: string; status: string }>('POST', '/book/securities/verify', signed(scope));
 // the desk's two data views. Both are GETs: the risk verb runs the book on a cache miss and

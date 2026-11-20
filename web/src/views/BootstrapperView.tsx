@@ -4,7 +4,7 @@ import { DataTable } from '../components/DataTable';
 import { DescriptorPanel, EditableScalar } from '../components/FieldView';
 import { Navigator, type Page } from '../components/Navigator';
 import { Whose } from '../components/Whose';
-import { blockHint, marketOf, useApp, written } from '../state';
+import { blockHint, heldBack, marketOf, useApp, written } from '../state';
 import { isObject, token } from '../tokens';
 import type { ConfigSection, JobDoc, Schema } from '../types';
 
@@ -179,20 +179,22 @@ function sectionPages(schema: Schema, doc: JobDoc, name: string, declared: Confi
  * family under the factor it writes, the interpolation the routed curve types are built with as the
  * rule table it is edited in, and the one addition a book can make - a family it does not configure
  * yet. Every save re-bootstraps the market it configures, so a bootstrap that complains writes
- * nothing and hands its messages back. */
+ * nothing and hands its messages back. A seat that may not mark reads them, told what it needs. */
 export function BootstrapperView() {
   const { state, dispatch } = useApp();
   const { doc, schema } = state;
   const market = marketOf(state);
   if (!doc || !schema || !market) return null;
 
+  const hold = heldBack(state, 'mark');
   const configure = (section: string): Configure | undefined =>
-    state.source?.kind === 'book'
+    state.source?.kind === 'book' && !hold
       ? async (entry, fields) => written(dispatch, await configureBook(section, entry, fields))
       : undefined;
 
   return (
-    <Navigator screen="bootstrap" keep pages={Object.entries(schema.Configuration).flatMap(
+    <Navigator screen="bootstrap" keep head={hold && <div className="note">{hold}</div>}
+               pages={Object.entries(schema.Configuration).flatMap(
       ([section, declared]) => sectionPages(schema, doc, section, declared, market[section],
                                             configure(section)))} />
   );

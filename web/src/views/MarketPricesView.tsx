@@ -4,7 +4,7 @@ import { DataTable } from '../components/DataTable';
 import { DescriptorPanel, EditableScalar } from '../components/FieldView';
 import { Navigator } from '../components/Navigator';
 import { Whose } from '../components/Whose';
-import { blockHint, marketOf, useApp, written } from '../state';
+import { blockHint, heldBack, marketOf, useApp, written } from '../state';
 import { isObject } from '../tokens';
 import type { Descriptor, Schema, Section } from '../types';
 
@@ -157,7 +157,8 @@ function BloombergTick() {
 
 /** The quotes half of the market data: every `Market Prices` block of the market the book prices
  * on, filed under its family and marked whose it is, its values editable over the live book - an
- * edit to a file's block landing on the block - and one button that fetches the desk's own. */
+ * edit to a file's block landing on the block - and one button that fetches the desk's own; where
+ * the seat may not mark, what it needs in their place. */
 export function MarketPricesView() {
   const { state } = useApp();
   const { doc, schema } = state;
@@ -165,11 +166,13 @@ export function MarketPricesView() {
   if (!doc || !schema || !market) return null;
 
   const blocks = market['Market Prices'] ?? {};
-  const live = state.source?.kind === 'book';
+  const hold = heldBack(state, 'mark');
+  const live = state.source?.kind === 'book' && !hold;
 
   return (
     <Navigator
-      screen="prices" head={<BloombergTick />} empty="this book quotes nothing"
+      screen="prices" head={hold ? <div className="note">{hold}</div> : <BloombergTick />}
+      empty="this book quotes nothing"
       pages={Object.keys(blocks).sort().map((name) => {
         const [family, ...rest] = name.split('.');
         return {

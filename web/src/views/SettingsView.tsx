@@ -3,7 +3,7 @@ import { DataTable } from '../components/DataTable';
 import { DescriptorPanel, EditableScalar } from '../components/FieldView';
 import { Whose } from '../components/Whose';
 import { edited, mapRows, type MapName } from '../files';
-import { marketOf, useApp, written } from '../state';
+import { heldBack, holds, marketOf, useApp, written } from '../state';
 import { isObject } from '../tokens';
 import type { Descriptor, NamedFile } from '../types';
 
@@ -32,7 +32,8 @@ export function SettingsView() {
  * own, as the market the book prices on states it, each entry marked whose it is: System
  * Parameters against the schema's System store, and every other market-data section as itself,
  * `.ModelParams` getting its two tables through FieldView and everything else falling to the JSON
- * view rather than to nothing. */
+ * view rather than to nothing. Where the block states a section here over a file and the seat may
+ * not mark, what it needs to retire one is said once above them. */
 function Stated() {
   const { state } = useApp();
   const { doc, schema } = state;
@@ -44,9 +45,12 @@ function Stated() {
   const elsewhere = ['System Parameters', 'Price Factors', 'Price Models', 'Market Prices']
     .concat(Object.keys(schema.Configuration));
   const others = Object.entries(market).filter(([section]) => !elsewhere.includes(section));
+  const hold = merge.MarketDataFile && ['System Parameters', ...others.map(([section]) => section)]
+    .some((section) => holds(merge.ExplicitMarketData, [section])) && heldBack(state, 'mark');
 
   return (
     <>
+      {hold && <div className="note">{hold}</div>}
       {isObject(system) && (
         <DescriptorPanel title="System Parameters" fields={schema.System.fields} values={system}
                          aside={(key) => <Whose path={['System Parameters', key]} />} />

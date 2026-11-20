@@ -5,7 +5,7 @@ import { Navigator } from '../components/Navigator';
 import { Whose } from '../components/Whose';
 import { spotQuoted, spreads, stampText } from '../desk';
 import { marketsView } from '../spine';
-import { blockHint, marketOf, useApp, written } from '../state';
+import { blockHint, heldBack, marketOf, useApp, written } from '../state';
 import { curveOf, formatNumber, isObject, tenorLabel } from '../tokens';
 import type { BookMarkets, Market, Schema, Section } from '../types';
 
@@ -84,6 +84,7 @@ export function MarketDataView() {
   const marketFile = doc.Calc.MergeMarketData?.MarketDataFile ?? '';
   const factors = market['Price Factors'] ?? {};
   const priceModels = market['Price Models'] ?? {};
+  const hold = heldBack(state, 'mark');
   const live = state.source?.kind === 'book';
 
   return (
@@ -91,6 +92,7 @@ export function MarketDataView() {
       screen="market" empty="this document carries no price factor"
       head={<>
         <RecordMarkets />
+        {hold && <div className="note">{hold}</div>}
         {marketFile ? (
           <div className="banner">
             {live
@@ -112,7 +114,7 @@ export function MarketDataView() {
           hint: blockHint(doc, ['Price Factors', name]),
           content: isObject(block) ? (
             <FactorBlock schema={schema} name={name} block={block} priceModels={priceModels}
-                         modelConfig={market['Model Configuration']} live={live}
+                         modelConfig={market['Model Configuration']} live={live && !hold}
                          market={market} />
           ) : <DescriptorPanel title={name} values={{ value: block }} />,
         };

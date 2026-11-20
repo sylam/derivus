@@ -2,13 +2,13 @@ import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import { configureSecurities, failure, getResult, getSecurities, verifySecurities } from '../api';
 import { DataTable } from '../components/DataTable';
 import { EmptyState } from '../components/EmptyState';
-import { EditableScalar } from '../components/FieldView';
+import { EditableScalar, FieldView } from '../components/FieldView';
 import { Navigator, type Page } from '../components/Navigator';
 import {
   USED_COLUMNS, mapPages, mapRows, mergeRequest, rejectedRows, seedDescriptor, setAt, usedRows,
   verifyRequest, withMember,
 } from '../securities';
-import { useApp } from '../state';
+import { heldBack, useApp } from '../state';
 import { isObject } from '../tokens';
 import type { SecuritiesAnswer, SeedOutcome, UsedRow, VerifyOutcome } from '../types';
 
@@ -24,10 +24,12 @@ const PANES = [
 type Edit = (path: string[], value: unknown) => void;
 
 /** A list the desk edits member by member: each an input of the shape it stands in, an ✕ that
- * drops one, and one button that appends another of the shape the last member has. */
+ * drops one, and one button that appends another of the shape the last member has - its members
+ * read, where nothing edits it. */
 function SeedList({ path, members, onEdit }: {
-  path: string[]; members: unknown[]; onEdit: Edit;
+  path: string[]; members: unknown[]; onEdit?: Edit;
 }) {
+  if (!onEdit) return <span className="mono">{members.join(', ')}</span>;
   const blank = typeof members[members.length - 1] === 'number' ? 0 : '';
   return (
     <span className="editcell">
@@ -52,18 +54,18 @@ function SeedList({ path, members, onEdit }: {
 /** One value of a seed entry, dispatched on its SHAPE - the seed is the desk's own JSON and no
  * declaration of the engine's describes it, so the form a value stands in is the form an edit
  * puts back. A dict is its own rows one level in; a list edits member by member. */
-function SeedValue({ path, value, onEdit }: { path: string[]; value: unknown; onEdit: Edit }) {
+function SeedValue({ path, value, onEdit }: { path: string[]; value: unknown; onEdit?: Edit }) {
   if (isObject(value)) return <SeedFields path={path} entry={value} onEdit={onEdit} />;
   if (Array.isArray(value)) return <SeedList path={path} members={value} onEdit={onEdit} />;
-  return (
+  return onEdit ? (
     <EditableScalar name={path[path.length - 1] ?? ''} value={value}
                     descriptor={seedDescriptor(path[path.length - 1] ?? '', value)}
                     onAmend={async (_, wire) => { onEdit(path, wire); return null; }} />
-  );
+  ) : <FieldView value={value} />;
 }
 
 function SeedFields({ path, entry, onEdit }: {
-  path: string[]; entry: Record<string, unknown>; onEdit: Edit;
+  path: string[]; entry: Record<string, unknown>; onEdit?: Edit;
 }) {
   return (
     <div className="fields">
@@ -80,12 +82,14 @@ function SeedFields({ path, entry, onEdit }: {
 }
 
 /** One vocabulary entry: the candidates a desk claims under one key of one block, edited in place
- * and merged by one button. A refusal is the service's own sentence with the form STANDING, so
- * the spelling it refused is still there to fix; a write answers with the tickers that block now
- * spells and the file it kept beside the one it replaced. */
+ * and merged by one button - read only where the seat may not mark. A refusal is the service's
+ * own sentence with the form STANDING, so the spelling it refused is still there to fix; a write
+ * answers with the tickers that block now spells and the file it kept beside the one it
+ * replaced. */
 function SeedCard({ block, name, entry, onSaved }: {
   block: string; name: string; entry: unknown; onSaved: () => void;
 }) {
+  const hold = heldBack(useApp().state, 'mark');
   const [edited, setEdited] = useState<unknown>(null);
   const [outcome, setOutcome] = useState<SeedOutcome | null>(null);
   const [refused, setRefused] = useState<string | null>(null);
@@ -111,15 +115,15 @@ function SeedCard({ block, name, entry, onSaved }: {
     <section className="card">
       <h3>{block} — {name}</h3>
       <SeedValue path={[]} value={value}
-                 onEdit={(at, next) => setEdited(setAt(value, at, next))} />
-      <div className="pager">
+                 onEdit={hold ? undefined : (at, next) => setEdited(setAt(value, at, next))} />
+      {!hold && <div className="pager">
         <button className="ghost" disabled={saving || edited === null}
                 onClick={() => void save()}>save {name}</button>
         {edited !== null && <span className="chip">edited</span>}
         {saving && <span className="chip running">writing</span>}
         {outcome && <span className="chip done">{outcome.candidates.length} tickers</span>}
         {outcome?.backup && <span className="mono">kept {outcome.backup}</span>}
-      </div>
+      </div>}
       {refused && <div className="error-box">{refused}</div>}
     </section>
   );
@@ -220,8 +224,9 @@ function useVerification(onDone: () => void): Verification {
 }
 
 /** THE EVIDENCE: what a terminal answered, filed by block - each entry under the path a drift is
- * named by, with the button that asks again - and the ledger of what was rejected and why. */
-function evidencePages(answer: SecuritiesAnswer, verify: Verification): Page[] {
+ * named by, with the button that asks again where `verify` is the seat's - and the ledger of what
+ * was rejected and why. */
+function evidencePages(answer: SecuritiesAnswer, verify?: Verification): Page[] {
   const rejected = rejectedRows(answer.map.rejected);
   return [
     ...mapPages(answer.map.blocks).map(({ block, key, node }) => {
@@ -232,10 +237,12 @@ function evidencePages(answer: SecuritiesAnswer, verify: Verification): Page[] {
         content: (
           <section className="card">
             <h3>{key === null ? block : `${block} — ${key}`} — {rows.length} verified</h3>
-            <div className="pager">
-              <button className="ghost" disabled={verify.running}
-                      onClick={() => verify.start({ block })}>verify {block}</button>
-            </div>
+            {verify && (
+              <div className="pager">
+                <button className="ghost" disabled={verify.running}
+                        onClick={() => verify.start({ block })}>verify {block}</button>
+              </div>
+            )}
             <DataTable columns={['entry', 'security', 'name', 'last print', 'verified']} index={[]}
                        data={rows.map(({ path, entry }) => [
                          path, entry.security, entry.name, entry.last_update, entry.verified])} />
@@ -317,18 +324,25 @@ export function SecuritiesView() {
   }
 
   const saved = () => setReload((count) => count + 1);
+  // a seat that may not mark reads the vocabulary and the evidence, told once what it needs
+  const hold = heldBack(state, 'mark');
+  const note = hold && <div className="note">{hold}</div>;
   const panes: Record<string, { pages: Page[]; empty: string; head?: ReactNode }> = {
-    vocabulary: { pages: vocabularyPages(answer.seed, saved), empty: 'the seed names nothing' },
+    vocabulary: { pages: vocabularyPages(answer.seed, saved), empty: 'the seed names nothing',
+                  head: note },
     evidence: {
-      pages: evidencePages(answer, verify),
+      pages: evidencePages(answer, hold ? undefined : verify),
       empty: answer.provisioned ? 'the map carries no entry'
         : 'this home has never been verified: the vocabulary is a claim, and nothing has '
           + 'evidenced it',
       head: (
         <>
+          {note}
           <div className="statusrow">
-            <button className="ghost" disabled={verify.running}
-                    onClick={() => verify.start({})}>verify the whole map</button>
+            {!hold && (
+              <button className="ghost" disabled={verify.running}
+                      onClick={() => verify.start({})}>verify the whole map</button>
+            )}
             <span className="hint">generated <span className="mono">
               {answer.map.generated ?? 'never'}</span></span>
           </div>

@@ -52,13 +52,15 @@ const panelFields = (declared: Section, fields: string[], menu: string[]): Secti
  * beat later, so a burst of edits is one solve. A post in flight is a chip, a refusal is the
  * service's own words with the edited values standing, and the block the service wrote comes back
  * through the etag poll. `seeded` makes the card the NEW one: a pre-fill picker above the same
- * editor, blank again once the commit that completes it has created the curve. */
+ * editor, blank again once the commit that completes it has created the curve. A seat that may not
+ * mark reads a curve with what it needs above it, and sets none up. */
 function CurveCard({ schema, title, block, seeded, fields, panel, declared, factors, typeScheme }: {
   schema: Schema; title: string; block?: CurveBlock; seeded?: Record<string, SeededCurve>;
   fields: string[]; panel: Section; declared: Section;
   factors: Record<string, unknown>; typeScheme: string;
 }) {
-  const { dispatch } = useApp();
+  const { state, dispatch } = useApp();
+  const hold = heldBack(state, 'mark');
   const [edit, setEdit] = useState<Editing>(() => idle(prefill(block?.curve ?? '', block ?? {},
                                                               fields)));
   const [outcome, setOutcome] = useState<CurveOutcome | null>(null);
@@ -107,8 +109,10 @@ function CurveCard({ schema, title, block, seeded, fields, panel, declared, fact
   const solved = block && solvedFactor(factors, block.curve);
   const knots = solved && Object.values(solved[1]).map(curveOf).find(Boolean)?.data.length;
   const row = declared.Points?.sub_fields ?? {};
+  if (hold && !block) return <div className="note">{hold}</div>;
   return (
     <>
+      {hold && <div className="note">{hold}</div>}
       {seeded && (
         <div className="pager">
           <span>pre-fill from</span>
@@ -132,7 +136,7 @@ function CurveCard({ schema, title, block, seeded, fields, panel, declared, fact
         title={title} fields={panel} values={panelValues(fields, form, typeScheme)}
         editable={(key) => key !== 'Near_Interpolation' || near.stated}
         // a curve that wants the scheme every curve of its type takes carries no rule of its own
-        onAmend={commits((key, wire) => ({
+        onAmend={hold ? undefined : commits((key, wire) => ({
           field: key, value: key === 'Interpolation' && wire === typeScheme ? '' : wire }))} />
       {block?.note && <div className="error-box">{block.note}</div>}
       <section className="card">
@@ -156,7 +160,7 @@ function CurveCard({ schema, title, block, seeded, fields, panel, declared, fact
         <DataTable
           columns={[...ROW_FIELDS.map(([key]) => key), '']} index={[]}
           data={form.rows.map((entry) => [...rowCells(entry), null])}
-          cell={(r, c) => (c === ROW_FIELDS.length ? (
+          cell={(r, c) => (hold ? undefined : c === ROW_FIELDS.length ? (
             <button className="ghost" onClick={() => fold({ row: r, patch: null })}>✕</button>
           ) : (
             <EditableScalar
@@ -164,9 +168,11 @@ function CurveCard({ schema, title, block, seeded, fields, panel, declared, fact
               descriptor={row[ROW_FIELDS[c][1]] ?? TEXT}
               onAmend={commits((key, wire) => ({ row: r, patch: { [key]: wire } }))} />
           ))} />
-        <button className="ghost" onClick={() => fold({ row: form.rows.length, patch: {} })}>
-          add a row
-        </button>
+        {!hold && (
+          <button className="ghost" onClick={() => fold({ row: form.rows.length, patch: {} })}>
+            add a row
+          </button>
+        )}
       </section>
       {refused && <div className="error-box">{refused}</div>}
       {solved && (
