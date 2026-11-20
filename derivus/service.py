@@ -7062,6 +7062,21 @@ def quote_dir():
     return os.path.join(dv_home(), 'tmp')
 
 
+#: What a values vector's file is called under `quote_dir`, after the `values_hash` it is kept by.
+VALUES_SUFFIX = '.values'
+
+
+def pinned_values(pending):
+    """The values vector a pending quote pinned, as the canonical bytes its `values_hash` names:
+    the file kept under that hash beside the pending files, or the vector on the pending file
+    itself, where one was filed before vectors were kept apart."""
+    pinned = pending['pinned']
+    if 'values' in pinned:
+        return spine.canonical(pinned['values'])
+    with open(os.path.join(quote_dir(), pinned['values_hash'] + VALUES_SUFFIX), 'rb') as handle:
+        return handle.read()
+
+
 #: What a quote sheet IS on the wire, so a host offers it as the spreadsheet a client is sent.
 QUOTE_SHEET_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 
@@ -7084,8 +7099,10 @@ def pending_quote(quote_id, suffix='.json'):
 @app.get('/book/quote/{quote_id}', summary='The pending trade filed under a quote id')
 def book_quote_pending(quote_id: str):
     """The pending trade exactly as the runner filed it: the `quote` it answered with, the `deal`
-    that books it, `quoted_at` and any pins. It stays after the approval, being the audit trail of
-    why the book carries what it carries, so this reads a quote given and a quote booked alike."""
+    that books it, `quoted_at` and any pins - the two hashes and the board's age, the values vector
+    itself kept apart under its hash (`pinned_values`). It stays after the approval, being the
+    audit trail of why the book carries what it carries, so this reads a quote given and a quote
+    booked alike."""
     with open(pending_quote(quote_id), encoding='utf-8') as handle:
         return json.load(handle)
 
@@ -7433,14 +7450,16 @@ class StructureJob:
                   'terms': quoted_terms(outcome['deal'], self.netting_set,
                                         outcome['valuation_configuration'])}
         if pinned is not None:
-            # the values vector travels as JSON and canonicalises back to the hash beside it, so
-            # the acceptance files the vector this quote was struck on and not a second reading
-            record['pinned'] = dict(pinned, values=json.loads(pinned['values'].decode('utf-8')))
+            # the values vector is kept once per market under the hash beside it, not on every
+            # quote struck on that market: the acceptance files it, and not a second reading
+            vector = os.path.join(directory, pinned['values_hash'] + VALUES_SUFFIX)
+            with open(vector + '.tmp', 'wb') as handle:
+                handle.write(pinned.pop('values'))
+            os.replace(vector + '.tmp', vector)
             # what the client asked and where it books: the acceptance files them under the
             # ACCEPTOR's seat, so the file is where they survive
             record['request'], record['portfolio'] = self.request, self.portfolio
-            outcome['pinned'] = {name: value for name, value in record['pinned'].items()
-                                 if name != 'values'}
+            record['pinned'] = outcome['pinned'] = pinned
         with open(path, 'w', encoding='utf-8', newline='') as handle:
             json.dump(as_json(record), handle, indent=2)
         return None, {'Results': {}, 'Stats': {'Quote': as_json(outcome)}}
@@ -7687,7 +7706,7 @@ def book_quote(request: dict):
             terms=ticket_terms(book, pending['deal'], pending['pinned']['values_hash']),
             quote={'quote_id': quote_id, 'structure': quoted['structure'],
                    'plan_hash': pending['pinned']['plan_hash'],
-                   'values': spine.canonical(pending['pinned']['values']),
+                   'values': pinned_values(pending),
                    'solved': solved_coordinates(quoted['legs']), 'edge': quoted['edge'],
                    'request': pending.get('request')})
         recorded = {'accepted': {'lsn': filled.pop('accepted')['lsn'], 'ticket': filled['ticket']},

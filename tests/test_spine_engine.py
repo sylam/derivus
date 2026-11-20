@@ -1884,9 +1884,12 @@ def test_a_quote_records_nothing_and_files_what_the_acceptance_will(recorded, qu
     pinned = filed['pinned']
     assert pinned['plan_hash'] == context.plan_hash()
     assert pinned['values_hash'] == context.values_hash()
-    assert spine.canonical(pinned['values']) == spine.values_of(context)
-    assert derivus.content_hash(pinned['values']) == pinned['values_hash'], \
-        'the vector on the file is not the one the hash beside it names'
+    vector = service.pinned_values(filed)
+    assert vector == spine.values_of(context) and 'values' not in pinned, (
+        'the vector is on the pending file, or is not the book\'s')
+    assert derivus.content_hash(json.loads(vector)) == pinned['values_hash'], \
+        'the vector on file is not the one the hash beside it names'
+    assert (tmp_path / 'tmp' / (pinned['values_hash'] + service.VALUES_SUFFIX)).read_bytes() == vector
     assert filed['terms'] == service.quoted_terms(filed['deal'], CLIENT_SET, None)
     assert filed['portfolio'] == 'spine-desk', 'a quote naming no node books into its book'
     # the board was stamped at 16:30 on the base date, so the age is the wall clock since then
@@ -1944,11 +1947,12 @@ def test_a_quote_pins_the_book_before_the_live_spot_lands_on_its_copy(recorded, 
     assert quoted.plan_hash() == book_context.plan_hash(), \
         'a spot moved the plan - the values plane and the plan plane are not disjoint'
 
-    pinned = pending_of(tmp_path, out['Stats']['Quote'])['pinned']
+    filed = pending_of(tmp_path, out['Stats']['Quote'])
+    pinned = filed['pinned']
     assert pinned['values_hash'] == book_context.values_hash(), \
         'the quote pinned its own spot-patched market rather than the book it would land against'
     assert pinned['plan_hash'] == book_context.plan_hash()
-    assert spine.canonical(pinned['values']) == spine.values_of(book_context)
+    assert service.pinned_values(filed) == spine.values_of(book_context)
 
     # the booking reads the same pair off the desk's copy, so it stands against the book
     verdict = spine.package().firmness.assess(
@@ -1969,6 +1973,37 @@ def typed(home, *event_types):
     made of."""
     return [(lsn, event_type) for lsn, event_type, _ in facts(home)
             if event_type in event_types]
+
+
+def test_a_pending_quote_keeps_its_vector_apart_and_one_filed_with_it_still_books(
+        recorded, quoting):
+    """A pending quote's file holds the two hashes it pinned and not the values vector, which is
+    kept once under its hash beside the pending files, so two quotes struck on one market share one
+    vector file and the list of quotes reads no vector. A pending file written with the vector on
+    it - the first quote restated that way, its vector file gone with the second's - is accepted
+    all the same, and the record files that vector under the hash the quote pinned.
+
+    Killing mutations: the vector written on the pending file again, where the file carries
+    `values`; a pending file's own vector never read, where the acceptance finds no vector file.
+    """
+    quotes = [quote_of('ZeroCostCollar', dict(COLLAR, notional=AMOUNT * size),
+                       netting_set=CLIENT_SET) for size in (1, 2)]
+    files = sorted(os.listdir(quoting.parent / 'tmp'))
+    first = pending_of(quoting.parent, quotes[0])
+    kept = quoting.parent / 'tmp' / (first['pinned']['values_hash'] + service.VALUES_SUFFIX)
+    assert [name for name in files if name.endswith(service.VALUES_SUFFIX)] == [kept.name]
+    assert sorted(first['pinned']) == ['pillar_age', 'plan_hash', 'values_hash']
+    assert len(CLIENT.get('/book/quotes').json()['quotes']) == 2
+
+    vector = kept.read_bytes()
+    first['pinned']['values'] = json.loads(vector)
+    (quoting.parent / 'tmp' / (quotes[0]['quote_id'] + '.json')).write_text(json.dumps(first))
+    kept.unlink()
+    booked = accept(quotes[0]).json()
+    assert booked['written'] is True, booked
+    _, _, body = facts(recorded, 'quote_filed')[0]
+    assert body['values_hash'] == first['pinned']['values_hash']
+    assert blob(recorded, body['values_hash']) == vector
 
 
 def test_the_acceptance_files_the_quote_then_the_fill_and_a_retry_coalesces(recorded, quoting):
@@ -2003,7 +2038,8 @@ def test_the_acceptance_files_the_quote_then_the_fill_and_a_retry_coalesces(reco
     assert body['ticket'] == booked['ticket'] and body['plan_hash'] == struck['plan_hash']
     assert body['request'].startswith('the client wants')
     assert len(body['solved']) == 1 and body['edge'] == pytest.approx(quote['edge'])
-    assert blob(recorded, body['values_hash']) == spine.canonical(struck['values'])
+    assert blob(recorded, body['values_hash']) == service.pinned_values(
+        pending_of(quoting.parent, quote))
 
     _, _, fill_body = facts(recorded, 'fill')[0]
     assert fill_body['execution_reference'] == quote['quote_id']
