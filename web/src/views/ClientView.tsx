@@ -7,7 +7,8 @@ import {
   baseDateOf, cellText, quoted, rowsByPath, sizeOf, toRows, type BlotterRow, type Picked,
 } from '../blotter';
 import {
-  CLIENT, RUNS, agreementsOf, heldUnder, markText, movedText, readiness, ready, since, termsReading,
+  CLIENT, RUNS, agreementsOf, bookedSince, bookedText, heldUnder, markText, readiness, ready,
+  termsReading,
   touching, type Held, type Line, type Term,
 } from '../client';
 import { EmptyState } from '../components/EmptyState';
@@ -209,7 +210,7 @@ function ClientPage({ id, lines, own, reads, rows, factor, market, schema }: {
       </div>
 
       <OnBook own={own} reads={reads} rows={rows} market={market} schema={schema} />
-      <XvaRows id={id} xva={reads.xva} recording={!!entities} record={history.data} />
+      <XvaRows id={id} xva={reads.xva} positions={reads.positions} />
       <Happened history={entities && history} />
     </div>
   );
@@ -410,9 +411,9 @@ function TradeRow({ trade, market, schema, recording, mark }: {
 }
 
 /** The client's XVA rows - each the last run of a set naming it - with when each ran and, on a
- * desk that records, how many events the client's `record` filed under the set since its run. */
-function XvaRows({ id, xva, recording, record }: {
-  id: string; xva: Reads['xva']; recording: boolean; record: ActivityRow[] | null;
+ * desk that records, the trades booked under the set since off the record's `positions`. */
+function XvaRows({ id, xva, positions }: {
+  id: string; xva: Reads['xva']; positions: Position[] | null;
 }) {
   const sets = (xva.data?.sets ?? []).filter((set) => set.counterparty === id);
   return (
@@ -430,13 +431,13 @@ function XvaRows({ id, xva, recording, record }: {
             <tr>
               <th>Netting set</th><th>CSA</th><th className="n">CVA<div className="sub">+ is an expected loss</div></th>
               <th className="n">FVA<div className="sub">+ is a funding cost</div></th>
-              <th>Run</th><th>Status</th>{recording && <th>Since its run</th>}
+              <th>Run</th><th>Status</th>
             </tr>
           </thead>
           <tbody>
             {sets.map((set) => (
-              <XvaRow key={set.reference} set={set} read={xva.data!.as_of} recording={recording}
-                      moved={record && since(set, record).length} />
+              <XvaRow key={set.reference} set={set} read={xva.data!.as_of}
+                      booked={positions && bookedSince(set, positions)} />
             ))}
           </tbody>
         </table>
@@ -446,9 +447,7 @@ function XvaRows({ id, xva, recording, record }: {
   );
 }
 
-function XvaRow({ set, read, recording, moved }: {
-  set: XvaSet; read: string; recording: boolean; moved: number | null;
-}) {
+function XvaRow({ set, read, booked }: { set: XvaSet; read: string; booked: number | null }) {
   const age = ageOf(set.as_of, read);
   const chip = lastRunChip(set);
   const money = (value: number | null) => (value === null ? <span className="hint">—</span>
@@ -461,20 +460,14 @@ function XvaRow({ set, read, recording, moved }: {
           {set.collateralized ? 'CSA' : 'no CSA'}</span></td>
         <td className="n">{money(set.cva)}</td>
         <td className="n">{money(set.fva)}</td>
-        <td className={`age ${age.tone}`} title={age.title}>
-          {set.as_of ? `${stampText(set.as_of)} · ${age.text}` : age.text}</td>
+        <td className={`age ${booked ? 'stale' : age.tone}`} title={age.title}>
+          {set.as_of ? `${stampText(set.as_of)} · ${age.text}` : age.text}
+          {!!booked && <div>{bookedText(booked)}</div>}</td>
         <td><span className={`chip ${chip.tone}`} title={chip.title}>{chip.text}</span>
           {set.recalc && <span className="chip running">{set.recalc.status}</span>}</td>
-        {recording && (
-          <td className={`prose${moved ? ' age stale' : ''}`}>
-            {set.as_of === null ? '' : moved === null ? <span className="hint">reading the record…</span>
-              : movedText(moved)}
-          </td>
-        )}
       </tr>
       {set.status === 'failed' && set.error && (
-        <tr className="detail"><td colSpan={recording ? 7 : 6}>
-          <div className="error-box">{set.error}</div></td></tr>
+        <tr className="detail"><td colSpan={6}><div className="error-box">{set.error}</div></td></tr>
       )}
     </>
   );

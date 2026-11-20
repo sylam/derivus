@@ -161,7 +161,7 @@ const position = (path, quantity, extra = {}) => ({
   instrument: `i${path}${quantity}`, agreement: 'ISDA-KES', portfolio: 'DESK', book: 'DESK',
   counterparty: 'KES', quantity, clips: 1, first_lsn: 1, last_lsn: 1,
   deal_paths: path === null ? [] : [path], reference: 'F', object: 'FXForwardDeal', expired: null,
-  settles: null, status: 'approved', pending: 0, ...extra });
+  settles: null, status: 'approved', pending: 0, tickets: [], ...extra });
 const ROWS = blotter.rowsByPath(blotter.toRows(DOC.Calc.Deals.Deals.Children, [], undefined));
 const held = (positions) => client.heldUnder('0', ROWS, positions).map((trade) => [
   trade.row?.reference ?? null, trade.row?.units ?? null, trade.position?.quantity ?? null,
@@ -206,12 +206,23 @@ check("a client's history is its reads together - by its entity and by each agre
        client.touching([BY_ENTITY, []]).map((entry) => entry.lsn)],
       [[31, 29, 22, 19], [22, 19]]);
 
-check("a set moved since its XVA run by the record's rows naming it written after the run, each "
-      + 'stamp read at its own offset',
-      "the two stamps compared as written, the record's UTC against the run's local time, which "
-      + 'sees nothing booked for two hours after every run; or a row of another set counted',
-      client.since({ reference: 'ISDA-KES', as_of: '2026-11-19T22:27:28.743+02:00' }, RECORD)
-        .map((entry) => entry.lsn), [31]);
+const ticket = (id, at) => ({ ticket: id, at, lsn: 0, fill: 0, actor: '', execution_reference: '',
+  quantity: 1, status: 'approved', tier: null, fell_past: null, waits_on: null });
+const RAN = { reference: 'ISDA-KES', as_of: '2026-11-19T22:27:28.743+02:00' };
+const BOOKED = [{ agreement: 'ISDA-KES', tickets: [ticket('t1', '2026-11-19T20:27:20Z'),
+                                                   ticket('t2', '2026-11-19T20:33:21Z')] },
+                // a restrike's one ticket books a second position
+                { agreement: 'ISDA-KES', tickets: [ticket('t2', '2026-11-19T20:33:21Z'),
+                                                   ticket('t3', '2026-11-19T20:40:00Z')] },
+                { agreement: 'CSA-ALD', tickets: [ticket('t4', '2026-11-19T21:00:00Z')] }];
+check("trades booked under a set since its run are the tickets filed under its agreement after the "
+        + "run's own instant, each once, and say so in a few words; none for a set never run",
+      "a ticket of another agreement counted; one before the run counted, or the two stamps compared "
+        + "as written - the record's UTC against the run's local time; or a restrike's one ticket "
+        + 'counted once per position it books',
+      [client.bookedSince(RAN, BOOKED), client.bookedSince({ ...RAN, as_of: null }, BOOKED),
+       client.bookedText(2), client.bookedText(1)],
+      [2, 0, '2 trades booked since', '1 trade booked since']);
 
 // ---- every client as a credit officer reads it -------------------------------------------------
 
@@ -236,19 +247,19 @@ const KES_PAPER = [PAPER[0], { agreement: 'CSA-KES', entity: 'KES', kind: 'ISDA 
                    { agreement: 'ISDA-NEW-KES', entity: 'KES', kind: 'ISDA 2002', terms: { Object: SET } }];
 const CREDIT = {
   sets: RUNS, rows: CREDIT_ROWS, agreements: KES_PAPER,
-  positions: [position('0/0', 1), position('0/2', 2, { pending: 2, status: 'pending' }),
+  positions: [position('0/0', 1, { tickets: [ticket('t1', '2026-11-19T20:27:20Z'),
+                                              ticket('t2', '2026-11-19T20:33:21Z')] }),
+              position('0/2', 2, { pending: 2, status: 'pending' }),
               position('1/0/0', 1, { agreement: 'CSA-KES' })],
   marks: [{ reference: 'ISDA-KES', deal_path: '0', value: 1000 },
                           { reference: 'DESK', deal_path: '1', value: 1500 },
                           { reference: 'KES-OLD', deal_path: '2', value: -200 }],
   calls: [{ agreement: 'CSA-KES', currency: 'EUR', balance: 400, fx: { EUR: 1, USD: 0.8 } }],
-  // the record's rows under each set, read by its agreement
-  record: { 'ISDA-KES': BY_AGREEMENT },
 };
 const lined = (lines) => lines.map((line) => [line.reference, line.paper, line.collateralised,
   line.trades, line.pending, line.value, line.call?.agreement ?? null]);
 const PLAIN = { ...CREDIT, agreements: client.agreementsOf('KES', null, CREDIT_DOC), positions: null,
-                record: null, calls: null };
+                calls: null };
 check("a client's lines are every set naming it, under its own agreement where one is in force, then "
       + 'each agreement nothing is booked under, worth nothing; on a desk keeping no record each set '
       + 'its own agreement, its trades as the file writes them',
@@ -267,16 +278,12 @@ check("a client's lines are every set naming it, under its own agreement where o
         ['KES-OLD', 'its own terms', false, 1, 0, -200, null],
         ['KES-GONE', null, false, 0, 0, null, null]]]);
 
-check("a run set's line counts the events the record filed under it since its run, off the rows read "
-        + 'by its own agreement; a set never run or whose rows are not read counts none, and a desk '
-        + 'keeping no record nothing',
-      "since() counting the rows of every agreement, which flags a quiet set for its neighbour's "
-        + 'bookings; or a set whose rows are not read - a desk keeping no record among them - '
-        + 'counted as nothing filed',
-      [client.creditLines('KES', { ...CREDIT, record: { 'ISDA-KES': BY_AGREEMENT, 'KES-OLD': RECORD } },
-                          SCHEMA).map((line) => [line.reference, line.moved]),
-       client.creditLines('KES', PLAIN, SCHEMA).map((line) => line.moved)],
-      [[['ISDA-KES', 1], ['CSA-KES', null], ['KES-OLD', 0], ['KES-GONE', null], ['ISDA-NEW-KES', null]],
+check("a run set's line counts the trades booked under it since its run off the record's positions; "
+        + 'a set with no run counts none, and a desk keeping no record nothing',
+      "a set's count read off another set's tickets, or a desk keeping no record given a count",
+      [client.creditLines('KES', CREDIT, SCHEMA).map((line) => [line.reference, line.booked]),
+       client.creditLines('KES', PLAIN, SCHEMA).map((line) => line.booked)],
+      [[['ISDA-KES', 1], ['CSA-KES', 0], ['KES-OLD', 0], ['KES-GONE', 0], ['ISDA-NEW-KES', null]],
        [null, null, null, null]]);
 
 const after = (value, collateralised, balance) => client.exposureAfter({
@@ -338,27 +345,22 @@ check('a failed run names who puts it right off the factor the engine could not 
         .map((error) => client.ownerOf(error).split(':')[0]),
       ['no credit curve', 'a market factor is missing', "the engine's sentence names no factor"]);
 
-check("what is wrong under a client's sets, worst first: a failed run, trades no agreement covers, a "
-      + 'set changed since its run, trades waiting on a second seat, trades never run - nothing of a '
-      + 'set that left the book or of a desk keeping no record that it cannot tell',
-      "the flags in the sets' order rather than the kinds'; a set that left the book flagged; a set "
-      + 'changed since a failed run; a never-run set with nothing on flagged; or a set on a desk '
-      + 'keeping no record called unpapered or changed',
+check("what is wrong under a client's sets, worst first: a failed run, trades no agreement covers, "
+      + 'trades waiting on a second seat, trades never run - nothing of a set that left the book or of '
+      + 'a desk keeping no record that it cannot tell',
+      "the flags in the sets' order rather than the kinds'; a set that left the book flagged; a "
+      + 'never-run set with nothing on flagged; or a set on a desk keeping no record called unpapered',
       [client.wrongWith(KES_LINES).map((wrong) => [wrong.kind, wrong.reference]),
        client.wrongWith(client.creditLines('KES', PLAIN, SCHEMA)).map((wrong) => [wrong.kind, wrong.reference])],
-      [[['failed', 'KES-OLD'], ['unpapered', 'KES-OLD'], ['moved', 'ISDA-KES'], ['pending', 'ISDA-KES'],
-        ['unrun', 'CSA-KES']],
+      [[['failed', 'KES-OLD'], ['unpapered', 'KES-OLD'], ['pending', 'ISDA-KES'], ['unrun', 'CSA-KES']],
        [['failed', 'KES-OLD'], ['unrun', 'CSA-KES']]]);
 
-const flagged = (moved, status = 'done') => client.wrongWith([{ reference: 'S', paper: 'ISDA',
-  run: { ...RUNS[0], status }, trades: 1, pending: 0, moved }]).map((wrong) => [wrong.kind, wrong.text]);
-check("a done run's set the record filed events under since says so, as that many events under it "
-        + 'since the run; nothing where none was filed, where the run failed, or where no record is read',
-      'the count said as the run being older than the book; a set with nothing filed since flagged; '
-        + "a failed run's set flagged as changed too; or a desk keeping no record flagged",
-      [flagged(3), flagged(1), flagged(0), flagged(null), flagged(2, 'failed').map(([kind]) => kind)],
-      [[['moved', '3 events under it since the run']], [['moved', '1 event under it since the run']],
-       [], [], ['failed']]);
+check('trades booked under a set since its run are a fact of its run, never something to act on: '
+        + 'they neither list it as wrong nor sort its client first',
+      'a set booked under since its run listed among what is wrong, which sends its client to the '
+        + 'top of the table for a book the close refreshes',
+      client.wrongWith([{ reference: 'S', paper: 'ISDA', run: RUNS[0], trades: 1, pending: 0,
+                          booked: 3 }]), []);
 
 check('clients with something to act on come first, then the largest exposure after collateral, an '
       + 'unread one last, then by name',

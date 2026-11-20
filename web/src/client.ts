@@ -195,34 +195,37 @@ export function markText(value: number, currency: string | null): string {
 export const touching = (reads: ActivityRow[][]): ActivityRow[] =>
   [...new Map(reads.flat().map((row) => [row.lsn, row])).values()].sort((a, b) => b.lsn - a.lsn);
 
-/** The record's rows under a set since its XVA row was run - the ones naming its agreement,
- * written after the run by the instant each stamp names. */
-export function since(set: XvaSet, rows: ActivityRow[]): ActivityRow[] {
-  const ran = instantMs(set.as_of);
-  return ran === undefined ? [] : rows.filter((row) => row.agreement === set.reference
-    && (instantMs(row.record_time) ?? -Infinity) > ran);
+/** How many trades were booked under a set since its run: the tickets filed under its agreement
+ * after the run's instant, each once though a restrike books several positions under one. */
+export function bookedSince(run: XvaSet, positions: Position[]): number {
+  const ran = instantMs(run.as_of);
+  return ran === undefined ? 0 : new Set(positions
+    .filter((position) => position.agreement === run.reference).flatMap((position) => position.tickets)
+    .filter((ticket) => (instantMs(ticket.at) ?? -Infinity) > ran).map((ticket) => ticket.ticket)).size;
 }
+
+/** The count in a run's cell, in the warn tone where it is any. */
+export const bookedText = (count: number): string => `${plural(count, 'trade')} booked since`;
 
 // ---- every client as a credit officer reads it ------------------------------------------------
 
 /** One netting set a client trades under: where the book holds it, the paper it is under - its
  * agreement's kind, null where none is in force - and whether its terms collateralise, its last
  * run, its trades and those waiting on a second seat, its value to the desk now in the risk's
- * currency, its call on the marked close, and how many events the record filed under it since its
- * run - null where the record's rows under it are not read. */
+ * currency, its call on the marked close, and how many trades were booked under it since its run -
+ * null where the record's positions are not read. */
 export type CreditLine = {
   reference: string; path: string | null; paper: string | null; collateralised: boolean;
   run: XvaSet | null; trades: number; pending: number; value: number | null;
-  call: CollateralCall | null; moved: number | null;
+  call: CollateralCall | null; booked: number | null;
 };
 
 /** What the lines are read off: the projection's sets, the client's agreements (`agreementsOf`),
- * the file's rows, and - each null where it is not read - the record's positions, its rows under
- * each set by the set's reference, the risk's marks and the calls on the marked close. */
+ * the file's rows, and - each null where it is not read - the record's positions, the risk's marks
+ * and the calls on the marked close. */
 export type CreditReads = {
   sets: XvaSet[]; agreements: Agreement[]; rows: Map<string, BlotterRow>;
-  positions: Position[] | null; record: Record<string, ActivityRow[]> | null;
-  marks: DealMark[] | null; calls: CollateralCall[] | null;
+  positions: Position[] | null; marks: DealMark[] | null; calls: CollateralCall[] | null;
 };
 
 /** A client's lines: a set the book holds or held naming it, under its own agreement where one is
@@ -243,7 +246,7 @@ export function creditLines(id: string, reads: CreditReads, schema: Schema): Cre
       value: path === null ? (run ? null : 0)
         : reads.marks && (markOf(reads.marks, path).own?.value ?? null),
       call: reads.calls?.find((call) => call.agreement === reference) ?? null,
-      moved: run && reads.record?.[reference] ? since(run, reads.record[reference]).length : null,
+      booked: run && reads.positions ? bookedSince(run, reads.positions) : null,
     };
   };
   return [...runs.map((run) => line(run.reference, run)),
@@ -305,7 +308,7 @@ export function runSum(lines: CreditLine[], key: 'cva' | 'fva'):
 /** What a row says to act on, worst first. */
 export const WRONG = {
   failed: 'run failed', unpapered: 'trading with no agreement in force',
-  moved: 'changed since its run', pending: 'waiting on a second seat', unrun: 'never run',
+  pending: 'waiting on a second seat', unrun: 'never run',
 } as const;
 
 /** One thing to act on under a set, in business words, and who puts it right. */
@@ -317,9 +320,6 @@ const RECALC = 'a recalc asked for through the chat';
 export const RUNS = 'each row is the last run of its set, refreshed at the close, and a recalc is '
   + 'asked for through the chat';
 
-/** The record's word on a set since its run: how many events it filed under the set. */
-export const movedText = (moved: number): string => `${plural(moved, 'event')} under it since the run`;
-
 /** Who puts a failed run right, off the factor the engine could not find: a credit curve whoever
  * marks states, any other factor the market's owner adds. */
 export function ownerOf(error: string | null): string {
@@ -329,19 +329,17 @@ export function ownerOf(error: string | null): string {
       : `a market factor is missing: the market's owner adds ${factor}`;
 }
 
-/** What is wrong under a client's lines, worst first - a done run's set the record filed events
- * under since; a set that has left the book reads its last run and asks for nothing. */
+/** What is wrong under a client's lines, worst first - a set that has left the book reads its last
+ * run and asks for nothing. */
 export function wrongWith(lines: CreditLine[]): Wrong[] {
   const order = Object.keys(WRONG);
   return lines.filter((line) => !line.run?.note).flatMap(({
-    reference, paper, run, trades, pending, moved }) => [
+    reference, paper, run, trades, pending }) => [
     run?.status === 'failed' && { kind: 'failed' as const, reference,
       text: run.error ?? 'its last run failed', who: ownerOf(run.error) },
     trades > 0 && paper === null && { kind: 'unpapered' as const, reference,
       who: 'legal declares the agreement on Paper',
       text: `${plural(trades, 'trade')} under ${reference}, which no agreement in force covers` },
-    !!moved && run?.status === 'done' && { kind: 'moved' as const, reference,
-      who: `the close refreshes it, or ${RECALC}`, text: movedText(moved) },
     pending > 0 && { kind: 'pending' as const, reference, who: 'another seat signs on the Back Office',
       text: `${plural(pending, 'trade')} under it waiting on a second seat` },
     trades > 0 && (!run || run.status === 'never run') && {
