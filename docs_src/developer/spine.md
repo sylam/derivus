@@ -325,8 +325,8 @@ An act on an instrument - a restrike, an election, a delete - is judged where it
 the deepest node holding every position in it under the book (`capability.judged_at`), read off
 the positions fold and never stated by a caller. `spine.amend` and `spine.apply_lifecycle` file
 that node as the body's `portfolio`, and the oracle names a frame judged narrower than what it
-moved. An election of an instrument the record holds no position in, and one filed before a body
-named a node, is judged at its book. **Held by**
+moved. An election of an instrument the record holds no position in, and one whose body names no
+node, is judged at its book. **Held by**
 `test_spine_engine.py::test_an_election_is_judged_where_its_position_sits`,
 `::test_a_declared_tree_is_where_a_book_books_and_a_restrike_is_judged`,
 `test_spine_oracle.py::test_an_election_is_judged_at_the_node_its_body_names_and_else_at_its_book`,
