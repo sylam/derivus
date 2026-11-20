@@ -2354,7 +2354,8 @@ def announced(document, rows):
     in the diary's order and each as the record answers it (`answered`) - none where no home is
     configured."""
     return answered(spine.ordered(rows + spine.premiums(
-        book_name(document), reporting_currency(document))) if spine.configured() else rows)
+        book_name(document), structures.reporting_currency(document, market_of)))
+        if spine.configured() else rows)
 
 
 def diary_etag(document):
@@ -2744,7 +2745,7 @@ def telling(rows):
            if instrument}
     names = named_trades(document, set(now) | set(now.values()))
     writer = spine.package().vocabulary.WRITER
-    reporting = reporting_currency(document) if document else ''
+    reporting = structures.reporting_currency(document, market_of) if document else ''
 
     def said(row):
         kind, body, actor = row['event_type'], bodies.get(row['lsn']), row['actor']
@@ -3293,19 +3294,12 @@ def carried(job, day, reading=Context):
     return sum(PnL.unit_marks(as_json(out['Results'])).values())
 
 
-def reporting_currency(document):
-    """The currency `document` reports in, which a price stating no other is in: its
-    `Calculation.Currency`, else its market's base."""
-    return (document['Calc']['Calculation'].get('Currency')
-            or structures.base_currency(market_of(document)))
-
-
 def consideration(document, price, currency):
     """`(currency, rate)` a fill files beside its `price`: none where the price is stated in the
     book's own reporting currency, else that currency and what one unit of it is worth in the
     book's, at this booking's own board - or the 422 naming a currency the book carries no spot for.
     """
-    reporting = reporting_currency(document)
+    reporting = structures.reporting_currency(document, market_of)
     if currency is None or currency == reporting:
         return None, None
     if price is None:
@@ -3794,7 +3788,7 @@ def book_worklist(actor: str = None):
         booked = spine.folded(lambda log: {row['lsn']: log.open_body(log.frame_at(row['lsn']))
                                            for row in found})
         entries = {entry['lsn']: entry for position in rows for entry in position['tickets']}
-        reporting = reporting_currency(document)
+        reporting = structures.reporting_currency(document, market_of)
         return [dict(row, price=booked[row['lsn']].get('price'),
                      currency=booked[row['lsn']].get('currency') or reporting,
                      tier=entries[row['lsn']]['tier'], fell_past=entries[row['lsn']]['fell_past'],
@@ -5397,7 +5391,7 @@ def book_spots(source, routes, document):
     surfaces' - a spot is the number every deal in the book reprices off."""
     from derivus_bloomberg import security_map
 
-    base = market_of(document)['System Parameters']['Base_Currency']
+    base = structures.base_currency(market_of(document))
     values = security_map.fetch_fx_spot(source, routes.values())
     return {'FxRate.{}'.format(currency): {'Spot': spot} for currency, spot in
             structures.crossed_spots(base, {pair: values[security]
@@ -6048,7 +6042,7 @@ def dependency_answer(document, resolved, missing, seed=None, mapped=None, **nam
     would, never a guess. A job that has already read the vocabulary threads it in."""
     seed = desk_seed() if seed is None else seed
     mapped = desk_map()[0] if mapped is None else mapped
-    base = market_of(document)['System Parameters']['Base_Currency']
+    base = structures.base_currency(market_of(document))
     rows = []
     for factor in missing:
         supply, note = supply_of(factor, base, seed, mapped)

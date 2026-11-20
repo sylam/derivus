@@ -3538,7 +3538,7 @@ def test_the_worklist_names_each_ticket_and_the_seat_it_waits_on(recorded, desk)
         'what': "EXEC-BIG for Client A Ltd awaits a second seat's approval",
         'key': waiting['ticket'], 'reference': 'EXEC-BIG', 'deal_path': waiting['deal_path'],
         'client': 'Client A Ltd', 'agreement': CLIENT_SET, 'booker': ACTOR, 'tier': 'desk',
-        'price': 1250.0, 'currency': service.reporting_currency(json.loads(desk.read_text()))}
+        'price': 1250.0, 'currency': structures.reporting_currency(json.loads(desk.read_text()))}
     assert "{!r} booked it, which the 'desk' tier refuses".format(ACTOR) in row['waits_on']
     risk = worklist(actor=RISK_SEAT)
     assert risk['seat'] == RISK_SEAT and set(risk['counts'].values()) == {0}, risk['counts']

@@ -2423,6 +2423,25 @@ def test_a_tarf_on_a_fitted_pair_stops_riding_gbm(accrual_book):
         17.379426406278363, rel=1e-9), 'the orientation that already joined moved'
 
 
+def test_reporting_currency_reads_calculation_before_loading_the_market(book):
+    """`structures.reporting_currency` answers `Calculation.Currency` without loading the market
+    file, and falls back to the market's base currency only where `Calculation.Currency` is absent.
+
+    Killing mutation: eagerly loading the market before checking `Calculation.Currency` (fails with
+    FileNotFoundError on the stated-currency arm) or dropping the `base_currency` fallback (fails
+    on the unstated-currency arm).
+    """
+    stated = copy.deepcopy(book)
+    stated['Calc']['Calculation']['Currency'] = 'ZAR'
+    stated['Calc']['MergeMarketData'] = {'MarketDataFile': 'missing_market_file.json'}
+    assert structures.reporting_currency(stated) == 'ZAR'
+
+    unstated = copy.deepcopy(book)
+    unstated['Calc']['Calculation'].pop('Currency', None)
+    assert structures.reporting_currency(unstated) == 'USD'
+
+
+
 @pytest.mark.card
 def test_the_accumulator_solves_one_strike_from_either_axis_under_the_model(accrual_book):
     """RECIPROCAL CONSISTENCY under the fitted law - the axis gate's shape, one model on.
