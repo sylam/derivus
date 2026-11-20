@@ -290,8 +290,7 @@ set's unmargined one. **Held by** `tests/test_saccr.py::test_the_rates_example_i
 `::test_legs_paying_two_currencies_are_one_fx_trade`,
 `::test_an_fx_swap_is_its_two_forwards_the_near_one_gone_once_settled`,
 `::test_a_floating_energy_leg_reads_the_units_it_has_still_to_pay`,
-`::test_a_container_or_leg_the_reader_cannot_read_is_refused_by_name`,
-`::test_a_trade_whose_exposure_the_declarations_do_not_state_is_refused_by_name`,
+`::test_a_trade_the_reader_cannot_read_is_refused_by_name`,
 `::test_a_parameters_file_stating_an_entry_amiss_is_refused_by_name`. **Not gated:** the MPOR floor
 of a set of more than 5,000 trades.
 
