@@ -403,6 +403,14 @@ check("a field naming price factors offers the market's of its types, by the nam
        desk.factorNames({ widget: 'Text', description: '', value: '' }, CURVES),
        desk.factorNames(named(['InterestRate']), null)],
       [['EUR', 'USD-OIS', 'ZAR'], ['USD.ZAR'], ['ACME'], [], [], []]);
+let walked = 0;
+const COUNTED = { get 'Price Factors'() { walked += 1; return CURVES['Price Factors']; } };
+[{ widget: 'Float', description: '', value: 0 }, named([]), named({ Currency: ['FxRate'] })]
+  .forEach((descriptor) => desk.factorNames(descriptor, COUNTED));
+check('a field naming no factor never walks the market',
+      'the gate on a field declaring no factor type dropped, which walks every factor of the '
+      + 'market once per input on a screen - 90 ms a render at 3,000 factors and 300 inputs',
+      [walked, desk.factorNames(named(['FxRate']), COUNTED), walked], [0, ['ZAR'], 1]);
 
 // --- what the seat may do: one rule over GET /book/seat
 const verbs = (held) => ({ book: [], approve: [], mark: [], document: [], settle: [], confirm: [],

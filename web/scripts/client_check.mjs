@@ -82,6 +82,7 @@ const DOC = { Calc: { Deals: { Deals: { Children: [
     node({ Object: SET, Reference: 'CSA-ALD', Credit_Support_Amounts: { Counterparty: 'ALD' } })]),
   node({ Object: SET, Reference: 'ISDA-OFF', Credit_Support_Amounts: { Counterparty: 'OFF' } }),
 ] } } } };
+const ROWS = blotter.rowsByPath(blotter.toRows(DOC.Calc.Deals.Deals.Children, [], undefined));
 const PAPER = [
   { agreement: 'ISDA-KES', entity: 'KES', kind: 'ISDA 2002', terms: KES_SET },
   { agreement: 'ISDA-NEW', entity: 'ALD', kind: 'ISDA 2002 with CSA', terms: { Object: SET } },
@@ -91,8 +92,8 @@ check("a client's agreements are those legal declares with it, and on a desk kee
       + 'netting sets naming it wherever they sit in the book',
       "another entity's agreement taken; the walk kept to the top level, which loses a set nested "
       + 'under a book node; or a set read off its type name rather than the credit support it states',
-      [client.agreementsOf('ALD', PAPER, DOC).map((row) => row.agreement),
-       client.agreementsOf('ALD', null, DOC).map((row) => [row.agreement, row.entity])],
+      [client.agreementsOf('ALD', PAPER, ROWS).map((row) => row.agreement),
+       client.agreementsOf('ALD', null, ROWS).map((row) => [row.agreement, row.entity])],
       [['ISDA-NEW'], [['CSA-ALD', 'ALD']]]);
 
 const ENTITIES = [{ entity: 'KES', name: 'Kestrel', parent: null },
@@ -101,7 +102,7 @@ const ENTITIES = [{ entity: 'KES', name: 'Kestrel', parent: null },
                   { entity: 'OFF', name: 'Offside', parent: null }];
 const RECONCILE = { terms_mismatch: [{ agreement: 'ISDA-OFF', deal_path: '2', fields: ['Netted'] }] };
 const lines = (id, entities, curve) => client.readiness(
-  id, entities, client.agreementsOf(id, entities && PAPER, DOC), DOC, RECONCILE, curve)
+  id, entities, client.agreementsOf(id, entities && PAPER, ROWS), DOC, RECONCILE, curve)
   .map((line) => [line.tone, line.fix ?? null]);
 check('a client is ready where nothing stops a booking: an agreement not yet in the book, or a set '
       + 'off its paper, books all the same; no agreement, no entity or no credit curve does not',
@@ -112,7 +113,8 @@ check('a client is ready where nothing stops a booking: an agreement not yet in 
       [lines('KES', ENTITIES, {}), lines('ALD', ENTITIES, undefined), lines('MAR', ENTITIES, {}),
        lines('OFF', ENTITIES, {}), lines('NOBODY', ENTITIES, {}), lines('KES', null, {}),
        ['KES', 'ALD', 'MAR'].map((id) => client.ready(client.readiness(
-         id, ENTITIES, client.agreementsOf(id, PAPER, DOC), DOC, null, id === 'ALD' ? null : {})))],
+         id, ENTITIES, client.agreementsOf(id, PAPER, ROWS), DOC, null,
+         id === 'ALD' ? null : {})))],
       [[['ok', null], ['ok', null], ['ok', null]],
        [['ok', null], ['note', null], ['todo', 'curve']],
        [['ok', null], ['todo', 'agreement'], ['ok', null]],
@@ -122,7 +124,7 @@ check('a client is ready where nothing stops a booking: an agreement not yet in 
        [true, false, false]]);
 
 const curveless = (id, entities) => client.readiness(
-  id, entities, client.agreementsOf(id, entities && PAPER, DOC), DOC, null, undefined).at(-1).text;
+  id, entities, client.agreementsOf(id, entities && PAPER, ROWS), DOC, null, undefined).at(-1).text;
 check("a client with no credit curve reads its first trade refused where the book holds no set "
       + 'naming it, and a trade still booking where the book already prices one without a curve',
       'the refusal said of a set the book already holds, where the service books all the same - it '
@@ -138,7 +140,6 @@ const position = (path, quantity, extra = {}) => ({
   counterparty: 'KES', quantity, clips: 1, first_lsn: 1, last_lsn: 1,
   deal_paths: path === null ? [] : [path], reference: 'F', object: 'FXForwardDeal', expired: null,
   settles: null, status: 'approved', pending: 0, tickets: [], ...extra });
-const ROWS = blotter.rowsByPath(blotter.toRows(DOC.Calc.Deals.Deals.Children, [], undefined));
 const held = (positions) => client.heldUnder('0', ROWS, positions).map((trade) => [
   trade.row?.reference ?? null, trade.row?.units ?? null, trade.position?.quantity ?? null,
   trade.closed]);
@@ -234,8 +235,8 @@ const CREDIT = {
 };
 const lined = (lines) => lines.map((line) => [line.reference, line.paper, line.collateralised,
   line.trades, line.pending, line.value, line.call?.agreement ?? null]);
-const PLAIN = { ...CREDIT, agreements: client.agreementsOf('KES', null, CREDIT_DOC), positions: null,
-                calls: null };
+const PLAIN = { ...CREDIT, agreements: client.agreementsOf('KES', null, CREDIT_ROWS),
+                positions: null, calls: null };
 check("a client's lines are every set naming it, under its own agreement where one is in force, then "
       + 'each agreement nothing is booked under, worth nothing; on a desk keeping no record each set '
       + 'its own agreement, its trades as the file writes them',

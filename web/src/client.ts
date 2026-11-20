@@ -4,7 +4,7 @@
 // rows and XVA rows that are its own - on a desk that records and on one that does not.
 
 import type { Dispatch } from 'react';
-import { rowsByPath, toRows, type BlotterRow } from './blotter';
+import type { BlotterRow } from './blotter';
 import { SURVIVAL, entityText, instantMs, plural } from './desk';
 import { byPath, closed, type Agreement, type Entity, type Position } from './positions';
 import { standing, type Action } from './state';
@@ -26,12 +26,12 @@ export function openClient(dispatch: Dispatch<Action>, id: string) {
 }
 
 /** A client's agreements: on a desk that records, the ones its record declares with the entity; on
- * one that does not, every node of the book whose credit support names it - a netting set's terms
- * being its agreement. */
+ * one that does not, every row of the book (`rowsByPath`, the caller's) whose credit support names
+ * it - a netting set's terms being its agreement. */
 export function agreementsOf(id: string, declared: Agreement[] | null,
-                             doc: JobDoc | null): Agreement[] {
+                             rows: Map<string, BlotterRow>): Agreement[] {
   if (declared) return declared.filter((row) => row.entity === id);
-  return [...rowsByPath(toRows(doc?.Calc.Deals.Deals.Children ?? [], [], undefined)).values()]
+  return [...rows.values()]
     .filter((row) => token(row.deal.Credit_Support_Amounts, 'Counterparty') === id)
     .map((row) => ({ agreement: row.reference, entity: id, kind: '', terms: row.deal }));
 }

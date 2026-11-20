@@ -68,7 +68,7 @@ export function ClientView() {
   const ids = new Set([...creditCounterparties(reads.entities, doc, {}),
                        ...creditCounterparties(null, doc, {}), state.selection.picks[CLIENT] ?? '']);
   const pages = [...ids].filter(Boolean).sort().map((id) => {
-    const own = agreementsOf(id, reads.agreements, doc);
+    const own = agreementsOf(id, reads.agreements, rows);
     const lines = readiness(id, reads.entities, own, doc, state.record.reconcile,
                             factors[`${SURVIVAL}.${id}`]);
     return { id, lines, own };

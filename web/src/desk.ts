@@ -480,8 +480,9 @@ export function factorFamily(factor: string): string {
  * names, by the name after the type - `InterestRate.ZAR` as `ZAR`. A table's cell is declared per
  * column, so it is asked with its column's own. */
 export function factorNames(descriptor: Descriptor | undefined, market: Market | null): string[] {
-  const declared = descriptor?.factors;
-  const types = Array.isArray(declared) ? declared : [];
+  const types = descriptor?.factors;
+  // asked once per input on a screen, and most inputs name no factor
+  if (!Array.isArray(types) || !types.length) return [];
   return [...new Set(Object.keys(market?.['Price Factors'] ?? {})
     .filter((name) => types.includes(factorFamily(name)))
     .map((name) => name.slice(name.indexOf('.') + 1)))].sort();

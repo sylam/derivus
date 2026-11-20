@@ -93,7 +93,7 @@ export function XvaView() {
   const ids = new Set([...(paper?.entities ?? []).map((row) => row.entity),
                        ...view.sets.flatMap((set) => (set.counterparty ? [set.counterparty] : []))]);
   const clients: Client[] = actionFirst([...ids].map((id) => {
-    const agreements = agreementsOf(id, paper?.agreements ?? null, doc);
+    const agreements = agreementsOf(id, paper?.agreements ?? null, rows);
     const lines = creditLines(id, {
       sets: view.sets, agreements, rows, positions: paper?.positions ?? null,
       marks: risk.data?.per_deal ?? null, calls: recording ? collateral.data?.calls ?? null
