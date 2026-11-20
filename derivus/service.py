@@ -211,6 +211,17 @@ def load(job, context=None):
                                             parses=BOOK and BOOK.parses)
 
 
+def beside(context, job):
+    """`job` loaded over the market `context` holds: a copy of it carrying `job`'s deals and
+    calculation. What `load(job)` builds where `job` differs in those alone from the job `context`
+    loaded, with the market read once."""
+    other = deepcopy(context)
+    load(dict(job, Calc={key: section for key, section in job['Calc'].items()
+                         if key != 'MergeMarketData'}), other)
+    other.current_cfg.files = context.current_cfg.files
+    return other
+
+
 #: The section of a job's `Calc` naming each file a load reads.
 FILE_SECTIONS = {'MarketDataFile': 'MergeMarketData', 'CalendDataFile': 'CalendDataFile'}
 
@@ -1721,10 +1732,13 @@ def book_price(request: dict):
         jobs, terms = xva_pair(document, deal_path) if increment else ([document], None)
     except ValueError as error:
         raise HTTPException(422, str(error))
-    contexts = [load(job) for job in jobs]
-    run, stamp = contexts[0], replay(contexts[0])
+    run = load(jobs[0])
+    contexts, stamp = [run], replay(run)
     if increment:
-        run, stamp = IncrementJob(contexts, terms), {'with': stamp, 'without': replay(contexts[1])}
+        # the pair is one market and one calculation, so its second job moves the plan alone
+        contexts.append(beside(run, jobs[1]))
+        run, stamp = IncrementJob(contexts, terms), {
+            'with': stamp, 'without': dict(stamp, plan_hash=contexts[1].plan_hash())}
     return queued(Job(content_hash(stamp), run, stamp, spine.CURIOSITY, actor=request.get('actor'),
                       book=book_name(document)),
                   cost(contexts[0].current_cfg.deals['Calculation'])['class'])

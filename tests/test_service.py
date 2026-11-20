@@ -7627,6 +7627,39 @@ def test_an_edit_to_either_named_file_is_a_new_run_and_the_request_parses_neithe
         service.BOOK = None
 
 
+def test_the_second_job_of_an_increment_is_loaded_over_the_market_the_first_read(
+        tmp_path, monkeypatch):
+    """The two jobs of an increment are one market and one calculation under two deal trees, so
+    the second is loaded over the market the first read (`beside`) and its replay tuple is the
+    first's with its own plan. On a book naming a market data file and a calendar, NS_3 with its
+    first deal beside its mirror: that context has the plan hash, the values hash and the files of
+    the same job loaded on its own, its values hash is the first job's, and it runs to the same
+    CVA and FVA to the bit.
+
+    Killing mutations: the copy left holding the first job's deals, where its plan hash is the
+    first's; the files it read not carried over, where it names no market data file.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    named_book(tmp_path)
+    try:
+        document = service.BOOK.read()[0]
+        at = next(path for path, node in service.netting_sets(document)
+                  if node['Instrument']['.Deal']['Reference'] == 'NS_3')
+        (held, mirrored), _ = service.xva_pair(document, at + '/0')
+        first = service.load(held)
+        over, apart = service.beside(first, mirrored), service.load(mirrored)
+        assert over.plan_hash() == apart.plan_hash() != first.plan_hash()
+        assert over.values_hash() == apart.values_hash() == first.values_hash()
+        assert over.current_cfg.files == apart.current_cfg.files
+        assert all(over.current_cfg.files.values()), over.current_cfg.files
+        numbers = [context.run_job()[1]['Results'] for context in (over, apart)]
+        assert [float(numbers[0][name]) for name in ('cva', 'fva')] == [
+            float(numbers[1][name]) for name in ('cva', 'fva')]
+        assert float(numbers[0]['cva']) > 0.0
+    finally:
+        service.BOOK = None
+
+
 def test_a_file_rewritten_inside_one_tick_is_a_new_run(tmp_path, monkeypatch):
     """The XVA tab knows a named file by its bytes, never by its clock: the market data file
     rewritten with its size and modified time held, EQ_3's spot moved from 115 to 116, gives NS_3
