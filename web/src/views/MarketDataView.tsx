@@ -3,7 +3,7 @@ import { getBookMarkets, patchMarket } from '../api';
 import { DescriptorPanel, type AmendField } from '../components/FieldView';
 import { Navigator } from '../components/Navigator';
 import { Whose } from '../components/Whose';
-import { spotQuoted, spreads, stampText } from '../desk';
+import { fileName, spotQuoted, spreads, stampText } from '../desk';
 import { marketsView } from '../spine';
 import { blockHint, heldBack, marketOf, useApp, written } from '../state';
 import { curveOf, formatNumber, isObject, tenorLabel } from '../tokens';
@@ -96,9 +96,11 @@ export function MarketDataView() {
         {marketFile ? (
           <div className="banner">
             {live
-              ? <>This book prices on the market data file <b>{marketFile}</b> with its own block
+              ? <>This book prices on the market data file{' '}
+                <b title={marketFile}>{fileName(marketFile)}</b> with its own block
                 merged over it: an entry the block states is marked <b>block</b>.</>
-              : <>This document overlays a server-side market data file (<b>{marketFile}</b>) —
+              : <>This document overlays a server-side market data file (
+                <b title={marketFile}>{fileName(marketFile)}</b>) —
                 only the overlay is shown here.</>}
             {describe && ` The engine resolves ${describe.factors.resolved.length} factors from it` +
               (describe.factors.missing.length
