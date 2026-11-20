@@ -426,8 +426,11 @@ def test_a_grant_at_a_node_reaches_every_path_under_it_and_nothing_beside_it(tmp
             scope_of('fill', fill('E'), BANK),
             scope_of('portfolio_declared', {'path': OPTIONS}, BANK),
             scope_of('portfolio_declared', {'path': BANK}, BANK),
-            scope_of('election', {'portfolio': OPTIONS}, BANK)) == (
-        OPTIONS, BANK, FX, None, BANK), 'a body is read where its type names a portfolio'
+            scope_of('election', {'portfolio': OPTIONS}, BANK),
+            scope_of('election', {}, BANK),
+            scope_of('determination', {'portfolio': OPTIONS}, BANK)) == (
+        OPTIONS, BANK, FX, None, OPTIONS, BANK, BANK), \
+        'a body is read where its type names a portfolio'
     assert [scope_of(event_type, {}, FX) for event_type in (
         'policy_declared', 'official_close_declared', 'fixing_observed', 'run_completed')] == [
         None] * 4, 'a firm fact judged at the node its envelope names'

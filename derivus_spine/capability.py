@@ -59,7 +59,7 @@ CAPABILITY_EVENTS = ('policy_declared', 'break_glass_used')
 ANY_BOOK = '*'
 
 #: The types whose body names the portfolio they are about - the node they are judged at.
-PORTFOLIO_TYPES = ('fill', 'amendment', 'quote_filed', 'approval', 'rejection')
+PORTFOLIO_TYPES = ('fill', 'amendment', 'election', 'quote_filed', 'approval', 'rejection')
 #: The types `scope_of` opens a body for: those, and a declared node judged at its parent.
 SCOPED_TYPES = PORTFOLIO_TYPES + ('portfolio_declared',)
 #: The types `verb_for` opens a body for: a transition says which act of the back office it is.
@@ -320,18 +320,23 @@ def under(path, node):
 
 
 def deepest(paths):
-    """The deepest node every one of `paths` sits at or under, or None for none - where an
-    amendment moving the positions held at them is judged."""
+    """The deepest node every one of `paths` sits at or under, or None for none."""
     return '/'.join(commonprefix([path.split('/') for path in paths])) or None
 
 
 def holders(positions, instrument, book):
     """The portfolios under `book` at which `positions`, the positions fold's state, holds
-    `instrument` at a quantity other than nothing - what a restrike of it moves, and so where
-    it is judged."""
+    `instrument` at a quantity other than nothing - what an act on it moves."""
     return sorted(portfolio for rows in positions.get(instrument, {}).values()
                   for portfolio, row in rows.items()
                   if row['quantity'] and book is not None and under(portfolio, book))
+
+
+def judged_at(positions, instrument, book):
+    """The node an act on `instrument` - a restrike, an election, a delete - is judged at: the
+    deepest one holding every position in it under `book`, or None where `positions`, the positions
+    fold's state, holds none."""
+    return deepest(holders(positions, instrument, book))
 
 
 def scope_of(event_type, body, book):

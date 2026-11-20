@@ -1267,17 +1267,13 @@ def entities(lsn=None):
 
 
 def holder_of(address, book, folds=None):
-    """The deepest portfolio node holding `address` under `book`, or None if unrecorded."""
+    """The node an act on the instrument at `address` is judged at under `book`
+    (`capability.judged_at`), or None where nothing records or the record holds none."""
     if not configured():
         return None
     spine = package()
-
-    def read(log):
-        held = _state(log, spine.projections.PROJECTORS['positions'], folds=folds)
-        nodes = spine.capability.holders(held, address, book)
-        return spine.capability.deepest(nodes) if nodes else None
-
-    return folded(read)
+    return folded(lambda log: spine.capability.judged_at(_state(
+        log, spine.projections.PROJECTORS['positions'], folds=folds), address, book))
 
 
 def agreements(lsn=None):
@@ -1314,8 +1310,8 @@ def amend(deal, amended_to, actor_name=None, book_name=None, effective_time=None
         terms = terms and dict(terms, notional_in={
             currency: units * amount for currency, amount in terms['notional_in'].items() if units})
         body = spine.verbs.amendment(
-            log, canonical(deal), canonical(amended_to), portfolio=spine.capability.deepest(
-                spine.capability.holders(held, was, book_name)))
+            log, canonical(deal), canonical(amended_to),
+            portfolio=spine.capability.judged_at(held, was, book_name))
         return routed(log, 'amendment', body, subject, book_name, effective_time, plan, terms,
                       folds=folds, standing=spine.verbs.moved(held, was))
 
@@ -1332,19 +1328,30 @@ def _restruck(positions, was, now):
                 if clip['instrument'] != now), default=None)
 
 
-def apply_lifecycle(event_type, body, actor_name=None, book_name=None, effective_time=None):
+def apply_lifecycle(event_type, body, actor_name=None, book_name=None, effective_time=None,
+                    folds=None):
     """File an election, a fixing observation or a determination. Anything consequence-shaped is
     refused - see `derivus_spine.verbs.apply_lifecycle` - and so is a price printed at zero or below,
-    the families that are prices declaring it on their factor class."""
+    the families that are prices declaring it on their factor class. An election is judged where an
+    amendment of its instrument would be (`capability.judged_at`), read off the positions ADVANCED
+    in `folds` and filed as its `portfolio` whatever a caller states there; one the record holds no
+    position in is judged at the book."""
     if event_type == 'fixing_observed' and isinstance(body, dict) and isinstance(
             body.get('value'), numbers.Real) and body['value'] <= 0 and str(
             body.get('index')).split('.')[0] in POSITIVE:
         raise SpineRefused('{} is a price, and {!r} is no print of one: nothing is filed'.format(
             body['index'], body['value']))
-    verbs = package().verbs
+    spine = package()
     with writing() as log:
-        return verbs.apply_lifecycle(log, actor(actor_name, log), event_type, body,
-                                     book=book_name, effective_time=effective_time)
+        if event_type == 'election':
+            spine.vocabulary.validate(event_type, body)
+            node = spine.capability.judged_at(advancing(
+                log, spine.projections.PROJECTORS['positions'], folds=folds),
+                body['instrument'], book_name)
+            body = {field: value for field, value in dict(body, portfolio=node).items()
+                    if value is not None}
+        return spine.verbs.apply_lifecycle(log, actor(actor_name, log), event_type, body,
+                                           book=book_name, effective_time=effective_time)
 
 
 def transition(subject, status, actor_name=None, book_name=None, effective_time=None,

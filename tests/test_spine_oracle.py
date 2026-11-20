@@ -45,8 +45,8 @@ from derivus_spine.canon import canonical_bytes, content_hash
 from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 from derivus_spine.projections import CSA, PROJECTORS, fold
 from derivus_spine.verbs import (
-    STANDING, amendment, approve, book, complete_run, declare_agreement, declare_close,
-    declare_entity, declare_file, declare_portfolio, file_quote, transition)
+    STANDING, amendment, apply_lifecycle, approve, book, complete_run, declare_agreement,
+    declare_close, declare_entity, declare_file, declare_portfolio, file_quote, transition)
 from derivus_spine.vocabulary import cited_blobs
 
 from gates.spine_game.red import forged
@@ -534,6 +534,49 @@ def test_a_restrike_judged_narrower_than_what_it_moved_is_named(tmp_path):
                                         book_name=BOOK))
         assert oracle.failed(answers) == ['nothing_outside_its_scope'], (name, answers)
         assert said in answers['nothing_outside_its_scope']['evidence'][0], answers
+
+
+def test_an_election_is_judged_at_the_node_its_body_names_and_else_at_its_book(tmp_path):
+    """AN ELECTION'S NODE IS ITS BODY'S `portfolio`, AND ITS BOOK WHERE IT NAMES NONE. The body
+    every election carried before one named a node still validates, is admitted to the seat
+    holding `book` over the book and refused to a node seat, and replays inside its seat; the
+    choice naming the node its position sits at is that node seat's to file; and a copy carrying a
+    node seat's election judged at its own node, another node holding the instrument too, is named.
+
+    Killing mutations: `portfolio` required of an election, which refuses the body an earlier frame
+    carries; `scope_of` reading no node off an election, which refuses the node seat the exercise
+    of its own position; and an election's portfolio trusted as written, which lets a node seat
+    exercise every holder's position under a judgment at its own node.
+    """
+    fx, seat = BOOK + '/FX', 'subject-fx'
+    chosen = {'instrument': INSTRUMENT, 'choice': 'exercise'}
+    home = seeded(tmp_path, 'elected', clips=())
+    log = SpineLog(home)
+    try:
+        blob = log.store.put(canonical_document({'grants': [
+            {'subject': ACTOR, 'verb': 'admin', 'book': '*'},
+            {'subject': ACTOR, 'verb': 'book', 'book': BOOK},
+            {'subject': seat, 'verb': 'book', 'book': fx}], 'read': []}))
+        log.append('policy_declared', {'policy': CAPABILITIES_POLICY, 'blob': blob}, actor=ACTOR,
+                   blob_refs=(blob,))
+        log.append('fill', dict(fill('E-FX'), portfolio=fx), actor=seat, book=BOOK)
+        apply_lifecycle(log, ACTOR, 'election', chosen, book=BOOK)
+        with pytest.raises(CapabilityDenied) as refused:
+            apply_lifecycle(log, seat, 'election', chosen, book=BOOK)
+        apply_lifecycle(log, seat, 'election', dict(chosen, portfolio=fx), book=BOOK)
+        log.append('fill', dict(fill('E-RT'), portfolio=BOOK + '/Rates'), actor=ACTOR, book=BOOK)
+        landed = log.head()[0]
+    finally:
+        log.close()
+    assert "holds no book scope over '{}'".format(BOOK) in str(refused.value), refused.value
+    assert oracle.failed(oracle.report(home)) == []
+    assert verify_home(home)['events'] == landed
+
+    answers = oracle.report(planted(home, tmp_path, 'narrow', 'election',
+                                    dict(chosen, choice='abandon', portfolio=fx), actor=seat,
+                                    book_name=BOOK))
+    assert oracle.failed(answers) == ['nothing_outside_its_scope'], answers
+    assert 'the election is judged at' in answers['nothing_outside_its_scope']['evidence'][0]
 
 
 def test_a_verdict_beside_its_ticket_and_a_fill_beside_the_tree_are_named(tmp_path):

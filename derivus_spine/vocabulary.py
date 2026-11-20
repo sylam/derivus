@@ -194,8 +194,10 @@ FACT_TYPES = {
         ('instrument', HASH), ('amended_to', HASH)),
         optional=(('portfolio', PATH), ('ticket', HASH), ('tier', TEXT), ('fell_past', TEXTS),
                   SUPERSEDES)),
+    # A holder's choice, judged as an amendment is: `portfolio` is the deepest node holding every
+    # position in the instrument, and a body carrying none is judged at its book.
     'election': _validator('election', (
-        ('instrument', HASH), ('choice', TEXT))),
+        ('instrument', HASH), ('choice', TEXT)), optional=(('portfolio', PATH),)),
     # Keyed by (index, date, source), so an administrator's print and a vendor snap are different
     # facts and a republication is a new row under the same key rather than an edit.
     'fixing_observed': _validator('fixing_observed', (

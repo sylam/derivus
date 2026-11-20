@@ -1772,7 +1772,8 @@ def file_lifecycle(event_type: str, body: dict, actor: str | None = None,
     `determination` `{subject, ruling}`. A knock, an expiry or an accrual follows from these and is
     refused by name, as is a price printed at zero or below. `effective_time`
     (`YYYY-MM-DDTHH:MM:SS.ffffffZ`) is when the fact is true, which orders a restated print. `actor`
-    is the seat it is filed under - a print is the firm's and wants `mark` over the whole firm.
+    is the seat it is filed under - a print is the firm's and wants `mark` over the whole firm, an
+    election `book` at the node its position sits at, which the record reads and no caller states.
     Answers `{recorded: {lsn}, event_type}`, and saying one thing twice is one fact.
     """
     return service().call('POST', '/book/lifecycle', json=dict(

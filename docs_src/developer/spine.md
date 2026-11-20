@@ -307,10 +307,21 @@ each list by the verb its clearing act demands (`spine.demands`). **Held by**
 A grant's `book` is a node reaching every path below it: `BANK/FX` covers `BANK/FX/Options`, not
 `BANK/FXO` or `BANK`. `capability.scope_of`, shared by writer and oracle, judges the firm's own
 facts (policies, markets, prints, runs, the paper, custody) at the firm, which only `*` reaches; a
-fill, restrike, quote or verdict at its `portfolio`; a declared node at its parent; else the book.
-**Held by**
+fill, restrike, election, quote or verdict at its `portfolio`; a declared node at its parent; else
+the book. **Held by**
 `test_spine_capability.py::test_a_grant_at_a_node_reaches_every_path_under_it_and_nothing_beside_it`,
 `test_spine_oracle.py::test_the_firms_own_facts_are_judged_at_the_firm_whatever_their_envelope_names`.
+
+An act on an instrument - a restrike, an election, a delete - is judged where its positions sit:
+the deepest node holding every position in it under the book (`capability.judged_at`), read off
+the positions fold and never stated by a caller. `spine.amend` and `spine.apply_lifecycle` file
+that node as the body's `portfolio`, and the oracle names a frame judged narrower than what it
+moved. An election of an instrument the record holds no position in, and one filed before a body
+named a node, is judged at its book. **Held by**
+`test_spine_engine.py::test_an_election_is_judged_where_its_position_sits`,
+`::test_a_declared_tree_is_where_a_book_books_and_a_restrike_is_judged`,
+`test_spine_oracle.py::test_an_election_is_judged_at_the_node_its_body_names_and_else_at_its_book`,
+`::test_a_restrike_judged_narrower_than_what_it_moved_is_named`.
 
 !!! warning "Enforcement activates by declaration"
     With no capabilities document in force every append and queued job is admitted; once one

@@ -226,7 +226,8 @@ def apply_lifecycle(log, actor, event_type, body, book=None, effective_time=None
     verb's own arm: the writer would refuse a knock as an unknown type but would accept a `fill`
     submitted here. A knock, an expiry or an accrual is a consequence of terms plus one of the three
     and is read off a projection. A determination is a fact about a ruling, not about the touch it
-    rules on. A print is keyed by its `(index, date, source)` and filed by `keyed`.
+    rules on. A print is keyed by its `(index, date, source)` and filed by `keyed`. An election's
+    `portfolio`, where its body carries one, is the node it is judged at, as an amendment's is.
     """
     if event_type not in LIFECYCLE_TYPES:
         raise UnknownEventType(

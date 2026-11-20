@@ -37,7 +37,7 @@ import math
 from .canon import canonical_bytes, content_hash
 from .capability import (
     CAPABILITIES_POLICY, CAPABILITY_EVENTS, PORTFOLIO_TYPES, SCOPED_TYPES, VERB_TYPES,
-    apply_event, declarable, deepest, evaluate, holders, initial_state, nodes, scope_of, stray,
+    apply_event, declarable, evaluate, holders, initial_state, judged_at, nodes, scope_of, stray,
     under, verb_for)
 from .errors import SpineRefusal
 from .log import GENESIS_PREV, SpineLog, as_of_key
@@ -197,14 +197,14 @@ def nothing_outside_its_scope(log, judged=None):
     """Every frame judged at a node below a book held the verb its type demanded there, and sits
     where the record admits it.
 
-    The node half of the writer's decision re-reached (`_judged`): a fill, a restrike, a quote or
-    a verdict at the portfolio its body names, a node declared at its parent, and a node admin's
-    capabilities declaration through `declarable`. Four places are held to the record around
-    them: a portfolio sits in its own book's tree; a restrike is judged at the deepest node
-    holding what it moved, off the `positions` fold at the frame before it; once any node of a
-    book is declared, a fill books into the book or a declared node; and a verdict at a node
-    covers every trade carrying its ticket, so an approver does not sign another node's ticket
-    by naming its own. `judged` is the walk where the caller took it already.
+    The node half of the writer's decision re-reached (`_judged`): a fill, a restrike, an election,
+    a quote or a verdict at the portfolio its body names, a node declared at its parent, and a node
+    admin's capabilities declaration through `declarable`. Four places are held to the record
+    around them: a portfolio sits in its own book's tree; a restrike or an election is judged at
+    the deepest node holding what it moved, off the `positions` fold at the frame before it; once
+    any node of a book is declared, a fill books into the book or a declared node; and a verdict
+    at a node covers every trade carrying its ticket, so an approver does not sign another node's
+    ticket by naming its own. `judged` is the walk where the caller took it already.
     """
     judged = _judged(log, True) if judged is None else judged
     if isinstance(judged, str):
@@ -324,16 +324,16 @@ def _unscoped(frame, scope, verb):
 
 def _placed(frame, body, positions, declared):
     """Why a frame judged at a node is not where the writer would have let it stand - the
-    sentences, none where it is: under its own book; a restrike covering every position it moves,
-    which `positions` - the fold at the frame before it - holds under that book; and a fill into
-    the book or a node `declared` under it once any is."""
+    sentences, none where it is: under its own book; a restrike or an election covering every
+    position it moves, which `positions` - the fold at the frame before it - holds under that
+    book; and a fill into the book or a node `declared` under it once any is."""
     event_type, book = frame['event_type'], frame['book']
     named = stray(event_type, body, book)
     if named is not None:
         return ['LSN {}: the {} names the portfolio {!r} and is filed under the book {!r} - a '
                 'portfolio outside its own book\'s tree, which the writer refuses'.format(
                     frame['lsn'], event_type, named, book)]
-    named = body.get('portfolio') if event_type in ('fill', 'amendment') else None
+    named = body.get('portfolio') if event_type in ('fill', 'amendment', 'election') else None
     if named is None:
         return []
     if event_type == 'fill':
@@ -341,13 +341,13 @@ def _placed(frame, body, positions, declared):
         return [] if not tree or named in [book] + tree else [
             'LSN {}: the fill books into {!r}, which book {!r} does not declare - it books into '
             'itself or a declared node, {}'.format(frame['lsn'], named, book, ', '.join(tree))]
-    held = holders(positions, body['instrument'], book)
-    node = deepest(held)
+    node = judged_at(positions, body['instrument'], book)
     if node is None or under(node, named):
         return []
-    return ['LSN {}: the amendment is judged at {!r} and moves the positions held at {}, the '
-            'deepest node holding them being {!r} - a restrike judged narrower than what it '
-            'moved'.format(frame['lsn'], named, ', '.join(held), node)]
+    return ['LSN {}: the {} is judged at {!r} and moves the positions held at {}, the deepest '
+            'node holding them being {!r} - an act judged narrower than what it moved'.format(
+                frame['lsn'], event_type, named,
+                ', '.join(holders(positions, body['instrument'], book)), node)]
 
 
 def _undeclared(log, body):

@@ -3041,13 +3041,15 @@ def book_lifecycle(request: dict):
     The print is what `GET /book/close/check` waits on for a fixing, and the election what it waits
     on for an expiry vesting a choice. A knock, an expiry or an accrual follows from these and is
     refused by name, as is a price printed at zero or below. The writer admits it as it admits every
-    append - a print is the firm's, at `mark` over `*` - and a seat it refuses is answered in its own
-    words with the denial landed. 404 where no home is configured.
+    append - a print is the firm's, at `mark` over `*`, and an election asks `book` at the deepest
+    node holding every position in its instrument, read off the record and never off the caller -
+    and a seat it refuses is answered in its own words with the denial landed. 404 where no home is
+    configured.
     """
     document, _ = recording().read()
     filed = spine.apply_lifecycle(request.get('event_type'), request.get('body'),
                                   actor_name=request.get('actor'), book_name=book_name(document),
-                                  effective_time=request.get('effective_time'))
+                                  effective_time=request.get('effective_time'), folds=folds())
     return {'recorded': {'lsn': filed['lsn']}, 'event_type': request.get('event_type')}
 
 

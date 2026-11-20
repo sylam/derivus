@@ -1364,6 +1364,52 @@ def test_a_declared_tree_is_where_a_book_books_and_a_restrike_is_judged(recorded
     assert verify_home(recorded)['events'] == head(recorded)
 
 
+def test_an_election_is_judged_where_its_position_sits(recorded, desk):
+    """AN ELECTION IS JUDGED WHERE ITS POSITION SITS, as an amendment is: at the deepest node
+    holding every position in its instrument under the book, read off the positions fold, filed as
+    the body's `portfolio` and never stated by a caller. So a seat granted `book` at a desk's node
+    exercises the trade it booked there; a seat at a sibling node is refused by name with the
+    denial landed, and refused again where its body names its own node; and an instrument the
+    record holds no position in is judged at the book, which a node seat does not reach.
+
+    Killing mutations: `election` out of `capability.PORTFOLIO_TYPES`, which judges it at the book
+    and refuses the trader the exercise of its own trade; and `spine.apply_lifecycle` filing the
+    portfolio a caller states, which lands the sibling seat's election.
+    """
+    with_client(desk)
+    fx, rates = 'spine-desk/FX', 'spine-desk/Rates'
+    for path in (fx, rates):
+        spine.declare_portfolio(path)
+    entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate')] + [
+        (DESK_FX, 'validate', 'spine-desk'), (DESK_FX, 'book', fx), (DESK_TWO, 'book', rates)])
+    booked = ticketed('CF-ELECT', portfolio=fx, actor=DESK_FX).json()
+    assert booked['written'] is True, booked
+    held = booked['recorded']['instrument']
+
+    def elect(seat, instrument=held, **stated):
+        return CLIENT.post('/book/lifecycle', content=dump({
+            'event_type': 'election', 'actor': seat,
+            'body': dict({'instrument': instrument, 'choice': 'exercise'}, **stated)}),
+            headers=JSON)
+
+    for stated in ({}, {'portfolio': rates}):
+        refused = elect(DESK_TWO, **stated)
+        assert refused.status_code == 422, (stated, refused.text)
+        assert "holds no book scope over '{}'".format(fx) in refused.json()['detail'], stated
+        assert facts(recorded, 'capability_denied')[-1][2] == {
+            'subject': DESK_TWO, 'verb': 'book', 'book': fx, 'attempted_type': 'election'}
+    assert facts(recorded, 'election') == []
+    assert elect(DESK_FX, portfolio=rates).status_code == 200
+    assert [body for _, _, body in facts(recorded, 'election')] == [
+        {'instrument': held, 'choice': 'exercise', 'portfolio': fx}]
+    unheld = elect(DESK_FX, instrument=spine.instrument_address(
+        {'Instrument': {'.Deal': dict(CASHFLOW, Reference='CF-NOBODY')}}))
+    assert unheld.status_code == 422, unheld.text
+    assert "holds no book scope over 'spine-desk'," in unheld.json()['detail']
+    assert verify_home(recorded)['events'] == head(recorded)
+    assert oracle.failed(oracle.report(recorded)) == []
+
+
 def test_the_money_a_settlement_moved_reads_back_as_balances(recorded, desk):
     """The back office's half through the service: a settlement that moved money states the amount,
     the asset, its kind, the settlement system's reference and the value date, and `/book/cash`
