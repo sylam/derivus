@@ -2123,6 +2123,19 @@ def file_positions(document, known):
     return found
 
 
+def held_at(document, known):
+    """`{(instrument, agreement): [{deal_path, reference, client}]}` - where `document` holds each
+    position (`file_positions`), keyed under its enclosing netting set's `Reference` (or None) with
+    that set's counterparty as `client`."""
+    held = {}
+    for instrument, nodes in file_positions(document, known).items():
+        for node in nodes:
+            placed = enclosing_set(document, node['deal_path']) or {}
+            held.setdefault((instrument, placed.get('Reference')), []).append(
+                dict(node, client=set_terms(placed)[0] or None))
+    return held
+
+
 #: The two event types a position is made of - what `positions_behind` counts past the pin.
 POSITION_EVENTS = ('fill', 'amendment')
 
@@ -2179,12 +2192,7 @@ def reconciled(document):
     make it invisible by construction.
     """
     record = record_positions()
-    held = {}
-    for instrument, nodes in file_positions(document, {address for address, _ in record}).items():
-        for node in nodes:
-            placed = enclosing_set(document, node['deal_path']) or {}
-            held.setdefault((instrument, placed.get('Reference')), []).append(
-                dict(node, client=set_terms(placed)[0] or None))
+    held = held_at(document, {address for address, _ in record})
     lost = [row for key, row in sorted(record.items()) if row['quantity'] and key not in held]
     names, clients = named_trades(document, {row['instrument'] for row in lost}), client_names()
     return {
@@ -2571,10 +2579,11 @@ def book_positions(actor: str = None):
     standing = spine.visible([row for row in spine.standing(folds=folds())
                               if row['quantity'] or row['amended_to'] is None], spine.sight(actor))
     wanted = {row['instrument'] for row in standing}
-    held, legs = file_positions(document, wanted), PnL.held_legs(job_children(document), wanted)
+    held, legs = held_at(document, wanted), PnL.held_legs(job_children(document), wanted)
     diaried = [dict(row, instrument=legs.get(row['instrument'], row['instrument']))
                for row in hub_diary(document)['rows']]
-    lost = {row['instrument'] for row in standing if row['book'] == book_name(document)} - set(held)
+    lost = ({row['instrument'] for row in standing if row['book'] == book_name(document)}
+            - {instrument for instrument, _ in held})
     # what the file no longer carries announces its days off the record's own terms, where this
     # box's store holds them - a copy that never pulled them can name neither day
     lost = lost and spine.folded(lambda log: set(filter(log.store.has, lost)))
@@ -2591,9 +2600,7 @@ def book_positions(actor: str = None):
             rows.append(dict(row, expired=expired, settles=settles))
     answer = []
     for row in rows:
-        paths = [node['deal_path'] for node in held.get(row['instrument'], [])
-                 if (enclosing_set(document, node['deal_path']) or {}).get('Reference')
-                 == row['agreement']]
+        paths = [node['deal_path'] for node in held.get((row['instrument'], row['agreement']), ())]
         deal = deal_at(document, paths[0])['Instrument']['.Deal'] if paths else {}
         answer.append(dict(row, deal_paths=paths, reference=deal.get('Reference'),
                            object=deal.get('Object')))
