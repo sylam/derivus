@@ -1135,7 +1135,7 @@ def held_structure(document, deal_path):
         if held is None:
             held = {row['instrument'] for row in spine.positions()
                     if row['quantity'] and row.get('book') == book_name(document)}
-        if content_hash(instrument_of(node)) in held:
+        if spine.instrument_address(node) in held:
             return '/'.join(segments[:depth])
     return None
 
@@ -2097,7 +2097,7 @@ def booked_instruments(document):
     references are not unique in a book. A compiled job keeps the file's paths and announces
     nothing for a node it ignores, so a clip left on terms a restrike moved names nothing, and a
     partial unwind, a second node of the same terms, is the one instrument its first is."""
-    return {path: content_hash(instrument_of(node)) for path, node in walk_job_deals(document)}
+    return {path: spine.instrument_address(node) for path, node in walk_job_deals(document)}
 
 
 def file_positions(document, known):
@@ -2112,14 +2112,14 @@ def file_positions(document, known):
 
     def frame(node):
         deal = node['Instrument']['.Deal']
-        return content_hash(instrument_of(node)) not in known and (
+        return spine.instrument_address(node) not in known and (
             deal.get('Object') == 'NettingCollateralSet' or deal.get('Object') in containers
-            and any(content_hash(instrument_of(inner)) in known
+            and any(spine.instrument_address(inner) in known
                     for _, inner in walk_job_deals(node.get('Children', []))))
 
     for path, node in walk_job_deals(document, frame):
         if not frame(node):
-            found.setdefault(content_hash(instrument_of(node)), []).append(
+            found.setdefault(spine.instrument_address(node), []).append(
                 {'deal_path': path, 'reference': node['Instrument']['.Deal'].get('Reference')})
     return found
 

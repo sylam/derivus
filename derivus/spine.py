@@ -458,6 +458,12 @@ def ticket(plan_hash, trade):
     return package().content_hash({'plan_hash': plan_hash, 'trade': trade})
 
 
+def instrument_address(node):
+    """The address a node of a job document is booked under: the content hash of its terms,
+    its legs written under it (`schema.instrument_of`)."""
+    return content_hash(instrument_of(node))
+
+
 def fill_key(instrument, execution_reference):
     """The stable id of one fill, which a confirmation is filed against - `verbs.fill_key`."""
     return package().verbs.fill_key(instrument, execution_reference)
@@ -743,13 +749,13 @@ def _hold(document, nets):
             deal = node['Instrument']['.Deal']
             if node.get('Ignore') == 'True':
                 continue
-            key = (content_hash(instrument_of(node)), agreement)
+            key = (instrument_address(node), agreement)
             if key not in nets:
                 if deal.get('Object') in containers:
                     walk(node.get('Children', []), deal.get('Reference') if deal.get('Object')
                          == 'NettingCollateralSet' else agreement)
                 continue
-            inside.update(((content_hash(instrument_of(leg)), agreement), (leg, deal))
+            inside.update(((instrument_address(leg), agreement), (leg, deal))
                           for _, leg in schema.walk(node.get('Children', ())))
             if key in carried or not nets[key]:
                 node['Ignore'] = 'True'
@@ -1930,11 +1936,11 @@ class PnL:
         containers, found = mapping['Instrument']['containers'], {}
 
         def frame(node):
-            return content_hash(instrument_of(node)) not in wanted and node['Instrument'][
+            return instrument_address(node) not in wanted and node['Instrument'][
                 '.Deal'].get('Object') in containers
 
         for _, node in walk_job_deals(document, frame):
-            address = content_hash(instrument_of(node))
+            address = instrument_address(node)
             if address in wanted:
                 found.setdefault(address, instrument_of(node))
         for address in sorted(set(wanted) - set(found)):
@@ -1951,7 +1957,7 @@ class PnL:
         containers, found = mapping['Instrument']['containers'], {}
 
         def holder_of(node):
-            address = content_hash(instrument_of(node))
+            address = instrument_address(node)
             filed = node['Instrument']['.Deal'].get('Reference')
             return address if address in known else filed if filed in known else None
 
@@ -1962,7 +1968,7 @@ class PnL:
         for _, node in schema.walk(children, frame):
             holder = holder_of(node)
             if holder is not None:
-                found.update((content_hash(instrument_of(leg)), holder)
+                found.update((instrument_address(leg), holder)
                              for leg in schema.leaves(node.get('Children', ())))
         return found
 
@@ -1973,7 +1979,7 @@ class PnL:
         replaced - is read once per unit, each unit in a group of its own."""
         groups = []
         for unit in units:
-            leaves = {content_hash(instrument_of(leaf)) for leaf in schema.leaves([unit])}
+            leaves = {instrument_address(leaf) for leaf in schema.leaves([unit])}
             group = next((group for group in groups if not group[1] & leaves), None)
             if group is None:
                 groups.append(([unit], leaves))
