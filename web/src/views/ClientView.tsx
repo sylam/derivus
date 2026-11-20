@@ -1,8 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import {
-  getBookActivity, getBookAgreements, getBookEntities, getBookPositions, getBookRisk, getBookXva,
-  type About,
-} from '../api';
+import { getBookActivity, type About } from '../api';
 import {
   baseDateOf, cellText, quoted, rowsByPath, sizeOf, toRows, type BlotterRow, type Picked,
 } from '../blotter';
@@ -18,7 +15,7 @@ import {
 } from '../desk';
 import { statusText, type Agreement, type Entity, type Position } from '../positions';
 import { pinnedAt } from '../spine';
-import { clockOf, marketOf, opened, standing, useApp, useRead } from '../state';
+import { marketOf, opened, standing, useApp, useRead } from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
 import { markOf, wholeRecord } from '../trade';
 import type {
@@ -45,12 +42,7 @@ export function ClientView() {
   const { doc, schema, source } = state;
   const recording = state.record.spine !== null;
   const live = source?.kind === 'book';
-  const clock = clockOf(state);
-  const paper = useRead(live && recording ? () => Promise.all([
-    getBookEntities(), getBookAgreements(), getBookPositions()])
-    : null, [source, recording, pinnedAt(state.record.spine)]);
-  const xva = useRead(live ? getBookXva : null, [clock]);
-  const risk = useRead(live ? getBookRisk : null, [clock, state.seat]);
+  const { paper, xva, risk } = state;
 
   if (!live) {
     return (
@@ -63,10 +55,10 @@ export function ClientView() {
     return <EmptyState title={paper.error ?? "Reading the record's paper…"}
                        hint="The entities legal declares, their agreements and the positions under them." />;
   }
-  const [legal, signed, held] = paper.data ?? [null, null, null];
+  const held = recording ? paper.data : null;
   const reads: Reads = {
-    entities: legal?.entities ?? null, agreements: signed?.agreements ?? null,
-    unstated: signed?.settlement_state ?? null, positions: held?.positions ?? null, xva, risk,
+    entities: held?.entities ?? null, agreements: held?.agreements ?? null,
+    unstated: held?.unstated ?? null, positions: held?.positions ?? null, xva, risk,
   };
   const market = marketOf(state);
   const factors = market?.['Price Factors'] ?? {};

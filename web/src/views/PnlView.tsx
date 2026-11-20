@@ -1,11 +1,12 @@
 import { useRef, useState } from 'react';
-import { getBookAgreements, getBookEntities, getMarkedDays, getPnl } from '../api';
+import { getMarkedDays, getPnl } from '../api';
 import { EmptyState } from '../components/EmptyState';
 import {
   behind, explained, factorLabel, FIGURES, pnlQuery, positionLabel, residualShare, type Pnl,
 } from '../pnl';
 import { useApp, useRead } from '../state';
 import { formatNumber, type Kind } from '../tokens';
+import { NO_PAPER } from '../positions';
 
 /** A figure as a cell: a number signed in colour, and a dash for what nobody can know. */
 function Figure({ value, kind = 'money' }: { value: number | null | undefined; kind?: Kind }) {
@@ -43,10 +44,7 @@ export function PnlView() {
 
   const marked = useRead(live ? getMarkedDays : null, [live]);
   const days = marked.data;
-  const paperRead = useRead(live ? () => Promise.all([getBookEntities(), getBookAgreements()])
-    : null, [live]);
-  const paper = { entities: paperRead.data?.[0].entities ?? [],
-                  agreements: paperRead.data?.[1].agreements ?? [] };
+  const paper = state.paper.data ?? NO_PAPER;
   // read again whenever the window or the scope moves, or the reader asks - the explain only when
   // asked for - with the book it was read at
   const read = useRead(live && days?.days.length ? async () => ({ asked: current.current,

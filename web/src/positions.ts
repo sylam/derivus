@@ -6,7 +6,7 @@
 
 import { formatNumber } from './tokens';
 import { GROUP, type TreeNode } from './tree';
-import type { DealNode } from './types';
+import type { DealNode, SettlementState } from './types';
 
 /** One row of `GET /book/positions`: the fold's own row, and where the book file holds it. */
 export type Position = {
@@ -48,14 +48,16 @@ export type Agreement = {
   agreement: string; entity: string; kind: string; terms: Record<string, unknown>;
 };
 
-/** What the grouped views read: the positions standing, the paper they sit under, and the nodes
- * of the book's tree the record declares. */
+/** What the grouped views read: the positions standing, the paper they sit under with what that
+ * paper never states, and the nodes of the book's tree the record declares. */
 export type Paper = {
-  positions: Position[]; entities: Entity[]; agreements: Agreement[]; nodes: string[];
+  positions: Position[]; entities: Entity[]; agreements: Agreement[]; unstated: SettlementState;
+  nodes: string[];
 };
 
 /** The paper of a desk that has read none - or records nothing. */
-export const NO_PAPER: Paper = { positions: [], entities: [], agreements: [], nodes: [] };
+export const NO_PAPER: Paper = { positions: [], entities: [], agreements: [],
+                                 unstated: { fields: [], collateral_columns: [] }, nodes: [] };
 
 /** How a screen groups the book: as the file nests it, or by one of the record's two keys. */
 export type Grouping = 'book' | 'portfolio' | 'client';

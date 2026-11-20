@@ -1,11 +1,10 @@
 import { useState } from 'react';
-import { declareEntity, failure, getBookAgreements, getBookEntities } from '../api';
+import { declareEntity, failure } from '../api';
 import { entityText } from '../desk';
 import { openClient } from '../client';
 import { EmptyState } from '../components/EmptyState';
-import type { Agreement, Entity } from '../positions';
-import { worklistAt } from '../spine';
-import { heldBack, opened, standing, useApp, useRead } from '../state';
+import { type Agreement, type Entity, NO_PAPER } from '../positions';
+import { heldBack, opened, standing, useApp } from '../state';
 import { AgreementForm, AgreementTerms, type Said } from '../components/Desk';
 
 /** The paper the book trades under: every legal entity and agreement the record declares, each
@@ -18,18 +17,13 @@ import { AgreementForm, AgreementTerms, type Said } from '../components/Desk';
 export function PaperView() {
   const { state, dispatch } = useApp();
   const { schema } = state;
-  const at = worklistAt(state.source?.kind === 'book' ? state.record.spine : null);
+  const recording = state.source?.kind === 'book' && state.record.spine !== null;
   const [amending, setAmending] = useState<{ from: Agreement; at: number } | null>(null);
   const hold = heldBack(state, 'document', null);
 
-  const read = useRead(at === null ? null : () => Promise.all([getBookEntities(),
-                                                            getBookAgreements()]), [at]);
-  const [legal, signed] = read.data ?? [];
-  const paper = { entities: legal?.entities ?? [], agreements: signed?.agreements ?? [],
-                  unstated: signed?.settlement_state ?? { fields: [], collateral_columns: [] },
-                  error: read.error };
+  const paper = { ...(state.paper.data ?? NO_PAPER), error: state.paper.error };
 
-  if (at === null || !schema) {
+  if (!recording || !schema) {
     return (
       <EmptyState
         title="The paper is the live book's record."

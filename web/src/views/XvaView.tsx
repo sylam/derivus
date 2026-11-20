@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { getBookCollateral, getBookRisk, getXvaProfile } from '../api';
+import { getBookCollateral, getXvaProfile } from '../api';
 import { SET, fieldsOf, rowsByPath, toRows } from '../blotter';
 import {
   RUNS, WRONG, actionFirst, agreementsOf, bookedText, creditLines, exposureAfter, openClient,
@@ -41,7 +41,7 @@ export function XvaView() {
   const recording = state.record.spine !== null;
   const clock = clockOf(state);
   const [opened, setOpened] = useState<string | null>(null);
-  const risk = useRead(live ? getBookRisk : null, [clock, state.seat]);
+  const { risk } = state;
   const collateral = useRead(live && recording ? getBookCollateral : null, [clock, state.seat]);
 
   if (!live) {
