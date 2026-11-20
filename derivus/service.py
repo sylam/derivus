@@ -4624,10 +4624,9 @@ def marking(request, attempted):
     """Let the seat `request` names write the market - market data and its set-up are the marking
     seat's, `mark` over the book served, over the firm where none is - or refuse in the record's own
     words, the denial of `attempted` landed. Every seat where no home is configured."""
-    if spine.configured():
-        spine.entitled(spine.package().vocabulary.MARK, request.get('actor'),
-                       None if BOOK is None else book_name(BOOK.read()[0]), attempted,
-                       'no {} is written'.format(attempted.replace('_', ' ')))
+    spine.entitled(spine.MARK, request.get('actor'),
+                   None if BOOK is None else book_name(BOOK.read()[0]), attempted,
+                   'no {} is written'.format(attempted.replace('_', ' ')))
 
 
 #: Where a survival curve the desk writes ends: fifty years, past any exposure a book carries - the

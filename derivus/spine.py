@@ -85,6 +85,8 @@ LANES = (TELEMETRY, CURIOSITY, STANDING)
 #: What the standing lane MINTS, respelled beside the lanes for the same reason: a standing job the
 #: queue turns away is recorded as a refusal of this type.
 STANDING_TYPE = 'run_completed'
+#: The two verbs checked off the log, respelled so an unconfigured box never imports the spine.
+MARK, VALIDATE = 'mark', 'validate'
 
 #: The processes a market is designated for - `derivus_spine.policy.DESIGNATED_PROCESSES`,
 #: respelled here so the service can name them without paying for the spine import: the one a
@@ -1698,11 +1700,9 @@ def admit(lane, actor_name=None, book=None):
     one the record could not attribute - and a refused seat lands its `capability_denied` in the
     writer's voice before the raise, a repeat coalescing onto the LSN it already has.
     """
-    if not configured():
-        return
     standing = lane == STANDING
     # the type the lane would have filed, or the lane itself where it files none
-    entitled(package().vocabulary.MARK if standing else package().vocabulary.VALIDATE, actor_name,
+    entitled(MARK if standing else VALIDATE, actor_name,
              book, STANDING_TYPE if standing else (lane or CURIOSITY), 'this job is not queued '
              'and nothing runs: the hub\'s compute is reached through the queue and the queue asks '
              'first, so work this seat is not scoped for is work this box does not pay for',
@@ -1712,7 +1712,9 @@ def admit(lane, actor_name=None, book=None):
 def entitled(verb, actor_name, book, attempted, refused, anywhere=False):
     """Let this seat act under `verb` over `book` - over any node under it where `anywhere` - or
     refuse in the record's own words, saying `refused`, the denial of `attempted` landed first.
-    Every seat where no capabilities document is in force."""
+    Every seat where no home is configured or no capabilities document is in force."""
+    if not configured():
+        return
     spine = package()
 
     def asked(log):
