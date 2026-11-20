@@ -5577,7 +5577,7 @@ def submit_bloomberg(scope, routine=False, actor=None):
     # clock names it: two ticks against an unmoved book are two trips, never one coalesced result
     result_id = content_hash({'book': etag, 'bloomberg': scope, 'at': time.perf_counter()})
     # the tick is TELEMETRY - a repaint superseded by the next one before anything could cite it -
-    # light, or the book stops ticking for a whole-book recalc and then drains a burst of stale beats
+    # and light, or the book stops ticking for a whole-book recalc and then drains a burst of stale beats
     return queued(Job(result_id, BloombergJob(live, scope, result_id, routine), {}, spine.TELEMETRY,
                       actor=actor or spine.hub(), book=book_name(document)))
 
