@@ -1,15 +1,13 @@
-import { useEffect, useState } from 'react';
-import { failure, getResult, tickBloomberg, tickMarket } from '../api';
+import { useState } from 'react';
+import { tickBloomberg, tickMarket } from '../api';
 import { DataTable } from '../components/DataTable';
 import { DescriptorPanel, EditableScalar } from '../components/FieldView';
 import { Navigator } from '../components/Navigator';
 import { Whose } from '../components/Whose';
 import { factorFamily } from '../desk';
-import { blockHint, heldBack, marketOf, useApp, written } from '../state';
+import { blockHint, heldBack, marketOf, useApp, useQueued, written } from '../state';
 import { isObject } from '../tokens';
 import type { Descriptor, Schema, Section } from '../types';
-
-const POLL_MS = 500;
 
 /** A quote row's columns: a table declares them by name, a container by its sub-fields - the two
  * `Points` families declare the same row both ways. A container sub-field is the INSTRUMENT the
@@ -99,57 +97,35 @@ function MarketPriceBlock({ schema, name, block, live }: {
  * read off the run's own stats. Nothing here names a pair - the scope defaults to the desk's. */
 function BloombergTick() {
   const { dispatch } = useApp();
-  const [run, setRun] = useState<{ id: string; status: string } | null>(null);
-  const [note, setNote] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<Record<string, unknown> | null>(null);
-
-  useEffect(() => {
-    if (!run || run.status === 'done' || run.status === 'error') return;
-    const timer = setInterval(async () => {
-      try {
-        const summary = await getResult(run.id);
-        setNote(summary.progress?.note ?? null);
-        setRun({ id: run.id, status: summary.status });
-        if (summary.status === 'done') {
-          setOutcome((summary.stats?.Bloomberg ?? {}) as Record<string, unknown>);
-          await written(dispatch, { written: true });
-        } else if (summary.status === 'error') setOutcome({ refused: [summary.error] });
-      } catch (error) {
-        setRun({ id: run.id, status: 'error' });
-        setOutcome({ refused: [failure(error).error] });
-      }
-    }, POLL_MS);
-    return () => clearInterval(timer);
-  }, [run?.id, run?.status]);
-
-  async function tick() {
+  const asking = useQueued<void, Record<string, unknown> | undefined>(tickBloomberg, 'Bloomberg',
+                                                                      (answer) => {
+    setOutcome(answer ?? {});
+    written(dispatch, { written: true }).catch(() => undefined);
+  });
+  const tick = () => {
     setOutcome(null);
-    setNote(null);
-    try {
-      const submitted = await tickBloomberg();
-      setRun({ id: submitted.result_id, status: submitted.status });
-    } catch (error) {
-      setRun({ id: '', status: 'error' });
-      setOutcome({ refused: [failure(error).error] });
-    }
-  }
+    asking.start();
+  };
 
   const named = (key: string) => (outcome?.[key] ?? []) as string[];
-  const live = run?.status === 'queued' || run?.status === 'running';
+  const status = asking.run?.status ?? (asking.error ? 'error' : outcome && 'done');
   return (
     <>
       <div className="statusrow">
-        <button className="ghost" onClick={tick} disabled={live}>tick from Bloomberg</button>
-        {run && (
-          <span className={`chip ${run.status === 'done' ? 'done'
-            : run.status === 'error' ? 'error' : 'running'}`}>{run.status}</span>
+        <button className="ghost" onClick={tick} disabled={!!asking.run}>
+          tick from Bloomberg
+        </button>
+        {status && (
+          <span className={`chip ${status === 'done' ? 'done'
+            : status === 'error' ? 'error' : 'running'}`}>{status}</span>
         )}
-        {note && <span className="mono">{note}</span>}
+        {asking.run?.progress && <span className="mono">{asking.run.progress.note}</span>}
         {['installed', 'updated', 'new_factors'].map((key) => named(key).length > 0 && (
           <span key={key} className="chip on">{key}: {named(key).join(', ')}</span>
         ))}
       </div>
-      {named('refused').map((message, i) => (
+      {[...named('refused'), ...(asking.error ? [asking.error] : [])].map((message, i) => (
         <div key={i} className="error-box">{message}</div>
       ))}
     </>

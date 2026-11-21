@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import {
-  failure, getCalculations, getResult, getTable, postExecute, runCalculation, saveCalculation,
+  failure, getCalculations, getTable, postExecute, runCalculation, saveCalculation,
   tableCsv,
 } from '../api';
 import { DescriptorPanel } from '../components/FieldView';
@@ -8,7 +8,7 @@ import { DataTable } from '../components/DataTable';
 import { Navigator, type Page } from '../components/Navigator';
 import { TimeSeriesChart } from '../components/TimeSeriesChart';
 import { currencyOf, lagsBook, ownDials, stampText, tableReading } from '../desk';
-import { clockOf, marketOf, useApp, useRead } from '../state';
+import { clockOf, marketOf, useApp, usePolled, useRead } from '../state';
 import { formatNumber, isObject, token } from '../tokens';
 import type { JobDoc, Schema, TableShape } from '../types';
 import { OnStrip } from '../components/Desk';
@@ -16,7 +16,6 @@ import { OnStrip } from '../components/Desk';
 // a page of a table: its leading rows and columns, the whole of it a download away
 const PAGE = 200;
 const WIDE = 50;
-const POLL_MS = 500;
 
 const isScalar = (shape: TableShape) => shape.rows <= 1 && shape.columns.length === 0;
 
@@ -51,19 +50,9 @@ export function CalculationView() {
   const saved = written ?? read.data?.calculations ?? {};
 
   // poll while the run is live
-  useEffect(() => {
-    if (!run.resultId || run.status === 'done' || run.status === 'error' || run.status === 'idle') {
-      return;
-    }
-    const timer = setInterval(async () => {
-      try {
-        dispatch({ type: 'RUN_POLLED', summary: await getResult(run.resultId!) });
-      } catch (error) {
-        dispatch({ type: 'RUN_FAILED', error: failure(error).error });
-      }
-    }, POLL_MS);
-    return () => clearInterval(timer);
-  }, [run.resultId, run.status, dispatch]);
+  usePolled(['done', 'error', 'idle'].includes(run.status) ? null : run.resultId,
+            (summary) => dispatch({ type: 'RUN_POLLED', summary }),
+            (error) => dispatch({ type: 'RUN_FAILED', error }));
 
   // on done: fetch every scalar table for the stat strip, and open the default table
   useEffect(() => {

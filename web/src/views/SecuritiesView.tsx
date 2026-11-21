@@ -1,5 +1,5 @@
-import { Fragment, useEffect, useState, type ReactNode } from 'react';
-import { configureSecurities, failure, getResult, getSecurities, verifySecurities } from '../api';
+import { Fragment, useState, type ReactNode } from 'react';
+import { configureSecurities, failure, getSecurities, verifySecurities } from '../api';
 import { DataTable } from '../components/DataTable';
 import { EmptyState } from '../components/EmptyState';
 import { EditableScalar, FieldView } from '../components/FieldView';
@@ -8,11 +8,9 @@ import {
   USED_COLUMNS, mapPages, mapRows, mergeRequest, rejectedRows, seedDescriptor, setAt, usedRows,
   verifyRequest, withMember,
 } from '../securities';
-import { heldBack, useApp, useRead } from '../state';
+import { heldBack, useApp, useQueued, useRead } from '../state';
 import { isObject } from '../tokens';
 import type { SecuritiesAnswer, SeedOutcome, UsedRow, VerifyOutcome } from '../types';
-
-const POLL_MS = 500;
 
 const PANES = [
   { id: 'vocabulary', label: 'the vocabulary' },
@@ -144,61 +142,33 @@ type Verification = { start: (scope: { block?: string }) => void; running: boole
  * import) is held HERE, so it is said ONCE however many buttons asked for it, and it is a notice
  * rather than an error: the vocabulary reads perfectly well on a workstation that cannot verify. */
 function useVerification(onDone: () => void): Verification {
-  const [run, setRun] = useState<{ id: string; scope: string; status: string } | null>(null);
-  const [note, setNote] = useState<string | null>(null);
+  const [scope, setScope] = useState('');
   const [outcome, setOutcome] = useState<VerifyOutcome | null>(null);
-  const [refused, setRefused] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!run || run.status === 'done' || run.status === 'error') return;
-    const timer = setInterval(async () => {
-      try {
-        const summary = await getResult(run.id);
-        const progress = summary.progress;
-        setNote(progress
-          ? progress.note + (progress.total ? ` ${progress.done}/${progress.total}` : '') : null);
-        setRun({ ...run, status: summary.status });
-        if (summary.status === 'done') {
-          setOutcome((summary.stats?.Securities ?? {}) as VerifyOutcome);
-          onDone();
-        } else if (summary.status === 'error') {
-          setRefused(summary.error ?? 'the verification failed');
-        }
-      } catch (error) {
-        setRun({ ...run, status: 'error' });
-        setRefused(failure(error).error);
-      }
-    }, POLL_MS);
-    return () => clearInterval(timer);
-  }, [run?.id, run?.status]);
-
-  async function start(scope: { block?: string }) {
-    setRefused(null);
-    setOutcome(null);
-    setNote(null);
-    try {
-      const submitted = await verifySecurities(verifyRequest(scope));
-      setRun({ id: submitted.result_id, scope: scope.block ?? 'the whole map',
-               status: submitted.status });
-    } catch (error) {
-      setRun(null);
-      setRefused(failure(error).error);
-    }
-  }
-
+  const asking = useQueued(verifySecurities, 'Securities', (answer?: VerifyOutcome) => {
+    setOutcome(answer ?? {});
+    onDone();
+  });
+  const progress = asking.run?.progress;
+  const status = asking.run?.status ?? (outcome && 'done');
   const drifted = Object.entries(outcome?.drifted ?? {});
   const added = Object.entries(outcome?.added ?? {});
   return {
-    start: (scope) => void start(scope),
-    running: run !== null && run.status !== 'done' && run.status !== 'error',
+    start: (asked) => {
+      setOutcome(null);
+      setScope(asked.block ?? 'the whole map');
+      asking.start(verifyRequest(asked));
+    },
+    running: !!asking.run,
     strip: (
       <>
-        {run && (
+        {status && (
           <div className="statusrow">
-            <span className={`chip ${run.status === 'done' ? 'done'
-              : run.status === 'error' ? 'error' : 'running'}`}>{run.status}</span>
-            <span className="mono">{run.scope}</span>
-            {note && <span className="mono">{note}</span>}
+            <span className={`chip ${status === 'done' ? 'done' : 'running'}`}>{status}</span>
+            <span className="mono">{scope}</span>
+            {progress && (
+              <span className="mono">{progress.note}
+                {progress.total ? ` ${progress.done}/${progress.total}` : ''}</span>
+            )}
             {outcome && (
               <span className="hint">
                 {(outcome.verified ?? []).length} re-verified · {added.length} new ·{' '}
@@ -210,7 +180,7 @@ function useVerification(onDone: () => void): Verification {
             )}
           </div>
         )}
-        {refused && <div className="banner">{refused}</div>}
+        {asking.error && <div className="banner">{asking.error}</div>}
         {drifted.length > 0 && (
           <DataTable columns={['entry', 'security', 'drift']} index={[]}
                      data={drifted.map(([path, drift]) => [path, drift.security, drift.drift])} />

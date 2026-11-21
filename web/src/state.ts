@@ -498,35 +498,47 @@ export function useRead<T>(read: (() => Promise<T>) | null, keys: unknown[]) {
 
 const QUEUE_POLL_MS = 500;
 
-/** A job asked of the service's queue: submitted, then polled until its run answers under its
- * `stats[stat]` - handed to `landed` - or with the service's own sentence, a refused ask's or a
- * failed run's (`ranAs`). One at a time. */
+/** A queued run read every half second while `id` names one: each summary handed to `read`, and
+ * a read that fails to `failed` as the service's sentence. */
+export function usePolled(id: string | null | undefined, read: (summary: ResultSummary) => void,
+                          failed: (said: string) => void) {
+  useEffect(() => {
+    if (!id) return;
+    const timer = setInterval(async () => {
+      try {
+        read(await getResult(id));
+      } catch (thrown) {
+        failed(failure(thrown).error);
+      }
+    }, QUEUE_POLL_MS);
+    return () => clearInterval(timer);
+  }, [id]);
+}
+
+/** A job asked of the service's queue: submitted, then polled (`usePolled`) until its run answers
+ * under its `stats[stat]` - handed to `landed` - or with the service's own sentence, a refused
+ * ask's or a failed run's (`ranAs`); `run` is the wait, with what the job says of its progress.
+ * One at a time. */
 export function useQueued<R, T>(
   submit: (request: R) => Promise<{ result_id: string; status: string }>, stat: string,
   landed: (answer: T) => void) {
-  const [run, setRun] = useState<{ id: string; status: string; since: number } | null>(null);
+  const [run, setRun] = useState<{ id: string; status: string; since: number;
+                                   progress?: ResultSummary['progress'] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const busy = useRef(false);
   const finish = (said: string | null) => { busy.current = false; setRun(null); setError(said); };
 
-  useEffect(() => {
-    if (!run?.id) return;
-    const timer = setInterval(async () => {
-      try {
-        const summary = await getResult(run.id);
-        const read = ranAs<T>(summary, stat);
-        if (!read) setRun((standing) => standing && { ...standing, status: summary.status });
-        else if ('refused' in read) finish(read.refused);
-        else {
-          finish(null);
-          landed(read.answer);
-        }
-      } catch (thrown) {
-        finish(failure(thrown).error);
-      }
-    }, QUEUE_POLL_MS);
-    return () => clearInterval(timer);
-  }, [run?.id]);
+  usePolled(run?.id, (summary) => {
+    const read = ranAs<T>(summary, stat);
+    if (!read) {
+      setRun((standing) => standing
+        && { ...standing, status: summary.status, progress: summary.progress });
+    } else if ('refused' in read) finish(read.refused);
+    else {
+      finish(null);
+      landed(read.answer);
+    }
+  }, finish);
 
   async function start(request: R) {
     if (busy.current) return;
