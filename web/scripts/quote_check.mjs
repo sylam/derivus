@@ -251,16 +251,20 @@ const CAKED = {
   legs: [{ role: 'tier_1', solved: { 'tiers[0].coupon': 2.8512196637090006 } }],
   margin: { amount: 20000, currency: 'ZAR', value: 1152.7, pricing_currency: 'USD' },
 };
-check('a quote quoted again starts from its ticket as priced, every cell the recipe solved blank again',
+const BUYING = quote.draftOf({ ...ZARUSD, params: { ...ZARUSD.params, buy_currency: 'USD' } }, COLLAR);
+check('a quote quoted again starts from its ticket as priced, every cell the recipe solved blank '
+      + 'again; the currency its client buys is the form chosen, which the ticket states again',
       'the solved coupon kept, which states every cell and the premium - the service refuses '
-      + 'that, leaving nothing to solve; or the tiers left as the arrays the quote filed, which the '
-      + 'table cannot read by column',
-      [quote.draftOf(CAKED, CAKE, 'HARBOURLINE/FX'), quote.draftOf(ZARUSD, COLLAR).values],
+      + 'that, leaving nothing to solve; the tiers left as the arrays the quote filed, which the '
+      + 'table cannot read by column; or the selector the quote was asked with kept among the '
+      + 'parameters, a row no form declares beside the buttons that state it',
+      [quote.draftOf(CAKED, CAKE, 'HARBOURLINE/FX'), quote.draftOf(ZARUSD, COLLAR).values,
+       BUYING.values, quote.requestOf(BUYING, COLLAR).params.buy_currency],
       [{ structure: 'RangeAccrual', variation: null,
          values: { premium: 5000, pair: 'USDZAR', tiers: [{ floor: 17, cap: 18.2, coupon: '' }] },
          nettingSet: 'ISDA-KESTREL', margin: { amount: '20000', currency: 'ZAR' },
          portfolio: 'HARBOURLINE/FX' },
-       ZARUSD.params]);
+       ZARUSD.params, ZARUSD.params, 'USD']);
 
 // --- the firm window and the acceptance
 const SCHEMA = { 'Quote Policy': { fields: { firm_seconds: { widget: 'Float', value: 600 } } } };

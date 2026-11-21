@@ -91,12 +91,13 @@ export function requestOf(draft: Draft, declared: StructureType): Record<string,
 const PATH = /^(\w+)(?:\[(\d+)\]\.(\w+))?$/;
 
 /** A quote's ticket to quote again: the structure, form, client and margin it was quoted on and
- * the node it said it books at (`portfolio`), its parameters as priced - a table's rows by their
- * declared columns - with every parameter the recipe SOLVED blank again, so the same solve runs. */
+ * the node it said it books at (`portfolio`), the parameters a ticket fills as priced - a selector
+ * is the form's to state, a table's rows go by their declared columns - with every parameter the
+ * recipe SOLVED blank again, so the same solve runs. */
 export function draftOf(quote: Quote, declared: StructureType, portfolio = ''): Draft {
   const fields = ticketFields(declared, quote.variation);
   const values: Record<string, unknown> = Object.fromEntries(Object.entries(quote.params)
-    .map(([key, value]) => {
+    .filter(([key]) => key in fields).map(([key, value]) => {
       const columns = fields[key]?.col_names;
       return [key, columns && Array.isArray(value) ? value.map((row) => (Array.isArray(row)
         ? Object.fromEntries(columns.map((column, at) => [column, row[at]])) : { ...row }))
