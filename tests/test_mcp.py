@@ -138,7 +138,7 @@ def test_the_instructions_a_host_shows_are_the_desks_orientation():
     """
     instructions = mcp_server.MCP.instructions
 
-    assert instructions == mcp_server.INSTRUCTIONS != mcp_server.__doc__
+    assert instructions == mcp_server.orientation(True) != mcp_server.__doc__
     assert 'RF_SERVICE_URL' not in instructions, "the maintainer's docstring, not the desk's"
     for said in ('START WITH desk_status', 'solve_structure', '{".Timestamp": "YYYY-MM-DD"}',
                  '{".Percent": 2.5}', 'Strike_Price is on the ENGINE axis', '1/17.50',
@@ -280,22 +280,74 @@ def test_a_booking_s_value_date_reaches_the_record_and_the_diary_announces_its_p
                         'netting_set', 'agreement'}
 
 
-def test_the_record_reads_say_so_on_a_box_that_records_nothing(book, tmp_path, monkeypatch):
-    """The six reads that need a RECORD, and a deployment that keeps none answers a 404 the tool
-    turns into the service's own sentence rather than an empty answer a model would read as
-    agreement, or as a record holding nothing.
+#: The record's tools, which a desk that keeps none lacks.
+RECORD_TOOLS = ('book_reconcile', 'close_check', 'book_activity', 'book_markets', 'book_positions',
+                'describe_seat', 'book_files', 'declare_file', 'declare_market', 'declare_close',
+                'export_settlements', 'file_status', 'file_lifecycle', 'book_cash',
+                'collateral_calls', 'mark_book', 'book_pnl', 'declare_legal_entity',
+                'declare_agreement', 'describe_agreements', 'declare_portfolio',
+                'describe_portfolios', 'worklist', 'approve_ticket', 'reject_ticket',
+                'approve_quote', 'reject_quote')
 
-    Killing mutation: any of them answering `{}` where no home is configured, which tells a model
-    the file and the record agree on a box that has no record.
+
+def test_a_desk_that_keeps_no_record_is_told_so_and_oriented_without_its_tools(
+        book, tmp_path, monkeypatch):
+    """Every tool of the record, on a desk that keeps none, is the service's 404, which the tool
+    turns into the service's own sentence rather than an empty answer a model would read as
+    agreement, or as a record holding nothing: the desk's user is told first and the operator's
+    remedy after. The orientation of that desk names none of them, and a recording desk's adds
+    exactly them.
+
+    Killing mutations: any of them answering `{}` where no home is configured, which tells a model
+    the file and the record agree on a box that has no record; `worklist` named in the part every
+    desk reads, which sends a model on a desk with no record after a tool it lacks; the sentence
+    opening on the operator's variable, which a desk's user cannot act on.
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
-    for tool, arguments in ((mcp_server.book_reconcile, {}),
-                            (mcp_server.close_check, {'date': '2030-01-01'}),
-                            (mcp_server.book_activity, {}), (mcp_server.book_markets, {}),
-                            (mcp_server.book_positions, {}), (mcp_server.describe_seat, {})):
+    for name in RECORD_TOOLS:
+        tool = getattr(mcp_server, name)
         with pytest.raises(ToolError) as refusal:
-            tool(**arguments)
-        assert 'DV_SPINE_HOME' in str(refusal.value) and '404' in str(refusal.value)
+            tool(**{parameter.name: '2030-01-01'
+                    for parameter in inspect.signature(tool).parameters.values()
+                    if parameter.default is parameter.empty})
+        said = str(refusal.value)
+        assert '404' in said and 0 < said.find('this desk keeps no record') < said.find(
+            'DV_SPINE_HOME'), (name, said)
+    plain, recording = ({tool.name for tool in asyncio.run(mcp_server.MCP.list_tools())
+                         if tool.name in mcp_server.orientation(mode)} for mode in (False, True))
+    assert recording - plain == set(RECORD_TOOLS) and plain < recording
+
+
+class Down:
+    """A transport whose service is not there."""
+
+    def request(self, *args, **kwargs):
+        raise __import__('requests').exceptions.ConnectionError('refused')
+
+
+def test_a_host_is_shown_the_orientation_of_the_mode_its_service_is_in(
+        book, request, tmp_path, monkeypatch):
+    """`orient` reads the mode off the service's status and installs that mode's orientation for
+    the host: the part every desk reads where the desk keeps no record, the record's part after it
+    where it keeps one. A service that does not answer leaves what stands.
+
+    Killing mutation: `orient` installing the recording desk's orientation whatever the status
+    says, which tells a desk with no record about tools it lacks.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
+    mcp_server.orient()
+    assert mcp_server.MCP.instructions == mcp_server.orientation(False) == mcp_server.INSTRUCTIONS
+
+    mcp_server.configure(base_url='http://nowhere', session=Down())
+    mcp_server.orient()
+    assert mcp_server.MCP.instructions == mcp_server.INSTRUCTIONS, 'a silent service moved it'
+
+    request.getfixturevalue('recorded')
+    service.BOOK = service.Book(str(book))
+    mcp_server.configure(base_url='http://testserver', session=TestClient(service.app))
+    mcp_server.orient()
+    assert mcp_server.MCP.instructions == mcp_server.orientation(True) == (
+        mcp_server.INSTRUCTIONS + '\n\n' + mcp_server.RECORD)
 
 
 def test_the_record_reads_are_read_only_and_say_what_they_read(book):
@@ -313,7 +365,7 @@ def test_the_record_reads_are_read_only_and_say_what_they_read(book):
                        ('book_files', 'content'), ('describe_seat', 'nodes')):
         assert tools[name].annotations.read_only_hint is True, name
         assert said in tools[name].description, name
-        assert name in mcp_server.INSTRUCTIONS, name
+        assert name in mcp_server.orientation(True), name
 
 
 def test_the_strip_and_the_markets_reach_a_model_as_the_record_answers_them(book, recorded,
@@ -1495,10 +1547,6 @@ def test_the_service_being_down_names_dv_service(book):
 
     Killing mutation: a transport error left to propagate rather than named as the service.
     """
-    class Down:
-        def request(self, *args, **kwargs):
-            raise __import__('requests').exceptions.ConnectionError('refused')
-
     mcp_server.configure(base_url='http://nowhere', session=Down())
     with pytest.raises(ToolError, match='DV_Service'):
         mcp_server.read_book()

@@ -2106,10 +2106,11 @@ def book_risk(actor: str = None):
 #: How long a diary request waits on the one worker before it says so instead of hanging a client.
 DIARY_SECONDS = 300.0
 
-#: What a caller with no home configured is told by a verb that reads the record. The book verbs
-#: still answer: this is the deployment recording nothing, not a failure.
-NO_RECORD = ('this box records nothing, so there is no record to read against: set {} to the home '
-             '`DV_Spine init` minted, or leave it unset and the book file is the whole truth here')
+#: What a verb of the record answers on a desk that keeps none: the desk's user first, its
+#: operator's remedy second. The book verbs still answer: this is no failure.
+NO_RECORD = ('this desk keeps no record, so there is nothing for this to read or file on and the '
+             'book file is the whole truth here; to keep one, the operator sets {} to the home '
+             '`DV_Spine init` minted')
 
 #: What a row whose index no `fixings` policy orders says instead of a source. A reading never
 #: refuses, so the row stands due and names why the record cannot answer it.

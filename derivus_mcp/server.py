@@ -52,10 +52,11 @@ from mcp_types import ToolAnnotations
 #: What a host shows the MODEL before it calls anything - the desk's orientation, not this
 #: module's maintenance notes. A host reads it once per session, so it says what the desk IS,
 #: where to start, the wire forms, the one axis a model gets wrong, and what a refusal means.
+#: This part is true of every desk; `RECORD` is what a desk that keeps a record adds to it.
 INSTRUCTIONS = """\
 derivus desk - one trading book with its market, priced by the derivus engine and served by
-DV_Service. You are a dealer's assistant on this desk: everything you do goes through these
-tools, the book on disk is the record, and every write is validated before it lands.
+DV_Service. You are this desk's assistant: everything you do goes through these tools, the book
+on disk is what they read and write, and every write is validated before it lands.
 
 START WITH desk_status: the book's date and currency, its curves and surfaces with when each
 was snapped, the calibrated models, the netting sets and the last XVA per set, and whether a
@@ -72,23 +73,17 @@ A WORKING DAY: read_book to see what is held; describe_instrument_type before bo
 you have not booked; book_deal for a plain instrument; for FX options solve_structure and then
 book_quote, which take market terms and handle the axis; book_risk_summary for the mark and
 its gradient; execute_book or price_candidate for a what-if; solve_deal for a par amount or a
-strike to a target; xva_increment for what one trade would add to its client's CVA, FVA and
-peak exposure; recalc_xva ONLY on request, it is minutes, and xva_view for what stands.
+strike to a target; book_diary for every payment, fixing and expiry the book owes or is owed;
+xva_increment for what one trade would add to its client's CVA, FVA and peak exposure;
+recalc_xva ONLY on request, it is minutes, and xva_view for what stands.
 The desk keeps its own NAMED CALCULATIONS - a credit Monte Carlo at another path count, a PFE
 grid, a base valuation with Greeks: describe_calculations lists them, configure_calculation saves
 one, run_calculation prices the live book (or one subtree) under it. They are this workstation's:
-the book's own calculation and the record never move.
+the book's own calculation never moves.
 
-QUOTING IS NOT BOOKING. solve_structure gives a price and records nothing - quote as often as
+QUOTING IS NOT BOOKING. solve_structure gives a price and books nothing - quote as often as
 the client asks. book_quote is the ACCEPTANCE: call it when the client TAKES the price, and it
-is what records the quote and books the trade. Between the two the market moves, which is
-reported and never refused. EVERY BOOKING IS A TICKET: where the desk's policy wants a second
-seat the trade books all the same and reads PENDING - the answer carries a tier and waits_on -
-and that seat signs it with approve_quote(quote_id, actor), or approve_ticket(ticket, actor)
-for a direct booking; reject_quote and reject_ticket file the other verdict, the trade standing
-rejected until somebody closes it. Never book it a second time. worklist names what waits on
-somebody: tickets to sign, payments due, fills to confirm, collateral calls, closes to mark,
-rejected trades.
+is what books the trade.
 
 THE WIRE FORMS a deal is written in: dates {".Timestamp": "YYYY-MM-DD"}, periods
 {".DateOffset": "3M"}, percentages {".Percent": 2.5}, numbers as numbers; a curve or a surface
@@ -100,14 +95,8 @@ declared: describe_structure lists them with the parameters they take; never com
 or a seagull from legs by hand.
 
 REFUSALS ARE ANSWERS: {written: false, refused: [...]} names what to fix - fix that one thing
-and post again. The SAME two keys WITH `accepted` beside them is a different answer: the
-client's price is already on the record and the desk's own policy will not book it, so say
-which bound it broke and do not re-quote. Deals are addressed by deal_path, which is
-positional, so pass the reference you read at a path whenever you amend or delete. A legacy
-book - trades the book file holds and nobody booked - is taken on as the import_a_legacy_book
-prompt walks: book_reconcile lists each under in_file_not_in_record, and book_deal(deal_path,
-reference, quantity=1, execution_reference=its reference) books it where it sits, moving no
-number.
+and post again. Deals are addressed by deal_path, which is positional, so pass the reference
+you read at a path whenever you amend or delete.
 
 THE MARKET: update_market_quotes and patch_market_values move values; configure_curve,
 configure_book and set_base_date change structure and re-solve; tick_market_from_bloomberg
@@ -115,12 +104,33 @@ needs a terminal on the service's own workstation, and describe_securities reads
 vocabulary behind it with the print every curve knot was solved from. A booking refused for
 market data the book lacks is answered by book_dependencies - what that trade needs and which
 seed entry would supply it - and cured by setup_market, which discovers only what is unknown and
-installs the surface, spots and curves as editable defaults in one write. Bootstrapping dials,
+installs the surface, spots and curves as editable defaults in one write; declare_survival_curve
+writes a new client's credit curve from the spread the CVA desk states. Bootstrapping dials,
 Bloomberg ticker codes and curve set-ups are normally configured once in the web UI - ask
-before changing them here.
+before changing them here."""
 
-THE RECORD, where this desk keeps one: book_diary is everything the book owes or is owed with
-the fact each row waits on, close_check says whether a close on a day is legal and names what
+#: What a desk that keeps a record adds to `INSTRUCTIONS`: every tool it names and that part
+#: does not is one the service answers its 404 for on a desk that keeps none.
+RECORD = """\
+THIS DESK KEEPS A RECORD, and the rest is what that adds.
+
+AN ACCEPTANCE IS RECORDED: book_quote files the quote it books, and between the quote and the
+acceptance the market moves, which is reported and never refused. EVERY BOOKING IS A TICKET:
+where the desk's policy wants a second seat the trade books all the same and reads PENDING -
+the answer carries a tier and waits_on - and that seat signs it with
+approve_quote(quote_id, actor), or approve_ticket(ticket, actor) for a direct booking;
+reject_quote and reject_ticket file the other verdict, the trade standing rejected until
+somebody closes it. Never book it a second time. worklist names what waits on somebody: tickets
+to sign, payments due, fills to confirm, collateral calls, closes to mark, rejected trades.
+{written: false, refused: [...]} WITH `accepted` beside the two keys is a different answer: the
+client's price is already on the record and the desk's own policy will not book it, so say
+which bound it broke and do not re-quote. A legacy book - trades the book file holds and nobody
+booked - is taken on as the import_a_legacy_book prompt walks: book_reconcile lists each under
+in_file_not_in_record, and book_deal(deal_path, reference, quantity=1,
+execution_reference=its reference) books it where it sits, moving no number.
+
+THE RECORD: book_diary's rows carry the fact each waits on, close_check says whether a close on
+a day is legal and names what
 is outstanding, book_reconcile says where the book file and the record disagree, book_activity
 is one line per event with the head to page from, and book_markets the official close standing
 per market - its latest by day - with the close of its day each superseded; book_files lists the
@@ -141,8 +151,7 @@ declared, mark_book values one unit of every instrument on it, and book_pnl read
 made between two marked days or since the last marks. THE PAPER the book trades under is
 declared too, by the seat
 that keeps the legal documents: declare_legal_entity and declare_agreement, the terms a netting set
-and never a balance, and describe_agreements to read them, and declare_survival_curve writes a new
-client's credit curve from the spread the CVA desk states - a booking then names its agreement, the
+and never a balance, and describe_agreements to read them - a booking then names its agreement, the
 first one under it bringing its netting set, and its portfolio, a path under the book or a node
 declared on it (declare_portfolio, describe_portfolios), and its quantity is the position change in
 units of the deal, 1 booking it as written; book_positions reads what stands, each where it sits
@@ -150,7 +159,14 @@ with the status its tickets read, and worklist what waits on the seat asking. Th
 take the seat reading as actor: a seat that acts at one node of the book reads that node's rows,
 and describe_seat says which verbs it holds and at which nodes."""
 
-MCP = MCPServer('derivus', instructions=INSTRUCTIONS)
+
+def orientation(recording):
+    """The desk's orientation in the mode its service is in: the part every desk reads and, where
+    the desk keeps a record, what the record adds."""
+    return INSTRUCTIONS + '\n\n' + RECORD if recording else INSTRUCTIONS
+
+
+MCP = MCPServer('derivus', instructions=orientation(True))
 READ_ONLY = ToolAnnotations(read_only_hint=True)
 
 SERVICE = None
@@ -2175,9 +2191,21 @@ def quote_sheet(quote_id: str) -> bytes:
     return _resource('/book/quote/{}/sheet'.format(quote_id), binary=True)
 
 
+def orient():
+    """Install the orientation of the mode the service is in, read off its status, whose `spine` is
+    null on a desk that keeps no record. A service that does not answer leaves what stands."""
+    try:
+        recording = service().call('GET', '/book/status')['spine'] is not None
+    except ToolError:
+        return
+    # the SDK reads this when a session opens and offers no setter for it
+    MCP._lowlevel_server.instructions = orientation(recording)
+
+
 def main():
     """Serve the tools over stdio, for an MCP host that launches this as a subprocess."""
     configure()
+    orient()
     MCP.run(transport='stdio')
     return 0
 

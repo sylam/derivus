@@ -8,7 +8,7 @@ importing the engine pulls torch into a process that only speaks HTTP.
 
 | where | what |
 | --- | --- |
-| `derivus_mcp/server.py` | the tools, prompts and resources on `MCP`, the host-facing `INSTRUCTIONS`, `main` (stdio) |
+| `derivus_mcp/server.py` | the tools, prompts and resources on `MCP`, the host-facing `INSTRUCTIONS` and `RECORD`, `main` (stdio) |
 | `Service`, `configure` | the HTTP client; `session` is the transport seam a test drives in process |
 | `_await_result` | the poll loop every waiting tool rides, reporting progress on each poll |
 | `_summary`, `_booking` | a run trimmed to its replay tuple and table shapes; a booking answer to that booking |
@@ -34,13 +34,22 @@ No `.mcp.json` is tracked, because it would pin one machine's paths into the rep
 
 ## The instructions
 
-A host shows the server's `instructions` to the model once per session, before any call, so
-`INSTRUCTIONS` is the desk's orientation and the module docstring stays the maintainer's. They say
-to start with `desk_status`, that a deal states its terms and leaves conventions to their declared
-defaults, the wire forms (`{".Timestamp": "YYYY-MM-DD"}`, `{".Percent": 2.5}`), that an FX
-`Strike_Price` is on the engine axis, that a refusal is an answer, that quoting is not booking, and
-how the market and the record are worked. **Held by**
-`test_the_instructions_a_host_shows_are_the_desks_orientation`.
+A host shows the server's `instructions` to the model once per session, before any call, so they
+are the desk's orientation and the module docstring stays the maintainer's. A desk has two modes
+and no roles, so the orientation is composed from the mode its service is in (`orientation`).
+`INSTRUCTIONS` is the part every desk reads: start with `desk_status`, a deal states its terms and
+leaves conventions to their declared defaults, the wire forms (`{".Timestamp": "YYYY-MM-DD"}`,
+`{".Percent": 2.5}`), an FX `Strike_Price` is on the engine axis, a refusal is an answer, quoting
+is not booking, and how the market is worked. `RECORD` is what a desk that keeps a record adds:
+the ticket a booking is and its second seat, the record's reads and declarations, the paper. It
+names every tool the service answers its 404 for on a desk that keeps none, and `INSTRUCTIONS`
+names none of them. `orient` reads the mode off `GET /book/status` as the server starts, `spine`
+being null on a desk that keeps no record, and a service that does not answer then leaves the
+recording desk's orientation standing. **Held by**
+`test_the_instructions_a_host_shows_are_the_desks_orientation`,
+`test_a_desk_that_keeps_no_record_is_told_so_and_oriented_without_its_tools`,
+`test_a_host_is_shown_the_orientation_of_the_mode_its_service_is_in`; **Not gated:** `main`
+calling `orient`.
 
 ## The tools
 
@@ -94,9 +103,10 @@ structure takes it as `name`. **Held by**
 | `book_positions` | `GET /book/positions`: positions under agreement and portfolio |
 | `declare_legal_entity`, `declare_agreement`, `describe_agreements` | `/book/entities`, `/book/agreements`: the paper the book trades under |
 
-A read that needs a record answers the service's 404 on a desk that keeps none, never an empty
-answer a model would read as agreement. **Held by**
-`test_the_record_reads_say_so_on_a_box_that_records_nothing`.
+A tool of the record answers the service's 404 on a desk that keeps none, never an empty answer a
+model would read as agreement, in the service's one sentence (`service.NO_RECORD`): the desk's
+user is told first, the operator's remedy after. **Held by**
+`test_a_desk_that_keeps_no_record_is_told_so_and_oriented_without_its_tools`.
 
 ## Prompts and resources
 
