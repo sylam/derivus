@@ -163,6 +163,21 @@ check('an agreement lacks each factor its terms name that the market does not ho
        client.lacked({ Object: SET }, declared, {})],
       [['DividendRate.ACME', 'FxRate.CHF', 'FxRate.SEK'], [], []]);
 
+const worded = (terms) => {
+  const reading = client.termsReading(terms, DECLARED);
+  return [...reading.terms, ...reading.conventions].map((term) => term.key);
+};
+check("a set's own funding curve is no term a client's page reads, stated or at its convention, "
+      + 'and the curve it names is still asked of the market',
+      'the term read off the declaration whole, which words the curve of an adjustment no screen '
+      + "shows; or the field cut from what readiness reads too, which calls ready a client whose "
+      + 'paper names a curve the market lacks',
+      [worded(NAMING), worded({ ...CSA }).includes('Funding_Rate'),
+       client.lacked({ Object: SET, Funding_Rate: 'USD-FUND' }, declared, {})],
+      [['Agreement_Currency', 'Credit_Support_Amounts.Counterparty',
+        'Collateral_Assets.Cash_Collateral', 'Collateral_Assets.Equity_Collateral'], false,
+       ['InterestRate.USD-FUND']]);
+
 const wanting = (id, paper, factors) => client.readiness(id, ENTITIES, paper, DOC, null, factors, DECLARED)
   .filter((line) => / names /.test(line.text)).map((line) => [
     line.tone, /names (\S+), which the market does not hold/.exec(line.text)?.[1] ?? null,

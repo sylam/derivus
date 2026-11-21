@@ -4,7 +4,7 @@ import { factorNames } from '../desk';
 import { marketOf, useApp } from '../state';
 import {
   SUPPORT_ROW, currencyOf, curveOf, editRaw, encodeScalar, fieldLabel, formatNumber, isBlank,
-  isEditableScalar, isObject, kindOf, label, offsetText, sharedSections, token, ungrouped,
+  isEditableScalar, isObject, kindOf, label, offsetText, onScreen, sharedSections, token, ungrouped,
 } from '../tokens';
 import type { Descriptor, Schema, Section } from '../types';
 import { axisNames, quotesNormal } from '../vols';
@@ -189,7 +189,7 @@ export function DescriptorPanel({ title, fields, values, onAmend, editable, asid
   );
 }
 
-/** A deal as its type declares it: a card per section holding that section's fields - its `own`
+/** A deal as its type declares it: a card per section holding what a screen shows - its `own`
  * alone, the sections every type shares left out - then every key no section covers, the viewer's
  * honesty panel; a type nobody declared is one card whole. `cut` narrows a section's fields, and
  * `hold` - what holds the seat from amending - reads in place of every input. */
@@ -206,17 +206,19 @@ export function DealPanels({ deal, schema, own, cut = (fields) => fields, hold, 
   }
   const shared = own ? sharedSections(schema.Instrument.types) : [];
   const of = (section: string) => schema.Instrument.sections[section] ?? {};
-  const pick = (keep: (key: string) => boolean) =>
-    Object.fromEntries(Object.entries(deal).filter(([key]) => keep(key)));
-  const extra = pick((key) => !sections.some((section) => key in of(section)));
+  const extra = Object.fromEntries(Object.entries(deal)
+    .filter(([key]) => !sections.some((section) => key in of(section))));
   return (
     <>
       {hold && <div className="note">{hold}</div>}
-      {sections.filter((section) => !shared.includes(section)).map((section) => (
-        <DescriptorPanel key={section} title={schema.Instrument.titles?.[section] ?? section}
-                         fields={cut(of(section))} values={pick((key) => key in of(section))}
-                         onAmend={hold ? undefined : onAmend} {...panel} />
-      ))}
+      {sections.filter((section) => !shared.includes(section)).map((section) => {
+        const { fields, values } = onScreen(of(section), deal);
+        return (
+          <DescriptorPanel key={section} title={schema.Instrument.titles?.[section] ?? section}
+                           fields={cut(fields)} values={values}
+                           onAmend={hold ? undefined : onAmend} {...panel} />
+        );
+      })}
       <DescriptorPanel title="Fields the engine does not know" values={extra} />
     </>
   );

@@ -11,7 +11,7 @@ import {
 import { byPath, closed, type Agreement, type Entity, type Position } from './positions';
 import { standing, type Action } from './state';
 import {
-  COLLATERAL, currencyOf, formatNumber, isBlank, label, setCurrency, tenorLabel, token,
+  COLLATERAL, currencyOf, formatNumber, isBlank, label, onScreen, setCurrency, tenorLabel, token,
   uncollateralised,
 } from './tokens';
 import { markOf } from './trade';
@@ -159,7 +159,7 @@ function term(key: string, field: Descriptor, value: unknown,
  * each other term stated, the rest at their conventions apart; a set whose collateral is off only
  * what it states, collateral it does not have meaning nothing. The flag itself is the reading's. */
 export function termsReading(terms: Record<string, unknown>, schema: Schema): TermsReading {
-  const fields = fieldsOf(schema, String(terms.Object), true) ?? {};
+  const { fields } = onScreen(fieldsOf(schema, String(terms.Object), true) ?? {}, terms);
   const currency = (description: string) =>
     currencyOf(description, Object.keys(fields), (key) => terms[key]);
   const all = Object.entries(fields).filter(([key]) => key !== COLLATERAL)

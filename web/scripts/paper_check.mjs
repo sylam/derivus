@@ -80,6 +80,28 @@ check("an agreement's form leaves out the fields and the collateral columns the 
        paper.Received_Threshold === SET.Received_Threshold, paper.Netted === SET.Netted],
       [false, ['Currency', 'Haircut_Posted'], ['Text', 'Percent'], 2, ['Equity'], true, true]);
 
+const FUNDED_SET = { ...TERMS, Funding_Rate: field('Text', '', { convention: true }),
+  Collateral_Assets: field('Container', {}, { sub_fields: {
+    Cash_Collateral: table(['Currency', 'Collateral_Rate', 'Funding_Rate'], ['Text', 'Text', 'Text']) } }) };
+const FUNDED = { ...CSA, Funding_Rate: 'USD-FUND', Unknown: 1,
+                 Collateral_Assets: { Cash_Collateral: [{ Currency: 'EUR', Funding_Rate: 'EUR-FUND' }] } };
+const [filed, declared] = [structuredClone(FUNDED), Object.keys(FUNDED_SET)];
+const screen = tokens.onScreen(FUNDED_SET, FUNDED);
+check("a set's own funding curve is on no screen and stays in its terms: a section shows its other "
+      + "fields with the values under them, a cash collateral row's rate columns among them, and "
+      + 'the terms and the declaration it was handed stand whole',
+      'the field rendered, a term of an adjustment no screen shows; the term struck from the terms '
+      + "handed in, which a form then files without it; a collateral table's column of the name cut "
+      + 'too; the field struck from the declaration, which loses a client its readiness line; or '
+      + 'a key the section does not declare shown under it',
+      [Object.keys(screen.fields).includes('Funding_Rate'), Object.keys(screen.values),
+       screen.fields.Collateral_Assets.sub_fields.Cash_Collateral.col_names,
+       screen.values.Collateral_Assets.Cash_Collateral, FUNDED, Object.keys(FUNDED_SET)],
+      [false, ['Collateralized', 'Agreement_Currency', 'Liquidation_Period',
+               'Credit_Support_Amounts', 'Collateral_Assets'],
+       ['Currency', 'Collateral_Rate', 'Funding_Rate'],
+       [{ Currency: 'EUR', Funding_Rate: 'EUR-FUND' }], filed, declared]);
+
 const read = (values) => (key) => values[key];
 check("an amount is in the currency field its description says it is in, by key or in words",
       "any mention of a currency field read, which tags a quanto rate 'payoff currency per unit' "

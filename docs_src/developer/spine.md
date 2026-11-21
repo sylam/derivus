@@ -620,12 +620,16 @@ posts: the `pending` tickets with approve and refuse-with-a-reason, then the `pa
 clears it, with the day's close check and the close behind its verdict. The Paper workspace
 (`web/src/views/PaperView.tsx`) lists the entities and the agreements with their terms and
 declares both, an agreement's terms the netting set rendered off the `NettingCollateralSet`
-declaration `/schema` publishes, and opens on what a row of the strip names. Each posts under the
+declaration `/schema` publishes, and opens on what a row of the strip names. No screen shows a
+set's own `Funding_Rate`, the term of its collateral adjustment: every view of a deal's fields
+leaves it out (`onScreen` in `web/src/tokens.ts`), a set stating it keeps it through an edit, and
+a client's readiness still asks the market for the curve it names. Each posts under the
 acting seat and shows a refusal in the service's own words. **Held by** what they read,
 `test_pnl.py::test_the_worklist_names_what_waits_and_each_row_leaves_when_its_fact_lands`,
 `test_diary.py::test_a_close_is_declared_only_on_a_day_the_check_calls_legal` and
 `test_spine_engine.py::test_the_paper_is_declared_and_a_booking_names_the_agreement_it_sits_under`,
-and the web's type check; the rendering is **Not gated**.
+`web/scripts/paper_check.mjs` and `web/scripts/client_check.mjs` for what no screen shows, and
+the web's type check; the rest of the rendering is **Not gated**.
 
 ## Policies {#policies}
 

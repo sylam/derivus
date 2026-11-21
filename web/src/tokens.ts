@@ -218,6 +218,19 @@ export const uncollateralised = (fields: Section, values: Record<string, unknown
 export const setCurrency = (terms: Record<string, unknown>): string =>
   label([terms.Balance_Currency, terms.Agreement_Currency].find(Boolean));
 
+/** The curve a netting set's collateral adjustment funds at: experimental, so no screen shows
+ * the term, and a set stating it keeps it through every edit. */
+const SET_FUNDING = 'Funding_Rate';
+
+/** One section of a deal as a screen shows it: its `fields` and the `deal`'s values under them,
+ * `SET_FUNDING` in neither - a collateral table's column of that name stays - and `deal` whole. */
+export function onScreen(fields: Section, deal: Record<string, unknown>):
+  { fields: Section; values: Record<string, unknown> } {
+  const cut = <T>(record: Record<string, T>): Record<string, T> => Object.fromEntries(
+    Object.entries(record).filter(([key]) => key in fields && key !== SET_FUNDING));
+  return { fields: cut(fields), values: cut(deal) };
+}
+
 /** `fields` cut to the ones `values` state - a container's to the children it states - and those
  * `also` names: what reads of terms whose conventions mean nothing. */
 export function statedOnly(fields: Section, values: Record<string, unknown>,
