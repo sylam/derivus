@@ -1,7 +1,8 @@
 # Roadmap
 
 The build plan and the engineering status of derivus, for whoever builds on it next: what is to be
-closed before 0.5.0, what is designed but not built, and how a change is verified. What was built,
+closed before 0.5.0, what is out of that release and what comes next, what is designed but not
+built, and how a change is verified. What was built,
 and the numbers it was measured to, is in the commit messages; the tests that hold each rule are
 named on the developer page that states it.
 
@@ -27,6 +28,23 @@ features kept ahead of their build, not rows to close.
   calculation as a job; it then retires. It raises on three field names outside its write
   allowlist and on multi-column Tables outside a four-name allowlist, and fourteen output-shaped
   descriptors have no widget.
+
+## Out of this release, and next {#scope}
+
+Out of this release, a row under Designed, not built saying more where one stands:
+
+- VaR and standard stress, the readers of the scenario batch.
+- Scenarios as a named map, each read with its P&L: a `ScenarioValuation` takes a list of markets
+  and reports each one's values.
+- Option settlement amounts, the diary's payoff-shaped amount.
+- An entity's static data beyond its id, name and parent: its LEI, its rating, its KYC standing.
+- Structure variations and add-leg on the screen.
+
+Next, after it:
+
+- Gamma on the risk screen, on demand.
+- A second seat's approval for a declared entity or agreement.
+- A physically delivered TARF.
 
 ## Designed, not built
 

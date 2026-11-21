@@ -190,6 +190,12 @@ Grouped by where a validator meets them.
   `utils.CreditSupportList.value` returns the first row's threshold, minimum transfer or independent
   amount whatever the counterparty's rating, in the engine and the spine's collateral call. Exact
   for one row; UNMEASURED otherwise.
+- **An upstream document's `Base_Time_Grid`, `Scenario_Time_Grid` and `Percentiles` are not read**
+  (2026-11-21). A credit run's grid is `Time_Grid` and its percentile `Percentile`, each at its
+  declared default where the document states neither, so a document stating its grids and
+  percentiles under the upstream names alone runs on the declared ones. UNMEASURED: the size is the
+  document's own grid and percentiles against those. A document states both under the names the run
+  reads.
 - **Declared fields not yet read** (2026-10-11), each a feature declared ahead of its build and kept
   so: `Average_FX` (floating energy deal, energy option) will average the fx and the reference
   separately and multiply the two averages in place of the sum of products; `Net_Cashflows`

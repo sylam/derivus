@@ -45,8 +45,9 @@ SKIP = {'.git', 'node_modules', 'artifacts', 'data', 'notebooks', 'docs', 'site'
 FACTORS = 'riskfactors'
 #: Libraries whose names a page may cite.
 LIBRARIES = ('torch', 'torch.Tensor', 'numpy', 'pandas')
-#: Names a page cites to say they are deliberately absent - mcp.md: no tracked `.mcp.json`.
-ABSENT = {'.mcp.json'}
+#: Names a page cites to say they are deliberately absent - mcp.md: no tracked `.mcp.json`;
+#: limitations.md: the upstream keys a credit run does not read.
+ABSENT = {'.mcp.json', 'Scenario_Time_Grid', 'Percentiles'}
 #: A heading over names that may not exist yet.
 UNBUILT = re.compile(r'^#+ .*(not built|\bOpen\b|Non-goals)', re.IGNORECASE)
 SPAN = re.compile(r'`([^`\n]+)`')
