@@ -6,7 +6,7 @@ import {
   WAITING, divergences, reconcileAt, reconcileVerdict, wantsReconcile, wantsWorklist, worklistAt,
   worklistLine,
 } from '../spine';
-import { opened, spineOf, useApp } from '../state';
+import { noneShown, opened, spineOf, useApp } from '../state';
 import type { Reconcile } from '../types';
 
 /** Where the book FILE stands against the record, in the app frame beside the book's own header.
@@ -163,7 +163,7 @@ function Divergences({ reconcile }: { reconcile: Reconcile }) {
  * this client has merged - each the service's sentence for what it is about and who did it, and a
  * row naming a deal, an agreement or an entity opens it. Every type shows, including one this
  * deployment has no sentence for, which renders its own name. Collapsed it is the last thing that
- * happened; expanded it is the sequence.
+ * happened; expanded it is the sequence. A seat shown no row is told so, not that none is recorded.
  */
 export function ActivityStrip() {
   const { state, dispatch } = useApp();
@@ -183,9 +183,9 @@ export function ActivityStrip() {
           <b className="mono">LSN {newest.lsn}</b> {newest.by}: {newest.summary}
           {' · '}{stampText(newest.record_time)}
         </span>
-      ) : <span>nothing has been recorded here yet</span>}
+      ) : <span>{noneShown(state, 'nothing has been recorded here yet')}</span>}
       <span className="spacer" />
-      <span className="mono">{rows.length} rows held</span>
+      {newest && <span className="mono">{rows.length} rows held</span>}
       {open && (
         <div className="rows">
           <table className="data">

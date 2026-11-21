@@ -196,8 +196,8 @@ function Origin({ recording, held, history, quote }: {
                 position {booked.lsn}</span>
             ) : (
               <span className="hint">{typeof history === 'string'
-                ? `the record did not answer: ${history}` : history === null
-                  ? 'reading the record…' : 'no fill on the record opens this trade'}</span>
+                ? `the record did not answer: ${history}` : history === null ? 'reading the record…'
+                  : noneShown(state, 'no fill on the record opens this trade')}</span>
             )}
           </div>
         )}
@@ -250,9 +250,7 @@ function Origin({ recording, held, history, quote }: {
               </tbody>
             </table>
           </div>
-        ) : (
-          <div className="hint">{noneShown(state)}.</div>
-        )}
+        ) : booked && <div className="hint">{noneShown(state)}.</div>}
       </div>
     </section>
   );
@@ -326,7 +324,8 @@ function Worth({ path, reference, legs, shut }: {
 function History({ recording, history, deal }: {
   recording: boolean; history: ActivityRow[] | string | null; deal: Record<string, unknown>;
 }) {
-  const { schema } = useApp().state;
+  const { state } = useApp();
+  const { schema } = state;
   return (
     <section className="card">
       <h3>What happened to it</h3>
@@ -362,7 +361,8 @@ function History({ recording, history, deal }: {
                   </tr>
                 ))}
                 {!history.length && (
-                  <tr><td className="hint">nothing on the record opens this trade.</td></tr>
+                  <tr><td className="hint">
+                    {noneShown(state, 'nothing on the record opens this trade')}.</td></tr>
                 )}
               </tbody>
             </table>

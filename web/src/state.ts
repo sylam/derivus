@@ -502,16 +502,17 @@ export const bookRisk = (state: AppState) => readAs(heldBack(state, 'validate'),
 export const actingSeat = (state: AppState): string =>
   (state.grants?.asked === state.seat && state.grants.read?.seat) || state.seat;
 
-/** What a seat shown no position in a trade is told, the record showing a seat what sits under the
- * nodes it holds a grant at: that the record holds none, where that is the whole book - a node at
- * or above it, or no grants read - and else that the seat is shown none, with what it sees. */
-export function noneShown(state: AppState): string {
+/** What a seat shown nothing of a thing on the record is told - no position in a trade, no row of
+ * its history or of the record's strip - the record showing a seat what sits under the nodes it
+ * holds a grant at: `whole`, that the record holds none, where it is shown the whole book - a node
+ * at or above it, or no grants read - and else that the seat is shown none, with what it sees. */
+export function noneShown(state: AppState, whole = 'The record holds none of it now'): string {
   const { grants } = state;
   const book = String(state.doc?.Calc.Deals.Reference ?? '');
   const held = grants?.asked === state.seat ? Object.values(grants.read?.verbs ?? {}) : [];
   const sees = [...new Set(held.flatMap((at) => at ?? [book]))].sort();
   if (!held.length || sees.some((node) => book === node || book.startsWith(`${node}/`))) {
-    return 'The record holds none of it now';
+    return whole;
   }
   return `${grants!.read!.seat} is shown none of it, ${sees.length
     ? `seeing only what sits under ${sees.join(', ')}` : 'holding no grant at any node'}`;

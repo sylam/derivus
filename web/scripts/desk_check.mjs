@@ -536,6 +536,16 @@ check('a seat shown no position in a trade is told the record holds none only wh
        'sales-9 is shown none of it, seeing only what sits under HARBOUR',
        'sales-9 is shown none of it, holding no grant at any node']);
 
+const YET = 'nothing has been recorded here yet';
+check("a seat shown the whole book is told each place's own sentence - no fill opens the trade, "
+      + 'nothing is recorded yet - and a seat shown none of it is told so in every place',
+      "the place's sentence dropped for the trade's, which tells the reader of an empty strip "
+      + "that the record holds none of it now; or the place's sentence said to a seat shown "
+      + 'none, which tells it nothing has been recorded on a record that holds the book',
+      [state.noneShown(seated({ book: ['HARBOURLINE'] }), YET), state.noneShown(seated(null), YET),
+       state.noneShown(seated({ book: ['HARBOURLINE/FX'] }, 'sales-9'), YET)],
+      [YET, YET, 'sales-9 is shown none of it, seeing only what sits under HARBOURLINE/FX']);
+
 const NO_SEAT = 'No seat is set, and this desk files every act under the seat that asks.';
 check('a seat may act where a node it holds the act\'s verb at is the node or above it, the book '
       + 'by default and the whole firm only by a grant over every node; and says, naming the '
