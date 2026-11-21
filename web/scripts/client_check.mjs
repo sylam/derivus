@@ -380,17 +380,18 @@ check('a read refused for want of a marked close is a state of the desk, said as
         'No close stands on the market designated for the P&L.',
         'The book is not marked for the day asked.', null, null], true, false, false]);
 
-const sent = (said) => [/on the Back Office for the market named official,/.test(said),
-                        /through the chat for any other\./.test(said)];
-check('where no close stands the desk is sent to the Back Office for the market its control '
-      + 'declares on, official, and to the chat for any other; by a seat holding the verb the '
-      + 'declaration demands, where the grants read name it',
-      'the Back Office named for whatever market the desk designates, which sends a desk '
-      + 'designating another to declare a close its P&L never reads; or the verb left out',
+const sent = (said) => [
+  / on the Back Office, on the market the desk designates for its P&L\./.test(said),
+  /official|any other/.test(said)];
+check('where no close stands the desk is sent to the Back Office, whose control declares on the '
+      + 'market the desk designates for its P&L, once and for every desk; by a seat holding the '
+      + 'verb the declaration demands, where the grants read name it',
+      'the Back Office named for the market called official alone, which sends a desk '
+      + 'designating another to the chat for a close its own control declares; or the verb left out',
       [sent(UNMARKED[1].hint), sent(client.declaredOn('mark')),
-       client.declaredOn('mark').startsWith('A close is declared by a seat holding mark: '),
-       client.declaredOn().startsWith('A close is declared: ')],
-      [[true, true], [true, true], true, true]);
+       client.declaredOn('mark').startsWith('A close is declared by a seat holding mark on the '),
+       client.declaredOn().startsWith('A close is declared on the ')],
+      [[true, false], [true, false], true, true]);
 
 const UNREAD = 'the calculation policy in force states a CreditMonteCarlo block the engine refuses';
 const funded = (cost, benefit, refused) =>

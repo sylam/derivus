@@ -279,13 +279,12 @@ export function creditLines(id: string, reads: CreditReads, schema: Schema): Cre
             .map((row) => line(row.agreement, null))];
 }
 
-/** Where a close is declared, by a seat holding `verb` where its grants name one: the Back Office's
- * control declares on the market named official alone and the chat on any, no read telling the
- * client which the desk designates where nothing is declared under it. */
+/** Where a close is declared, by a seat holding `verb` where its grants name one: the Back
+ * Office's control names no market, and the service declares it on the one the desk designates for
+ * its P&L, which the marks and the P&L read. */
 export const declaredOn = (verb?: string): string =>
-  `A close is declared${verb ? ` by a seat holding ${verb}` : ''}: on the Back Office for the `
-  + 'market named official, through the chat for any other. The book is then marked at it '
-  + 'through the chat';
+  `A close is declared${verb ? ` by a seat holding ${verb}` : ''} on the Back Office, on the `
+  + 'market the desk designates for its P&L. The book is then marked at it through the chat';
 
 /** How each refusal of a read on a marked close starts, with what it says is missing and who puts
  * it right: no market designated for the P&L, none declared under that name, no marks for a day. */
