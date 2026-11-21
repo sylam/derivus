@@ -157,7 +157,10 @@ declared on it (declare_portfolio, describe_portfolios), and its quantity is the
 units of the deal, 1 booking it as written; book_positions reads what stands, each where it sits
 with the status its tickets read, and worklist what waits on the seat asking. The record's reads
 take the seat reading as actor: a seat that acts at one node of the book reads that node's rows,
-and describe_seat says which verbs it holds and at which nodes."""
+and describe_seat says which verbs it holds and at which nodes. THE OFFICIAL CALCULATION is
+declared as well, by the admin seat: declare_official_calculation states what the desk's credit
+run runs at - its paths, its batches, its seed, the two funding curves - and
+describe_official_calculation reads what stands; a named calculation stays a seat's own."""
 
 
 def orientation(recording):
@@ -2001,6 +2004,36 @@ def declare_agreement(agreement: str, entity: str, kind: str, terms: dict,
     return service().call('POST', '/book/agreements', json=dict(
         {'agreement': agreement, 'entity': entity, 'kind': kind, 'terms': terms},
         **_stated(actor=actor)))
+
+
+@MCP.tool(annotations=READ_ONLY)
+def describe_official_calculation() -> dict:
+    """What the desk's OFFICIAL runs run at, as the record declares it: `calculations`, per
+    calculation type the block of that type's fields its official run runs at - `CreditMonteCarlo`
+    is the one type that has one - with the `blob` the document is stored under and the `lsn` of
+    its declaration, each null where none is declared. A named calculation (`describe_calculations`)
+    and a what-if's overrides are a seat's own and never official. 404 on a box that records
+    nothing.
+    """
+    return service().call('GET', '/book/calculations')
+
+
+@MCP.tool()
+def declare_official_calculation(calculations: dict, actor: str | None = None) -> dict:
+    """Declare what the desk's official runs run at as the `admin` seat, which files a
+    `policy_declared`: `calculations` is `{"CreditMonteCarlo": {...}}`, a block of that type's own
+    fields (`describe_calculation_type`) - `Batch_Size` and `Simulation_Batches` for the paths,
+    `Random_Seed`, and `Funding_Valuation_Adjustment` with its `Funding_Cost_Interest_Curve` and
+    `Funding_Benefit_Interest_Curve` - and no `Object`, the type being the key. A container such as
+    `Funding_Valuation_Adjustment` is stated whole.
+
+    Never choose these numbers or curves yourself: they are the desk's policy, so declare what you
+    are told. The engine judges the block before anything is recorded and a refusal names the field
+    to fix; a curve the book does not carry is refused by the run that reads it. The last
+    declaration stands, and `{}` declares that nothing is stated. Answers `{recorded: {lsn}, blob}`.
+    """
+    return service().call('POST', '/book/calculations', json=dict(
+        {'calculations': calculations}, **_stated(actor=actor)))
 
 
 @MCP.tool()

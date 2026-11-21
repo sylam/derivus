@@ -5917,3 +5917,66 @@ def test_a_tick_the_hub_may_not_mark_is_refused_and_the_cadence_lives(recorded, 
         "so no bloomberg tick is written. Declare a document granting ('{}', mark, 'spine-desk') "
         "through `DV_Spine grant --file`. The refusal is itself recorded at LSN {} - the book is "
         "untouched".format(beat, ACTOR, ACTOR, denial[0][0]) for beat in (1, 2)], ran.stdout
+
+
+# --------------------------------------------------------------------------------------------
+# The official calculation: declared under admin, judged by the engine, read by the credit run.
+
+#: What a hub's credit run is declared to run at in these gates: two batches, its FVA's cost funded
+#: at `FUND` and its benefit at the dollar curve the exposure deflates on.
+OFFICIAL = {'Simulation_Batches': 2, 'Funding_Valuation_Adjustment': {
+    'Funding_Cost_Interest_Curve': 'FUND', 'Funding_Benefit_Interest_Curve': 'USD'}}
+
+
+def official(blocks, **body):
+    """The calculation policy declared through the service's verb: its response."""
+    return CLIENT.post('/book/calculations', content=dump(dict({'calculations': blocks}, **body)),
+                       headers=JSON)
+
+
+def test_the_official_calculation_is_judged_by_the_engine_before_the_record_takes_it(recorded,
+                                                                                    desk):
+    """`POST /book/calculations` declares the `calculation` policy and `GET` reads what stands with
+    its address and position, nulls on a record declaring none. The engine judges each block
+    against its own type's declarations before anything appends: a field `CreditMonteCarlo` does
+    not declare, a value its field does not admit and `Object`, the type being the key and no
+    field of it, are each a 422 in the engine's words, and a type no official run reads is one in
+    the record's. None moves the head. No market is read: the desk's book carries no `FUND` curve
+    and the block naming it lands. Under a capabilities document a seat holding no `admin` is
+    refused by the record, the denial landed.
+
+    Killing mutation: the judge dropped from `spine.declare_calculations`, which lands the
+    misspelt field as policy.
+    """
+    started = head(recorded)
+    assert CLIENT.get('/book/calculations').json() == {
+        'calculations': None, 'blob': None, 'lsn': None}
+    for blocks, said in (
+            ({'CreditMonteCarlo': {'Simulation_Batchs': 2}},
+             'CreditMonteCarlo declares no Simulation_Batchs - it declares '),
+            ({'CreditMonteCarlo': {'Credit_Valuation_Adjustment': {'Calculate': 'Maybe'}}},
+             "Calculate is 'Maybe', not one of Yes, No"),
+            ({'CreditMonteCarlo': dict(OFFICIAL, Object='CreditMonteCarlo')},
+             'CreditMonteCarlo declares no Object - it declares '),
+            ({'BaseValuation': {'Greeks': 'First'}},
+             "states a block for 'BaseValuation', which no official run reads")):
+        refused = official(blocks)
+        assert refused.status_code == 422 and said in refused.json()['detail'], refused.text
+    assert head(recorded) == started, 'a refused declaration recorded something'
+
+    declared = official({'CreditMonteCarlo': OFFICIAL})
+    assert declared.status_code == 200, declared.text
+    blob = declared.json()['blob']
+    assert declared.json() == {'recorded': {'lsn': started + 1}, 'blob': blob}
+    assert CLIENT.get('/book/calculations').json() == {
+        'calculations': {'CreditMonteCarlo': OFFICIAL}, 'blob': blob, 'lsn': started + 1}
+    assert facts(recorded, 'policy_declared')[-1] == (
+        started + 1, 'policy_declared', {'policy': policy.CALCULATION_POLICY, 'blob': blob})
+
+    entitle(recorded, [(ACTOR, 'admin', '*')])
+    stranger = official({}, actor='subject-nobody')
+    assert stranger.status_code == 422 and 'subject-nobody' in stranger.json()['detail']
+    assert facts(recorded, 'capability_denied')[-1][2] == {
+        'subject': 'subject-nobody', 'verb': 'admin', 'book': '*',
+        'attempted_type': 'policy_declared'}
+    assert CLIENT.get('/book/calculations').json()['lsn'] == started + 1

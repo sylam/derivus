@@ -83,11 +83,11 @@ from .schema import (EXPOSURES, PRICES_KEY, mapping, deal_at, declared_block,
                      stated_messages, tables_of, tenor_fields, update_market_quote,
                      validate_instrument, value_message, walk_job_deals)
 from ._version import __version__
-from .config import Config, ModelParams, as_json, decode_wire, family_entries
+from .config import Config, ModelParams, as_json, family_entries
 from .instruments import construct_instrument
 from .calculation import Diary, calculation_class
 from .spine import (AGREEMENT_STATE, HOLDING_AMOUNTS, SETTLED, SETTLES, Collateral, PnL, book_name,
-                    diary, export_settlements, paper, replay)
+                    decoded, diary, export_settlements, judge_calculation, paper, replay)
 
 LOG = logging.getLogger(__name__)
 
@@ -1632,22 +1632,6 @@ def booked_again(outcome, booked, written, what):
                   what, booked['lsn'], 'the file had lost it, so it takes it back' if written
                   else 'the file carries it, so nothing is spliced either')}
     return written, dict(outcome, _validated=outcome['validate'], **answer) if written else answer
-
-
-def decoded(block):
-    """`block` as a run reads it: each wire tag the object it stands for, a deal as written."""
-    return json.loads(json.dumps(block), object_hook=lambda wire: decode_wire(
-        wire, lambda deal: deal))
-
-
-def judge_calculation(calculation, stated):
-    """Refuse by name what the calculation `calculation` names declares against what `stated`
-    states, decoded as a run reads it (`schema.stated_messages`), `Object` being the type token."""
-    cls = calculation_class(calculation.get('Object'))
-    refused = stated_messages(cls.__name__, declared_fields(cls).values(), decoded(stated),
-                              ('Object',))
-    if refused:
-        raise ValueError('; '.join(refused))
 
 
 def with_overrides(document, overrides):
@@ -3678,6 +3662,38 @@ def book_agreements():
     recorded()
     return {'agreements': spine.agreements(), 'settlement_state': {
         'fields': list(AGREEMENT_STATE), 'collateral_columns': list(HOLDING_AMOUNTS)}}
+
+
+@app.post('/book/calculations', summary="Declare what the desk's official runs run at")
+def book_calculations_declared(request: dict):
+    """`{calculations, actor}` - declare the `calculation` policy: per calculation type the block
+    of that type's own fields its official run runs at, `{"CreditMonteCarlo": {...}}`, the one
+    type an official run reads a block for.
+
+    The record checks the document's shape and the engine judges each block against its own type's
+    declarations before anything appends, so an undeclared field or a value its field does not
+    admit is refused in the engine's words, a 422, with nothing filed. No market is read: a curve
+    the book does not carry fails the run that reads it, by name. The act is `admin`, enforced by
+    the record; the last declaration stands, and one stating no type states nothing. 404 where no
+    home is configured.
+    """
+    recorded()
+    try:
+        filed = spine.declare_calculations(request.get('calculations'),
+                                           actor_name=request.get('actor'))
+    except ValueError as refused:
+        raise HTTPException(422, str(refused))
+    return {'recorded': {'lsn': filed['lsn']}, 'blob': filed['blob']}
+
+
+@app.get('/book/calculations', summary="What the desk's official runs run at, as declared")
+def book_calculations():
+    """`{calculations, blob, lsn}` - the `calculation` policy in force: the block each calculation
+    type's official run runs at, the address the document is stored under and the position of its
+    declaration, each null where none is declared. 404 where no home is configured."""
+    recorded()
+    blob, document, lsn = spine.calculation_policy()
+    return dict(document or {'calculations': None}, blob=blob, lsn=lsn)
 
 
 @app.get('/spine/frames', summary="The record's frames, verbatim - what a replica pulls")

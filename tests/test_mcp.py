@@ -100,7 +100,8 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'export_settlements', 'file_status', 'file_lifecycle', 'describe_calculations',
                 'configure_calculation', 'run_calculation', 'describe_agreements',
                 'declare_legal_entity', 'declare_agreement', 'book_positions', 'book_cash',
-                'collateral_calls', 'mark_book', 'book_pnl', 'declare_survival_curve'}
+                'collateral_calls', 'mark_book', 'book_pnl', 'declare_survival_curve',
+                'describe_official_calculation', 'declare_official_calculation'}
     assert set(tools) == expected
     for name, tool in tools.items():
         assert tool.description and len(tool.description) > 60, f'{name} has no real contract'
@@ -119,7 +120,7 @@ def test_every_tool_is_registered_and_carries_its_contract():
                        'set_base_date', 'configure_securities', 'verify_securities',
                        'setup_market', 'configure_calculation', 'run_calculation',
                        'declare_legal_entity', 'declare_agreement', 'mark_book',
-                       'declare_survival_curve'}
+                       'declare_survival_curve', 'declare_official_calculation'}
 
 
 def read_resource(uri):
@@ -289,7 +290,8 @@ RECORD_TOOLS = ('book_reconcile', 'close_check', 'book_activity', 'book_markets'
                 'collateral_calls', 'mark_book', 'book_pnl', 'declare_legal_entity',
                 'declare_agreement', 'describe_agreements', 'declare_portfolio',
                 'describe_portfolios', 'worklist', 'approve_ticket', 'reject_ticket',
-                'approve_quote', 'reject_quote')
+                'approve_quote', 'reject_quote', 'describe_official_calculation',
+                'declare_official_calculation')
 
 
 def test_a_desk_that_keeps_no_record_is_told_so_and_oriented_without_its_tools(
@@ -1183,6 +1185,32 @@ def test_a_recorded_desk_books_and_accepts_through_the_binding(recorded, tmp_pat
         assert mcp_server.worklist()['pending'] == []
     finally:
         service.BOOK = None
+
+
+def test_the_official_calculation_reaches_a_model_as_the_record_declares_it(book, recorded):
+    """Each tool is one `service().call`: `declare_official_calculation` posts the blocks under
+    `calculations` beside the seat and answers the record's position and the document's address,
+    `describe_official_calculation` reads them back with that address and position - nulls on a
+    record declaring none - and a block the engine refuses is the engine's own sentence, a tool
+    error with nothing declared.
+
+    Killing mutation: the tool posting its blocks under another key than `calculations`, which the
+    record refuses as a document stating no such section.
+    """
+    credit = {'Simulation_Batches': 20, 'Funding_Valuation_Adjustment': {
+        'Funding_Cost_Interest_Curve': 'USD', 'Funding_Benefit_Interest_Curve': 'ZAR'}}
+    assert mcp_server.describe_official_calculation() == {
+        'calculations': None, 'blob': None, 'lsn': None}
+    with pytest.raises(ToolError, match='CreditMonteCarlo declares no Simulation_Batchs'):
+        mcp_server.declare_official_calculation(
+            {'CreditMonteCarlo': {'Simulation_Batchs': 20}}, actor='subject-desk-one')
+    assert mcp_server.describe_official_calculation()['lsn'] is None
+
+    declared = mcp_server.declare_official_calculation({'CreditMonteCarlo': credit},
+                                                       actor='subject-desk-one')
+    assert declared['recorded']['lsn'] == 5 and len(declared['blob']) == 64
+    assert mcp_server.describe_official_calculation() == {
+        'calculations': {'CreditMonteCarlo': credit}, 'blob': declared['blob'], 'lsn': 5}
 
 
 #: The tools that put work on the hub's compute, or value the book where the queue would, each with

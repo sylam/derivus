@@ -58,8 +58,8 @@ from ._version import __version__
 from .calculation import BaseValuation, Diary, calculation_class
 from . import schema
 from .schema import (declared_fields, flipped, index_named, instrument_of, job_children, mapping,
-                     netting_sets, tables_of, walk_job_deals, without_clocks)
-from .config import Config, as_json
+                     netting_sets, stated_messages, tables_of, walk_job_deals, without_clocks)
+from .config import Config, as_json, decode_wire
 from .structures import base_currency, market_of
 
 #: The whole switch, the actor beside it, and the folder a reader's folds start from. Read per
@@ -647,6 +647,22 @@ def observations(lsn=None, indices=None):
                 sorted(named - set(ordered)))
 
     return folded(fold)
+
+
+def decoded(block):
+    """`block` as a run reads it: each wire tag the object it stands for, a deal as written."""
+    return json.loads(json.dumps(block), object_hook=lambda wire: decode_wire(
+        wire, lambda deal: deal))
+
+
+def judge_calculation(calculation, stated, known=('Object',)):
+    """Refuse by name what the calculation `calculation` names declares against what `stated`
+    states, decoded as a run reads it (`schema.stated_messages`). `known` is what `stated` may
+    state beside the type's fields: `Object`, the type token, where a block names its own type."""
+    cls = calculation_class(calculation.get('Object'))
+    refused = stated_messages(cls.__name__, declared_fields(cls).values(), decoded(stated), known)
+    if refused:
+        raise ValueError('; '.join(refused))
 
 
 def compiled_job(document, lsn=None, strict=True, runs=None, folds=None, market=None):
@@ -1238,6 +1254,33 @@ def declare_agreement(agreement, entity, kind, terms, actor_name=None, effective
     with writing() as log:
         return verbs.declare_agreement(log, actor(actor_name, log), agreement, entity, kind,
                                        canonical(terms), effective_time=effective_time)
+
+
+def declare_calculations(calculations, actor_name=None, effective_time=None):
+    """Declare the `calculation` policy, `{calculation type: block}`: what each type's official run
+    runs at. The record checks the document's shape, then each block is judged against its own
+    type's declarations (`judge_calculation`, the type token no field of it), before anything
+    appends. `admin` scope, which the writer enforces."""
+    policy = package().policy
+    with translating():
+        raw = policy.canonical_policy(policy.CALCULATION_POLICY,
+                                      {policy.CALCULATION_SECTION: calculations})
+    for name, block in calculations.items():
+        judge_calculation({'Object': name}, block, ())
+    with writing() as log:
+        return policy.declare_bytes(log, actor(actor_name, log), policy.CALCULATION_POLICY, raw,
+                                    effective_time)
+
+
+def calculation_policy():
+    """`(blob, document, lsn)` - the `calculation` policy standing in the record, the address it is
+    stored under and the position of its declaration (`policy.in_force`): nulls where this home
+    declared none."""
+    def read(log):
+        policy = package().policy
+        return policy.in_force(log, policy.CALCULATION_POLICY)
+
+    return folded(read)
 
 
 def declare_portfolio(path, actor_name=None, effective_time=None):
