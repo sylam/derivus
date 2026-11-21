@@ -1569,6 +1569,8 @@ def xva_view(reference: str | None = None) -> dict:
     name. Beside the rows, `funding` names the two curves a recalc asked now would fund its FVA
     at, `cost` and `benefit`, null for one the calculation does not state - the official
     calculation's where the desk declares one (`describe_official_calculation`), else the book's.
+    Where it carries `refused`, the official calculation cannot be read and a recalc would refuse
+    in those words: say so, the rows still standing as their runs left them.
     """
     if reference is None:
         return service().call('GET', '/book/xva')

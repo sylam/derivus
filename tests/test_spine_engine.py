@@ -6312,12 +6312,11 @@ MISDECLARED = ('the calculation policy in force states a CreditMonteCarlo block 
 def test_a_block_declared_past_the_engine_s_judge_refuses_the_credit_run_by_name(
         recorded, credit_hub, tmp_path):
     """The operator's `DV_Spine declare` takes a calculation policy on its shape alone, so a block
-    misspelling a field lands. It is judged where it is read: the recalc, the increment and the
-    view's funding answer each refuse in a sentence a desk user can act on - the policy in force,
-    the engine's own words for the field, and that a seat holding `admin` declares the block again
-    - naming no route and no command. Nothing is queued and no row is filed, while a what-if of
-    the book, a base valuation, reads no policy and runs. The block declared again through the
-    service, the recalc runs.
+    misspelling a field lands. It is judged where it is read: the recalc and the increment each
+    refuse in a sentence a desk user can act on - the policy in force, the engine's own words for
+    the field, and that a seat holding `admin` declares the block again - naming no route and no
+    command. Nothing is queued and no row is filed, while a what-if of the book, a base valuation,
+    reads no policy and runs. The block declared again through the service, the recalc runs.
 
     Killing mutations: the judge dropped from `official_calculation`, where the recalc is queued
     and runs at one batch, the field it was meant to state ignored; the sentence sending its
@@ -6326,8 +6325,7 @@ def test_a_block_declared_past_the_engine_s_judge_refuses_the_credit_run_by_name
     misdeclared(recorded, tmp_path)
     for refused in (CLIENT.post('/book/xva', content=dump({}), headers=JSON),
                     CLIENT.post('/book/price', content=dump(
-                        {'deal_path': '0/0', 'xva_increment': True}), headers=JSON),
-                    CLIENT.get('/book/xva')):
+                        {'deal_path': '0/0', 'xva_increment': True}), headers=JSON)):
         assert refused.status_code == 422, refused.text
         said = refused.json()['detail']
         assert all(words in said for words in MISDECLARED), said
@@ -6337,3 +6335,31 @@ def test_a_block_declared_past_the_engine_s_judge_refuses_the_credit_run_by_name
 
     assert official({'CreditMonteCarlo': {'Simulation_Batches': 2}}).status_code == 200
     assert drew(credit_runs(['NS_A'])['NS_A']) == (service.XVA_BATCH_SIZE, 2)
+
+
+def test_the_xva_view_answers_its_rows_while_the_policy_in_force_cannot_be_read(
+        recorded, credit_hub, tmp_path):
+    """THE VIEW DOES NOT GO DOWN WITH THE POLICY. A recalc lands a row per set, and the policy is
+    then declared past the engine's judge, misspelling a field. The recalc refuses by name. The
+    view answers 200 with every row as it stood, and its `funding` names no curve and carries,
+    under `refused`, the sentence the recalc refused in. A block the engine reads, declared again,
+    and `funding` names the policy's curves.
+
+    Killing mutation: the refusal raised through the view (`funded` letting it pass), where the
+    view answers the recalc's 422 and no row.
+    """
+    assert sorted(credit_runs()) == ['NS_A', 'NS_B']
+    rows = xva_rows()
+    misdeclared(recorded, tmp_path)
+    refused = CLIENT.post('/book/xva', content=dump({}), headers=JSON)
+    assert refused.status_code == 422 and all(
+        words in refused.json()['detail'] for words in MISDECLARED), refused.text
+
+    view = CLIENT.get('/book/xva')
+    assert view.status_code == 200, view.text
+    assert {row['reference']: row for row in view.json()['sets']} == rows
+    assert view.json()['funding'] == {'cost': None, 'benefit': None,
+                                      'refused': [refused.json()['detail']]}
+
+    assert official({'CreditMonteCarlo': OFFICIAL}).status_code == 200
+    assert CLIENT.get('/book/xva').json()['funding'] == {'cost': 'FUND', 'benefit': 'USD'}

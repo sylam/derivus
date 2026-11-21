@@ -570,9 +570,12 @@ what a client holding the paper re-reads it on, the web client its entities and 
 (`paperOwed` in `web/src/state.ts`), a booking moving its holdings alone. `GET /book/xva` reads its
 rows on every ask and keeps one part under the same key: `funding`, the two curves a recalc asked
 now would fund its FVA at (`service.funded`), read through `spine.official_calculation` as the run
-reads them, a null for one the calculation does not state. **Held by**
+reads them, a null for one the calculation does not state. The view does not go down with the
+policy: where the record refuses that calculation the rows answer as ever and `funding` carries two
+nulls beside `refused`, the sentence in the list a write's refusal answers. **Held by**
 `web/scripts/paper_check.mjs`,
 `test_spine_engine.py::test_the_xva_view_names_the_curves_a_credit_run_would_fund_at_and_keeps_the_answer`,
+`::test_the_xva_view_answers_its_rows_while_the_policy_in_force_cannot_be_read`,
 `test_service.py::test_a_status_poll_with_nothing_moved_is_a_lookup_and_all_it_reads_is_in_its_key`,
 `test_spine_engine.py::test_a_status_poll_is_answered_anew_once_the_record_moves_and_the_paper_has_its_own_stamp`,
 `::test_a_risk_poll_with_nothing_moved_is_a_lookup_and_a_frame_that_moves_no_number_runs_nothing`,
@@ -665,8 +668,9 @@ never official. Every other compile reads none: a job a seat posts whole to `/ex
 `/prepare` states its own calculation, and a base valuation, the marks, a roll, a replay and a
 diary are none of them the book's credit run, so a declaration moves none of their plans. A
 recalc's own floor (`service.xva_document`) sits under both. A block declared past the judge, through
-`DV_Spine declare`, is judged where it is read and refuses the run by name. A desk keeping no
-record has no policy: its official calculation comes with its document. **Held by**
+`DV_Spine declare`, is judged where it is read and refuses the run by name, in a sentence saying
+that a seat holding `admin` declares it again and naming no route. A desk keeping no record has no
+policy: its official calculation comes with its document. **Held by**
 `test_spine_engine.py::test_a_credit_run_under_the_policy_is_the_run_of_the_same_block_written_in_the_book_file`,
 `::test_the_policy_stands_over_the_book_file_which_stands_where_the_policy_says_nothing`,
 `::test_a_field_an_adjustment_block_states_stands_over_the_recalc_s_floor`,

@@ -391,7 +391,8 @@ anything is filed, and `GET /book/calculations` answers the one in force with it
 `GET /book/xva` answers beside its rows `funding`, `{cost, benefit}`: the two curves a recalc asked
 now would fund its FVA at, a null for one its calculation does not state, which the engine reads as
 the curve it deflates on. A row says what its own run cost; `funding` says what the next one funds
-at.
+at. Where the policy in force states a block the engine refuses, the recalc refuses by name and the
+view still answers its rows, `funding` carrying two nulls and the sentence under `refused`.
 
 THE POLL IS `GET /book/status`. Its `etag` names the book's text, so a client fetches the book only
 where it moved, and under a spine home its `spine.paper` is the LSN of the last entity or agreement

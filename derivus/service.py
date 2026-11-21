@@ -4558,6 +4558,9 @@ def book_xva_view():
     for one its calculation does not state: read as the run reads its calculation (`funded`), the
     `calculation` policy's block over the book file's own on a desk that records. A row says what
     its own run cost; this says what the next one funds at. Kept under the poll's key (`polled`).
+    THE VIEW DOES NOT GO DOWN WITH THE POLICY: where the record refuses that calculation - a policy
+    block the engine will not read - the rows answer as ever and `funding` names no curve, the
+    refusal's sentence beside the two nulls under `refused`. The recalc is what refuses.
     """
     live = live_book()
     return {'as_of': as_of(), 'sets': xva_entries(live.read()[0]),
@@ -4567,11 +4570,16 @@ def book_xva_view():
 def funded(document, _):
     """`{cost, benefit}` - the curves a credit run of `document` asked now funds its FVA at, off
     the calculation that run reads (`spine.official_calculation`), None for one it does not
-    state."""
-    stated = spine.official_calculation(document, 'CreditMonteCarlo').get(
-        'Funding_Valuation_Adjustment') or {}
-    return {leg.lower(): stated.get('Funding_{}_Interest_Curve'.format(leg)) or None
-            for leg in ('Cost', 'Benefit')}
+    state. Where the record refuses that calculation both are None beside `refused`, its sentence
+    in the list a write's refusal answers."""
+    funding = dict.fromkeys(('cost', 'benefit'))
+    try:
+        stated = spine.official_calculation(document, 'CreditMonteCarlo').get(
+            'Funding_Valuation_Adjustment') or {}
+    except spine.SpineRefused as refusal:
+        return dict(funding, refused=[str(refusal)])
+    return {leg: stated.get('Funding_{}_Interest_Curve'.format(leg.title())) or None
+            for leg in funding}
 
 
 def xva_entries(document):
