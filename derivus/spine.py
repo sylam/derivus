@@ -1328,6 +1328,12 @@ def declare_limits(limits, actor_name=None, effective_time=None):
                                     effective_time)
 
 
+def limits():
+    """`{legal entity: {amount, currency}}` - the credit limits the `limits` policy standing in the
+    record declares, empty where this home declared none."""
+    return folded(lambda log: package().policy.limits_in_force(log))
+
+
 def policy_in_force(name):
     """`(blob, document, lsn)` - the policy `name` standing in the record, the address it is stored
     under and the position of its declaration (`policy.in_force`): nulls where this home declared

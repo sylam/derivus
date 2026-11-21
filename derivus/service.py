@@ -3494,9 +3494,11 @@ def declared_entity(field, entity):
     return declared
 
 
-def clients_under(entity):
-    """`entity` and every entity declared under it, however deep - the client a view groups."""
-    parents = {name: row.get('parent') for name, row in declared_entity('client', entity).items()}
+def clients_under(entity, declared=None):
+    """`entity` and every entity declared under it, however deep - the client a view groups.
+    `declared` is the record's `{entity: row}` where the caller holds it."""
+    parents = {name: row.get('parent') for name, row in (
+        declared_entity('client', entity) if declared is None else declared).items()}
     found, grew = {entity}, True
     while grew:
         grew = False
@@ -4590,10 +4592,18 @@ def book_xva_view():
     THE VIEW DOES NOT GO DOWN WITH THE POLICY: where the record refuses that calculation - a policy
     block the engine will not read - the rows answer as ever and `funding` names no curve, the
     refusal's sentence beside the two nulls under `refused`. The recalc is what refuses.
+
+    `limits` is one entry per legal entity the record's `limits` policy declares a credit limit
+    for (`limit_usage`): the limit, the `usage` these rows' peak exposures add up to against the
+    entity and every entity under it, and the `headroom` left. The limits are kept under the
+    poll's key and the sums are of the rows this answer carries, so a restated limit reads at once
+    and nothing runs. Empty where none is declared and where the desk keeps no record.
     """
     live = live_book()
-    return {'as_of': as_of(), 'sets': xva_entries(live.read()[0]),
-            'funding': polled(live, 'funding', funded)}
+    entries = xva_entries(live.read()[0])
+    return {'as_of': as_of(), 'sets': entries, 'funding': polled(live, 'funding', funded),
+            'limits': [limit_usage(limit, draws_on(limit, entries))
+                       for limit in polled(live, 'limits', credit_limits)]}
 
 
 def funded(document, _):
@@ -4609,6 +4619,76 @@ def funded(document, _):
         return dict(funding, refused=[str(refusal)])
     return {leg: stated.get('Funding_{}_Interest_Curve'.format(leg.title())) or None
             for leg in funding}
+
+
+#: What a credit limit's entry says where the exposure against it is in another currency: the
+#: limit's own, then the currencies the netting sets' runs reported in.
+NOT_COMPARABLE = ('this limit is stated in {} and the exposure against it is reported in {}: an '
+                  'amount of one currency is not converted into another here, so the two are not '
+                  'comparable and no usage is stated - a seat holding admin states the limit in '
+                  'the currency the exposure is reported in')
+
+
+def credit_limits(*_):
+    """`[{entity, name, limit, clients}]` - each credit limit the record declares (`spine.limits`)
+    by entity: the entity's name, the limit `{amount, currency}` and `clients`, the entity and
+    every entity under it by the parent chain, whose netting sets all draw on it. Empty where none
+    is declared and where no record is kept. Read off the record alone, so `polled` keeps it."""
+    if not spine.configured():
+        return []
+    with spine.one_read(folds()):
+        limits = spine.limits()
+        declared = {row['entity']: row for row in spine.entities()} if limits else {}
+    return [{'entity': entity, 'name': (declared.get(entity) or {}).get('name'), 'limit': limit,
+             'clients': sorted(clients_under(entity, declared))}
+            for entity, limit in sorted(limits.items())]
+
+
+def pfe_column(columns):
+    """The `PFE_` column of the highest percentile among `columns`, None where there is none: the
+    exposure a credit limit is held against."""
+    found = [column for column in columns if column.startswith('PFE_')]
+    return max(found, key=lambda column: float(column[4:])) if found else None
+
+
+def draws_on(limit, entries):
+    """`[(reference, peak, currency)]` - what each netting set of `entries` (`xva_entries`) the
+    book carries against one of `limit`'s clients draws on it: the peak of its row's `pfe_column`
+    in the currency its run reported in, the peak None where the row states either none: a set
+    never run, a run that failed, a row filed before its currency was kept."""
+    draws = []
+    for entry in entries:
+        if entry['deal_path'] is not None and entry['counterparty'] in limit['clients']:
+            peaks = entry['peaks'] or {}
+            column = pfe_column(peaks) if entry['currency'] else None
+            draws.append((entry['reference'], None if column is None else peaks[column]['value'],
+                          entry['currency']))
+    return draws
+
+
+def limit_usage(limit, draws):
+    """One credit limit's entry, `{entity, name, limit, usage, headroom, sets, unrun, breached,
+    not_comparable}`, over `draws`, what each netting set draws on it (`draws_on`).
+
+    `usage` is the sum of the peaks, each floored at nothing: exposure nets inside a netting set
+    and adds across sets, so a set that owes the desk nothing takes none of another's away. `sets`
+    counts the sets summed and `unrun` those with no peak, which are not guessed at: `headroom`,
+    the limit less the usage, is stated only where there is none. `breached` is usage above the
+    limit. A peak in another currency than the limit's is not converted: the entry states no
+    usage, and `not_comparable` says so naming both."""
+    stated = limit['limit']
+    peaks = [max(peak, 0.0) for _, peak, _ in draws if peak is not None]
+    entry = dict({key: limit[key] for key in ('entity', 'name', 'limit')}, sets=len(peaks),
+                 unrun=len(draws) - len(peaks), usage=None, headroom=None, breached=None,
+                 not_comparable=None)
+    other = sorted({currency for _, peak, currency in draws if peak is not None}
+                   - {stated['currency']})
+    if other:
+        return dict(entry, not_comparable=NOT_COMPARABLE.format(
+            stated['currency'], ', '.join(other)))
+    usage = math.fsum(peaks)
+    return dict(entry, usage=usage, breached=usage > stated['amount'],
+                headroom=None if entry['unrun'] else stated['amount'] - usage)
 
 
 def xva_entries(document):

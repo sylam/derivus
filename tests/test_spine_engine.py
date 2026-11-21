@@ -6392,6 +6392,128 @@ def test_the_xva_view_names_the_curves_a_credit_run_would_fund_at_and_keeps_the_
     assert funding() == {'cost': 'FUND', 'benefit': 'FUND'}
 
 
+@pytest.fixture
+def group_hub(recorded, tmp_path):
+    """A recording desk whose record holds a group, `CPTY_B` declared under `CPTY_A`, and whose
+    book carries one set against the parent, NS_A, and two against the child, NS_B and NS_C: a
+    bought call each, at 1,000, 500 and 250 units, so every peak is above nothing and its own."""
+    yield xva_book(tmp_path, [
+        netting_set(name, counterparty, [dict(VANILLA, Reference='OPT_' + name, Units=units)])
+        for name, counterparty, units in (('NS_A', 'CPTY_A', 1000.0), ('NS_B', 'CPTY_B', 500.0),
+                                          ('NS_C', 'CPTY_B', 250.0))])
+    service.BOOK = None
+
+
+def usd(amount):
+    return {'amount': amount, 'currency': 'USD'}
+
+
+def limits_view():
+    """`GET /book/xva`'s `limits`, by entity."""
+    return {entry['entity']: entry for entry in CLIENT.get('/book/xva').json()['limits']}
+
+
+def held_to(entity, limit, **stated):
+    """One entry of the view's `limits` as it reads with nothing stated: the keys it always has."""
+    return dict({'entity': entity, 'name': entity + ' Ltd', 'limit': limit, 'usage': None,
+                 'headroom': None, 'sets': 0, 'unrun': 0, 'breached': None,
+                 'not_comparable': None}, **stated)
+
+
+def pfe(reference):
+    """The peak of the one PFE column the set's standing row carries."""
+    return xva_rows()[reference]['peaks']['PFE_95']['value']
+
+
+def test_usage_against_a_limit_is_the_peak_exposure_of_the_entity_s_sets_and_of_those_under_it(
+        group_hub, tmp_path):
+    """`GET /book/xva`'s `limits` holds each declared limit against the peak PFE of the netting
+    sets drawn on it, off the rows as they stand. `CPTY_A` is limited to 100,000 dollars and
+    `CPTY_B`, declared under it, to 50,000; NS_A is against the parent, NS_B and NS_C the child.
+
+    NOT GUESSED AT. Before any run each entry sums no set, counts every set unrun and states no
+    headroom. NS_A and NS_B run: the child's usage is NS_B's peak beside one set unrun, still
+    with no headroom. SUMMED. NS_C run, the child's usage is NS_B's peak plus NS_C's to the bit
+    and its headroom 50,000 less it; the parent's is the three peaks' sum (`math.fsum`), the
+    child's sets counting in it and the parent's set never in the child's. RESTATED, NOTHING RUN.
+    The child's limit restated at 25,000 reads `breached` on a headroom below nothing, and the
+    parent's restated in euros states no usage and says so naming both currencies; every row
+    stands as it stood. NOTHING NETS ACROSS SETS. NS_C's row rewritten in the projection's file at
+    a peak 1,000 below nothing, the child's usage is NS_B's peak alone, none of it taken away.
+
+    Killing mutations: `draws_on` reading every set whatever its counterparty, where the child's
+    usage carries the parent's NS_A; the limit's own entity alone drawing on it (`credit_limits`),
+    where the parent's usage is NS_A's; headroom stated with a set unrun; the limit's currency
+    not read (`limit_usage`), where the euro limit states the dollar usage; the floor dropped,
+    where the rewritten row takes 1,000 off NS_B's peak.
+    """
+    for entity, parent in (('CPTY_A', None), ('CPTY_B', 'CPTY_A')):
+        entity_declared(entity, parent)
+    parent, child = usd(100_000.0), usd(50_000.0)
+    assert limits_view() == {}
+    assert limits_declared({'CPTY_A': parent, 'CPTY_B': child}).status_code == 200
+    assert limits_view() == {
+        'CPTY_A': held_to('CPTY_A', parent, usage=0.0, unrun=3, breached=False),
+        'CPTY_B': held_to('CPTY_B', child, usage=0.0, unrun=2, breached=False)}
+
+    recalc(['NS_A', 'NS_B'])
+    a, b = pfe('NS_A'), pfe('NS_B')
+    assert limits_view() == {
+        'CPTY_A': held_to('CPTY_A', parent, usage=a + b, sets=2, unrun=1, breached=False),
+        'CPTY_B': held_to('CPTY_B', child, usage=b, sets=1, unrun=1, breached=False)}
+
+    recalc(['NS_C'])
+    c = pfe('NS_C')
+    assert 0.0 < c < b < a and 25_000.0 < b + c < 50_000.0 and a + b + c < 100_000.0, (a, b, c)
+    assert limits_view() == {
+        'CPTY_A': held_to('CPTY_A', parent, usage=math.fsum([a, b, c]), sets=3, breached=False,
+                          headroom=100_000.0 - math.fsum([a, b, c])),
+        'CPTY_B': held_to('CPTY_B', child, usage=b + c, sets=2, breached=False,
+                          headroom=50_000.0 - (b + c))}
+
+    rows, euros = xva_rows(), {'amount': 100_000.0, 'currency': 'EUR'}
+    assert limits_declared({'CPTY_A': euros, 'CPTY_B': usd(25_000.0)}).status_code == 200
+    assert limits_view() == {
+        'CPTY_A': held_to('CPTY_A', euros, sets=3,
+                          not_comparable=service.NOT_COMPARABLE.format('EUR', 'USD')),
+        'CPTY_B': held_to('CPTY_B', usd(25_000.0), usage=b + c, sets=2, breached=True,
+                          headroom=25_000.0 - (b + c))}
+    assert xva_rows() == rows, 'a restated limit moved a row'
+
+    path = tmp_path / service.XVA_FILE
+    filed = json.loads(path.read_text())
+    filed['sets']['NS_C']['peaks']['PFE_95']['value'] = -1_000.0
+    path.write_text(json.dumps(filed, indent=2))
+    assert limits_view()['CPTY_B'] == held_to(
+        'CPTY_B', usd(25_000.0), usage=b, sets=2, breached=False, headroom=25_000.0 - b)
+
+
+def test_the_limits_are_kept_under_the_poll_s_key_and_a_restated_one_is_read_at_once(group_hub):
+    """What `GET /book/xva`'s `limits` reads of the record - each limit, its entity's name and
+    the entities under it - is kept on the book under the poll's key, so a poll with nothing
+    moved is a lookup; a declaration, a frame, moves the key, and the next poll reads the limit
+    as restated with nothing run.
+
+    Killing mutation: the record read on every poll (`book_xva_view` calling `credit_limits`
+    itself), where the book keeps nothing under the key.
+    """
+    def kept():
+        return service.BOOK.polls.get(('limits',) + service.poll_key(service.BOOK))
+
+    entity_declared('CPTY_A')
+    assert limits_declared({'CPTY_A': usd(100_000.0)}).status_code == 200
+    assert kept() is None and limits_view()['CPTY_A']['limit'] == usd(100_000.0)
+    first = kept()
+    assert first == [{'entity': 'CPTY_A', 'name': 'CPTY_A Ltd', 'limit': usd(100_000.0),
+                      'clients': ['CPTY_A']}]
+    assert limits_view() and kept() is first, 'a poll with nothing moved read the record again'
+
+    assert limits_declared({'CPTY_A': usd(60_000.0)}).status_code == 200
+    assert kept() is None, 'the declaration left the poll key where it was'
+    assert limits_view()['CPTY_A']['limit'] == usd(60_000.0) == kept()[0]['limit']
+    assert service.EXECUTOR.queue.empty() and not (group_hub.parent / service.XVA_FILE).exists()
+
+
 def misdeclared(home, folder):
     """A calculation policy misspelling a field, put on the record at `home` by the operator's
     `DV_Spine declare`, which takes a block on its shape alone."""

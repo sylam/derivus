@@ -1574,7 +1574,14 @@ def xva_view(reference: str | None = None) -> dict:
     at, `cost` and `benefit`, null for one the calculation does not state - the official
     calculation's where the desk declares one (`describe_official_calculation`), else the book's.
     Where it carries `refused`, the official calculation cannot be read and a recalc would refuse
-    in those words: say so, the rows still standing as their runs left them.
+    in those words: say so, the rows still standing as their runs left them. `limits` is one entry
+    per legal entity a credit limit is declared for (`describe_credit_limits`): `limit`, the
+    `usage` the rows' peak `PFE` add up to over the entity's sets and those of every entity under
+    it, and the `headroom` left, in the limit's currency. `sets` is how many it sums and `unrun`
+    how many have no finished run: where any has none the usage is a floor and `headroom` is null,
+    so say which sets want a recalc rather than quote a headroom. `breached` is usage above the
+    limit; nothing is blocked. Where `not_comparable` is set, read its sentence out and state no
+    usage.
     """
     if reference is None:
         return service().call('GET', '/book/xva')
