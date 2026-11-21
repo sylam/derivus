@@ -352,7 +352,8 @@ export async function written(dispatch: Dispatch<Action>, outcome: BookDealOutco
  * and, of those, the ones showing the holdings under it: the positions and the portfolio nodes. */
 export const PAPER_TABS = ['portfolio', 'blotter', 'quote', 'trade', 'risk', 'xva', 'curves',
                            'backoffice', 'client', 'paper', 'pnl'];
-const HOLDING_TABS = ['portfolio', 'blotter', 'trade', 'risk', 'xva', 'backoffice', 'client'];
+const HOLDING_TABS = ['portfolio', 'blotter', 'quote', 'trade', 'risk', 'xva', 'backoffice',
+                      'client'];
 
 /** Which parts of the paper `tab` owes a read: all of it where none is held, else each part it
  * shows whose answer in hand (`answered`) was read elsewhere than where that part now stands

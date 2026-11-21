@@ -181,13 +181,15 @@ check('a booking re-reads the holdings on a screen showing them and the paper on
       'the paper re-read under the clock, which sends every screen naming a client two reads per '
       + 'booking of a paper no booking moves; the holdings read on every screen naming a client; '
       + 'the whole read dropped, which shows a desk holding nothing on the first screen that '
-      + 'groups the book after the Paper tab; or a part read again where it was read',
+      + 'groups the book after the Paper tab; a part read again where it was read; or the Quote '
+      + 'tab left out of the holdings, which offers a ticket the nodes declared before it opened',
       [owes('paper', HELD, AT, '27', 'e2'), owes('portfolio', HELD, AT, '27', 'e2'),
+       owes('quote', HELD, AT, '27', 'e2'),
        owes('paper', HELD, AT, '41', 'e1'), owes('portfolio', HELD, AT, '41', 'e2'),
        owes('paper', null, {}, '27', 'e2'), owes('portfolio', HELD, AT, '27', 'e1'),
        owes('settings', null, {}, '27', 'e2')],
-      [[false, false], [false, true], [true, false], [true, true], [true, true], [false, false],
-       [false, false]]);
+      [[false, false], [false, true], [false, true], [true, false], [true, true], [true, true],
+       [false, false], [false, false]]);
 
 const seen = (seat, etag = 'e1', paper = 27) => ({
   source: { kind: 'book', etag }, seat,
