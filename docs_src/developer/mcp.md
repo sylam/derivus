@@ -102,6 +102,7 @@ structure takes it as `name`. **Held by**
 | `mark_book`, `book_pnl` | `POST /book/marks`, `GET /book/pnl`: the close's marks; the P&L between them |
 | `book_positions` | `GET /book/positions`: positions under agreement and portfolio |
 | `declare_legal_entity`, `declare_agreement`, `describe_agreements` | `/book/entities`, `/book/agreements`: the paper the book trades under |
+| `describe_official_calculation`, `declare_official_calculation` | `GET`/`POST /book/calculations`: what the desk's official credit run runs at, the `calculation` policy |
 
 A tool of the record answers the service's 404 on a desk that keeps none, never an empty answer a
 model would read as agreement, in the service's one sentence (`service.NO_RECORD`): the desk's
@@ -208,7 +209,13 @@ to its client's XVA is `xva_increment`, never a difference against a row: the ro
 another grid. Its two runs are one market under two deal trees, so the second is loaded over the
 market the first read (`service.beside`). Asked of a trade the book holds, by its `deal_path`, the
 run with the trade is the set as it prices and nothing is spliced, so the answer is the one the
-trade gave as a candidate. **Held by**
+trade gave as a candidate. What every credit run runs at is the book's calculation under, on a
+recording desk, the `calculation` policy `declare_official_calculation` declares
+([the official calculation](spine.md#official-calculation)); a named calculation's dials go over
+it and are the seat's own. `xva_view`'s list carries `funding`, the two curves a recalc asked now
+would fund its FVA at. **Held by**
+`test_the_official_calculation_reaches_a_model_as_the_record_declares_it`,
+`test_spine_engine.py::test_the_xva_view_names_the_curves_a_credit_run_would_fund_at_and_keeps_the_answer`,
 `test_the_increment_tool_answers_the_services_own_increment`,
 `test_the_xva_view_answers_one_set_s_row_with_its_profile_and_no_place_on_the_server`,
 `test_the_increment_tool_asks_of_a_trade_the_book_holds_by_its_path`,

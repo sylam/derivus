@@ -376,12 +376,29 @@ holds a short - a pair worth nothing on every path.
 Against the set's row the difference would carry the set's own Monte Carlo noise, a trade dated
 where the set's grid has no row reshaping every path the run draws.
 
+WHAT A CREDIT RUN RUNS AT is its calculation: the book file's `Calculation` block and, on a desk
+that records, the `calculation` policy's `CreditMonteCarlo` block laid over it key by key, a
+container it states replacing the file's whole. That is the OFFICIAL calculation - on a desk that
+keeps no record it comes with the document - and the recalc, the increment and every other credit
+run start from it; a recalc lays its own floor under both - 1,024 paths in one batch, deterministic
+deflation and hazard rates, no gradient - and switches each adjustment on against the set's
+counterparty over both. `POST /book/calculations` `{calculations, actor}`
+declares the policy under `admin`, each block judged against its type's declarations before
+anything is filed, and `GET /book/calculations` answers the one in force with its `blob` and
+`lsn`, nulls where none is declared. A seat's own dials - a named calculation, the
+`calculation_overrides` of a what-if - go over the official calculation and are not official.
+`GET /book/xva` answers beside its rows `funding`, `{cost, benefit}`: the two curves a recalc asked
+now would fund its FVA at, a null for one its calculation does not state, which the engine reads as
+the curve it deflates on. A row says what its own run cost; `funding` says what the next one funds
+at.
+
 THE POLL IS `GET /book/status`. Its `etag` names the book's text, so a client fetches the book only
 where it moved, and under a spine home its `spine.paper` is the LSN of the last entity or agreement
 declaration standing, so a client holding the paper re-reads it only where that moved. A poll with
 nothing moved - the book's text, the files it names, the XVA file, the record and the day - parses
 and opens nothing, and so does one of `/book/risk`, which asks its seat's admission first all the
-same. `GET /book/quote/{quote_id}` answers a pending quote's pins without the values vector behind
+same; `/book/xva` keeps its `funding` the same way and reads its rows on every ask.
+`GET /book/quote/{quote_id}` answers a pending quote's pins without the values vector behind
 them, which the service keeps once per market beside the pending files.
 
 The book's FILE is the source of truth: every client — the web UI, an MCP tool, the Excel add-in —
@@ -400,7 +417,9 @@ UNDER A SPINE HOME THE BOOK PRICES AT ITS NET. The verbs that price the live boo
 and `/prepare` - price it compiled: every position the record holds written at its net, the same
 terms' second node under one set ignored as the first one's clip, every print the declared
 sources order filled in, and every netting set a declared agreement materialises on the terms the
-record holds for it, the file's own copy being what `GET /book/reconcile` compares. A deal the file holds that nobody booked prices as written, one unit,
+record holds for it, the file's own copy being what `GET /book/reconcile` compares; a job compiled
+for a credit run is written the `calculation` policy's block over its own as well, and no other
+job reads that policy. A deal the file holds that nobody booked prices as written, one unit,
 outside the P&L until `POST /book/deals` `{action: 'fill', deal_path}` takes it on, a fill of one
 under its own reference that moves no number; `GET /book/reconcile` names each such deal under
 `in_file_not_in_record`, on a file nothing has pinned as on any other. Every deal type declares which of its fields are

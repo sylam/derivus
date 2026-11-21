@@ -444,10 +444,10 @@ the record holds. `/execute`, `/prepare`, the diary, the marks and every valuing
 so a plan named once is the plan that runs and an auditor recompiles from what was printed.
 **Held by** `test_spine_engine.py::test_the_plan_compiles_from_the_fold_rather_than_from_what_was_typed`.
 
-Every write of a compile lands inside the deal tree, so it copies `Calc.Deals` alone: the compiled
-job shares its market with the document it was handed, which it leaves as read, and a caller that
-edits the job copies the level it writes at, as `service.xva_document` and
-`service.consolidated_risk` do. **Held by**
+Every write of a compile lands inside the deal tree, bar a credit run's calculation, which it
+replaces rather than edits, so it copies `Calc.Deals` alone: the compiled job shares its market
+with the document it was handed, which it leaves as read, and a caller that edits the job copies
+the level it writes at, as `service.xva_document` and `service.consolidated_risk` do. **Held by**
 `test_spine_engine.py::test_a_compile_copies_the_deal_tree_alone_and_loads_a_market_only_for_collateral_held`,
 `test_service.py::test_a_set_s_xva_job_shares_the_book_s_market_and_writes_none_of_the_book`,
 `::test_the_consolidated_risk_writes_nothing_on_the_document_it_values`.
@@ -472,6 +472,8 @@ edits the job copies the level it writes at, as `service.xva_document` and
   reconcile names. **Held by**
   `test_spine_engine.py::test_a_corrected_agreement_is_the_paper_every_run_prices_from_the_event_that_recorded_it`.
 - **Collateral balances**, for a run that reads one: [Collateral](#collateral).
+- **The calculation**, for a credit run: the `calculation` policy's block over the document's own,
+  the one write outside the deal tree ([the official calculation](#official-calculation)).
 
 ## The diary, reconcile and the close {#the-diary}
 
@@ -564,8 +566,12 @@ The risk asks admission before either of its two levels on every poll, and keeps
 the hash of all the run reads, so a frame that moves none of it runs nothing. The status's
 `spine.paper` is the LSN of the last entity or agreement declaration standing (`spine.papered`):
 what a client holding the paper re-reads it on, the web client its entities and agreements
-(`paperOwed` in `web/src/state.ts`), a booking moving its holdings alone. **Held by**
+(`paperOwed` in `web/src/state.ts`), a booking moving its holdings alone. `GET /book/xva` reads its
+rows on every ask and keeps one part under the same key: `funding`, the two curves a recalc asked
+now would fund its FVA at (`service.funded`), read through `spine.official_calculation` as the run
+reads them, a null for one the calculation does not state. **Held by**
 `web/scripts/paper_check.mjs`,
+`test_spine_engine.py::test_the_xva_view_names_the_curves_a_credit_run_would_fund_at_and_keeps_the_answer`,
 `test_service.py::test_a_status_poll_with_nothing_moved_is_a_lookup_and_all_it_reads_is_in_its_key`,
 `test_spine_engine.py::test_a_status_poll_is_answered_anew_once_the_record_moves_and_the_paper_has_its_own_stamp`,
 `::test_a_risk_poll_with_nothing_moved_is_a_lookup_and_a_frame_that_moves_no_number_runs_nothing`,
@@ -615,9 +621,58 @@ declaration, so one nobody could read never lands; the last declaration stands (
 | `firmness` | `{"pillar_seconds": s}`, how old a quote's board may have been | nothing refused on staleness |
 | `fixings` | `{"sources": {index: [source, ...]}}`, ordered | no index resolves |
 | `tiers` | `{"tiers": [...], "designations": {process: market}}`, [below](#tiers) | fills land unsigned |
+| `calculation` | `{"calculations": {type: block}}`, a block of the engine's own fields per calculation type, [below](#official-calculation) | a credit run reads its own document |
 
 **Held by** `test_spine_verbs.py::test_a_policy_document_is_closed_at_the_field_level_and_refuses_where_it_is_declared`,
 `::test_the_tolerance_comparison_is_structural_first_and_numeric_second`.
+
+### The official calculation {#official-calculation}
+
+What a recording desk's credit run runs at is policy, never a screen edit: the `calculation` policy
+states, per calculation type, a block of that type's own fields in the engine's names. The record
+checks the shape and knows no field (`policy.parse_calculation`), and refuses a type no official
+run reads (`policy.OFFICIAL_RUNS`, `CreditMonteCarlo` alone): a block nothing reads is a rule nobody
+enforces. The engine judges the fields. `spine.declare_calculations`, behind
+`POST /book/calculations` and the `declare_official_calculation` tool, judges each block against its
+type's declarations (`spine.judge_calculation`, the type token `Object` being the key and no field)
+before anything appends, and reads no market: a curve the book does not carry fails the run that
+reads it. `GET /book/calculations` answers the document in force with its blob and its position.
+A document for an official run of 20 batches of 1,024 paths, both funding curves named, as
+`DV_Spine declare calculation` takes it and as the route takes its one section beside `actor`:
+
+```json
+{"calculations": {"CreditMonteCarlo": {
+  "Batch_Size": 1024, "Simulation_Batches": 20,
+  "Funding_Valuation_Adjustment": {
+    "Funding_Cost_Interest_Curve": "USD-FUNDING",
+    "Funding_Benefit_Interest_Curve": "USD-OIS"}}}}
+```
+
+**Held by**
+`test_spine_verbs.py::test_a_calculation_policy_is_a_block_per_official_run_and_the_record_checks_its_shape_alone`,
+`test_spine_engine.py::test_the_official_calculation_is_judged_by_the_engine_before_the_record_takes_it`,
+`test_mcp.py::test_the_official_calculation_reaches_a_model_as_the_record_declares_it`.
+
+`spine.official_calculation(document, runs, lsn)` is the one reader: the block standing at `lsn`
+laid over the document's own key by key, so a container the policy states replaces the document's
+whole. [`compiled_job`](#the-plan) writes it into a job compiled for a credit run and into no
+other, which is why it sits there: that function already holds what a job runs as and the position
+it is compiled at. So the XVA recalc, the increment, a named credit calculation, a what-if naming
+the type and a credit job posted to `/execute` all start from it, a seat's own dials
+(`service.with_overrides`) going over it and never official; a base valuation, the marks and a
+diary read none, and a declaration moves none of their plans. A recalc's own floor
+(`service.xva_document`) sits under both. A block declared past the judge, through
+`DV_Spine declare`, is judged where it is read and refuses the run by name. A desk keeping no
+record has no policy: its official calculation comes with its document. **Held by**
+`test_spine_engine.py::test_a_credit_run_under_the_policy_is_the_run_of_the_same_block_written_in_the_book_file`,
+`::test_the_policy_stands_over_the_book_file_which_stands_where_the_policy_says_nothing`,
+`::test_a_field_an_adjustment_block_states_stands_over_the_recalc_s_floor`,
+`::test_a_declaration_moves_no_plan_but_a_credit_run_s`,
+`::test_a_restated_policy_is_a_new_plan_and_a_job_compiled_before_it_is_the_earlier_run`,
+`::test_the_increment_and_the_credit_charge_start_from_the_policy`,
+`::test_a_seat_s_own_credit_calculation_goes_over_the_policy`,
+`::test_a_block_declared_past_the_engine_s_judge_refuses_the_credit_run_by_name`,
+`test_service.py::test_a_desk_that_keeps_no_record_funds_at_what_its_document_states_and_declares_no_policy`.
 
 ## Tiers and tickets {#tiers}
 
@@ -938,7 +993,7 @@ beside an adversary and scripted faults; its roles are callables, so a model hos
 | Doorbell heartbeat; fallback interval | 15 s; 2 s | `service.DOORBELL_SECONDS`, `replica.INTERVAL` |
 | Activity page; worklist rows | 200 | `book_activity(limit=)`, `service.WORKLIST_ROWS` |
 | Quote firmness | 600 s | `Quote Policy.firm_seconds` |
-| Pillar staleness, tolerance, capabilities | none declared | `policy.py`, `capability.py` |
+| Pillar staleness, tolerance, capabilities, the official calculation | none declared | `policy.py`, `capability.py` |
 
 ## Open {#open}
 
