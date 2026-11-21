@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { getMarkedDays, getPnl } from '../api';
-import { unmarked } from '../client';
+import { declaredOn, unmarked } from '../client';
 import { EmptyState } from '../components/EmptyState';
 import {
   behind, explained, factorLabel, FIGURES, noPnl, opensOn, pnlQuery, pnlRead, positionLabel,
@@ -72,8 +72,8 @@ export function PnlView() {
     return (
       <EmptyState
         title="No close has been marked yet."
-        hint={`The P&L runs between marked closes on '${days.market}'. A close is declared on the Back Office${
-          verb ? `, by a seat holding \`${verb}\`,` : ''} and the book is marked at it through the chat: the first marks are where the P&L starts.`}
+        hint={`The P&L runs between marked closes on '${days.market}'. ${declaredOn(verb)
+        }: the first marks are where the P&L starts.`}
       />
     );
   }
