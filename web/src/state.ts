@@ -482,6 +482,21 @@ export function heldBack(state: AppState, act: Act,
 export const acceptHeld = (state: AppState, node?: string): string | null =>
   heldBack(state, 'quote_filed', node) ?? heldBack(state, 'fill', node);
 
+/** What a seat shown no position in a trade is told, the record showing a seat what sits under the
+ * nodes it holds a grant at: that the record holds none, where that is the whole book - a node at
+ * or above it, or no grants read - and else that the seat is shown none, with what it sees. */
+export function noneShown(state: AppState): string {
+  const { grants } = state;
+  const book = String(state.doc?.Calc.Deals.Reference ?? '');
+  const held = grants?.asked === state.seat ? Object.values(grants.read?.verbs ?? {}) : [];
+  const sees = [...new Set(held.flatMap((at) => at ?? [book]))].sort();
+  if (!held.length || sees.some((node) => book === node || book.startsWith(`${node}/`))) {
+    return 'The record holds none of it now';
+  }
+  return `${grants!.read!.seat} is shown none of it, ${sees.length
+    ? `seeing only what sits under ${sees.join(', ')}` : 'holding no grant at any node'}`;
+}
+
 /** The store, its dispatch, and each tab's label by its id. */
 export const AppContext = createContext<{
   state: AppState; dispatch: Dispatch<Action>; labels: Record<string, string>;

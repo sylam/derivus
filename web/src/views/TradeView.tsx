@@ -12,7 +12,8 @@ import {
 import { clientText, quoteAt, verdictOf, type Verdict } from '../quote';
 import { pinnedAt } from '../spine';
 import {
-  clockOf, heldBack, marketOf, spineOf, useApp, useQuoteList, useQuotes, useRead, written,
+  clockOf, heldBack, marketOf, noneShown, spineOf, useApp, useQuoteList, useQuotes, useRead,
+  written,
 } from '../state';
 import { formatNumber, ungrouped } from '../tokens';
 import {
@@ -110,8 +111,8 @@ function Terms({ row, set, units, quote }: {
           )}
           {units !== undefined && (
             <span title="the net of every fill, in units of the trade as written">
-              {units === null ? <>the record holds <b>none</b> of it now: its sizes are as
-                written</> : shut ? <><b>closed</b>: netted to nothing, its sizes are as written</>
+              {units === null ? <>{noneShown(state)}: its sizes are as written</>
+                : shut ? <><b>closed</b>: netted to nothing, its sizes are as written</>
                 : <>held <b>{formatNumber(units)}</b> of the trade as written</>}
             </span>
           )}
@@ -174,6 +175,7 @@ function Origin({ recording, held, history, quote }: {
   recording: boolean; held: Position[]; history: ActivityRow[] | string | null;
   quote: QuoteGiven | null | undefined;
 }) {
+  const { state } = useApp();
   const [showing, setShowing] = useState(false);
   const read = useQuotes(showing && quote ? [quote.quote_id] : []);
   const pending = quote && read.data?.[quote.quote_id];
@@ -249,7 +251,7 @@ function Origin({ recording, held, history, quote }: {
             </table>
           </div>
         ) : (
-          <div className="hint">The record holds no position in this trade now.</div>
+          <div className="hint">{noneShown(state)}.</div>
         )}
       </div>
     </section>
@@ -415,7 +417,7 @@ function Actions({ row, held, recording }: {
             : <Unwind key={key} row={row} position={position} onVerdict={setVerdict} />;
         }) : hold ? <div className="note">{hold}</div> : (
           <div className="note">{held.length ? 'Closed: the record holds none of it'
-            : 'Nothing of this trade is held on the record'}, so there is nothing to unwind.</div>
+            : noneShown(state)}, so there is nothing to unwind.</div>
         )}
         {verdict && (verdict.booked ? (
           <>

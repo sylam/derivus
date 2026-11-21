@@ -510,6 +510,22 @@ const seated = (grants, seat = 'sales-1', extra = {}, demands = DEMANDS) => ({
   doc: { Calc: { Deals: { Reference: 'HARBOURLINE' } } },
   grants: grants && { asked: seat, read: { seat, verbs: verbs(grants), demands }, refused: null },
   ...extra });
+const NONE = 'The record holds none of it now';
+check('a seat shown no position in a trade is told the record holds none only where it is shown '
+      + 'the whole book; a seat seeing part of it, another book or nothing is told it is shown '
+      + 'none, and what it sees',
+      'the record said to hold none to a seat lacking sight of the node, which tells it a trade '
+      + 'on the record is not; a node matched by prefix, which reads a grant over HARBOUR as the '
+      + 'whole of HARBOURLINE; or a grant nothing narrows, or grants not yet read, taken for no '
+      + 'sight',
+      [state.noneShown(seated({ book: ['HARBOURLINE'] })), state.noneShown(seated({ validate: null })),
+       state.noneShown(seated(null)),
+       state.noneShown(seated({ book: ['HARBOURLINE/FX'], validate: ['HARBOURLINE/FX'] }, 'sales-9')),
+       state.noneShown(seated({ book: ['HARBOUR'] }, 'sales-9')), state.noneShown(seated({}, 'sales-9'))],
+      [NONE, NONE, NONE, 'sales-9 is shown none of it, seeing only what sits under HARBOURLINE/FX',
+       'sales-9 is shown none of it, seeing only what sits under HARBOUR',
+       'sales-9 is shown none of it, holding no grant at any node']);
+
 const NO_SEAT = 'No seat is set, and this desk files every act under the seat that asks.';
 check('a seat may act where a node it holds the act\'s verb at is the node or above it, the book '
       + 'by default and the whole firm only by a grant over every node; and says, naming the '
