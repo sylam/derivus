@@ -1910,6 +1910,46 @@ def test_the_explain_and_the_call_of_a_past_close_read_the_files_its_marks_read(
     assert called('2024-07-01')['CSA-A'] == call
 
 
+def test_the_call_of_a_close_whose_file_nobody_declared_is_read_on_the_file_as_it_stands(
+        recorded, filed):
+    """A CLOSE WHOSE FILE THE RECORD DOES NOT HOLD IS READ ON THE FILE AS IT STANDS. The book names
+    its market data file, which states `Exclude_Paid_Today` for the netting sets, and the desk
+    never declares it, so the record's store holds no copy of the bytes the marks read. A two-year
+    rand cashflow and one paying 100,000 rand on the second day sit under a collateralised
+    agreement through two marked closes, the book rolled between them to a rand of 18.6. The second
+    close's call leaves the day's payment out, as the file says; the file is then rewritten with
+    the setting turned off, and the same close's call, read again by the same service, adds the
+    payment back - 100,000 at 18.6, an exposure 1,860,000.00 higher.
+
+    Killing mutation: the close's market kept under its job and the digests its marks run reported
+    (`'files': marks_of['files']`), which answers the first read's exposure after the file moved.
+    """
+    book, market = filed
+
+    def excluding(paid):
+        data = json.loads(market.read_text())
+        data['MarketData']['Valuation Configuration'] = {
+            'NettingCollateralSet': {'Exclude_Paid_Today': paid}}
+        market.write_text(json.dumps(data), newline='\n')
+
+    designated(recorded, fixings=False)
+    excluding(True)
+    agreed_csa('CSA-A', 'CPTY_A', 'USD', 1_000_000.0, -500_000.0, 100_000.0)
+    for deal, reference, price in ((LONG, 'EXEC-A', 15_600_000.0),
+                                   (PAYS_END, 'EXEC-W', 1_800_000.0)):
+        booked(deal, 1.0, reference, BOOK + '/Rates', price, parent=None, agreement='CSA-A')
+    closed_and_marked()
+    rolled(book, END, 18.6)
+    settle({'subject': due('CF-W', '2024-07-01')['key']})
+    closed_and_marked()
+    left_out = called('2024-07-01')['CSA-A']['exposure']
+    assert called('2024-07-01')['CSA-A']['exposure'] == left_out
+
+    excluding(False)
+    assert called('2024-07-01')['CSA-A']['exposure'] - left_out == pytest.approx(
+        100_000.0 * 18.6, rel=1e-9), 'the call is still read on the file as it first stood'
+
+
 #: The second pair of eyes, a seat reading the FX node of the book alone, and the seats that act on
 #: what waits: one approving at the Rates node, and the back office's three across the firm.
 SECOND, FX_READER = 'subject-desk-two', 'subject-desk-fx'
