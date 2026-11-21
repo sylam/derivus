@@ -815,8 +815,7 @@ def test_the_increment_tool_answers_the_services_own_increment(tmp_path, monkeyp
     """
     from test_service import SHORT_CALL, netting_set, xva_book
     monkeypatch.setenv('DV_HOME', str(tmp_path))
-    path = xva_book(tmp_path, [netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')],
-                                           funding_rate='FUND')])
+    path = xva_book(tmp_path, [netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')])])
     try:
         before = path.read_bytes()
         answer = asyncio.run(mcp_server.xva_increment(
@@ -871,8 +870,7 @@ def test_the_increment_tool_asks_of_a_trade_the_book_holds_by_its_path(tmp_path,
     """
     from test_service import netting_set, xva_book
     monkeypatch.setenv('DV_HOME', str(tmp_path))
-    xva_book(tmp_path, [netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')],
-                                    funding_rate='FUND')])
+    xva_book(tmp_path, [netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')])])
     try:
         answer = asyncio.run(mcp_server.xva_increment(deal_path='0/0', reference='OPT_A'))
         submitted = CLIENT.post('/book/price', content=dump(

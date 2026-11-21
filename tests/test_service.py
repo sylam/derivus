@@ -5998,9 +5998,8 @@ VANILLA = {'Object': 'EquityOptionDeal', 'Currency': 'USD', 'Payoff_Currency': '
 def netting_set(reference, counterparty, deals, funding_rate='USD'):
     """One uncollateralised `NettingCollateralSet` over its deals.
     `Credit_Support_Amounts.Counterparty` IS the `SurvivalProb` factor the CVA discounts by, which
-    is why the recalc reads it from there and nowhere else. `Funding_Rate` is what the FVA's
-    funding leg is priced off; the default `'USD'` is also the deflation curve, so it declares no
-    spread and therefore no adjustment."""
+    is why the recalc reads it from there and nowhere else. `funding_rate` is the set's own
+    `Funding_Rate`, its collateral adjustment's term: no FVA funds at it."""
     return {'Instrument': {'.Deal': {
         'Object': 'NettingCollateralSet', 'Reference': reference, 'Netted': 'True',
         'Collateralized': 'False', 'Agreement_Currency': 'USD', 'Balance_Currency': 'USD',
@@ -6011,15 +6010,19 @@ def netting_set(reference, counterparty, deals, funding_rate='USD'):
         'Children': [{'Instrument': {'.Deal': deal}} for deal in deals]}
 
 
-#: A funding curve ABOVE the book's USD curve, so a set funding at it carries a real spread over
+#: A funding curve ABOVE the book's USD curve, so a book funding at it carries a real spread over
 #: risk-free. Without one, FCA and FBA are zero by construction and the FVA column cannot be told
 #: from an unimplemented one.
 FUNDING_RATE = 0.05
 
+#: What a book's calculation states to fund both legs of its FVA at that curve.
+FUNDED = {'Funding_Cost_Interest_Curve': 'FUND', 'Funding_Benefit_Interest_Curve': 'FUND'}
 
-def xva_book(tmp_path, sets, counterparties=('CPTY_A', 'CPTY_B')):
-    """A live book of netting sets: a survival curve per counterparty, a GBM for the equity and a
-    funding curve above risk-free. The hazard rises with each counterparty, so the two sets'
+
+def xva_book(tmp_path, sets, counterparties=('CPTY_A', 'CPTY_B'), funding=FUNDED):
+    """A live book of netting sets: a survival curve per counterparty, a GBM for the equity, a
+    funding curve above risk-free and a calculation stating `funding`, the curves its FVA funds
+    at - no block where that is empty. The hazard rises with each counterparty, so the two sets'
     numbers are separable rather than coincidentally equal."""
     factors = dict(FACTORS, **EQUITY)
     factors['InterestRate.FUND'] = {
@@ -6032,7 +6035,8 @@ def xva_book(tmp_path, sets, counterparties=('CPTY_A', 'CPTY_B')):
     document = job(deals=(), factors=factors, sections={
         'Price Models': {'GBMAssetPriceModel.EQ': {'Vol': VOL, 'Drift': 0.0}},
         'Model Configuration': {'.ModelParams': {
-            'modeldefaults': {'EquityPrice': 'GBMAssetPriceModel'}, 'modelfilters': {}}}})
+            'modeldefaults': {'EquityPrice': 'GBMAssetPriceModel'}, 'modelfilters': {}}}},
+        **({'Funding_Valuation_Adjustment': funding} if funding else {}))
     document['Calc']['Deals']['Deals']['Children'] = sets
     path = tmp_path / 'book.json'
     path.write_text(json.dumps(json.loads(dump(document)), indent=2), newline='\n')
@@ -6045,12 +6049,11 @@ def desk_xva(tmp_path, monkeypatch):
     """Two counterparties, one vanilla each - the smallest book with a mosaic to keep, with
     `DV_HOME` at the gate's tmp so the projection is readable.
 
-    The sets fund DIFFERENTLY on purpose: NS_A at `FUND`, a spread over risk-free, and NS_B at the
-    risk-free curve itself - a real number beside an exact zero in one projection, each traceable
-    to the set's own `Funding_Rate`."""
+    Both sets fund at `FUND`, the curve the book's calculation states: a real adjustment on each
+    row of one projection."""
     monkeypatch.setenv('DV_HOME', str(tmp_path))
     yield xva_book(tmp_path, [
-        netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')], funding_rate='FUND'),
+        netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')]),
         netting_set('NS_B', 'CPTY_B', [dict(VANILLA, Reference='OPT_B')])])
     service.BOOK = None
 
@@ -6678,11 +6681,10 @@ def test_fva_is_a_column_of_the_same_row_off_the_same_run(desk_xva, tmp_path):
     identity: one `as_of`, one `result_id`, one `plan_hash`. That is what makes them addable - two
     reductions of the same exposure cube at the same market.
 
-    The NUMBER is the set's own declaration. NS_A funds at `FUND` and carries a real adjustment;
-    NS_B funds at risk-free and carries exactly 0.0, since FCA and FBA are each a spread OVER
-    risk-free. That exact zero is a computed number, not a column standing in for one.
+    The NUMBER is funded at the curves the book's calculation states. Both sets fund at `FUND`, a
+    spread over risk-free, and each carries a real adjustment whatever its own `Funding_Rate` says.
 
-    MEASURED, 1024 paths, seed 1: NS_A cva 120.85 / fva 302.82, NS_B cva 297.74 / fva 0.0.
+    MEASURED, 1024 paths, seed 1: NS_A cva 120.85 / fva 302.82, NS_B cva 297.74.
 
     Then the mosaic on both columns: a deal booked into NS_A with only NS_A recalced moves cva AND
     fva together under one new stamp, and leaves NS_B byte for byte.
@@ -6693,10 +6695,8 @@ def test_fva_is_a_column_of_the_same_row_off_the_same_run(desk_xva, tmp_path):
         row = before[entry['reference']]
         assert row['status'] == 'done', row['error']
         assert row['result_id'] == entry['result_id'], 'the row names a run it did not come from'
-        assert row['cva'] > 0.0 and row['fva'] is not None
-
-    assert before['NS_A']['fva'] > 0.0, 'a set funding above risk-free paid nothing to fund'
-    assert before['NS_B']['fva'] == 0.0, 'a set funding AT risk-free was charged a spread anyway'
+        assert row['cva'] > 0.0
+        assert row['fva'] > 0.0, 'a set of a book funding above risk-free paid nothing to fund'
 
     # the two columns are one run: the same stamp, and the same stamp on disk
     filed = json.loads((tmp_path / 'xva.json').read_text())['sets']
@@ -6715,6 +6715,64 @@ def test_fva_is_a_column_of_the_same_row_off_the_same_run(desk_xva, tmp_path):
     assert after['NS_A']['fva'] > before['NS_A']['fva'], 'a bigger position must cost more to fund'
     assert after['NS_A']['as_of'] > before['NS_A']['as_of']
     assert after['NS_B'] == before['NS_B'], 'a partial recalc touched a row it was not asked for'
+
+
+def test_an_fva_funds_at_the_curves_its_calculation_states_whatever_a_set_states(
+        tmp_path, monkeypatch):
+    """The book's calculation states both funding curves, and different: the cost at `FUND`, the
+    benefit at the dollar curve the exposure deflates on. NS_A holds a bought call; NS_B a bought
+    call beside a sold put, worth either sign, so its benefit leg reads a real exposure. With each
+    set stating a `Funding_Rate` of its own, `USD` and `FUND`, the recalc lands, and each set's CVA
+    and FVA are, to the bit, those of the same book with every set's `Funding_Rate` blank, priced
+    as another run.
+
+    Killing mutations: the set's `Funding_Rate` passed as both curves beside the authored block,
+    under which the recalc dies of a `TypeError`; the set's curve written over the calculation's,
+    which funds NS_A at no spread and pays NS_B a benefit.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    stated = {'Funding_Cost_Interest_Curve': 'FUND', 'Funding_Benefit_Interest_Curve': 'USD'}
+    either = [dict(VANILLA, Reference='OPT_B'),
+              dict(VANILLA, Reference='PUT_B', Option_Type='Put', Buy_Sell='Sell')]
+    priced, runs = [], []
+    try:
+        for a, b in (('USD', 'FUND'), ('', '')):
+            xva_book(tmp_path, [
+                netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')], funding_rate=a),
+                netting_set('NS_B', 'CPTY_B', either, funding_rate=b)], funding=stated)
+            recalc()
+            assert {row['status'] for row in xva_rows().values()} == {'done'}, xva_rows()
+            priced.append(adjustments())
+            runs.append({row['result_id'] for row in xva_rows().values()})
+    finally:
+        service.BOOK = None
+    assert priced[0] == priced[1] and not runs[0] & runs[1]
+    assert all(row['cva'] > 0.0 and row['fva'] > 0.0 for row in priced[0].values()), priced[0]
+
+
+def test_a_calculation_stating_no_funding_curve_funds_every_set_at_no_spread(
+        tmp_path, monkeypatch):
+    """A book whose calculation states no funding curve funds at the curve it deflates on: beside
+    a real CVA every set's FVA is exactly 0.0 whatever the set states - NS_A naming `FUND`, a
+    curve above risk-free, as its own `Funding_Rate`, NS_B the dollar curve and NS_C none.
+
+    Killing mutation: the set's `Funding_Rate` read as the curve its FVA funds at, which charges
+    NS_A a spread.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    xva_book(tmp_path, [
+        netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')], funding_rate='FUND'),
+        netting_set('NS_B', 'CPTY_B', [dict(VANILLA, Reference='OPT_B')]),
+        netting_set('NS_C', 'CPTY_A', [dict(VANILLA, Reference='OPT_C')], funding_rate='')],
+        funding=None)
+    try:
+        recalc()
+        rows = xva_rows()
+    finally:
+        service.BOOK = None
+    assert {row['status'] for row in rows.values()} == {'done'}, rows
+    assert all(row['cva'] > 0.0 for row in rows.values())
+    assert [row['fva'] for row in rows.values()] == [0.0, 0.0, 0.0], rows
 
 
 def test_an_xva_row_keeps_its_peaks_and_one_set_s_profile_is_read_by_itself(desk_xva, tmp_path):
@@ -6818,9 +6876,9 @@ def test_a_book_filing_its_curves_under_other_names_lands_both_columns(tmp_path,
     """A book whose rates name `USD-OIS` and `ZAR-OIS` and which files no curve under a bare
     currency, its deals naming the dollar curve as the book files it, its sets leaving their funding
     curves blank and its calculation
-    stating no deflation curve: the recalc lands both columns of each set, a real CVA beside NS_A's
-    FVA funding at `FUND` and NS_B's exact zero, and the run it builds names neither a deflation nor
-    a risk-free curve, the engine deflating on the base currency's own.
+    stating no deflation curve and no funding curve: the recalc lands both columns of each set, a
+    real CVA beside an FVA of exactly zero, and the run it builds names no deflation, risk-free or
+    funding curve, the engine deflating and funding on the base currency's own.
 
     Killing mutation: the engine deflating on the base currency's code, `USD`, which this book does
     not carry, so both rows land failed.
@@ -6828,8 +6886,9 @@ def test_a_book_filing_its_curves_under_other_names_lands_both_columns(tmp_path,
     monkeypatch.setenv('DV_HOME', str(tmp_path))
     vanilla = dict(VANILLA, Discount_Rate='USD-OIS')
     path = xva_book(tmp_path, [
-        netting_set('NS_A', 'CPTY_A', [dict(vanilla, Reference='OPT_A')], funding_rate='FUND'),
-        netting_set('NS_B', 'CPTY_B', [dict(vanilla, Reference='OPT_B')], funding_rate='')])
+        netting_set('NS_A', 'CPTY_A', [dict(vanilla, Reference='OPT_A')], funding_rate=''),
+        netting_set('NS_B', 'CPTY_B', [dict(vanilla, Reference='OPT_B')], funding_rate='')],
+        funding=None)
     document = json.loads(path.read_text())
     factors = document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
     for currency in ('USD', 'ZAR'):
@@ -6842,12 +6901,12 @@ def test_a_book_filing_its_curves_under_other_names_lands_both_columns(tmp_path,
         rows = xva_rows()
         assert all(row['status'] == 'done' and row['cva'] > 0.0 for row in rows.values()), [
             row['error'] for row in rows.values()]
-        assert rows['NS_A']['fva'] > 0.0 and rows['NS_B']['fva'] == 0.0, rows
+        assert rows['NS_A']['fva'] == rows['NS_B']['fva'] == 0.0, rows
         for _, node in service.netting_sets(document):
             run = service.xva_document(document, node, '')['Calc']['Calculation']
             funding = run['Funding_Valuation_Adjustment']
             assert 'Deflation_Interest_Rate' not in run and 'Risk_Free_Curve' not in funding
-            assert funding['Funding_Cost_Interest_Curve'] == node['Instrument']['.Deal']['Funding_Rate']
+            assert not [field for field in FUNDED if funding.get(field)]
     finally:
         service.BOOK = None
 
@@ -7005,7 +7064,7 @@ def test_a_trade_beside_its_mirror_is_worth_nothing_on_every_path(tmp_path, monk
     Killing mutation: the mirror left out of the 'without' run, which reads the call's own numbers.
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path))
-    xva_book(tmp_path, [netting_set('NS_E', 'CPTY_A', [], funding_rate='FUND')])
+    xva_book(tmp_path, [netting_set('NS_E', 'CPTY_A', [])])
     try:
         result_id, result = increment(deal=SHORT_CALL, parent_reference='NS_E')
     finally:
@@ -7023,8 +7082,7 @@ def test_a_trade_beside_its_mirror_is_worth_nothing_on_every_path(tmp_path, monk
 def one_set(tmp_path, monkeypatch):
     """NS_A alone: a what-if over the whole book is then a run of that one set, as a desk asks it."""
     monkeypatch.setenv('DV_HOME', str(tmp_path))
-    yield xva_book(tmp_path, [netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')],
-                                          funding_rate='FUND')])
+    yield xva_book(tmp_path, [netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')])])
     service.BOOK = None
 
 
@@ -7082,21 +7140,20 @@ def test_the_increment_on_a_second_seed_moves_by_rounding_and_the_two_runs_by_mo
 @pytest.fixture
 def credit_client(tmp_path, monkeypatch):
     """The quoting desk's client with a credit run to price: `CLIENT_SET` empty, CPTY_A's survival
-    curve, a funding curve over the dollar curve, and the rand on a GBM - a credit Monte Carlo
-    simulates nothing a book gives no model."""
+    curve, a funding curve over the dollar curve the calculation funds at, and the rand on a GBM -
+    a credit Monte Carlo simulates nothing a book gives no model."""
     monkeypatch.setenv('DV_HOME', str(tmp_path))
     factors = dict(FACTORS, **{
         'SurvivalProb.CPTY_A': {'Recovery_Rate': 0.4,
                                 'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.2]])},
         'InterestRate.FUND': {'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
                               'Curve': utils.Curve([], [[0.0, FUNDING_RATE], [5.0, FUNDING_RATE]])}})
-    document = job(factors=factors, sections={
+    document = job(factors=factors, Funding_Valuation_Adjustment=FUNDED, sections={
         'Bootstrapper Configuration': {'FXVol': {}},
         'Price Models': {'GBMAssetPriceModel.ZAR': {'Vol': 0.15, 'Drift': 0.0}},
         'Model Configuration': {'.ModelParams': {
             'modeldefaults': {'FxRate': 'GBMAssetPriceModel'}, 'modelfilters': {}}}})
-    document['Calc']['Deals']['Deals']['Children'].append(
-        netting_set(CLIENT_SET, 'CPTY_A', [], funding_rate='FUND'))
+    document['Calc']['Deals']['Deals']['Children'].append(netting_set(CLIENT_SET, 'CPTY_A', []))
     path = tmp_path / 'book.json'
     path.write_text(json.dumps(json.loads(dump(document)), indent=2), newline='\n')
     service.BOOK = service.Book(str(path))
@@ -7341,7 +7398,7 @@ def test_a_candidate_under_a_declared_agreement_brings_its_set(recorded, tmp_pat
     path = xva_book(tmp_path, [netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')])])
     try:
         declared('CPTY_A', 'NS_NEW', json.loads(dump(netting_set(
-            'NS_NEW', 'CPTY_A', [], funding_rate='FUND')))['Instrument']['.Deal'])
+            'NS_NEW', 'CPTY_A', [])))['Instrument']['.Deal'])
         before, lsn = path.read_bytes(), record_head(recorded)
         whatif = CLIENT.post('/book/price', content=dump(
             {'deal': SHORT_CALL, 'parent_reference': 'NS_NEW'}), headers=JSON)
@@ -7373,8 +7430,7 @@ def test_an_increment_reads_the_collateral_its_set_holds(recorded, tmp_path):
     which writes no balance - so its runs open holding nothing, the run without the trade reading
     a CVA of 117.46 against the recalc's 74.22.
     """
-    terms = dict(netting_set('CSA_A', 'CPTY_A', [], funding_rate='FUND')['Instrument']['.Deal'],
-                 Collateralized='True')
+    terms = dict(netting_set('CSA_A', 'CPTY_A', [])['Instrument']['.Deal'], Collateralized='True')
     terms['Credit_Support_Amounts'] = dict(
         terms['Credit_Support_Amounts'], Received_Threshold=UNCALLED, Minimum_Received=UNCALLED,
         Minimum_Posted=UNCALLED, Posted_Threshold={'.CreditSupportList': [[0.0, -1e12]]})
@@ -7433,9 +7489,10 @@ def named_book(tmp_path):
     """`(book, market, calendar)`: a market data FILE holding every equity, curve, model and
     correlation, survival curves for CPTY_0 to CPTY_4 and a factor no set reads; a calendar the
     equities count their spot dates on; and a book of ten netting sets naming both - NS_k against
-    CPTY_k on two of the six equities, the even
-    sets funding at FUND - whose explicit block states CPTY_3's curve over the file's and CPTY_5 to
-    CPTY_9's outright, EQ_0's spot, EQ_1's only surface, EQ_2's implied parameters and EQ_4's model.
+    CPTY_k on two of the six equities, its
+    calculation funding at FUND - whose explicit block states CPTY_3's curve over the file's and
+    CPTY_5 to CPTY_9's outright, EQ_0's spot, EQ_1's only surface, EQ_2's implied parameters and
+    EQ_4's model.
     """
     factors = dict(FACTORS, **{
         'InterestRate.FUND': {'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
@@ -7467,9 +7524,8 @@ def named_book(tmp_path):
     sets = [netting_set('NS_{}'.format(k), 'CPTY_{}'.format(k), [
         dict(VANILLA, Reference='OPT_{}_{}'.format(k, name), Equity=name, Dividends=name,
              Equity_Volatility=name)
-        for name in (NAMED[k % 6], NAMED[(k + 1) % 6])], funding_rate='USD' if k % 2 else 'FUND')
-        for k in range(10)]
-    document = job(deals=(), factors=stated, sections={
+        for name in (NAMED[k % 6], NAMED[(k + 1) % 6])]) for k in range(10)]
+    document = job(deals=(), factors=stated, Funding_Valuation_Adjustment=FUNDED, sections={
         'Price Models': {'GBMAssetPriceModel.EQ_4': {'Vol': 0.4, 'Drift': 0.0}}})
     del document['Calc']['MergeMarketData']['ExplicitMarketData']['System Parameters']
     document['Calc']['MergeMarketData']['MarketDataFile'] = str(market)

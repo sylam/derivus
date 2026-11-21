@@ -4130,8 +4130,8 @@ XVA_CVA_BLOCK = {'Calculate': 'Yes', 'Counterparty': '', 'Bank': '',
                  'Gradient': 'No'}
 
 #: The FVA block a recalc switches on, beside the CVA one and off the SAME run - the projection's
-#: second column. `Counterparty` is the set's; the two funding curves are decided per set (see
-#: `funding_curves`); the rest is the CVA block's own desk-projection posture.
+#: second column. `Calculate` and `Counterparty` are decided per set, the two funding curves are
+#: the book calculation's own to state, and the rest is the CVA block's desk-projection posture.
 XVA_FVA_BLOCK = {'Calculate': 'Yes', 'Counterparty': '', 'Bank': '',
                  'Deflate_Stochastically': 'No', 'Stochastic_Funding': 'No', 'Gradient': 'No'}
 
@@ -4193,21 +4193,6 @@ def set_terms(deal):
     return support.get('Counterparty') or '', deal.get('Collateralized', 'False') == 'True'
 
 
-def funding_curves(deal):
-    """`(cost, benefit)` funding curve names for a set's FVA, off the set's OWN declaration.
-
-    `Funding_Rate` is the curve a `NettingCollateralSet` already names as what it funds at, so the
-    projection reads the funding leg where the book states it rather than inventing a desk-wide
-    spread nobody authored. A set that names none leaves both blank, which the engine reads as the
-    risk-free curve, and FVA is then identically zero - FCA and FBA are both spreads OVER
-    risk-free. That zero is a READING, not a placeholder: the remedy is to author `Funding_Rate`.
-
-    Cost and benefit are the same curve because a single `Funding_Rate` is all the set declares.
-    """
-    funding = deal.get('Funding_Rate') or ''
-    return funding, funding
-
-
 def xva_document(document, node, counterparty):
     """A `CreditMonteCarlo` job over the book carrying ONE netting set's subtree, priced for BOTH
     adjustments the projection carries.
@@ -4228,9 +4213,14 @@ def xva_document(document, node, counterparty):
     way, 0 ULP on both of the gate's sets. FVA keeps the scaled cube it is defined on.
 
     The synthesized fields are a FLOOR: `setdefault` leaves a book stating its own path count or
-    batching alone, and an authored adjustment block keeps every field but the counterparty. No
-    deflation or risk-free curve is written: the engine reads both as the base currency's own, so
-    nothing here reads the market.
+    batching alone, and an authored adjustment block keeps every field but `Calculate` and the
+    counterparty. No deflation or risk-free curve is written: the engine reads both as the base
+    currency's own, so nothing here reads the market.
+
+    THE FVA FUNDS AT THE CURVES THE BOOK'S CALCULATION STATES, `Funding_Cost_Interest_Curve` and
+    `Funding_Benefit_Interest_Curve`, for every set alike. A calculation stating neither leaves
+    both blank, which the engine reads as the curve it deflates on, and the FVA is exactly 0.0. A
+    set's own `Funding_Rate` is its collateral adjustment's term and no FVA funds at it.
     """
     # only the root of the tree and the calculation are written, so the market is shared, not copied
     deals = document['Calc']['Deals']
@@ -4241,16 +4231,10 @@ def xva_document(document, node, counterparty):
     calculation = dict(run['Calc']['Calculation'], Object='CreditMonteCarlo')
     calculation.setdefault('Batch_Size', XVA_BATCH_SIZE)
     calculation.setdefault('Simulation_Batches', XVA_SIMULATION_BATCHES)
-    block = dict(XVA_CVA_BLOCK, **(calculation.get('Credit_Valuation_Adjustment') or {}))
-    block.update(Calculate='Yes', Counterparty=counterparty)
-    calculation['Credit_Valuation_Adjustment'] = block
-
-    cost, benefit = funding_curves(node['Instrument']['.Deal'])
-    funding = dict(XVA_FVA_BLOCK, Funding_Cost_Interest_Curve=cost,
-                   Funding_Benefit_Interest_Curve=benefit,
-                   **(calculation.get('Funding_Valuation_Adjustment') or {}))
-    funding.update(Calculate='Yes', Counterparty=counterparty)
-    calculation['Funding_Valuation_Adjustment'] = funding
+    for adjustment, floor in (('Credit_Valuation_Adjustment', XVA_CVA_BLOCK),
+                              ('Funding_Valuation_Adjustment', XVA_FVA_BLOCK)):
+        calculation[adjustment] = {**floor, **(calculation.get(adjustment) or {}),
+                                   'Calculate': 'Yes', 'Counterparty': counterparty}
     run['Calc']['Calculation'] = calculation
     return run
 
@@ -4533,9 +4517,10 @@ def book_xva_view():
 
     THE ADJUSTMENTS ARE COLUMNS OF ONE ROW, off one CMC per set, so they share an `as_of` and a
     replay tuple and can be added without asking whether they were priced on the same market. `fva`
-    is the funding cost less the benefit over the exposure, both spreads over the risk-free curve,
-    so a set declaring no `Funding_Rate` reads exactly 0.0. There is no `kva` column and no null
-    one: nothing computes a capital charge, and a null would read as "not recalculated yet".
+    is the funding cost less the benefit over the exposure, each the spread of the funding curve
+    the book's calculation states over the risk-free curve, so a book stating neither reads exactly
+    0.0 on every set. There is no `kva` column and no null one: nothing computes a capital charge,
+    and a null would read as "not recalculated yet".
 
     STALENESS IS DATA. The rows carry different `as_of` stamps on purpose - that is what a partial
     recalc means - so the view never blocks, never runs a CMC, and never hides a number's age.
