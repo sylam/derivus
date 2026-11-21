@@ -11,6 +11,7 @@ import {
 } from '../quote';
 import { clockOf, heldBack, useApp, useQueued } from '../state';
 import { formatNumber } from '../tokens';
+import { tradeAt } from '../trade';
 import type { ChargeAsk, Increment, PendingQuote, Schema } from '../types';
 import { Money, Waiting } from './Desk';
 import { DealPanels, FieldView } from './FieldView';
@@ -37,7 +38,9 @@ export function TicketCard({ pending }: { pending: PendingQuote }) {
     return () => clearTimeout(timer);
   }, [word, until]);
   const delivery = dateOf(first.Delivery_Date);
-  const charge = chargeAsk(pending, state.doc?.Calc.Deals?.Deals?.Children ?? []);
+  const nodes = state.doc?.Calc.Deals?.Deals?.Children ?? [];
+  const charge = chargeAsk(pending, nodes, state.tab === 'trade'
+    ? tradeAt(nodes, state.selection.picks.trade ?? '')?.path : undefined);
   const level = (on: { pair: string; level: number } | undefined, raw: number) =>
     (on ? `${on.pair} ${formatNumber(on.level)}` : formatNumber(raw));
 

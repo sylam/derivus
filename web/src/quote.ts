@@ -239,13 +239,14 @@ export function ranAs<T>(summary: ResultSummary, stat: string):
 
 /** The ask a quote's ticket makes for its credit charge: of the quote until it books, the what-if
  * pricing its trade into the book; from then of the trade the book holds, where the file holds
- * it now under the reference it booked as - and none where the file holds it no more. */
+ * it now under the reference it booked as - and none where the file holds it no more, nor on
+ * that trade's `own` page, which asks it itself. */
 export function chargeAsk(pending: Pick<PendingQuote, 'quote' | 'deal' | 'booked'>,
-                          nodes: DealNode[]): ChargeAsk | undefined {
+                          nodes: DealNode[], own?: string): ChargeAsk | undefined {
   if (!pending.booked) return { quote_id: pending.quote.quote_id };
   const reference = String(pending.deal.Reference);
   const path = landedAt(nodes, { ...pending.booked, reference });
-  return path === undefined ? undefined : { deal_path: path, reference };
+  return path === undefined || path === own ? undefined : { deal_path: path, reference };
 }
 
 /** One line of a credit charge: a number of the client's netting set with the trade and without

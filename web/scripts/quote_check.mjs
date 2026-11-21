@@ -428,16 +428,21 @@ const ticketed = (reference, extra) => (
   { quote: { quote_id: 'q1' }, deal: { Reference: reference }, ...extra });
 check('a ticket asks its credit charge of the quote until it books - an acceptance no tier booked '
         + 'included - and from then of the trade the book holds, where the file holds it now '
-        + 'under the reference it booked as; of nothing where the file holds it no more',
+        + 'under the reference it booked as; of nothing where the file holds it no more, nor on '
+        + "that trade's own page, which asks it itself",
       'the charge asked by the quote once it has booked, which prices a second trade beside the '
         + 'one the book holds; the booked path trusted over the reference, which asks of the '
-        + 'trade a deletion moved there; or an acceptance read as a booking',
+        + "trade a deletion moved there; an acceptance read as a booking; or the trade's own page "
+        + 'left unread, which shows one trade two credit charge controls',
       [quote.chargeAsk(ticketed('COLLAR-B', { booked: null }), QUOTED_BOOK),
        quote.chargeAsk(ticketed('COLLAR-B', { booked: null, accepted: { lsn: 37, ticket: 't' } }),
                        QUOTED_BOOK),
        quote.chargeAsk(ticketed('COLLAR-B', { booked: { lsn: 42, deal_path: '3' } }), QUOTED_BOOK),
-       quote.chargeAsk(ticketed('COLLAR-A', { booked: { lsn: 41, deal_path: '1' } }), QUOTED_BOOK)],
+       quote.chargeAsk(ticketed('COLLAR-A', { booked: { lsn: 41, deal_path: '1' } }), QUOTED_BOOK),
+       quote.chargeAsk(ticketed('COLLAR-B', { booked: { lsn: 42, deal_path: '3' } }), QUOTED_BOOK, '1'),
+       quote.chargeAsk(ticketed('COLLAR-B', { booked: { lsn: 42, deal_path: '3' } }), QUOTED_BOOK, '0'),
+       quote.chargeAsk(ticketed('COLLAR-B', { booked: null }), QUOTED_BOOK, '1')],
       [{ quote_id: 'q1' }, { quote_id: 'q1' }, { deal_path: '1', reference: 'COLLAR-B' },
-       undefined]);
+       undefined, undefined, { deal_path: '1', reference: 'COLLAR-B' }, { quote_id: 'q1' }]);
 
 done();
