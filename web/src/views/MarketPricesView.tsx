@@ -94,9 +94,11 @@ function MarketPriceBlock({ schema, name, block, live }: {
 }
 
 /** The terminal round trip as one button: a queued job, polled the way an execute is, its outcome
- * read off the run's own stats. Nothing here names a pair - the scope defaults to the desk's. */
+ * read off the run's own stats - what holds the marking seat from the queue in the button's place.
+ * Nothing here names a pair - the scope defaults to the desk's. */
 function BloombergTick() {
-  const { dispatch } = useApp();
+  const { state, dispatch } = useApp();
+  const hold = heldBack(state, 'validate');
   const [outcome, setOutcome] = useState<Record<string, unknown> | null>(null);
   const asking = useQueued<void, Record<string, unknown> | undefined>(tickBloomberg, 'Bloomberg',
                                                                       (answer) => {
@@ -113,9 +115,11 @@ function BloombergTick() {
   return (
     <>
       <div className="statusrow">
-        <button className="ghost" onClick={tick} disabled={!!asking.run}>
-          tick from Bloomberg
-        </button>
+        {hold ? <><span className="hint">tick from Bloomberg</span><span>{hold}</span></> : (
+          <button className="ghost" onClick={tick} disabled={!!asking.run}>
+            tick from Bloomberg
+          </button>
+        )}
         {status && (
           <span className={`chip ${status === 'done' ? 'done'
             : status === 'error' ? 'error' : 'running'}`}>{status}</span>

@@ -10,8 +10,8 @@ import { ActivityStrip, ReconcileBanner, SeatControl, WorklistBanner } from './c
 import { WORKSPACES } from './registry';
 import { bookOwed, polled, ringsAhead, single, worklistAt } from './spine';
 import {
-  AppContext, INITIAL, PAPER_TABS, bookLoaded, clockOf, paperAt, paperOwed, reducer, seatClock,
-  spineOf,
+  AppContext, INITIAL, PAPER_TABS, bookLoaded, bookRisk, clockOf, paperAt, paperOwed, reducer,
+  seatClock, spineOf,
 } from './state';
 
 const BOOK_POLL_MS = 2000;
@@ -105,10 +105,11 @@ export function App() {
   const owed = (slice: string, at: string, held: unknown) =>
     answered.current[slice] !== at || !held;
 
-  // The risk verb RUNS the book on a miss, so it is priced while a desk is LOOKING at it and only
-  // then: taking the tab prices it, every move of the clock under that gaze re-prices it, and a tab
-  // left behind or a window gone hidden costs nothing until it is looked at again.
-  const riskWanted = ['risk', 'trade', 'xva', 'client'].includes(state.tab) && visible;
+  // The risk verb RUNS the book on a miss, so it is priced while a desk is LOOKING at it, and only
+  // for a seat the queue admits to a what-if: taking the tab prices it, every move of the clock
+  // under that gaze re-prices it, and a tab left behind or a window gone hidden costs nothing.
+  const riskWanted = ['risk', 'trade', 'xva', 'client'].includes(state.tab) && visible
+    && !bookRisk(state).held;
   const riskAt = seatClock(state);
   useEffect(() => {
     if (clock === null || riskAt === null || !riskWanted

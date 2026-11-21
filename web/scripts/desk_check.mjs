@@ -597,6 +597,29 @@ check('a what-if is admitted to a seat holding validate at the book, above it or
       [null, null, 'Needs validate over HARBOURLINE: sales-1 holds it only over HARBOURLINE-2/fx.',
        'Needs validate: sales-1 holds it nowhere.',
        'Needs book over HARBOURLINE: sales-1 holds it only over HARBOURLINE/fx.']);
+const READ = { data: { mtm: 5 }, error: null, loading: false, clock: 'c' };
+const REFUSED = { data: null, error: 'the book will not price', loading: false, clock: null };
+const HOLD = 'Needs validate: sales-1 holds it nowhere.';
+check("a read the seat may not ask shows what holds it in the read's place, nothing read before "
+      + "it, and says it is held; one it may ask stands as read, its refusal the service's own",
+      'the answer in hand kept under the hold, which shows a seat the numbers the seat before it '
+      + "read; the service's refusal kept over the hold; the hold not said to be one, which "
+      + 'leaves it in the red box; or a read the seat may ask blanked, or said to be held',
+      [state.readAs(HOLD, READ), state.readAs(HOLD, REFUSED), state.readAs(null, READ),
+       state.readAs(null, REFUSED)],
+      [{ ...READ, data: null, error: HOLD, held: true }, { ...REFUSED, error: HOLD, held: true },
+       { ...READ, held: false }, { ...REFUSED, held: false }]);
+const risked = (grants, extra) =>
+  state.bookRisk({ ...seated(grants, 'sales-1', extra), risk: READ });
+check('the risk is a what-if the queue admits: held from a seat holding validate nowhere, and '
+      + 'read by one holding it at the book or a node under it, and on a desk keeping no record',
+      'the risk judged as a booking, which holds it from a seat pricing one node of the book and '
+      + 'shows it to one that books and may not price; or held on a desk that asks no grants',
+      [risked({}), risked({ validate: ['HARBOURLINE/fx'] }),
+       risked({ book: ['HARBOURLINE'], mark: ['HARBOURLINE'] }).held,
+       risked({}, { record: { spine: null } }).held],
+      [{ ...READ, data: null, error: HOLD, held: true }, { ...READ, held: false }, true, false]);
+
 const QUOTED = { ...DEMANDS, quote_filed: 'approve' };
 check('an acceptance is held where either act it files is, the quote or its fill, at the node the '
       + 'quote books at and the book where it states none',

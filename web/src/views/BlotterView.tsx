@@ -10,7 +10,7 @@ import {
   GROUPINGS, NO_PAPER, POSITION, bookedBy, byId, byPath, clientTree, closed, heldColumns,
   portfolioTree, type Paper, type Position,
 } from '../positions';
-import { actingSeat, clockOf, marketOf, openTrade, spineOf, useApp } from '../state';
+import { actingSeat, bookRisk, clockOf, marketOf, openTrade, spineOf, useApp } from '../state';
 import { formatNumber } from '../tokens';
 import { markOf } from '../trade';
 import type { DealMark, Market, Schema } from '../types';
@@ -68,7 +68,7 @@ export function BlotterView() {
   const rolling = rollingCount(tree, 30);
   const heads = recording ? [...HEADS, ...RECORD_HEADS] : HEADS;
   // a mark is of the book it was read on: the risk in the store, where the book has not moved since
-  const { risk } = state;
+  const risk = bookRisk(state);
   const marks = risk.data && !lagsBook(risk.clock, clockOf(state))
     ? [...risk.data.per_deal, ...risk.data.in_sets] : [];
   const markOn = (row: BlotterRow): DealMark | undefined => markOf(marks, markPath(row)).own;

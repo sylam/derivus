@@ -3,9 +3,9 @@ import { getMarkedDays, getPnl } from '../api';
 import { EmptyState } from '../components/EmptyState';
 import {
   behind, explained, factorLabel, FIGURES, noPnl, pnlQuery, positionLabel, residualShare,
-  type Pnl,
+  revalues, type Pnl,
 } from '../pnl';
-import { spineOf, useApp, useRead } from '../state';
+import { heldBack, readAs, spineOf, useApp, useRead } from '../state';
 import { formatNumber, type Kind } from '../tokens';
 import { entityText } from '../desk';
 import { NO_PAPER } from '../positions';
@@ -48,10 +48,11 @@ export function PnlView() {
   const days = marked.data;
   const paper = state.paper.data ?? NO_PAPER;
   // read again whenever the window or the scope moves, or the reader asks - the explain only when
-  // asked for - with the book it was read at
-  const read = useRead(recording && days?.days.length ? async () => ({ asked: current.current,
-    answer: await getPnl(pnlQuery(start, end, scope, explain)) }) : null,
-  [recording, days, start, end, scope, explain, again]);
+  // asked for - with the book it was read at; a what-if's work only of a seat that may ask one
+  const hold = revalues(end, explain) ? heldBack(state, 'validate') : null;
+  const read = readAs(hold, useRead(recording && days?.days.length && !hold ? async () => ({
+    asked: current.current, answer: await getPnl(pnlQuery(start, end, scope, explain)) }) : null,
+  [recording, days, start, end, scope, explain, again, hold]));
   const { answer, asked: readAt } = read.data ?? {};
   const { loading } = read;
   const error = marked.error ?? read.error;
@@ -71,7 +72,9 @@ export function PnlView() {
   }
   if (!answer) {
     return error ? (
-      <div className="main"><div className="panel"><div className="error-box">{error}</div></div></div>
+      <div className="main"><div className="panel">
+        <div className={read.held && !marked.error ? 'note' : 'error-box'}>{error}</div>
+      </div></div>
     ) : <EmptyState title="Reading the P&L…" hint="The marks of both days, the trades and the cash between them." />;
   }
 

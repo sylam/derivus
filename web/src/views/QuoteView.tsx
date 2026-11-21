@@ -13,7 +13,7 @@ import {
   verdictOf,
 } from '../quote';
 import {
-  acceptHeld, actingSeat, openTrade, useApp, useQueued, useQuoteList, useQuotes,
+  acceptHeld, actingSeat, heldBack, openTrade, useApp, useQueued, useQuoteList, useQuotes,
 } from '../state';
 import { formatNumber } from '../tokens';
 import type { PendingQuote, Quote, QuoteGiven, StructureType } from '../types';
@@ -231,6 +231,7 @@ function QuoteForm({ draft: initial = EMPTY, from, onQuoted }: {
   const paper = state.paper.data ?? NO_PAPER;
   const [draft, setDraft] = useState<Draft>(initial);
   const quoting = useQuoting(onQuoted);
+  const hold = heldBack(state, 'validate');
   const declared: StructureType | undefined = types[draft.structure];
   const edit = (change: Partial<Draft>) => setDraft((standing) => ({ ...standing, ...change }));
   const sets = clients(state.doc, paper.agreements);
@@ -310,10 +311,12 @@ function QuoteForm({ draft: initial = EMPTY, from, onQuoted }: {
           </>
         )}
         <div className="statusrow">
-          <button className="primary" disabled={!declared || !!quoting.run}
-                  onClick={() => declared && quoting.start(requestOf(draft, declared))}>
-            {quoting.run ? 'pricing…' : from ? 'quote again' : 'quote'}
-          </button>
+          {hold ? <><span className="hint">quote</span><span>{hold}</span></> : (
+            <button className="primary" disabled={!declared || !!quoting.run}
+                    onClick={() => declared && quoting.start(requestOf(draft, declared))}>
+              {quoting.run ? 'pricing…' : from ? 'quote again' : 'quote'}
+            </button>
+          )}
           <Waiting {...quoting} />
         </div>
       </div>
@@ -417,6 +420,7 @@ function Acceptance({ id, pending, verdict, quoting, onVerdict, onRequote }: {
   const recording = state.record.spine !== null;
   const seat = actingSeat(state);
   const hold = acceptHeld(state, pending.portfolio);
+  const priceHold = heldBack(state, 'validate');
   const { quote } = pending;
   const booked = pending.booked ?? verdict?.booked;
 
@@ -484,9 +488,11 @@ function Acceptance({ id, pending, verdict, quoting, onVerdict, onRequote }: {
         ))}
         {verdict && !verdict.booked && verdict.requote && (
           <div className="statusrow">
-            <button className="primary" disabled={!!quoting.run} onClick={onRequote}>
-              re-quote from the same parameters
-            </button>
+            {priceHold ? <><span className="hint">re-quote</span><span>{priceHold}</span></> : (
+              <button className="primary" disabled={!!quoting.run} onClick={onRequote}>
+                re-quote from the same parameters
+              </button>
+            )}
             <Waiting {...quoting} />
           </div>
         )}

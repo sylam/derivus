@@ -17,7 +17,7 @@ import {
   positionName, statusText, type Agreement, type Entity, type Position,
 } from '../positions';
 import { pinnedAt } from '../spine';
-import { marketOf, opened, standing, useApp, useRead } from '../state';
+import { bookRisk, marketOf, opened, standing, useApp, useRead } from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
 import { markOf, wholeRecord } from '../trade';
 import type {
@@ -33,7 +33,7 @@ type Reads = {
   entities: Entity[] | null; agreements: Agreement[] | null; positions: Position[] | null;
   unstated: SettlementState | null;
   xva: { data: BookXva | null; error: string | null };
-  risk: { data: BookRisk | null; error: string | null };
+  risk: { data: BookRisk | null; error: string | null; held: boolean };
 };
 
 /** One page per client: whether it is ready to trade, its agreements in a credit officer's words,
@@ -46,7 +46,8 @@ export function ClientView() {
   const { doc, schema, source } = state;
   const recording = state.record.spine !== null;
   const live = source?.kind === 'book';
-  const { paper, xva, risk } = state;
+  const { paper, xva } = state;
+  const risk = bookRisk(state);
 
   if (!live) {
     return (
@@ -301,7 +302,7 @@ function OnBook({ own, reads, rows, market, schema }: {
                 {closed ? `, ${closed} closed` : ''}</span>
               <span>
                 {mark ? <>marked <b>{markText(mark.value, risk!.currency)}</b>, read {stampText(risk!.as_of)}</>
-                  : reads.risk.error ? `no mark: ${reads.risk.error}`
+                  : reads.risk.error ? `no mark${reads.risk.held ? '. ' : ': '}${reads.risk.error}`
                     : path === null ? 'no mark: nothing is booked under it'
                       : risk ? 'no mark: the risk names no row for its set' : 'pricing the book for its mark…'}
               </span>

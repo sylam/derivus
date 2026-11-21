@@ -1,5 +1,5 @@
 import { Fragment, useMemo, useState } from 'react';
-import { NO_SEAT, failure, fillDeal, getBookActivity } from '../api';
+import { failure, fillDeal, getBookActivity } from '../api';
 import {
   baseDateOf, cellText, nameOf, quoted, rowsByPath, sizeOf, toRows, type BlotterRow,
 } from '../blotter';
@@ -12,8 +12,8 @@ import {
 import { clientText, quoteAt, verdictOf, type Verdict } from '../quote';
 import { pinnedAt } from '../spine';
 import {
-  clockOf, heldBack, marketOf, noneShown, spineOf, useApp, useQuoteList, useQuotes, useRead,
-  written,
+  bookRisk, clockOf, heldBack, marketOf, noneShown, spineOf, useApp, useQuoteList, useQuotes,
+  useRead, written,
 } from '../state';
 import { formatNumber, ungrouped } from '../tokens';
 import {
@@ -260,19 +260,20 @@ function Origin({ recording, held, history, quote }: {
 
 /** What the trade is worth to the desk, and what the number is on: its own mark where the risk
  * answer holds one, else the top-level node it sits inside, said as that - and, asked for, what
- * it adds to its client's credit numbers. */
+ * it adds to its client's credit numbers. Both are a what-if, so a seat held back from one is
+ * told so once. */
 function Worth({ path, reference, legs, shut }: {
   path: string; reference: string; legs: number; shut: boolean;
 }) {
   const { state } = useApp();
-  const { risk } = state;
+  const risk = bookRisk(state);
   const body = () => {
     if (state.source?.kind !== 'book') {
       return <div className="note">A file opened in this browser is not marked: the risk is a
         reading of the live book.</div>;
     }
     if (risk.error) {
-      return <div className={risk.error === NO_SEAT ? 'banner' : 'error-box'}>{risk.error}</div>;
+      return <div className={risk.held ? 'note' : 'error-box'}>{risk.error}</div>;
     }
     if (!risk.data) return <div className="hint">pricing the book…</div>;
     const { own, inside } = markOf([...risk.data.per_deal, ...risk.data.in_sets], path);
@@ -313,7 +314,7 @@ function Worth({ path, reference, legs, shut }: {
       <h3>What it is worth</h3>
       <div className="nested">
         {body()}
-        {state.source?.kind === 'book' && (
+        {state.source?.kind === 'book' && !risk.held && (
           <CreditCharge key={path} ask={{ deal_path: path, reference: reference || undefined }} />
         )}
       </div>

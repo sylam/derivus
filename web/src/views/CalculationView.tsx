@@ -8,7 +8,7 @@ import { DataTable } from '../components/DataTable';
 import { Navigator, type Page } from '../components/Navigator';
 import { TimeSeriesChart } from '../components/TimeSeriesChart';
 import { currencyOf, lagsBook, ownDials, stampText, tableReading } from '../desk';
-import { clockOf, marketOf, useApp, usePolled, useRead } from '../state';
+import { clockOf, heldBack, marketOf, useApp, usePolled, useRead } from '../state';
 import { formatNumber, isObject, token } from '../tokens';
 import type { JobDoc, Schema, TableShape } from '../types';
 import { OnStrip } from '../components/Desk';
@@ -201,8 +201,9 @@ function NewCalculation({ types, taken, create }: {
   );
 }
 
-/** The Run button, the run's own status and replay tuple, and its results - shown under the page
- * that asked, so a named run's numbers never read as the book's own. */
+/** The Run button - what holds the seat from a run in its place, the queue admitting one as a
+ * what-if - the run's own status and replay tuple, and its results, shown under the page that
+ * asked, so a named run's numbers never read as the book's own. */
 function RunStrip({ origin, submit, extra }: {
   origin: string; submit: () => Promise<void>; extra?: ReactNode;
 }) {
@@ -211,19 +212,22 @@ function RunStrip({ origin, submit, extra }: {
   const [refused, setRefused] = useState<string | null>(null);
   const mine = run.origin === origin;
   const busy = run.status === 'queued' || run.status === 'running';
+  const hold = heldBack(state, 'validate');
   return (
     <>
       <div className="statusrow">
-        <button className="primary" disabled={busy} onClick={async () => {
-          setRefused(null);
-          try {
-            await submit();
-          } catch (error) {
-            setRefused(failure(error).error);
-          }
-        }}>
-          Run
-        </button>
+        {hold ? <><span className="hint">run</span><span>{hold}</span></> : (
+          <button className="primary" disabled={busy} onClick={async () => {
+            setRefused(null);
+            try {
+              await submit();
+            } catch (error) {
+              setRefused(failure(error).error);
+            }
+          }}>
+            Run
+          </button>
+        )}
         {extra}
         {mine && <StatusChip />}
         {mine && run.summary?.plan_hash && (

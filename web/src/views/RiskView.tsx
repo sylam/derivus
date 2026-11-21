@@ -1,5 +1,4 @@
 import { Fragment, useMemo, useState } from 'react';
-import { NO_SEAT } from '../api';
 import { EXPORTS, saveCsv } from '../blotter';
 import {
   MARK, QUOTE_HEADS, bucketAxes, factorFamily, lagsBook, markHolds, marksExport, marksHeads,
@@ -9,7 +8,7 @@ import {
 } from '../desk';
 import { EmptyState } from '../components/EmptyState';
 import { closed, positionName, type Position } from '../positions';
-import { clockOf, marketOf, openTrade, useApp } from '../state';
+import { bookRisk, clockOf, marketOf, openTrade, useApp } from '../state';
 import { axisText, formatNumber } from '../tokens';
 import { tradeAt } from '../trade';
 import type { BookRisk, GreekRow } from '../types';
@@ -27,7 +26,8 @@ import { OnStrip } from '../components/Desk';
  */
 export function RiskView() {
   const { state, dispatch } = useApp();
-  const { risk, source } = state;
+  const { source } = state;
+  const risk = bookRisk(state);
   const [key, setKey] = useState<GreekKey>('magnitude');
   const [descending, setDescending] = useState(true);
   // the desk's grouped reading by default; the quote ladder, where the book's factors are built
@@ -58,16 +58,15 @@ export function RiskView() {
       />
     );
   }
-  // a refusal is the service's own wording, verbatim, and it stands in place of the numbers -
-  // nothing partial was served and nothing was cached, so there is nothing else to show
+  // what holds the seat from the read, or the service's refusal verbatim, stands in place of the
+  // numbers - nothing partial was served and nothing was cached, so there is nothing else to show
   if (risk.error) {
     return (
       <div className="main">
         <div className="panel">
-          <div className={risk.error === NO_SEAT ? 'banner' : 'error-box'}>{risk.error}</div>
+          <div className={risk.held ? 'note' : 'error-box'}>{risk.error}</div>
           <div className="hint">
-            {risk.error === NO_SEAT
-              ? 'The risk is read again as soon as a seat is set.'
+            {risk.held ? 'The risk is read as soon as the seat may ask it.'
               : unpriced(risk.error, source.opened) ?? 'The consolidated risk could not be read.'}
           </div>
         </div>

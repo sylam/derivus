@@ -289,11 +289,13 @@ export function SecuritiesView() {
   // a seat that may not mark reads the vocabulary and the evidence, told once what it needs
   const hold = heldBack(state, 'mark');
   const note = hold && <div className="note">{hold}</div>;
+  // a verification is the marking seat's and a job of the queue, which admits under validate
+  const queueHold = heldBack(state, 'validate');
   const panes: Record<string, { pages: Page[]; empty: string; head?: ReactNode }> = {
     vocabulary: { pages: vocabularyPages(answer.seed, saved), empty: 'the seed names nothing',
                   head: note },
     evidence: {
-      pages: evidencePages(answer, hold ? undefined : verify),
+      pages: evidencePages(answer, hold ?? queueHold ? undefined : verify),
       empty: answer.provisioned ? 'the map carries no entry'
         : 'this home has never been verified: the vocabulary is a claim, and nothing has '
           + 'evidenced it',
@@ -301,10 +303,11 @@ export function SecuritiesView() {
         <>
           {note}
           <div className="statusrow">
-            {!hold && (
-              <button className="ghost" disabled={verify.running}
-                      onClick={() => verify.start({})}>verify the whole map</button>
-            )}
+            {!hold && (queueHold
+              ? <><span className="hint">verify the whole map</span><span>{queueHold}</span></> : (
+                <button className="ghost" disabled={verify.running}
+                        onClick={() => verify.start({})}>verify the whole map</button>
+              ))}
             <span className="hint">generated <span className="mono">
               {answer.map.generated ?? 'never'}</span></span>
           </div>

@@ -12,7 +12,7 @@ import {
   PLUS, SURVIVAL, ageOf, currencyOf, entityText, lagsBook, peaks, plural, replayRows, spreads,
   stampText, tableReading, valuationDay, xvaTotals, type Peak,
 } from '../desk';
-import { clockOf, marketOf, useApp, useRead } from '../state';
+import { bookRisk, clockOf, marketOf, useApp, useRead } from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
 import { Amount, Money, OnStrip } from '../components/Desk';
 
@@ -42,7 +42,7 @@ export function XvaView() {
   const recording = state.record.spine !== null;
   const clock = clockOf(state);
   const [opened, setOpened] = useState<string | null>(null);
-  const { risk } = state;
+  const risk = bookRisk(state);
   const collateral = useRead(live && recording ? getBookCollateral : null, [clock, state.seat]);
 
   if (!live) {
@@ -128,9 +128,13 @@ export function XvaView() {
             {recording && <>; collateral{collateral.data ? ` on the ${marked}` : `: ${marked ?? 'unread'}`}</>}</>}
           currency={currency} lagging={lagsBook(xva.clock, clock)} loading={xva.loading}
         />
-        {[risk.error && `The value to the desk is not read: ${risk.error}`,
-          collateral.error && `The collateral is not read: ${collateral.error}`]
-          .map((refused) => refused && <div key={refused} className="error-box">{refused}</div>)}
+        {risk.error && (
+          <div className={risk.held ? 'note' : 'error-box'}>
+            The value to the desk is not read{risk.held ? '. ' : ': '}{risk.error}</div>
+        )}
+        {collateral.error && (
+          <div className="error-box">The collateral is not read: {collateral.error}</div>
+        )}
         <div className={`blotterbar wrongs${acting.length ? ' act' : ''}`}>
           {acting.length ? (
             <span className="hint">

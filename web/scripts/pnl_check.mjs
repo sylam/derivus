@@ -58,6 +58,14 @@ check('the verb is asked for the window and the scope stated, a blank end being 
        pnl.pnlQuery('', '2024-07-02', { portfolio: 'desk/FX' }, true)],
       ['start=2024-07-01&agreement=ISDA-1', 'end=2024-07-02&portfolio=desk%2FFX&explain=true']);
 
+check("a read ending now, or explained, is a what-if's work, which the queue admits a seat to; a "
+      + 'window between two marked days read plain is a read of the record, asked of any seat',
+      'the explain dropped, which asks three valuations of a seat the queue refuses; or every '
+      + 'read taken for a what-if, which holds a struck window from a seat that may read it',
+      [pnl.revalues('', false), pnl.revalues('2024-07-02', true), pnl.revalues('', true),
+       pnl.revalues('2024-07-02', false)],
+      [true, true, true, false]);
+
 check('only a window ending now falls behind the book, and only once the book has moved',
       'a struck day offered a re-read, which never moves; or every write reading the window again, '
       + 'which values the whole book per tick',

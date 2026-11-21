@@ -483,6 +483,19 @@ export function heldBack(state: AppState, act: Act,
 export const acceptHeld = (state: AppState, node?: string): string | null =>
   heldBack(state, 'quote_filed', node) ?? heldBack(state, 'fill', node);
 
+/** A read as its screen shows it where the seat is held back from the act it asks - `hold`, the
+ * line `heldBack` says, known before asking, so nothing is asked: that line in the read's place,
+ * nothing read before it shown, and `held` saying so. Else the read as it stands, a refusal of it
+ * one only the service could give. */
+export function readAs<T extends { data: unknown; error: string | null }>(
+  hold: string | null, read: T): T & { held: boolean } {
+  return hold === null ? { ...read, held: false }
+    : { ...read, data: null, error: hold, held: true };
+}
+
+/** The consolidated risk as a screen shows it, its read a what-if the queue admits (`readAs`). */
+export const bookRisk = (state: AppState) => readAs(heldBack(state, 'validate'), state.risk);
+
 /** The seat this client acts as, however it was set: the one the service answers its acts are
  * filed under (`GET /book/seat`), a sign-in token's or the header box's, and the box's own where
  * that is not read for it. */

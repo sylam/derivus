@@ -106,6 +106,10 @@ export function behind(end: string, readAt: string | undefined, now: string | un
   return !end && readAt !== undefined && now !== readAt;
 }
 
+/** Whether a P&L read is a what-if's work, which the queue admits a seat to: one ending now marks
+ * the book as it stands, and an explain values it three times more. */
+export const revalues = (end: string, explain: boolean): boolean => !end || explain;
+
 /** The query `GET /book/pnl` is asked with: a blank end is the book as it stands now, and a
  * blank scope is the whole book. */
 export function pnlQuery(start: string, end: string, scope: Record<string, string>,

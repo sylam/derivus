@@ -839,10 +839,13 @@ The reads that value on the request thread, `/book/risk` and a P&L read to now o
 `explain`, ask a what-if's question before they value. A posted tick and a securities verification
 queue under the seat that asked; the poll paths (a read's diary, the metronome's beat) run under
 `spine.hub()`, `DV_SPINE_ACTOR`, which a ticking desk must grant `validate`. Admission precedes the
-risk and diary caches, so no cached answer depends on who asked first. The web client holds a
-what-if's control, a quote's credit charge, by that reach (`heldBack` asked `validate`), a refused
-ask filing a denial. **Held by**
-`web/scripts/desk_check.mjs`,
+risk and diary caches, so no cached answer depends on who asked first. The web client judges
+every read and run the queue admits by that reach before it asks (`heldBack` asked `validate`), a
+refused ask filing a denial: a credit charge, a calculation run, a quote, and a tick or a
+verification after `mark`, each control saying what holds it; and the risk and a P&L to now or
+explained (`revalues` in `web/src/pnl.ts`), which a held seat is not sent, that line standing in
+the read's place with nothing another seat read (`readAs`, `bookRisk` in `web/src/state.ts`).
+**Held by** `web/scripts/desk_check.mjs`, `web/scripts/pnl_check.mjs`,
 `test_spine_engine.py::test_under_a_document_the_queue_asks_before_the_executor_does`,
 `::test_the_poll_paths_own_jobs_are_admitted_under_the_deployments_seat`,
 `::test_the_consolidated_risk_and_the_explain_ask_the_queue_s_question`,
