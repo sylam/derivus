@@ -1522,7 +1522,7 @@ def book_risk_summary(actor: str | None = None) -> dict:
 
 
 @MCP.tool(annotations=READ_ONLY)
-def xva_view() -> dict:
+def xva_view(reference: str | None = None) -> dict:
     """The XVA projection: one row per netting set, as the LAST recalculation left it.
 
     A CACHED PROJECTION, not a live number, and deliberately so - a credit Monte Carlo takes
@@ -1538,10 +1538,16 @@ def xva_view() -> dict:
     `note` saying so and no `deal_path`; a recalc still in flight rides under `recalc`. `currency`
     is the one the row's run reported in, null on a row filed before it was kept. `peaks` are the
     run's largest `EE` and `PFE_<percentile>`, each `{value, day}`; a set's whole exposure profile
-    is not in this list, and the service answers it one set at a time at `GET
-    /book/xva/{reference}/profile`.
+    is not in this list. Name one set as `reference` and the answer is that set's row alone with
+    its `profile`, `{columns, index, data}` by day, a set whose last run filed none refusing by
+    name.
     """
-    return service().call('GET', '/book/xva')
+    if reference is None:
+        return service().call('GET', '/book/xva')
+    profile = service().call('GET', '/book/xva/{}/profile'.format(
+        requests.utils.quote(reference, safe='')))['profile']
+    return dict(next(row for row in service().call('GET', '/book/xva')['sets']
+                     if row['reference'] == reference), profile=profile)
 
 
 @MCP.tool()

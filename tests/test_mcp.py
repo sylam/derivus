@@ -778,6 +778,35 @@ def test_the_increment_tool_answers_the_services_own_increment(tmp_path, monkeyp
         service.BOOK = None
 
 
+def test_the_xva_view_answers_one_set_s_row_with_its_profile_and_no_place_on_the_server(
+        tmp_path, monkeypatch):
+    """`xva_view` lists every set's row and, asked for one by `reference`, answers that row with the
+    exposure profile its last run filed - the service's own row, its own profile - and a set never
+    run is the service's sentence. The list is its rows and when it was read, never where the
+    projection sits on the server, and the tool's contract names no route.
+
+    Killing mutations: the tool dropping the `reference` it takes, which answers the whole list;
+    `GET /book/xva` answering the projection's `path`, which the tool relays to a model; the
+    contract sending a model to `/book/xva/{reference}/profile`, a route it cannot call.
+    """
+    from test_service import netting_set, xva_book
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    xva_book(tmp_path, [netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')]),
+                        netting_set('NS_B', 'CPTY_B', [dict(VANILLA, Reference='OPT_B')])])
+    try:
+        assert asyncio.run(mcp_server.recalc_xva(['NS_A']))['last']['status'] == 'done'
+        view = mcp_server.xva_view()
+        row = {row['reference']: row for row in view['sets']}['NS_A']
+        assert set(view) == {'as_of', 'sets'} and row['status'] == 'done'
+        assert mcp_server.xva_view('NS_A') == dict(
+            row, profile=CLIENT.get('/book/xva/NS_A/profile').json()['profile'])
+        with pytest.raises(ToolError, match="no exposure profile is filed for 'NS_B'"):
+            mcp_server.xva_view('NS_B')
+    finally:
+        service.BOOK = None
+    assert '/book/' not in inspect.getdoc(mcp_server.xva_view)
+
+
 def test_the_risk_summary_ranks_by_the_move_each_row_is_read_per(book):
     """`book_risk_summary` leads with what the book moves most per the move a desk reads each
     factor by. On the one-cash-flow book the rand spot's 1% outranks the ZAR curve's basis point,

@@ -4503,7 +4503,7 @@ def book_xva_view():
     `PFE_<percentile>` the run's exposure profile reached, `{value, day}`. The profile itself is
     kept on the row and read one set at a time (`/book/xva/{reference}/profile`).
     """
-    return {'as_of': as_of(), 'path': xva_path(), 'sets': xva_entries(live_book().read()[0])}
+    return {'as_of': as_of(), 'sets': xva_entries(live_book().read()[0])}
 
 
 def xva_entries(document):

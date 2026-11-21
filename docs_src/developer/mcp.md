@@ -81,7 +81,7 @@ structure takes it as `name`. **Held by**
 | `calibrate_spot_model` | `POST /book/model`: one pair's spot model fitted, never on the tick |
 | `declare_survival_curve` | `POST /book/survival`: a counterparty's curve from the CVA desk's spread |
 | `book_risk_summary` | `GET /book/risk`: the mark and its largest quote and factor rows |
-| `xva_view`, `recalc_xva` | `GET`/`POST /book/xva`: the cached projection per netting set; the verb that moves it |
+| `xva_view`, `recalc_xva` | `GET /book/xva`, `/book/xva/{reference}/profile`, `POST /book/xva`: the cached projection per netting set, or one set's row with its exposure profile; the verb that moves it |
 | `book_diary` | `GET /book/diary`: every payment, fixing and expiry, and each booking's premium |
 | `close_check`, `declare_close` | `GET /book/close/check`, `POST /book/close`: whether a close is legal; the close |
 | `book_markets`, `declare_market` | `GET`/`POST /book/markets`: the closes, names and snapshots; a name declared |
@@ -191,11 +191,14 @@ resource keeping every quoted pillar. **Held by** `test_a_run_comes_back_as_shap
 Risk is whole-book and counterparty-blind, one base valuation cached on the book's content; XVA is
 a projection per netting set in `DV_HOME/xva.json`, each row with its `as_of`, moved only by
 `recalc_xva` because a credit Monte Carlo is too slow to ride a tick. The docstrings say so, so a
-model neither reads an old CVA as live nor runs a simulation to answer a delta. What one trade adds
+model neither reads an old CVA as live nor runs a simulation to answer a delta. `xva_view` lists
+each row with its peaks and, asked for one set by `reference`, answers that row with its exposure
+profile; the list never says where the projection sits on the server. What one trade adds
 to its client's XVA is `xva_increment`, never a difference against a row: the row's run draws on
 another grid. Its two runs are one market under two deal trees, so the second is loaded over the
 market the first read (`service.beside`). **Held by**
 `test_the_increment_tool_answers_the_services_own_increment`,
+`test_the_xva_view_answers_one_set_s_row_with_its_profile_and_no_place_on_the_server`,
 `test_service.py::test_the_second_job_of_an_increment_is_loaded_over_the_market_the_first_read`.
 
 ### Solves run in the service
