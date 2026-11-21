@@ -5286,7 +5286,7 @@ def book_curves(curve: str = None):
                 interpolation=entry['interpolation'])
         except KeyError as missing:
             # a block authored before it carried its definition: its quotes read, it cannot re-roll
-            entry['note'] = 'authored without {} - set it up again through POST /book/curve'.format(
+            entry['note'] = 'authored without {} - set it up again with configure_curve'.format(
                 missing)
     if curve is not None:
         return answer
@@ -6610,7 +6610,8 @@ class SetupJob:
         rows += ['{} was re-priced onto {} with this set-up'.format(name, answer['base_date'])
                  for name in repriced]
         return rows + ['{} is a cross - {} is neither leg, so its spot model is fitted for the '
-                       'pair through POST /book/model'.format(name, base_currency)
+                       'pair: calibrate_spot_model(pair={!r})'.format(
+                           name, base_currency, name.split('.', 1)[1])
                        for name in answer.get('installed', [])
                        if name.startswith('FXVol.') and base_currency not in name.split('.')]
 

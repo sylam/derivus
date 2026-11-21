@@ -1639,6 +1639,24 @@ def test_a_curve_states_its_own_interpolation_and_the_read_verb_resolves_it(book
     assert (cleared['interpolation'], cleared['interpolation_source']) == ('Linear', 'default')
 
 
+def test_a_block_authored_without_its_definition_reads_with_a_note_naming_the_tool(book):
+    """A curve block that does not carry a convention it is re-rolled under still reads: its rows
+    answer, no `conventions`, and a `note` naming the convention it lacks and the tool that authors
+    the curve again.
+
+    Killing mutation: the note naming `POST /book/curve`, a route its reader cannot post to.
+    """
+    assert set_up_curve().status_code == 200
+    document = json.loads(book.read_text())
+    del document['Calc']['MergeMarketData']['ExplicitMarketData']['Market Prices'][CURVE_BLOCK][
+        'instrument']['Spot_Days']
+    book.write_text(json.dumps(document, indent=2), newline='\n')
+
+    entry = CLIENT.get('/book/curve').json()['curves'][CURVE_BLOCK]
+    assert 'conventions' not in entry and len(entry['rows']) == len(CURVE_ROWS)
+    assert entry['note'] == "authored without 'Spot_Days' - set it up again with configure_curve"
+
+
 def test_the_status_verb_says_what_the_desk_is_set_up_with(book, tmp_path, monkeypatch):
     """The read a client opens with, composed out of the readers beside it: the book's date and
     currency, what it holds, every curve with the knots it solved on, the latest print its rows
@@ -3581,7 +3599,8 @@ def test_a_pair_is_set_up_and_then_quotes(desk_setup, tmp_path, monkeypatch):
     Killing mutations: the spot installed un-crossed, which puts 157.25 on `FxRate.JPY` and makes
     a yen worth 157 dollars; the walk not narrowed to the pair, which installs the whole book's
     want-list; the check rows dropped, which is a curve priced off conventions nobody read; the
-    pair not normalised, which sends `eurzar` to a seed that spells `EURZAR`.
+    pair not normalised, which sends `eurzar` to a seed that spells `EURZAR`; the cross's row
+    naming `POST /book/model` for the tool that fits it, a route its reader cannot post to.
     """
     home = tmp_path / 'home'
     seeded_map(home, ('fx_vol', 'EURZAR'), ('fx_vol', 'USDJPY'), ('fx_spot', 'EURUSD'),
@@ -3607,7 +3626,8 @@ def test_a_pair_is_set_up_and_then_quotes(desk_setup, tmp_path, monkeypatch):
     assert abs(par_residuals(desk_setup, 'EUR')).max() < 1e-6, 'a benchmark that does not reprice'
     assert any('EUR was set up on the conventions this build ships' in row
                for row in outcome['check']), outcome['check']
-    assert any(row.startswith('FXVol.EUR.ZAR is a cross') for row in outcome['check'])
+    assert ("FXVol.EUR.ZAR is a cross - USD is neither leg, so its spot model is fitted for the "
+            "pair: calibrate_spot_model(pair='EUR.ZAR')") in outcome['check']
     # ONE write: the etag the job answers with is the file's, and nothing else moved it
     assert outcome['etag'] == CLIENT.get('/book').json()['etag'] != before
 
