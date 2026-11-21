@@ -1177,10 +1177,12 @@ def priced(document, runs=None):
     """The book as it PRICES: the file with what the record holds written in - every position at
     its net, every print the declared sources order, and where it `runs` as a calculation that
     reads one the balance of every collateralised set and the `calculation` policy's block over
-    the file's own - and the file as it stands where no home is configured. A read never refuses a
-    print nobody ordered, so the compile is not strict; a balance in an asset the book carries no
-    spot for refuses it all the same."""
-    return spine.compiled_job(document, strict=False, runs=runs, folds=folds(), market=market_of)
+    the file's own - and the file as it stands where no home is configured. This is the book's
+    OFFICIAL compile, the one that reads that policy: a job a seat posts whole is compiled without
+    it. A read never refuses a print nobody ordered, so the compile is not strict; a balance in an
+    asset the book carries no spot for refuses it all the same."""
+    return spine.compiled_job(document, strict=False, runs=runs, folds=folds(), market=market_of,
+                              official=True)
 
 
 def enclosing_set(document, deal_path):
@@ -3669,10 +3671,11 @@ def book_agreements():
 def book_calculations_declared(request: dict):
     """`{calculations, actor}` - declare the `calculation` policy: per calculation type the block
     of that type's own fields its official run runs at, `{"CreditMonteCarlo": {...}}`, the one
-    type an official run reads a block for. Every credit run compiled from the declaration on
-    reads it over the book file's own block, a container it states replacing the file's whole, and
-    a seat's own dials - a named calculation, a what-if's overrides - go over it and are not
-    official.
+    type an official run reads a block for. Every credit run of the book compiled from the
+    declaration on reads it over the book file's own block, a container it states replacing the
+    file's whole. What a seat states is its own and not official: a named calculation's dials and
+    a what-if's overrides go over it, and a job posted whole to `/execute` or `/prepare` states its
+    own calculation and reads none.
 
     The record checks the document's shape and the engine judges each block against its own type's
     declarations before anything appends, so an undeclared field or a value its field does not

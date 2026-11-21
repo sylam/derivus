@@ -2031,10 +2031,10 @@ def declare_official_calculation(calculations: dict, actor: str | None = None) -
 
     Never choose these numbers or curves yourself: they are the desk's policy, so declare what you
     are told. The engine judges the block before anything is recorded and a refusal names the field
-    to fix; a curve the book does not carry is refused by the run that reads it. Every credit run
-    from then on - `recalc_xva`, `xva_increment`, a credit `run_calculation` - reads the block over
-    the book's own calculation, a seat's own dials going over it. The last declaration stands, and
-    `{}` declares that nothing is stated. Answers `{recorded: {lsn}, blob}`.
+    to fix; a curve the book does not carry is refused by the run that reads it. From then on
+    `recalc_xva`, `xva_increment` and a credit `run_calculation` read the block over the book's own
+    calculation, a seat's own dials going over it. The last declaration stands, and `{}` declares
+    that nothing is stated. Answers `{recorded: {lsn}, blob}`.
     """
     return service().call('POST', '/book/calculations', json=dict(
         {'calculations': calculations}, **_stated(actor=actor)))

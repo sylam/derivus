@@ -444,8 +444,8 @@ the record holds. `/execute`, `/prepare`, the diary, the marks and every valuing
 so a plan named once is the plan that runs and an auditor recompiles from what was printed.
 **Held by** `test_spine_engine.py::test_the_plan_compiles_from_the_fold_rather_than_from_what_was_typed`.
 
-Every write of a compile lands inside the deal tree, bar a credit run's calculation, which it
-replaces rather than edits, so it copies `Calc.Deals` alone: the compiled job shares its market
+Every write of a compile lands inside the deal tree, bar the book's credit run's calculation, which
+it replaces rather than edits, so it copies `Calc.Deals` alone: the compiled job shares its market
 with the document it was handed, which it leaves as read, and a caller that edits the job copies
 the level it writes at, as `service.xva_document` and `service.consolidated_risk` do. **Held by**
 `test_spine_engine.py::test_a_compile_copies_the_deal_tree_alone_and_loads_a_market_only_for_collateral_held`,
@@ -472,8 +472,9 @@ the level it writes at, as `service.xva_document` and `service.consolidated_risk
   reconcile names. **Held by**
   `test_spine_engine.py::test_a_corrected_agreement_is_the_paper_every_run_prices_from_the_event_that_recorded_it`.
 - **Collateral balances**, for a run that reads one: [Collateral](#collateral).
-- **The calculation**, for a credit run: the `calculation` policy's block over the document's own,
-  the one write outside the deal tree ([the official calculation](#official-calculation)).
+- **The calculation**, for the served book's own credit run (`official`): the `calculation`
+  policy's block over the document's own, the one write outside the deal tree
+  ([the official calculation](#official-calculation)).
 
 ## The diary, reconcile and the close {#the-diary}
 
@@ -655,13 +656,15 @@ A document for an official run of 20 batches of 1,024 paths, both funding curves
 
 `spine.official_calculation(document, runs, lsn)` is the one reader: the block standing at `lsn`
 laid over the document's own key by key, so a container the policy states replaces the document's
-whole. [`compiled_job`](#the-plan) writes it into a job compiled for a credit run and into no
-other, which is why it sits there: that function already holds what a job runs as and the position
-it is compiled at. So the XVA recalc, the increment, a named credit calculation, a what-if naming
-the type and a credit job posted to `/execute` all start from it, a seat's own dials
-(`service.with_overrides`) going over it and never official; a base valuation, the marks and a
-diary read none, and a declaration moves none of their plans. A recalc's own floor
-(`service.xva_document`) sits under both. A block declared past the judge, through
+whole. [`compiled_job`](#the-plan) writes it where its caller says the compile is the served
+book's own run (`official`, which `service.priced` passes and nothing else) and the job runs as a
+credit run; it sits there because that function already holds what a job runs as and the position
+it is compiled at. So the XVA recalc, the increment, a named credit calculation and a what-if
+naming the type all start from it, a seat's own dials (`service.with_overrides`) going over it and
+never official. Every other compile reads none: a job a seat posts whole to `/execute` or
+`/prepare` states its own calculation, and a base valuation, the marks, a roll, a replay and a
+diary are none of them the book's credit run, so a declaration moves none of their plans. A
+recalc's own floor (`service.xva_document`) sits under both. A block declared past the judge, through
 `DV_Spine declare`, is judged where it is read and refuses the run by name. A desk keeping no
 record has no policy: its official calculation comes with its document. **Held by**
 `test_spine_engine.py::test_a_credit_run_under_the_policy_is_the_run_of_the_same_block_written_in_the_book_file`,
@@ -669,6 +672,7 @@ record has no policy: its official calculation comes with its document. **Held b
 `::test_a_field_an_adjustment_block_states_stands_over_the_recalc_s_floor`,
 `::test_a_declaration_moves_no_plan_but_a_credit_run_s`,
 `::test_a_restated_policy_is_a_new_plan_and_a_job_compiled_before_it_is_the_earlier_run`,
+`::test_a_credit_job_a_seat_posts_whole_runs_at_its_own_calculation_under_any_policy`,
 `::test_the_increment_and_the_credit_charge_start_from_the_policy`,
 `::test_a_seat_s_own_credit_calculation_goes_over_the_policy`,
 `::test_a_block_declared_past_the_engine_s_judge_refuses_the_credit_run_by_name`,

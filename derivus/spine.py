@@ -691,7 +691,8 @@ def official_calculation(document, runs=None, lsn=None):
     return dict(block, **stated)
 
 
-def compiled_job(document, lsn=None, strict=True, runs=None, folds=None, market=None):
+def compiled_job(document, lsn=None, strict=True, runs=None, folds=None, market=None,
+                 official=False):
     """The job the plan hashes, with every position the record holds at `lsn` written at its net
     and every declared observation filled. Unchanged where no home is configured.
 
@@ -731,10 +732,12 @@ def compiled_job(document, lsn=None, strict=True, runs=None, folds=None, market=
     its balance and its holdings' amounts, so a corrected agreement reaches every run from the event
     that recorded it; the file keeps its copy, which `/book/reconcile` names.
 
-    A job compiled for a run the `calculation` policy states a block for - a credit run - is written
-    that block standing at `lsn` over its own (`official_calculation`). Every other job reads no
-    policy, one that values nothing included, so a declaration moves neither its plan nor what it
-    caches.
+    `official` is the caller's word that this compile is the served book's own run, which
+    `service.priced` gives and nothing else: such a job running as a type the `calculation` policy
+    states a block for - a credit run - is written that block standing at `lsn` over its own
+    (`official_calculation`). Every other compile reads no policy: a job a seat posts whole states
+    its own calculation, and the marks, a roll, a replay and a diary are none of them the book's
+    run, so a declaration moves none of their plans.
     """
     if not configured():
         return document
@@ -748,8 +751,8 @@ def compiled_job(document, lsn=None, strict=True, runs=None, folds=None, market=
         balances = {} if runs is False else _balances(document, papers, lsn, folds)
         if (runs or document['Calc']['Calculation'].get('Object')) == BaseValuation.__name__:
             balances = {}
-        calculation = document['Calc']['Calculation'] if runs is False else official_calculation(
-            document, runs, lsn)
+        calculation = (official_calculation(document, runs, lsn) if official
+                       else document['Calc']['Calculation'])
         if not held and not balances and not papers and not _observing(document) \
                 and calculation is document['Calc']['Calculation']:
             return document

@@ -209,8 +209,8 @@ to its client's XVA is `xva_increment`, never a difference against a row: the ro
 another grid. Its two runs are one market under two deal trees, so the second is loaded over the
 market the first read (`service.beside`). Asked of a trade the book holds, by its `deal_path`, the
 run with the trade is the set as it prices and nothing is spliced, so the answer is the one the
-trade gave as a candidate. What every credit run runs at is the book's calculation under, on a
-recording desk, the `calculation` policy `declare_official_calculation` declares
+trade gave as a candidate. What a credit run of the book runs at is the book's calculation under,
+on a recording desk, the `calculation` policy `declare_official_calculation` declares
 ([the official calculation](spine.md#official-calculation)); a named calculation's dials go over
 it and are the seat's own. `xva_view`'s list carries `funding`, the two curves a recalc asked now
 would fund its FVA at. **Held by**

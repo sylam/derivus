@@ -6108,16 +6108,17 @@ def test_a_field_an_adjustment_block_states_stands_over_the_recalc_s_floor(credi
 
 
 def test_a_declaration_moves_no_plan_but_a_credit_run_s(recorded, quoting):
-    """A job compiled for anything but a credit run reads no policy. Across a declaration the
-    book's risk keeps its etag, a what-if of the book its result id and the book's own plan its
-    name; a quote struck after the declaration pins the plan the one struck before it pinned, and
-    that earlier quote books. At the seam, the book taken as a credit run's document: its diary and
-    its marks job compile to themselves, and its credit run to a job carrying the policy's block
-    over its own, the market shared and the document left as read.
+    """No compile but the book's own credit run reads the policy. Across a declaration the book's
+    risk keeps its etag, a what-if of the book its result id and the book's own plan its name; a
+    quote struck after the declaration pins the plan the one struck before it pinned, and that
+    earlier quote books. At the seam, the book taken as a credit run's document: its diary and its
+    marks job compile to themselves, and the book as it prices (`priced`) to a job carrying the
+    policy's block over its own, the market shared and the document left as read.
 
-    Killing mutations: the credit block written into every compile (`official_calculation` reading
-    it for whatever the job runs as), where the risk's etag moves; the policy read for a job that
-    values nothing (`compiled_job` asking it of a diary), where the diary's document is rewritten.
+    Killing mutations: the credit block written into whatever the book prices as
+    (`official_calculation` reading it for any type), where the risk's etag moves; the caller's
+    word ignored (`compiled_job` reading the policy whoever compiles), where the diary's document
+    is rewritten.
     """
     document = json.loads(quoting.read_text())
 
@@ -6140,7 +6141,7 @@ def test_a_declaration_moves_no_plan_but_a_credit_run_s(recorded, quoting):
     marks, read = spine.PnL.marks_job(credit, {}), derivus.content_hash(credit)
     assert spine.compiled_job(credit, strict=False, runs=False) is credit, 'a diary read the policy'
     assert spine.compiled_job(marks, strict=False) is marks, 'a marks job read the policy'
-    compiled = spine.compiled_job(credit, strict=False)
+    compiled = service.priced(credit)
     assert compiled['Calc']['Calculation'] == dict(credit['Calc']['Calculation'], **OFFICIAL)
     assert compiled['Calc']['MergeMarketData'] is credit['Calc']['MergeMarketData']
     assert derivus.content_hash(credit) == read, 'the compile wrote the document it read'
@@ -6153,8 +6154,8 @@ def test_a_restated_policy_is_a_new_plan_and_a_job_compiled_before_it_is_the_ear
     """A recalc asked again over a book and a policy that stand hands back the id its row names.
     The policy restated at three batches, the recalc is asked a run the row does not name - how a
     row reads for a book that moved, a new plan under a new id - and once it lands the row names
-    that run and its plan. The book compiled at the position before the restatement is the first
-    run's job: the policy a job is written is the one standing where it is compiled.
+    that run and its plan. The book compiled officially at the position before the restatement is
+    the first run's job: the policy a job is written is the one standing where it is compiled.
 
     Killing mutation: `official_calculation` reading the head whatever position it is asked at,
     where the job compiled before the restatement hashes to the second plan.
@@ -6174,17 +6175,44 @@ def test_a_restated_policy_is_a_new_plan_and_a_job_compiled_before_it_is_the_ear
     assert second[0] != first[0]
 
     pinned = spine.compiled_job(service.BOOK.read()[0], lsn=before, strict=False,
-                                runs='CreditMonteCarlo')
+                                runs='CreditMonteCarlo', official=True)
     job = service.xva_document(pinned, dict(service.netting_sets(pinned))['0'], 'CPTY_A')
     assert derivus.content_hash(job) == first[0], 'the book compiled before is not the first run'
 
 
+def test_a_credit_job_a_seat_posts_whole_runs_at_its_own_calculation_under_any_policy(
+        recorded, credit_hub):
+    """A job a seat posts whole states its own calculation and is the seat's own: the policy is
+    read where the service compiles THE BOOK to run it, and nowhere else. A credit job over the
+    book stating five batches is named a plan by `/prepare` on a hub declaring no policy. Under a
+    policy stating two it is named that same plan, and posted to `/execute` it runs that plan at
+    its own five batches, while the recalc of the same book draws the policy's two.
+
+    Killing mutation: the caller's word ignored (`compiled_job` reading the policy whoever
+    compiles), where the posted job is named another plan and runs at the policy's two.
+    """
+    document = service.BOOK.read()[0]
+    posted = {'Calc': dict(document['Calc'], Calculation=dict(
+        document['Calc']['Calculation'], Object='CreditMonteCarlo', Simulation_Batches=5))}
+
+    def planned():
+        return CLIENT.post('/prepare', content=dump(posted), headers=JSON).json()['plan_id']
+
+    own = planned()
+    assert official({'CreditMonteCarlo': {'Simulation_Batches': 2}}).status_code == 200
+    assert planned() == own, 'the policy moved the plan of a job a seat posted whole'
+    ran = drained(submit(posted))
+    assert ran['status'] == 'done', ran.get('error')
+    assert (ran['plan_hash'], ran['stats']['Simulation_Batches']) == (own, 5)
+    assert drew(credit_runs(['NS_A'])['NS_A']) == (service.XVA_BATCH_SIZE, 2)
+
+
 def test_the_increment_and_the_credit_charge_start_from_the_policy(recorded, credit_hub):
-    """Every credit run starts from the policy. Under one stating two batches and the FVA's two
-    curves, the increment of the call NS_A holds runs, as its 'with' leg, the set as it prices:
-    the recalc's CVA and FVA to the bit, on two batches of paths. And the credit charge a ticket
-    asks of a candidate, a seven-month call, is priced as the set will be once it books: booked,
-    the set's recalc reads the charge's 'with' CVA and FVA to the bit.
+    """Every credit run of the book starts from the policy. Under one stating two batches and the
+    FVA's two curves, the increment of the call NS_A holds runs, as its 'with' leg, the set as it
+    prices: the recalc's CVA and FVA to the bit, on two batches of paths. And the credit charge a
+    ticket asks of a candidate, a seven-month call, is priced as the set will be once it books:
+    booked, the set's recalc reads the charge's 'with' CVA and FVA to the bit.
 
     Killing mutation: the increment's book compiled as the calculation the file names rather than
     as a credit run (`book_price`), where its legs run at the file's own block, one batch.

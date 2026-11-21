@@ -380,9 +380,10 @@ WHAT A CREDIT RUN RUNS AT is its calculation: the book file's `Calculation` bloc
 that records, the `calculation` policy's `CreditMonteCarlo` block laid over it key by key, a
 container it states replacing the file's whole. That is the OFFICIAL calculation - on a desk that
 keeps no record it comes with the document - and the recalc, the increment and every other credit
-run start from it; a recalc lays its own floor under both - 1,024 paths in one batch, deterministic
-deflation and hazard rates, no gradient - and switches each adjustment on against the set's
-counterparty over both. `POST /book/calculations` `{calculations, actor}`
+run of the live book start from it, while a credit job posted whole to `/execute` or `/prepare`
+states its own and reads no policy; a recalc lays its own floor under both - 1,024 paths in one
+batch, deterministic deflation and hazard rates, no gradient - and switches each adjustment on
+against the set's counterparty over both. `POST /book/calculations` `{calculations, actor}`
 declares the policy under `admin`, each block judged against its type's declarations before
 anything is filed, and `GET /book/calculations` answers the one in force with its `blob` and
 `lsn`, nulls where none is declared. A seat's own dials - a named calculation, the
@@ -417,9 +418,9 @@ UNDER A SPINE HOME THE BOOK PRICES AT ITS NET. The verbs that price the live boo
 and `/prepare` - price it compiled: every position the record holds written at its net, the same
 terms' second node under one set ignored as the first one's clip, every print the declared
 sources order filled in, and every netting set a declared agreement materialises on the terms the
-record holds for it, the file's own copy being what `GET /book/reconcile` compares; a job compiled
-for a credit run is written the `calculation` policy's block over its own as well, and no other
-job reads that policy. A deal the file holds that nobody booked prices as written, one unit,
+record holds for it, the file's own copy being what `GET /book/reconcile` compares; a credit run of
+the live book is written the `calculation` policy's block over the file's own as well, which a job
+posted to `/execute` or `/prepare` is not. A deal the file holds that nobody booked prices as written, one unit,
 outside the P&L until `POST /book/deals` `{action: 'fill', deal_path}` takes it on, a fill of one
 under its own reference that moves no number; `GET /book/reconcile` names each such deal under
 `in_file_not_in_record`, on a file nothing has pinned as on any other. Every deal type declares which of its fields are
