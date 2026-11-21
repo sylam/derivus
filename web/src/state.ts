@@ -544,6 +544,11 @@ export const nothingWrong = (state: AppState): string => noneShown(
   state, `Every client's sets have a run that is done${state.record.spine !== null
     ? ', and no trade waits on a second seat' : ''}`);
 
+/** What the P&L says in its table's place where the window and scope answer no row: to a seat
+ * shown the whole book (`noneShown`) that no position stood in them. */
+export const noPositions = (state: AppState): string =>
+  noneShown(state, 'No position stood in this window and scope');
+
 /** The store, its dispatch, and each tab's label by its id. */
 export const AppContext = createContext<{
   state: AppState; dispatch: Dispatch<Action>; labels: Record<string, string>;

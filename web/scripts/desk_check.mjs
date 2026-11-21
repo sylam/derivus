@@ -574,8 +574,16 @@ check('an XVA table with nothing to act on says every run is done, and on a desk
        state.nothingWrong(seated({ book: ['HARBOURLINE/FX'] }, 'sales-9'))],
       [`${DONE}, and no trade waits on a second seat`, DONE,
        'sales-9 is shown none of it, seeing only what sits under HARBOURLINE/FX']);
+check('a P&L answering no row says in its table\'s place that no position stood in the window and '
+      + 'scope, to a seat shown the whole book; a seat shown none of it is told that',
+      'the sentence said whatever the seat is shown, which tells a seat shown no position that '
+      + 'the book held none; or an empty table left under a total of nothing',
+      [state.noPositions(seated({ book: ['HARBOURLINE'] })),
+       state.noPositions(seated({ book: ['HARBOURLINE/FX'] }, 'sales-9'))],
+      ['No position stood in this window and scope',
+       'sales-9 is shown none of it, seeing only what sits under HARBOURLINE/FX']);
 
-const NO_SEAT = 'No seat is set, and this desk files every act under the seat that asks.';
+const NO_SEAT ='No seat is set, and this desk files every act under the seat that asks.';
 check('a seat may act where a node it holds the act\'s verb at is the node or above it, the book '
       + 'by default and the whole firm only by a grant over every node; and says, naming the '
       + 'verb, what holds it elsewhere',

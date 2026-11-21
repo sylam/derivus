@@ -6,7 +6,9 @@ import {
   behind, explained, factorLabel, FIGURES, noPnl, opensOn, pnlQuery, pnlRead, positionLabel,
   residualShare, revalues, type Pnl,
 } from '../pnl';
-import { grantsOwed, heldBack, readAs, spineOf, useApp, useRead } from '../state';
+import {
+  grantsOwed, heldBack, noPositions, readAs, spineOf, useApp, useRead,
+} from '../state';
 import { formatNumber, type Kind } from '../tokens';
 import { entityText } from '../desk';
 import { NO_PAPER } from '../positions';
@@ -162,6 +164,7 @@ export function PnlView() {
         {answer.unknown.map((named) => (
           <div className="banner" key={`${named.instrument}:${named.what}`}>{named.what}</div>))}
 
+        {!answer.rows.length ? <div className="note">{noPositions(state)}.</div> : (
         <div className="tablewrap">
           <table className="data desk">
             <thead>
@@ -186,6 +189,7 @@ export function PnlView() {
             </tbody>
           </table>
         </div>
+        )}
 
         {answer.explain && <Explained explain={answer.explain} currency={currency} />}
       </div>
