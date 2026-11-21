@@ -1671,7 +1671,10 @@ def book_price(request: dict):
     In place of a candidate it takes a trade the book already holds, `{deal_path, reference?}`:
     the run with the trade is then the set as it prices and nothing is spliced, `reference` naming
     the deal the client read at the path as an amendment's does (`expected_reference`). A
-    `deal_path` beside a candidate, or without `xva_increment`, refuses 422.
+    `deal_path` beside a candidate, or without `xva_increment`, refuses 422. Where the set's
+    counterparty or an entity above it has a credit limit, the answer's `limits` holds each
+    against the usage with the trade and without it (`limits_against`), and the result's own
+    `limits` names what stood, so the same question over other rows or another limit runs again.
 
     THE CANDIDATE IS VALIDATED BEFORE IT QUEUES, through the seam a booking is refused at: a
     candidate naming market data the book does not carry would load, be DROPPED by discovery and
@@ -1718,8 +1721,10 @@ def book_price(request: dict):
     if increment:
         # the pair is one market and one calculation, so its second job moves the plan alone
         contexts.append(beside(run, jobs[1]))
-        run, stamp = IncrementJob(contexts, terms), {
-            'with': stamp, 'without': dict(stamp, plan_hash=contexts[1].plan_hash())}
+        limits = limits_against(terms)
+        run, stamp = IncrementJob(contexts, terms, limits), dict(
+            {'with': stamp, 'without': dict(stamp, plan_hash=contexts[1].plan_hash())},
+            **({'limits': content_hash(limits)} if limits else {}))
     return queued(Job(content_hash(stamp), run, stamp, spine.CURIOSITY, actor=request.get('actor'),
                       book=book_name(document)),
                   cost(contexts[0].current_cfg.deals['Calculation'])['class'])
@@ -4503,10 +4508,15 @@ class IncrementJob:
     THE ANSWER IS WITH LESS WITHOUT, in the run's report currency, under `stats.Increment`: CVA,
     FVA and the peak of the expected exposure and of each PFE column with the day it falls, beside
     the paths both runs drew. Each run's own results stay under `with` and `without`.
+
+    AND WHAT IT DOES TO A CREDIT LIMIT, where the set draws on one (`limits_against`): `limits`
+    carries each limit's entry (`limit_usage`) with the set's peak the run's own in place of its
+    row's - `usage`, `headroom` and `breached` with the trade, `usage_without` the usage without
+    it. A trade that would breach is answered like any other: nothing here blocks.
     """
 
-    def __init__(self, contexts, terms):
-        self.contexts, self.terms = contexts, terms
+    def __init__(self, contexts, terms, limits):
+        self.contexts, self.terms, self.limits = contexts, terms, limits
 
     def run_job(self):
         runs = [utils.run_whole(context.run_job) for context in self.contexts]
@@ -4534,6 +4544,13 @@ class IncrementJob:
                       'day': profile[column].idxmax().strftime('%Y-%m-%d')} for profile in profiles]
             answer[column] = {'with': peaks[0], 'without': peaks[1],
                               'increment': peaks[0]['peak'] - peaks[1]['peak']}
+        if self.limits:
+            column = pfe_column(profiles[0].columns)
+            mine = [(self.terms['netting_set'], column and answer[column][run]['peak'],
+                     self.terms['currency']) for run in ('with', 'without')]
+            answer['limits'] = [dict(limit_usage(limit, others + [mine[0]]),
+                                     usage_without=limit_usage(limit, others + [mine[1]])['usage'])
+                                for limit, others in self.limits]
         return None, {'Results': {'with': results[0], 'without': results[1]},
                       'Stats': {'Increment': answer}}
 
@@ -4642,6 +4659,19 @@ def credit_limits(*_):
     return [{'entity': entity, 'name': (declared.get(entity) or {}).get('name'), 'limit': limit,
              'clients': sorted(clients_under(entity, declared))}
             for entity, limit in sorted(limits.items())]
+
+
+def limits_against(terms):
+    """`[(limit, draws)]` - each credit limit the netting set `terms` names (`xva_pair`) draws on,
+    its counterparty's and that of every entity above it, with what every OTHER set draws on it
+    as the XVA rows stand: what a credit charge of that set is held against. Empty where none is
+    declared for them."""
+    live = live_book()
+    limits = [limit for limit in polled(live, 'limits', credit_limits)
+              if terms['counterparty'] in limit['clients']]
+    entries = xva_entries(live.read()[0]) if limits else ()
+    return [(limit, [draw for draw in draws_on(limit, entries)
+                     if draw[0] != terms['netting_set']]) for limit in limits]
 
 
 def pfe_column(columns):

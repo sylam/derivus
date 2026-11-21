@@ -6514,6 +6514,65 @@ def test_the_limits_are_kept_under_the_poll_s_key_and_a_restated_one_is_read_at_
     assert service.EXECUTOR.queue.empty() and not (group_hub.parent / service.XVA_FILE).exists()
 
 
+def test_a_credit_charge_holds_each_limit_its_set_draws_on_against_the_usage_with_the_trade(
+        group_hub):
+    """THE CHARGE READS THE LIMITS ITS SET DRAWS ON, its counterparty's and each above it.
+    `CPTY_B`, under `CPTY_A`, is limited to 40,000 dollars and the parent to 200,000; the trade is
+    a seven-month call into NS_B, and `w` and `wo` are that set's peak PFE off the charge's own two
+    runs, with the trade and without.
+
+    A SET NEVER RUN IS NOT GUESSED AT. NS_A and NS_B have run and NS_C has not: the child's entry
+    sums NS_B alone, at `w`, counts NS_C unrun and states no headroom. WHAT STOOD IS PART OF THE
+    QUESTION. NS_C run, the same charge is asked again and is answered anew: the child's usage is
+    NS_C's standing peak plus `w` to the bit, the standing usage with NS_B's own peak replaced by
+    the run's, `usage_without` the same sum at `wo`, and its headroom 40,000 less the usage. The
+    trade takes the child from within its limit to over it, which reads `breached` on a headroom
+    below nothing, and the run is done like any other. The parent's entry sums NS_A's and NS_C's
+    standing peaks with `w` and stands within. NO LIMIT, NO CLAIM. With the child's limit alone
+    declared, a charge into the parent's own NS_A names no limit at all: a limit is drawn on by
+    the sets of its entity and of those under it, never by one above.
+
+    Killing mutations: NS_B's standing row left among what the charge is held against
+    (`limits_against`), where its peak counts beside the run's; what stood left out of what the
+    result names (`book_price`), where the second ask is handed the first's answer, NS_C still
+    unrun; a limit read for any set of the group (`limits_against` reading every limit), where
+    the charge into NS_A carries the child's.
+    """
+    for entity, parent in (('CPTY_A', None), ('CPTY_B', 'CPTY_A')):
+        entity_declared(entity, parent)
+    parent, child = usd(200_000.0), usd(40_000.0)
+    assert limits_declared({'CPTY_A': parent, 'CPTY_B': child}).status_code == 200
+    recalc(['NS_A', 'NS_B'])
+    a = pfe('NS_A')
+
+    def charged(reference='NS_B'):
+        answer = answered(deal=SHORT_CALL, parent_reference=reference)
+        return answer, answer['PFE_95']['with']['peak'], answer['PFE_95']['without']['peak']
+
+    first, w, wo = charged()
+    assert wo < 40_000.0 < w, (wo, w)
+    assert first['limits'] == [
+        dict(held_to('CPTY_A', parent, usage=a + w, sets=2, unrun=1, breached=False),
+             usage_without=a + wo),
+        dict(held_to('CPTY_B', child, usage=w, sets=1, unrun=1, breached=True), usage_without=wo)]
+
+    recalc(['NS_C'])
+    c = pfe('NS_C')
+    assert limits_view()['CPTY_B']['usage'] == pfe('NS_B') + c < 40_000.0
+    second, again, again_without = charged()
+    assert (again, again_without) == (w, wo), 'the same two runs drew other paths'
+    assert second['limits'] == [
+        dict(held_to('CPTY_A', parent, usage=math.fsum([a, c, w]), sets=3, breached=False,
+                     headroom=200_000.0 - math.fsum([a, c, w])),
+             usage_without=math.fsum([a, c, wo])),
+        dict(held_to('CPTY_B', child, usage=c + w, sets=2, breached=True,
+                     headroom=40_000.0 - (c + w)), usage_without=c + wo)]
+    assert second['limits'][1]['headroom'] < 0.0 < second['cva']['increment']
+
+    assert limits_declared({'CPTY_B': child}).status_code == 200
+    assert 'limits' not in charged('NS_A')[0]
+
+
 def misdeclared(home, folder):
     """A calculation policy misspelling a field, put on the record at `home` by the operator's
     `DV_Spine declare`, which takes a block on its shape alone."""

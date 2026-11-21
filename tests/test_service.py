@@ -6920,6 +6920,33 @@ def test_a_desk_that_keeps_no_record_funds_at_what_its_document_states_and_decla
         (404, service.NO_RECORD.format('DV_SPINE_HOME'))] * 2
 
 
+def test_a_desk_that_keeps_no_record_declares_no_credit_limit_and_claims_none(desk_xva,
+                                                                             monkeypatch):
+    """A credit limit is the record's to hold. On a desk that keeps none both verbs of the
+    `limits` policy answer the no-record sentence, a 404; the XVA view's `limits` is empty over a
+    row that ran; and a credit charge answers what it answered, naming no limit in its answer or
+    in what its result is named by.
+
+    Killing mutations: `recorded()` dropped from `GET /book/limits`, which answers a 422 about a
+    home nobody configured; `credit_limits` asking the record whether or not the desk keeps one,
+    which takes the view down with that 422.
+    """
+    monkeypatch.delenv('DV_SPINE_HOME', raising=False)
+    refused = [CLIENT.get('/book/limits'),
+               CLIENT.post('/book/limits', json={'limits': {'CPTY_A': {
+                   'amount': 5e6, 'currency': 'USD'}}})]
+    assert [(answer.status_code, answer.json()['detail']) for answer in refused] == [
+        (404, service.NO_RECORD.format('DV_SPINE_HOME'))] * 2
+
+    recalc(['NS_A'])
+    view = CLIENT.get('/book/xva').json()
+    assert view['limits'] == [] and xva_rows()['NS_A']['peaks']['PFE_95']['value'] > 0.0
+    _, result = increment(deal=SHORT_CALL, parent_reference='NS_A')
+    assert result['status'] == 'done', result.get('error')
+    assert 'limits' not in result and 'limits' not in result['stats']['Increment']
+    assert set(result) >= {'with', 'without'} and result['stats']['Increment']['PFE_95']
+
+
 def test_an_xva_row_keeps_its_peaks_and_one_set_s_profile_is_read_by_itself(desk_xva, tmp_path):
     """A ROW KEEPS WHAT ITS RUN SHOWED, AND THE LIST CARRIES ITS PEAKS ALONE. Each row a run files
     keeps its `exposure_profile` - on this desk 26 days by `EE`, `ENE` and `PFE_95` - in the
