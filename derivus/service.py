@@ -5355,9 +5355,10 @@ def book_status():
     as of, the other wherever the book states the two apart, and which names the inner path count a
     simulated deal is priced on and, where the book states fewer than the declaration, says so with
     the remedy; how many deals it holds - a structure one with its legs, a netting set none, as
-    `file_positions` reads the file's trades - and which netting sets; each curve with the knots
-    it solved on, the scheme it is built under, the latest print its rows carry and any benchmark
-    held out; each vol surface with its own quote stamp; the spot models calibrated onto it; the
+    `file_positions` reads the file's trades - and which netting sets; each interest-rate curve
+    the market holds with the knots it solved on, the scheme it is built under, the latest print
+    its rows carry and any benchmark held out, one no quote block solved by name with no knots;
+    each vol surface with its own quote stamp; the spot models calibrated onto it; the
     last XVA per set, trimmed to the columns a desk reads staleness off.
 
     Under a configured home `spine` says which LSN the file was hydrated at and how far the record
@@ -5381,6 +5382,14 @@ def status_of(document, etag):
     market = market_of(document)
     factors = market.get('Price Factors', {})
     calculation = document['Calc']['Calculation']
+    curves = {entry['curve']: entry for entry in curve_blocks(market).values()}
+    for name in factors:
+        family, _, curve = name.partition('.')
+        if family == CURVE_BOOTSTRAPPER:
+            # a curve no quote block solved is the market's all the same: by name, with no knots
+            curves.setdefault(curve, {
+                'curve': curve, 'currency': factors[name].get('Currency'), 'snapped': '',
+                'interpolation': curve_interpolation(market, curve)[0], 'rows': []})
     return {
         'etag': etag,
         'base_date': book_base_date(document, market).isoformat(),
@@ -5399,7 +5408,7 @@ def status_of(document, etag):
                     'snapped': entry['snapped'], 'interpolation': entry['interpolation'],
                     'knots': [row['tenor'] for row in entry['rows'] if row['use'] == 'Yes'],
                     'held_out': [row['tenor'] for row in entry['rows'] if row['use'] != 'Yes']}
-                   for entry in curve_blocks(market).values()],
+                   for _, entry in sorted(curves.items())],
         'surfaces': [{'name': name, 'snapped': wire_stamp(factors[name].get('Quote_Timestamp'))}
                      for name in sorted(factors) if name.split('.')[0] in VOL_SURFACES],
         'models': [{'name': name, 'family': name.split('.')[0][:-len(MODEL_SUFFIX)]}

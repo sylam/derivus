@@ -1642,7 +1642,9 @@ def test_a_curve_states_its_own_interpolation_and_the_read_verb_resolves_it(book
 def test_the_status_verb_says_what_the_desk_is_set_up_with(book, tmp_path, monkeypatch):
     """The read a client opens with, composed out of the readers beside it: the book's date and
     currency, what it holds, every curve with the knots it solved on, the latest print its rows
-    carry and any benchmark held out, and what this workstation could fetch if asked.
+    carry and any benchmark held out, and what this workstation could fetch if asked. The book's
+    two curves are price factors no quote block solved, so each is listed by name with no knots
+    until its rows are set up.
 
     `DV_HOME` is the gate's own tmp, so `provisioned` and the XVA rows are this book's and not
     the workstation's, and `blpapi` does not import (`None` in `sys.modules`) - no session is opened
@@ -1650,7 +1652,8 @@ def test_the_status_verb_says_what_the_desk_is_set_up_with(book, tmp_path, monke
 
     Killing mutations: `held_out` partitioning on the rows in USE, which the read-back block
     carries either way so only the split says which; `terminal.present` reading anything but this
-    workstation's own import, which the absent module then does not move.
+    workstation's own import, which the absent module then does not move; the curves read off the
+    quote blocks alone, which lists none on a book that prices on two.
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
     monkeypatch.setitem(sys.modules, 'blpapi', None)
@@ -1672,7 +1675,10 @@ def test_the_status_verb_says_what_the_desk_is_set_up_with(book, tmp_path, monke
     assert structures.thin_paths(
         {'MCMC_Simulations': structures.declared_paths()}) is None
     assert (bare['deals'], bare['netting_sets']) == (1, [])
-    assert (bare['curves'], bare['surfaces'], bare['models'], bare['xva']) == ([], [], [], [])
+    unquoted = [{'curve': name, 'currency': name, 'snapped': '', 'interpolation': 'Linear',
+                 'knots': [], 'held_out': []} for name in ('USD', 'ZAR')]
+    assert (bare['curves'], bare['surfaces'], bare['models'], bare['xva']) == (
+        unquoted, [], [], [])
     assert bare['terminal'] == {'present': False, 'ticking': None, 'provisioned': False}
     assert bare['etag'] == CLIENT.get('/book').json()['etag']
 
@@ -1680,7 +1686,7 @@ def test_the_status_verb_says_what_the_desk_is_set_up_with(book, tmp_path, monke
     assert set_up_curve(held).status_code == 200
     status = CLIENT.get('/book/status').json()
 
-    assert status['curves'] == [{
+    assert status['curves'] == [unquoted[0], {
         'curve': 'ZAR', 'currency': 'ZAR', 'snapped': '2024-06-28', 'interpolation': 'Linear',
         'knots': [row['tenor'] for row in CURVE_ROWS[:-1]], 'held_out': ['10Y']}]
 
@@ -7848,8 +7854,8 @@ def on_each(books, ask):
 
 def test_a_book_naming_a_market_data_file_is_read_off_the_file(file_book):
     """A book stating NOTHING over the market data file it names is answered off the file: the
-    status names the file's base currency and date, both its curves and its surface; the curve
-    verb lists both curves; the consolidated risk reads the cashflow's six ZAR quotes off the
+    status names the file's base currency and date, both its quoted curves beside the USD curve no
+    block solved, and its surface; the curve verb lists both quoted curves; the consolidated risk reads the cashflow's six ZAR quotes off the
     file's strip; and a counterparty's survival curve and the date verb answer as they do on the
     book's explicit twin, the survival curve the one factor the bare block states and the roll
     re-authoring the file's ZAR strip on the new day into it, re-solving that curve alone and
@@ -7865,8 +7871,9 @@ def test_a_book_naming_a_market_data_file_is_read_off_the_file(file_book):
     book, market = file_book
     status = CLIENT.get('/book/status').json()
     assert (status['base_currency'], status['base_date']) == ('USD', '2024-06-28')
-    assert [(entry['curve'], entry['interpolation']) for entry in status['curves']] == [
-        ('ZAR', 'HermiteRT'), ('ZAR-FX', 'Linear')]
+    assert [(entry['curve'], entry['interpolation'], bool(entry['knots']))
+            for entry in status['curves']] == [
+        ('USD', 'Linear', False), ('ZAR', 'HermiteRT', True), ('ZAR-FX', 'Linear', True)]
     assert [entry['name'] for entry in status['surfaces']] == ['FXVol.USD.ZAR']
     assert sorted(CLIENT.get('/book/curve').json()['curves']) == [
         'InterestRatePrices.ZAR', 'InterestRatePrices.ZAR-FX']

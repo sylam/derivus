@@ -62,7 +62,7 @@ structure takes it as `name`. **Held by**
 
 | tool | endpoint: what |
 | --- | --- |
-| `desk_status` | `GET /book/status`: date, currency, curves and surfaces with their snap times, models, netting sets, last XVA, terminal |
+| `desk_status` | `GET /book/status`: date, currency, every curve the market holds and its surfaces with their snap times, models, netting sets, last XVA, terminal |
 | `list_instrument_types`, `describe_instrument_type` | `GET /schema`: the bookable types; one type's declared fields, a non-type answered with close matches |
 | `describe_structure`, `describe_calculation_type`, `describe_factor_type`, `describe_configuration` | `GET /schema`: a structure, calculation, price factor, or the bootstrap dials |
 | `job_skeleton` | `GET /schema/job`: a minimal job that loads |

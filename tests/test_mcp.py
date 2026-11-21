@@ -205,15 +205,17 @@ def test_desk_status_orients_a_model_in_one_call(book, tmp_path, monkeypatch):
     assert {key: bare['calculation'][key] for key in ('Object', 'Currency', 'paths')} == {
         'Object': 'BaseValuation', 'Currency': 'USD', 'paths': 1}
     assert 'MCMC_Simulations is 1' in bare['calculation']['paths_note']
-    assert (bare['deals'], bare['netting_sets'], bare['curves']) == (1, [], [])
+    unquoted = [{'curve': name, 'currency': name, 'snapped': '', 'interpolation': 'Linear',
+                 'knots': [], 'held_out': []} for name in ('USD', 'ZAR')]
+    assert (bare['deals'], bare['netting_sets'], bare['curves']) == (1, [], unquoted)
     assert bare['terminal'] == {'present': False, 'ticking': None, 'provisioned': False}
 
     mcp_server.configure_curve('ZAR', 'ZAR', CURVE_ROWS)
     curves = mcp_server.desk_status()['curves']
 
-    assert curves == [{'curve': 'ZAR', 'currency': 'ZAR', 'snapped': '2024-06-28',
-                       'interpolation': 'Linear',
-                       'knots': [row['tenor'] for row in CURVE_ROWS], 'held_out': []}]
+    assert curves == [unquoted[0], {'curve': 'ZAR', 'currency': 'ZAR', 'snapped': '2024-06-28',
+                                    'interpolation': 'Linear',
+                                    'knots': [row['tenor'] for row in CURVE_ROWS], 'held_out': []}]
 
 
 def test_the_diary_reaches_a_model_as_rows_it_can_act_on(book, tmp_path, monkeypatch):
