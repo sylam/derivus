@@ -931,7 +931,6 @@ class SurvivalProb(Factor1D):
     fields = [
         F('Recovery_Rate', 'Float', default=0.4, bind='value',
           description='The assumed recovery amount, entered as 0.4 for 40%'),
-        F('Minimum_Recovery_Rate', 'Text', default='<undefined>'),
         F('Issuer', 'Text', default=''),
         F('Curve', 'Curve', bind='value', description='Negative log survival probability')
     ]
