@@ -64,10 +64,13 @@ export function PnlView() {
     );
   }
   if (days && !days.days.length) {
+    // the verb the declaration demands under the map in force, where the seat's grants are read
+    const verb = state.grants?.read?.demands.official_close_declared;
     return (
       <EmptyState
         title="No close has been marked yet."
-        hint={`The P&L runs between marked closes on '${days.market}'. Declare a close and mark the book (POST /book/marks) - the first marks are where the P&L starts.`}
+        hint={`The P&L runs between marked closes on '${days.market}'. A close is declared on the Back Office${
+          verb ? `, by a seat holding \`${verb}\`,` : ''} and the book is marked at it through the chat: the first marks are where the P&L starts.`}
       />
     );
   }
