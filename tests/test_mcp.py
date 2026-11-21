@@ -75,8 +75,9 @@ def test_every_tool_is_registered_and_carries_its_contract():
     """The docstring IS the contract a model reads, so an empty one is an undocumented verb; and
     the read-only hints are what let a host run discovery without asking permission to write.
 
-    Killing mutation: `read_book` registered without its read-only hint, which makes a host ask
-    before a model may read the book.
+    Killing mutations: `read_book` registered without its read-only hint, which makes a host ask
+    before a model may read the book; `patch_market_values`' example spot written in market terms,
+    `19.25`, which a model copies into a field held as the reporting currency per unit.
     """
     tools = {t.name: t for t in asyncio.run(mcp_server.MCP.list_tools())}
     expected = {'list_instrument_types', 'describe_instrument_type', 'describe_calculation_type',
@@ -103,7 +104,9 @@ def test_every_tool_is_registered_and_carries_its_contract():
     assert set(tools) == expected
     for name, tool in tools.items():
         assert tool.description and len(tool.description) > 60, f'{name} has no real contract'
-    writers = {name for name, tool in tools.items()
+    assert '{{"FxRate.ZAR": {{"Spot": {:.5f}}}}}'.format(1 / 19.25) in tools[
+        'patch_market_values'].description, "the example spot is off the field's own axis"
+    writers ={name for name, tool in tools.items()
                if not (tool.annotations and tool.annotations.read_only_hint)}
     assert writers == {'book_deal', 'amend_deal', 'delete_deal', 'price_candidate', 'xva_increment',
                        'solve_deal', 'execute_book', 'update_market_quotes', 'patch_market_values',
