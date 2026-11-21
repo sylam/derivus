@@ -797,7 +797,9 @@ KEYED = dict({
         (policy.FIXINGS_POLICY, {'sources': {'FxRate.ZAR': ['ECB']}},
          {'sources': {'FxRate.ZAR': ['BFIX']}}),
         (policy.TIERS_POLICY, {'tiers': [{'name': 'desk'}]},
-         {'tiers': [{'name': 'desk', 'four_eyes': True}]}))})
+         {'tiers': [{'name': 'desk', 'four_eyes': True}]}),
+        (policy.CALCULATION_POLICY, {'calculations': {'CreditMonteCarlo': {'Batch_Size': 1024}}},
+         {'calculations': {'CreditMonteCarlo': {'Batch_Size': 2048}}}))})
 
 
 #: The keyed declarations that name what they replaced on every restatement; the rest name it only
@@ -1202,7 +1204,7 @@ def test_a_policy_document_is_closed_at_the_field_level_and_refuses_where_it_is_
 
     with pytest.raises(MalformedEvent) as refusal:
         policy.declare(log, MINT, 'liquidity', {'anything': 1})
-    assert 'firmness, fixings, tiers, tolerance' in str(refusal.value)
+    assert 'calculation, firmness, fixings, tiers, tolerance' in str(refusal.value)
 
     assert log.head()[0] == 4, 'a refused declaration wrote something'
     # an empty tolerance document is a policy that tolerates nothing, and it is legal - silence is
@@ -1252,6 +1254,62 @@ def test_the_policy_in_force_is_a_fold_and_absence_is_the_answer(tmp_path):
         policy.firmness_in_force(log)
     assert blob in str(refusal.value)
     log.close()
+
+
+def test_a_calculation_policy_is_a_block_per_official_run_and_the_record_checks_its_shape_alone(
+        tmp_path):
+    """The `calculation` policy is one section, a calculation type and the block its official run
+    runs at. The record checks the shape and never a field: a second section, a type no official
+    run reads, a block that is no object and a section that is none are each refused by name with
+    nothing written, while a block of fields only the engine knows lands as declared, one blob
+    however it was spelled. The reader answers what stood at a position: nothing before the first
+    declaration, the first document just before its restatement, the restatement at the head.
+    Under a capabilities document granting the genesis seat `admin`, a seat holding none is
+    refused by the record, the denial landed.
+
+    Killing mutations: a type outside `OFFICIAL_RUNS` let through, which declares a block for a
+    base valuation no run reads; the reader answering the head whatever position it is asked at.
+    """
+    home, log = minted(tmp_path)
+    credit = {'Simulation_Batches': 20, 'Batch_Size': 1024, 'Funding_Valuation_Adjustment': {
+        'Funding_Cost_Interest_Curve': 'USD-FUNDING', 'Funding_Benefit_Interest_Curve': 'USD-OIS'}}
+    broken = (('note', {'calculations': {}, 'note': 'why'}),
+              ("'BaseValuation', which no official run reads",
+               {'calculations': {'BaseValuation': {'Greeks': 'First'}}}),
+              ("the block for 'CreditMonteCarlo' is list", {'calculations': {'CreditMonteCarlo': [
+                  ['Batch_Size', 1024]]}}),
+              ('calculations is NoneType', {}),
+              ('a calculation policy is list', ['calculations']))
+    for named, document_ in broken:
+        with pytest.raises(MalformedEvent) as refusal:
+            policy.declare(log, MINT, policy.CALCULATION_POLICY, document_)
+        assert named in str(refusal.value), (named, str(refusal.value))
+    assert log.head()[0] == 4, 'a refused declaration wrote something'
+    assert policy.calculations_in_force(log) == {}
+
+    first = policy.declare(log, MINT, policy.CALCULATION_POLICY,
+                           {'calculations': {'CreditMonteCarlo': credit}})
+    respelled = policy.declare(log, MINT, policy.CALCULATION_POLICY, {'calculations': {
+        'CreditMonteCarlo': dict(reversed(list(credit.items())))}})
+    assert respelled['coalesced'] is True and respelled['blob'] == first['blob']
+    assert policy.in_force(log, policy.CALCULATION_POLICY) == (
+        first['blob'], {'calculations': {'CreditMonteCarlo': credit}}, first['lsn'])
+    second = policy.declare(log, MINT, policy.CALCULATION_POLICY, {'calculations': {
+        'CreditMonteCarlo': dict(credit, Simulation_Batches=40)}})
+    assert policy.calculations_in_force(log, first['lsn'] - 1) == {}
+    assert policy.calculations_in_force(log, second['lsn'] - 1) == {'CreditMonteCarlo': credit}
+    assert policy.calculations_in_force(log)['CreditMonteCarlo']['Simulation_Batches'] == 40
+
+    declare(log, MINT, document(grants=((MINT, 'admin', '*'),)))
+    head = log.head()[0]
+    with pytest.raises(CapabilityDenied) as refusal:
+        policy.declare(log, STRANGER, policy.CALCULATION_POLICY, {'calculations': {}})
+    assert STRANGER in str(refusal.value) and 'admin' in str(refusal.value)
+    assert denials(log)[-1] == (head + 1, {'subject': STRANGER, 'verb': 'admin', 'book': '*',
+                                           'attempted_type': 'policy_declared'})
+    assert policy.calculations_in_force(log) == policy.calculations_in_force(log, second['lsn'])
+    log.close()
+    assert verify_home(home)['events'] == log.head()[0]
 
 
 # --------------------------------------------------------------------------------------------

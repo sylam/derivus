@@ -255,7 +255,8 @@ def test_the_cli_declares_a_policy_from_a_file_and_reports_what_is_in_force(tmp_
         'the readout borrowed the position of a declaration that carried no blob'
 
     every = json.loads(spine('policy', '--home', home).stdout)
-    assert sorted(every) == ['capabilities', 'firmness', 'fixings', 'tiers', 'tolerance']
+    assert sorted(every) == ['calculation', 'capabilities', 'firmness', 'fixings', 'tiers',
+                             'tolerance']
     assert every['tolerance'] == every['capabilities'] == {'blob': None, 'document': None,
                                                            'lsn': None}
 

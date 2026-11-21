@@ -11,7 +11,8 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""The tolerance, firmness, fixings and tiers policy documents, and the fold that finds one in force.
+"""The tolerance, firmness, fixings, tiers and calculation policy documents, and the fold that finds
+one in force.
 
 Policy is data: hashed into the blob store and declared through the ordinary writer, as the
 capabilities document is. Nothing here is a constant edited in a release - a deployment that wants a
@@ -31,7 +32,9 @@ measured is reported instead. A fixings policy is the authority an observation i
 names one source order per index: a home declaring none has said which administrator it believes
 about nothing, so every index it is asked for refuses by name. A tiers policy is the workflow a
 ticket falls through, and it has no default either: a home declaring none has declared no tiers, so
-what an undeclared workflow means is the caller's decision rather than this module's.
+what an undeclared workflow means is the caller's decision rather than this module's. A calculation
+policy is what an official run runs at, a block of the engine's own fields per calculation type,
+and it has no default: a home declaring none has said nothing, so a run reads its own document.
 """
 import hashlib
 import json
@@ -46,6 +49,7 @@ TOLERANCE_POLICY = 'tolerance'
 FIRMNESS_POLICY = 'firmness'
 FIXINGS_POLICY = 'fixings'
 TIERS_POLICY = 'tiers'
+CALCULATION_POLICY = 'calculation'
 
 #: The tolerance document's one section: result class -> the absolute epsilon a replay of that
 #: class may differ by. Closed at the field level, like an event body.
@@ -84,6 +88,14 @@ FIRMNESS_RETIRED = ('plan_seconds', 'values_seconds')
 #: What a tiers document may not restate: the window and the verdict it answers. Pillar age is
 #: checked on every booking before a tier is read.
 FIRMNESS_FIELDS = (PILLAR_SECONDS, 'firm')
+
+#: The calculation document's one section: calculation type -> the block of that type's own fields
+#: its official run runs at. The fields are the engine's, which judges a block; the shape is ours.
+CALCULATION_SECTION = 'calculations'
+
+#: The calculation types an official run reads a block for, and the whole of them: a block declared
+#: for a run that reads none is a rule nobody enforces.
+OFFICIAL_RUNS = ('CreditMonteCarlo',)
 
 
 def parse_tolerance(document, where):
@@ -357,10 +369,47 @@ def _unstaled(carrying, whose, refuse):
                    whose, ', '.join(restated), FIRMNESS_POLICY, PILLAR_SECONDS, FIRMNESS_POLICY))
 
 
+def parse_calculation(document, where):
+    """Check `document` as a calculation policy and return it parsed. `where` names it in refusals.
+
+    One section, a calculation type and the block of that type's own fields its official run runs
+    at, in the engine's names: `{"calculations": {"CreditMonteCarlo": {"Batch_Size": 1024}}}`. The
+    SHAPE alone is checked - the fields are the engine's, which judges a block where it is declared
+    and where a run reads it - and a type no official run reads (`OFFICIAL_RUNS`) is refused by
+    name.
+    """
+    def refuse(sentence):
+        raise MalformedEvent('{}: {}'.format(where, sentence))
+
+    if not isinstance(document, dict):
+        refuse('a calculation policy is {}, not a JSON object - it is {{"{}": {{type: block}}}}'
+               .format(type(document).__name__, CALCULATION_SECTION))
+    surplus = sorted(set(document) - {CALCULATION_SECTION})
+    if surplus:
+        refuse('a calculation policy carries {} beyond {} - the document is closed at the field '
+               'level; drop the key or version the document shape'.format(
+                   ', '.join(surplus), CALCULATION_SECTION))
+    entries = document.get(CALCULATION_SECTION)
+    if not isinstance(entries, dict):
+        refuse('{} is {}, not an object of calculation type -> block - a policy stating nothing '
+               'says so with an empty object, so that silence is never mistaken for absence'.format(
+                   CALCULATION_SECTION, type(entries).__name__))
+    for name, block in sorted(entries.items()):
+        if name not in OFFICIAL_RUNS:
+            refuse('{} states a block for {!r}, which no official run reads - the runs that read '
+                   'one are {}, and a block nothing reads is a rule nobody enforces'.format(
+                       CALCULATION_SECTION, name, ', '.join(OFFICIAL_RUNS)))
+        if not isinstance(block, dict):
+            refuse('the block for {!r} is {}, not an object of that calculation\'s own fields - '
+                   'one stating nothing is an empty object'.format(name, type(block).__name__))
+    return {CALCULATION_SECTION: dict(entries)}
+
+
 #: policy name -> the parser that reads it. `declare` refuses a name absent from this map rather
 #: than store a document nobody could read back.
 PARSERS = {TOLERANCE_POLICY: parse_tolerance, FIRMNESS_POLICY: parse_firmness,
-           FIXINGS_POLICY: parse_fixings, TIERS_POLICY: parse_tiers}
+           FIXINGS_POLICY: parse_fixings, TIERS_POLICY: parse_tiers,
+           CALCULATION_POLICY: parse_calculation}
 
 
 def canonical_policy(policy, document, where=None):
@@ -562,3 +611,13 @@ def tiers_in_force(log, lsn=None):
     a document this module invented.
     """
     return in_force(log, TIERS_POLICY, lsn)[1]
+
+
+def calculations_in_force(log, lsn=None):
+    """`{calculation type: block}` the calculation policy standing at `lsn` declares, empty where
+    this home declared none.
+
+    Absence is neither a refusal nor a default: a home declaring no calculation policy has not
+    said what an official run runs at, so each runs at what its own document states.
+    """
+    return (in_force(log, CALCULATION_POLICY, lsn)[1] or {}).get(CALCULATION_SECTION, {})
