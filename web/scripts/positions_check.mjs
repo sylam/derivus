@@ -22,7 +22,7 @@ const hash = (letter) => letter.repeat(64);
 const row = (instrument, agreement, portfolio, counterparty, quantity, paths, reference, object) =>
   ({ instrument: hash(instrument), agreement, portfolio, book: 'desk', counterparty, quantity,
      clips: 1, first_lsn: 5, last_lsn: 5, deal_paths: paths, reference, object, expired: null,
-     settles: null });
+     settles: null, tickets: [] });
 
 const EM = row('a', 'ISDA-1', 'desk/Rates/EM', 'LEI-A', 1, ['1/0', '1/2'], 'COLLAR1',
                'StructuredDeal');
@@ -178,16 +178,24 @@ check('a trade pending whole reads pending once, and a part awaiting a seat says
        positions.statusText([ticketed('approved', 1, 0), ticketed('rejected', -1, 0)])],
       ['pending', 'approved · 0.5 pending', 'approved, rejected']);
 
-// --- the blotter's four record columns, as the table shows them and the export writes them
-check('a row held twice sums its quantity and names each portfolio and client once, by name; a '
-      + 'row held by nothing has no quantity at all',
+// --- the blotter's five record columns, as the table shows them and the export writes them
+const by = (actor, lsn) => ({ ticket: `t${lsn}`, lsn, fill: lsn, actor, at: '', quantity: 1,
+  execution_reference: '', status: 'approved', tier: null, fell_past: null, waits_on: null });
+const booked = (position, ...tickets) => ({ ...position, status: 'approved', pending: 0, tickets });
+check('a row held twice sums its quantity and names each portfolio and client once, by name, and '
+      + 'each seat that booked it once, a value under each of the record\'s heads before the mark; '
+      + 'a row held by nothing has no quantity at all',
       'the quantity summed over nothing, which writes 0 beside a node the record holds none of - '
-      + 'the reading of a trade closed out; or the clients written by id',
-      [positions.heldColumns([ticketed('approved', 1, 0), { ...EM, status: 'approved', pending: 0 },
-                              { ...LEGACY, status: 'approved', pending: 0 }], PAPER.entities),
-       positions.heldColumns([], PAPER.entities)],
-      [[1, 'desk, desk/Rates/EM, desk/Rates', 'Client A, CPTY_B', 'approved'],
-       [null, '', '', '']]);
+      + 'the reading of a trade closed out; the clients written by id; the seat of a later ticket '
+      + 'named - the last, or every one - which says whoever unwound a trade booked it; or a head '
+      + 'with no value under it, every value after it then under the wrong head',
+      [positions.heldColumns([booked(ticketed('approved', 1, 0), by('sales-1', 10), by('ops', 31)),
+                              booked(EM, by('sales-2', 12)),
+                              booked(LEGACY, by('sales-1', 14), by('sales-2', 40))], PAPER.entities),
+       positions.heldColumns([], PAPER.entities), positions.bookedBy([booked(EM)]),
+       blotter.RECORD_HEADS],
+      [[1, 'desk, desk/Rates/EM, desk/Rates', 'Client A, CPTY_B', 'approved', 'sales-1, sales-2'],
+       [null, '', '', '', ''], [], ['Qty', 'Portfolio', 'Client', 'Status', 'Booked by', 'Mark']]);
 
 // --- a position netted to nothing
 const SHUT = { ...row('e', 'ISDA-1', 'desk/FX', 'LEI-A', 0, ['1/1'], 'CALL1', 'FXOptionDeal'),

@@ -568,18 +568,20 @@ export function inWindow(row: BlotterRow, horizon: number | null): boolean {
 const rollsOwn = (row: BlotterRow, horizon: number | null): boolean =>
   !row.ignored && (row.expiry ?? row.next) !== undefined && inWindow(row, horizon);
 
-/** The window filter over the tree: a row rolling on its own account survives whole - a structure
- * never loses the leg that is rolling - and a row holding others survives with only those of them
- * that do, so a netting set with one trade rolling this week shows that trade. */
-export function filterRows(rows: BlotterRow[], horizon: number | null): BlotterRow[] {
-  if (horizon === null) return rows;
+/** The tree less what `keeps` does not: a row it keeps survives whole - a structure never loses a
+ * leg - and a row holding others survives with only those of them that do. */
+export function keptRows(rows: BlotterRow[], keeps: (row: BlotterRow) => boolean): BlotterRow[] {
   return rows.flatMap((row) => {
-    const children = filterRows(row.children, horizon);
-    const rolling = rollsOwn(row, horizon);
-    if (!rolling && children.length === 0) return [];
-    return [{ ...row, children: rolling ? row.children : children }];
+    if (keeps(row)) return [row];
+    const children = keptRows(row.children, keeps);
+    return children.length ? [{ ...row, children }] : [];
   });
 }
+
+/** The window filter over the tree: what rolls inside it on its own account, so a netting set
+ * with one trade rolling this week shows that trade. */
+export const filterRows = (rows: BlotterRow[], horizon: number | null): BlotterRow[] =>
+  (horizon === null ? rows : keptRows(rows, (row) => rollsOwn(row, horizon)));
 
 /** The type that holds a client's trades rather than being one. */
 export const SET = 'NettingCollateralSet';
@@ -621,10 +623,17 @@ export function flatten(rows: BlotterRow[], collapsed: Set<string>): BlotterRow[
 
 // ---- the export ---------------------------------------------------------------------------------
 
-/** The blotter's columns in the order the table shows them, and the record's four after them. */
+/** The blotter's columns in the order the table shows them, then the record's five and the mark
+ * a desk that records reads beside them. */
 export const HEADS = ['Reference', 'Type', 'Desk side', 'On', 'Ccy', 'Amount', 'Strike', 'Barrier',
   'Terms', 'Expiry', 'Next date', 'Days'];
-export const RECORD_HEADS = ['Qty', 'Portfolio', 'Client', 'Status'];
+export const MARKED = 'Mark';
+export const RECORD_HEADS = ['Qty', 'Portfolio', 'Client', 'Status', 'Booked by', MARKED];
+
+/** The deal path a row's mark is read at: the node its position is held at, else its own key - a
+ * deal path in the file's tree, and under the record's grouping a key no mark is filed at, a
+ * folder's or a leg's under its position. */
+export const markPath = (row: BlotterRow): string => row.position?.deal_paths[0] ?? row.path;
 
 /** A row as the export writes it, a value per column of `HEADS`: every number the one behind its
  * cell - an amount under a position the one held, a level on the pair's axis - never the text the

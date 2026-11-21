@@ -344,6 +344,30 @@ check('a leg reads by its role under its structure, and any other reference whol
        blotter.nameOf({ reference: 'ZeroCostCollar-6a90461d', deal: {} })],
       ['protection', 'EURZAR-ZARCALL-REBOOKED-2027-05', 'ZeroCostCollar-6a90461d']);
 
+// ---- what a seat booked, and where a row's mark is read -----------------------------------------
+
+const paths = (rows) => rows.map((row) => (row.children.length ? [row.path, paths(row.children)]
+  : row.path));
+const BOOKED = { '0/0': 'sales-1', '0/1': 'sales-2' };
+const mine = (seat) => paths(blotter.keptRows(BOOK, (row) => BOOKED[row.path] === seat));
+check('what a seat booked survives whole, a structure with its legs, under the set holding it, and '
+      + "nothing else of that set's",
+      "the set kept whole for one trade of the seat's, which shows a salesman every trade under "
+      + "his client's agreement; a structure cut to nothing, its legs carrying no ticket of their "
+      + 'own; or the set dropped with the trade it holds',
+      [mine('sales-1'), mine('sales-2'), mine('nobody')],
+      [[['0', [['0/0', ['0/0/0', '0/0/1']]]]], [['0', ['0/1']]], []]);
+
+const HELD_ROW = blotter.groupedRows([{ id: 'p', label: 'FE' }], blotter.rowsByPath(BOOK),
+                                    new Map([['p', POSITION]]), '2026-11-16')[0];
+check("a row's mark is read at the node its position is held at, or at its own deal path in the "
+      + "file's tree; a leg under a position has no mark of its own",
+      "a position's row read at its own key, where the risk files no mark, which blanks every "
+      + 'mark once the book is grouped by portfolio or client',
+      [blotter.markPath(BOOK[0].children[0]), blotter.markPath(HELD_ROW),
+       blotter.markPath(HELD_ROW.children[0])],
+      ['0/0', '0/0', 'p/0']);
+
 // ---- the export: the rows as shown, in the columns shown, every number as itself ----------------
 
 const OPTION = { ...ON_USD, Reference: 'USDZAR, CALL "A"', Expiry_Date: { '.Timestamp': '2027-05-16' } };

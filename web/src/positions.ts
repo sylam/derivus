@@ -146,16 +146,21 @@ export function statusText(held: Position[]): string {
   return pending && pending !== quantity ? `${read} · ${formatNumber(pending)} pending` : read;
 }
 
-/** What the record holds of a row as the blotter's four record columns: the net quantity - none
- * where nothing is held - the portfolios and the clients it sits under, and what its tickets read,
- * or that it closed. */
+/** Who booked `held`, each seat once: the actor of a position's first ticket, whoever filled it
+ * or unwound it after. */
+export const bookedBy = (held: Position[]): string[] =>
+  [...new Set(held.flatMap((row) => row.tickets.slice(0, 1).map((ticket) => ticket.actor)))];
+
+/** What the record holds of a row as the blotter's five record columns: the net quantity - none
+ * where nothing is held - the portfolios and the clients it sits under, what its tickets read, or
+ * that it closed, and who booked it. */
 export function heldColumns(held: Position[], entities: Entity[]):
-  [number | undefined, string, string, string] {
+  [number | undefined, string, string, string, string] {
   const distinct = (values: string[]) => [...new Set(values)].join(', ');
   const net = netOf(held);
   return [net, distinct(held.map((row) => row.portfolio)),
     distinct(held.map((row) => clientName(entities, row.counterparty))),
-    closed(net) ? 'closed' : statusText(held)];
+    closed(net) ? 'closed' : statusText(held), bookedBy(held).join(', ')];
 }
 
 /** One position as a leaf, by the reference a desk knows it by. `other` is the coordinate the tree
