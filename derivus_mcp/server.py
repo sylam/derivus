@@ -160,7 +160,10 @@ take the seat reading as actor: a seat that acts at one node of the book reads t
 and describe_seat says which verbs it holds and at which nodes. THE OFFICIAL CALCULATION is
 declared as well, by the admin seat: declare_official_calculation states what the desk's credit
 run runs at - its paths, its batches, its seed, the two funding curves - and
-describe_official_calculation reads what stands; a named calculation stays a seat's own."""
+describe_official_calculation reads what stands; a named calculation stays a seat's own. CREDIT
+LIMITS are the admin seat's too: declare_credit_limits states what each legal entity's peak
+exposure is held against and describe_credit_limits reads what stands, the usage against each
+riding on the XVA view and on a trade's credit charge; a limit blocks nothing."""
 
 
 def orientation(recording):
@@ -2042,6 +2045,34 @@ def declare_official_calculation(calculations: dict, actor: str | None = None) -
     """
     return service().call('POST', '/book/calculations', json=dict(
         {'calculations': calculations}, **_stated(actor=actor)))
+
+
+@MCP.tool(annotations=READ_ONLY)
+def describe_credit_limits() -> dict:
+    """The credit limit each counterparty is held to, as the record declares it: `limits`, per
+    legal entity `{amount, currency}`, with the `blob` the document is stored under and the `lsn`
+    of its declaration, each null where none is declared. What stands against a limit - usage,
+    headroom, a breach - is `xva_view`'s `limits`. 404 on a box that records nothing.
+    """
+    return service().call('GET', '/book/limits')
+
+
+@MCP.tool()
+def declare_credit_limits(limits: dict, actor: str | None = None) -> dict:
+    """Declare the desk's counterparty credit limits as the `admin` seat, which files a
+    `policy_declared`: `limits` is `{"<entity id>": {"amount": 5000000, "currency": "USD"}}`, an
+    amount above zero per declared legal entity (`describe_agreements` lists them), in the
+    currency the book's credit run reports in - a limit in another is never converted and reads
+    not comparable. A limit on a parent entity is drawn on by every entity under it.
+
+    Never choose a limit yourself: it is the desk's credit policy, so declare what you are told.
+    The document stands WHOLE: state every limit that is to stand, one left out being withdrawn,
+    and `{}` withdrawing all. An entity the record does not declare is refused by name with
+    nothing recorded. Nothing is blocked by a limit: `xva_view` reports usage against it and
+    `xva_increment` whether a trade would breach it. Answers `{recorded: {lsn}, blob}`.
+    """
+    return service().call('POST', '/book/limits', json=dict(
+        {'limits': limits}, **_stated(actor=actor)))
 
 
 @MCP.tool()

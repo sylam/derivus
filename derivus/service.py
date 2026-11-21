@@ -3700,8 +3700,34 @@ def book_calculations():
     type's official run runs at, the address the document is stored under and the position of its
     declaration, each null where none is declared. 404 where no home is configured."""
     recorded()
-    blob, document, lsn = spine.calculation_policy()
+    blob, document, lsn = spine.policy_in_force('calculation')
     return dict(document or {'calculations': None}, blob=blob, lsn=lsn)
+
+
+@app.post('/book/limits', summary='Declare the credit limit each legal entity is held to')
+def book_limits_declared(request: dict):
+    """`{limits, actor}` - declare the `limits` policy: per legal entity the credit limit its
+    exposure is held against, `{"LEI-A": {"amount": 5000000, "currency": "USD"}}`, an amount above
+    zero of the currency named. A limit on a parent is drawn on by every entity under it.
+
+    The record checks the document's shape, and an entity it does not hold is refused by name, a
+    422, with nothing filed: a limit on one is a rule nothing enforces. The act is `admin`,
+    enforced by the record; the last declaration stands whole, and one naming no entity limits
+    nobody. 404 where no home is configured.
+    """
+    recorded()
+    filed = spine.declare_limits(request.get('limits'), actor_name=request.get('actor'))
+    return {'recorded': {'lsn': filed['lsn']}, 'blob': filed['blob']}
+
+
+@app.get('/book/limits', summary='The credit limit each legal entity is held to, as declared')
+def book_limits():
+    """`{limits, blob, lsn}` - the `limits` policy in force: the credit limit each legal entity's
+    exposure is held against, the address the document is stored under and the position of its
+    declaration, each null where none is declared. 404 where no home is configured."""
+    recorded()
+    blob, document, lsn = spine.policy_in_force('limits')
+    return dict(document or {'limits': None}, blob=blob, lsn=lsn)
 
 
 @app.get('/spine/frames', summary="The record's frames, verbatim - what a replica pulls")

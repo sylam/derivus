@@ -101,7 +101,8 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'configure_calculation', 'run_calculation', 'describe_agreements',
                 'declare_legal_entity', 'declare_agreement', 'book_positions', 'book_cash',
                 'collateral_calls', 'mark_book', 'book_pnl', 'declare_survival_curve',
-                'describe_official_calculation', 'declare_official_calculation'}
+                'describe_official_calculation', 'declare_official_calculation',
+                'describe_credit_limits', 'declare_credit_limits'}
     assert set(tools) == expected
     for name, tool in tools.items():
         assert tool.description and len(tool.description) > 60, f'{name} has no real contract'
@@ -120,7 +121,8 @@ def test_every_tool_is_registered_and_carries_its_contract():
                        'set_base_date', 'configure_securities', 'verify_securities',
                        'setup_market', 'configure_calculation', 'run_calculation',
                        'declare_legal_entity', 'declare_agreement', 'mark_book',
-                       'declare_survival_curve', 'declare_official_calculation'}
+                       'declare_survival_curve', 'declare_official_calculation',
+                       'declare_credit_limits'}
 
 
 def read_resource(uri):
@@ -291,7 +293,7 @@ RECORD_TOOLS = ('book_reconcile', 'close_check', 'book_activity', 'book_markets'
                 'declare_agreement', 'describe_agreements', 'declare_portfolio',
                 'describe_portfolios', 'worklist', 'approve_ticket', 'reject_ticket',
                 'approve_quote', 'reject_quote', 'describe_official_calculation',
-                'declare_official_calculation')
+                'declare_official_calculation', 'describe_credit_limits', 'declare_credit_limits')
 
 
 def test_a_desk_that_keeps_no_record_is_told_so_and_oriented_without_its_tools(
@@ -1226,6 +1228,29 @@ def test_the_official_calculation_reaches_a_model_as_the_record_declares_it(book
     assert declared['recorded']['lsn'] == 5 and len(declared['blob']) == 64
     assert mcp_server.describe_official_calculation() == {
         'calculations': {'CreditMonteCarlo': credit}, 'blob': declared['blob'], 'lsn': 5}
+
+
+def test_the_credit_limits_reach_a_model_as_the_record_declares_them(book, recorded):
+    """Each tool is one `service().call`: `declare_credit_limits` posts the limits under `limits`
+    beside the seat and answers the record's position and the document's address,
+    `describe_credit_limits` reads them back with that address and position - nulls on a record
+    declaring none - and a limit on an entity the record does not hold is the service's own
+    sentence, a tool error with nothing declared.
+
+    Killing mutation: the tool posting its limits under another key than `limits`, which the
+    record refuses as a document stating no such section.
+    """
+    limit = {'amount': 5_000_000.0, 'currency': 'USD'}
+    assert mcp_server.describe_credit_limits() == {'limits': None, 'blob': None, 'lsn': None}
+    with pytest.raises(ToolError, match="a limit is declared on 'LEI-A', and that is no legal"):
+        mcp_server.declare_credit_limits({'LEI-A': limit}, actor='subject-desk-one')
+    assert mcp_server.describe_credit_limits()['lsn'] is None
+
+    mcp_server.declare_legal_entity('LEI-A', 'Client A', actor='subject-desk-one')
+    declared = mcp_server.declare_credit_limits({'LEI-A': limit}, actor='subject-desk-one')
+    assert declared['recorded']['lsn'] == 6 and len(declared['blob']) == 64
+    assert mcp_server.describe_credit_limits() == {
+        'limits': {'LEI-A': limit}, 'blob': declared['blob'], 'lsn': 6}
 
 
 #: The tools that put work on the hub's compute, or value the book where the queue would, each with

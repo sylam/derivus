@@ -6026,6 +6026,65 @@ def test_the_official_calculation_is_judged_by_the_engine_before_the_record_take
     assert CLIENT.get('/book/calculations').json()['lsn'] == started + 1
 
 
+def limits_declared(limits, **body):
+    """The limits policy declared through the service's verb: its response."""
+    return CLIENT.post('/book/limits', content=dump(dict({'limits': limits}, **body)),
+                       headers=JSON)
+
+
+def entity_declared(entity, parent=None):
+    """A legal entity declared through the service's verb, under `parent` where one is named."""
+    stated = {'entity': entity, 'name': '{} Ltd'.format(entity)}
+    answer = CLIENT.post('/book/entities', content=dump(
+        dict(stated, parent=parent) if parent else stated), headers=JSON)
+    assert answer.status_code == 200, answer.text
+
+
+def test_a_limit_is_declared_on_a_legal_entity_the_record_holds_and_on_no_other(recorded, desk):
+    """`POST /book/limits` declares the `limits` policy and `GET` reads what stands with its
+    address and position, nulls on a record declaring none. The record holds `LEI-A` alone: a
+    limit on `LEI-GHOST`, and one on `LEI-GHOST` beside one on `LEI-A`, are each a 422 naming the
+    entity nobody declared and the one the record declares, and a limit of zero is one in the
+    record's own words. None moves the head. The limit on `LEI-A` lands, and a restatement naming
+    nobody stands whole in its place. Under a capabilities document a seat holding no `admin` is
+    refused by the record, the denial landed.
+
+    Killing mutation: the entity check dropped from `spine.declare_limits`, which lands a limit on
+    an entity nobody declared.
+    """
+    entity_declared('LEI-A')
+    started, limit = head(recorded), {'amount': 5_000_000.0, 'currency': 'USD'}
+    assert CLIENT.get('/book/limits').json() == {'limits': None, 'blob': None, 'lsn': None}
+    for limits, said in (
+            ({'LEI-GHOST': limit}, "a limit is declared on 'LEI-GHOST', and that is no legal "
+                                   'entity the record declares - it declares LEI-A'),
+            ({'LEI-A': limit, 'LEI-GHOST': limit}, "a limit is declared on 'LEI-GHOST', and"),
+            ({'LEI-A': dict(limit, amount=0)}, "the limit on 'LEI-A' is the amount 0"),
+            (None, 'limits is NoneType')):
+        refused = limits_declared(limits)
+        assert refused.status_code == 422 and said in refused.json()['detail'], refused.text
+    assert head(recorded) == started, 'a refused declaration recorded something'
+
+    declared = limits_declared({'LEI-A': limit})
+    assert declared.status_code == 200, declared.text
+    blob = declared.json()['blob']
+    assert declared.json() == {'recorded': {'lsn': started + 1}, 'blob': blob}
+    assert CLIENT.get('/book/limits').json() == {
+        'limits': {'LEI-A': limit}, 'blob': blob, 'lsn': started + 1}
+    assert facts(recorded, 'policy_declared')[-1] == (
+        started + 1, 'policy_declared', {'policy': policy.LIMITS_POLICY, 'blob': blob})
+    assert limits_declared({}).status_code == 200
+    assert CLIENT.get('/book/limits').json()['limits'] == {}
+
+    entitle(recorded, [(ACTOR, 'admin', '*')])
+    stranger = limits_declared({'LEI-A': limit}, actor='subject-nobody')
+    assert stranger.status_code == 422 and 'subject-nobody' in stranger.json()['detail']
+    assert facts(recorded, 'capability_denied')[-1][2] == {
+        'subject': 'subject-nobody', 'verb': 'admin', 'book': '*',
+        'attempted_type': 'policy_declared'}
+    assert CLIENT.get('/book/limits').json()['lsn'] == started + 2
+
+
 @pytest.fixture
 def credit_hub(recorded, tmp_path):
     """A recording desk with a credit run to price: NS_A holds a bought call and NS_B one beside a

@@ -1308,15 +1308,31 @@ def declare_calculations(calculations, actor_name=None, effective_time=None):
                                     effective_time)
 
 
-def calculation_policy():
-    """`(blob, document, lsn)` - the `calculation` policy standing in the record, the address it is
-    stored under and the position of its declaration (`policy.in_force`): nulls where this home
-    declared none."""
-    def read(log):
-        policy = package().policy
-        return policy.in_force(log, policy.CALCULATION_POLICY)
+def declare_limits(limits, actor_name=None, effective_time=None):
+    """Declare the `limits` policy, `{legal entity: {amount, currency}}`: the credit limit each
+    entity's exposure is held against. The record checks the document's shape, then an entity it
+    does not hold is refused by name before anything appends, a limit on one being a rule nothing
+    enforces. `admin` scope, which the writer enforces."""
+    policy = package().policy
+    with translating():
+        raw = policy.canonical_policy(policy.LIMITS_POLICY, {policy.LIMITS_SECTION: limits})
+    held = {row['entity'] for row in entities()}
+    if set(limits) - held:
+        raise SpineRefused(
+            'a limit is declared on {}, and that is no legal entity the record declares - it '
+            'declares {}: a limit on an entity nobody declared is a rule nothing enforces, so '
+            'declare the entity first'.format(', '.join(map(repr, sorted(set(limits) - held))),
+                                              ', '.join(sorted(held)) or 'none'))
+    with writing() as log:
+        return policy.declare_bytes(log, actor(actor_name, log), policy.LIMITS_POLICY, raw,
+                                    effective_time)
 
-    return folded(read)
+
+def policy_in_force(name):
+    """`(blob, document, lsn)` - the policy `name` standing in the record, the address it is stored
+    under and the position of its declaration (`policy.in_force`): nulls where this home declared
+    none."""
+    return folded(lambda log: package().policy.in_force(log, name))
 
 
 def declare_portfolio(path, actor_name=None, effective_time=None):
