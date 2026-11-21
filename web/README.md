@@ -149,4 +149,7 @@ Design notes: the app renders **from the schema** (`GET /schema`) — panels, dr
 table columns are the engine's own declarations, so a new deal type or calculation appears here by
 being declared on its class. Views are entries in a workspace registry (`src/registry.ts`); a
 future SACCR / backtest / market-archive screen is a new entry, not a refactor. Results render by
-SHAPE (date-indexed frame → chart, frame → table, scalar → stat), never by result name.
+SHAPE (date-indexed frame → chart, frame → table, scalar → stat), never by result name. A screen
+speaks to a reader at a desk, so no string or markup text names a command-line flag, an
+environment variable, a route or an install: `scripts/words_check.mjs` reads them off the parsed
+source, comments apart.

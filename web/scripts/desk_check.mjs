@@ -8,6 +8,7 @@
 // surface they build too, and a spot nothing quotes. The last check is what a named calculation
 // shows for a dial it does not state.
 
+import { readFileSync } from 'node:fs';
 import { check, done, load } from './check.mjs';
 
 const desk = await load('desk');
@@ -229,6 +230,23 @@ check('leaving an opened document asks first where its copy may hold edits made 
        asks(COPY, { etag: 'e1', path: 'inbox/other.json' }),
        asks({ etag: 'e2', path: 'book.json' }, COPY)],
       [[true, true], null, [true, true], [true, true], null]);
+
+// --- a screen that reads the desk's own book, with none of it to read
+const HEADER = readFileSync(new URL('../src/components/DocumentLoader.tsx', import.meta.url), 'utf8')
+  .split(/\r?\n/).map((line) => line.trim());
+const pressed = ({ hint }) => {
+  const control = /Press "([^"]+)" at the top/.exec(hint)?.[1];
+  return [control, HEADER.includes(control)];
+};
+check('over a read-only copy of a file a screen names the control that leaves it for the book, and '
+      + 'what it then shows; a desk serving no book names the control that opens a file; each by '
+      + 'the label the header draws',
+      "a control named by a word the header does not draw ('return to book'), which sends the "
+      + 'reader to a button that is not there; or what the screen shows left out of the sentence',
+      [pressed(desk.offBook("the desk's own risk")),
+       desk.offBook("the desk's own risk").hint.endsWith("this screen then shows the desk's own risk."),
+       pressed(desk.NO_BOOK)],
+      [['back to book', true], true, ['open a job file', true]]);
 
 // --- pending approval inside the marks, off `GET /book/positions`
 const position = (reference, paths, pending) => ({ reference, deal_paths: paths, pending,

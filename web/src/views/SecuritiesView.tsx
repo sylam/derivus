@@ -4,6 +4,7 @@ import { DataTable } from '../components/DataTable';
 import { EmptyState } from '../components/EmptyState';
 import { EditableScalar, FieldView } from '../components/FieldView';
 import { Navigator, type Page } from '../components/Navigator';
+import { offBook } from '../desk';
 import {
   USED_COLUMNS, mapPages, mapRows, mergeRequest, rejectedRows, seedDescriptor, setAt, usedRows,
   verifyRequest, withMember,
@@ -269,12 +270,8 @@ export function SecuritiesView() {
                                           [source, reload]);
 
   if (source?.kind !== 'book') {
-    return (
-      <EmptyState
-        title="The vocabulary is this workstation's own."
-        hint="This document was opened from a file. Start the service with --book <job file> and the tickers this desk could quote, what a terminal verified about them, and the print behind every knot appear here."
-      />
-    );
+    return <EmptyState {...offBook('the tickers this desk could quote, what a terminal verified '
+                                   + 'about them and the print behind every knot')} />;
   }
   if (error) {
     return <div className="main"><div className="panel">

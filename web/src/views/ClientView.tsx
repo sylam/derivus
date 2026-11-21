@@ -10,8 +10,8 @@ import {
 import { EmptyState } from '../components/EmptyState';
 import { Navigator } from '../components/Navigator';
 import {
-  PLUS, SURVIVAL, ageOf, creditCounterparties, entityText, lastRunChip, plural, spreads,
-  stampText, valuationDay,
+  PLUS, SURVIVAL, ageOf, creditCounterparties, entityText, lastRunChip, offBook, plural,
+  spreads, stampText, valuationDay,
 } from '../desk';
 import {
   positionName, statusText, type Agreement, type Entity, type Position,
@@ -50,10 +50,7 @@ export function ClientView() {
   const risk = bookRisk(state);
 
   if (!live) {
-    return (
-      <EmptyState title="A client is read off the live book."
-                  hint="This document was opened from a file. Start the service with --book <job file> and each counterparty the book trades with has a page here." />
-    );
+    return <EmptyState {...offBook('a page for each counterparty the book trades with')} />;
   }
   if (!schema || !doc) return null;
   if (recording && !paper.data) {

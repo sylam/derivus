@@ -1,10 +1,10 @@
 import { Fragment, useMemo, useState } from 'react';
 import { EXPORTS, saveCsv } from '../blotter';
 import {
-  MARK, QUOTE_HEADS, bucketAxes, factorFamily, lagsBook, markHolds, marksExport, marksHeads,
-  marksTotal, onPair, perOf, perUnitText, placeText, plural, positionsUnder, quoteView,
-  quotesExport, readingExport, reconciles, riskOf, riskReading, sharedPer, sortGreeks, stampText,
-  tenorText, unpriced, valuationDay, type GreekKey, type Ladder,
+  MARK, NO_BOOK, QUOTE_HEADS, bucketAxes, factorFamily, lagsBook, markHolds, marksExport,
+  marksHeads, marksTotal, offBook, onPair, perOf, perUnitText, placeText, plural, positionsUnder,
+  quoteView, quotesExport, readingExport, reconciles, riskOf, riskReading, sharedPer, sortGreeks,
+  stampText, tenorText, unpriced, valuationDay, type GreekKey, type Ladder,
 } from '../desk';
 import { EmptyState } from '../components/EmptyState';
 import { closed, positionName, type Position } from '../positions';
@@ -42,22 +42,8 @@ export function RiskView() {
 
   // the risk verb answers over the LIVE book; a document opened from a file has no server-side
   // book to differentiate, and saying so is better than showing another book's numbers under it
-  if (source?.kind !== 'book') {
-    return (
-      <EmptyState
-        title="Consolidated risk is a reading of the live book."
-        hint="This document was opened from a file. Start the service with --book <job file> and the desk's own risk appears here."
-      />
-    );
-  }
-  if (risk.status === 404) {
-    return (
-      <EmptyState
-        title="The service is serving no book."
-        hint="It was started without --book, or the book has been closed since this page loaded."
-      />
-    );
-  }
+  if (source?.kind !== 'book') return <EmptyState {...offBook("the desk's own risk")} />;
+  if (risk.status === 404) return <EmptyState {...NO_BOOK} />;
   // what holds the seat from the read, or the service's refusal verbatim, stands in place of the
   // numbers - nothing partial was served and nothing was cached, so there is nothing else to show
   if (risk.error) {

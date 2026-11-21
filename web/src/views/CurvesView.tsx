@@ -9,7 +9,9 @@ import {
   QUIET_MS, commit, curveFields, curveRequest, due, nearPair, panelValues, prefill, solvedFactor,
   type CurveEdit, type CurveForm, type Editing,
 } from '../curves';
-import { SURVIVAL, creditCounterparties, entityText, factorFamily, valuationDay } from '../desk';
+import {
+  SURVIVAL, creditCounterparties, entityText, factorFamily, offBook, valuationDay,
+} from '../desk';
 import { blockHint, heldBack, marketOf, useApp, useRead, written } from '../state';
 import { curveOf, isObject, token } from '../tokens';
 import type {
@@ -196,12 +198,8 @@ export function CurvesView() {
   const { data: answer, error } = read;
 
   if (source?.kind !== 'book') {
-    return (
-      <EmptyState
-        title="A curve is set up in the live book."
-        hint="This document was opened from a file. Start the service with --book <job file> and the book's curves, and the ones this workstation's seed can set up, appear here."
-      />
-    );
+    return <EmptyState {...offBook("the book's curves, and the ones this workstation's seed "
+                                   + 'can set up')} />;
   }
   const { doc } = state;
   const market = marketOf(state);

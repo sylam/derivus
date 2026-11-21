@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { BOOK_DOCUMENT, failure, getBook, openBook } from '../api';
-import { fileName, leavingAsks } from '../desk';
+import { NO_BOOK, fileName, leavingAsks } from '../desk';
 import { bookLoaded, useApp } from '../state';
 import type { JobDoc } from '../types';
 
@@ -44,7 +44,7 @@ export function DocumentLoader() {
     try {
       dispatch(bookLoaded(await getBook()));
     } catch {
-      dispatch({ type: 'DOC_FAILED', error: 'The service is not serving a book' });
+      dispatch({ type: 'DOC_FAILED', error: NO_BOOK.title });
     }
   }
 

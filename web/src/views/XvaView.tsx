@@ -9,8 +9,8 @@ import {
 import { EmptyState } from '../components/EmptyState';
 import { TimeSeriesChart } from '../components/TimeSeriesChart';
 import {
-  PLUS, SURVIVAL, ageOf, currencyOf, entityText, lagsBook, peaks, plural, replayRows, spreads,
-  stampText, tableReading, valuationDay, xvaTotals, type Peak,
+  NO_BOOK, PLUS, SURVIVAL, ageOf, currencyOf, entityText, lagsBook, offBook, peaks, plural,
+  replayRows, spreads, stampText, tableReading, valuationDay, xvaTotals, type Peak,
 } from '../desk';
 import { bookRisk, clockOf, marketOf, useApp, useRead } from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
@@ -45,22 +45,8 @@ export function XvaView() {
   const risk = bookRisk(state);
   const collateral = useRead(live && recording ? getBookCollateral : null, [clock, state.seat]);
 
-  if (!live) {
-    return (
-      <EmptyState
-        title="The XVA projection belongs to the live book."
-        hint="This document was opened from a file. Start the service with --book <job file> and the desk's projection appears here."
-      />
-    );
-  }
-  if (xva.status === 404) {
-    return (
-      <EmptyState
-        title="The service is serving no book."
-        hint="It was started without --book, or the book has been closed since this page loaded."
-      />
-    );
-  }
+  if (!live) return <EmptyState {...offBook("the last credit run of each of the desk's sets")} />;
+  if (xva.status === 404) return <EmptyState {...NO_BOOK} />;
   // a corrupt projection file names itself in the refusal; the rows are still on disk
   if (xva.error) {
     return (

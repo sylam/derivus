@@ -4,7 +4,7 @@ import { Waiting } from '../components/Desk';
 import { EmptyState } from '../components/EmptyState';
 import { DescriptorPanel } from '../components/FieldView';
 import { Navigator } from '../components/Navigator';
-import { stampText } from '../desk';
+import { offBook, stampText } from '../desk';
 import { NO_PAPER, nodeAt } from '../positions';
 import {
   bookingNodes, clients, clientText, directions, type Draft, draftOf, firmSeconds, firmText,
@@ -68,15 +68,12 @@ export function QuoteView() {
 
   if (!doc || !schema) return null;
   const structures = schema.Structure?.types ?? {};
-  if (state.source?.kind !== 'book' || !Object.keys(structures).length) {
-    return (
-      <EmptyState
-        title="A quote prices against the desk's own book."
-        hint={state.source?.kind !== 'book'
-          ? 'A file opened in this browser has no service book behind it: start the service '
-            + 'with --book to quote.'
-          : 'This service publishes no structures to quote.'} />
-    );
+  if (state.source?.kind !== 'book') {
+    return <EmptyState {...offBook('what the desk has quoted, and the ticket a new quote is priced on')} />;
+  }
+  if (!Object.keys(structures).length) {
+    return <EmptyState title="A quote prices against the desk's own book."
+                       hint="This service publishes no structures to quote." />;
   }
 
   const rows = listed.data?.quotes ?? [];
