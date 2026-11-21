@@ -1555,7 +1555,7 @@ default = {
     'Percent': 0.0,
     'Text': '',
     'DateList': 'null',
-    'CreditSupportList': '[[0,1]]',
+    'CreditSupportList': '[[1,0]]',
     'DatePicker': ''
 }
 

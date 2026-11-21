@@ -27,8 +27,9 @@ Extension points are data: a new type is a row or a class attribute the engine a
 - Every JSON schema is a per-class `fields` list, and every store but `System` is the view `schema.emit_*` builds from those declarations at import, never a second copy.
 - Where a store's key is not the class name, **the class declares the bridge**: `factor_types` on a process, `model_type` on a calibration, `market_factor_type` on a bootstrapper (`FXVol` reads `FXVolPrices`). No rule recovers one name from another.
 - `Process_factor_map` and `Interpolation_factor_map` are the same declarations read sideways; a market-price quote references the `Instrument` declarations rather than restating them ([Market Prices](market_prices.md)).
+- A table whose rows travel as positions declares its columns in the order a row travels, so a client lays a row under the published headers and writes it back with no turn of its own: a `.CreditSupportList` row is `[rating, amount]`, and each of the netting set's five credit support tables declares the rating first. The web client and the notebook Workbench (`derivus_jupyter.py`) both pass those rows through as they are.
 
-**Held by** `tests/test_schema_emission.py::test_every_store_is_the_emitted_view`, `::test_the_calculation_types_are_what_run_job_dispatches`.
+**Held by** `tests/test_schema_emission.py::test_every_store_is_the_emitted_view`, `::test_the_calculation_types_are_what_run_job_dispatches`, `::test_a_credit_support_table_declares_its_columns_in_the_order_a_row_travels`. **Not gated:** the Workbench's read and write of a credit support table, `derivus_jupyter.py` importing a widget package the test environment does not carry; and the web client's, which renders in a browser.
 
 A function switching on a magic-string type, or a parallel dict passed beside a primary operand, is a class or registry waiting to happen: strengthen the existing primitive.
 

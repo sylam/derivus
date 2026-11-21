@@ -4,8 +4,7 @@ import { factorNames } from '../desk';
 import { marketOf, useApp } from '../state';
 import {
   SUPPORT_ROW, currencyOf, curveOf, editRaw, encodeScalar, fieldLabel, formatNumber, isBlank,
-  isEditableScalar, isObject, kindOf, label, offsetText, sharedSections, supportRows, token,
-  ungrouped,
+  isEditableScalar, isObject, kindOf, label, offsetText, sharedSections, token, ungrouped,
 } from '../tokens';
 import type { Descriptor, Schema, Section } from '../types';
 import { axisNames, quotesNormal } from '../vols';
@@ -52,7 +51,7 @@ export function FieldView({ value, descriptor, normal }: {
   if (Array.isArray(support)) {
     return (
       <>
-        <DataTable columns={descriptor?.col_names ?? []} index={[]} data={supportRows(support)} />
+        <DataTable columns={descriptor?.col_names ?? []} index={[]} data={support} />
         <div className="hint">{SUPPORT_ROW}</div>
       </>
     );
@@ -270,13 +269,13 @@ function TableEdit({ name, declared, value, onAmend }: {
 }) {
   const columns = declared.col_names ?? [];
   const support = declared.obj === 'CreditSupportList';
-  const forms = support ? ['Float', 'Integer'] : (declared.obj ?? []) as string[];
+  const forms = support ? ['Integer', 'Float'] : (declared.obj ?? []) as string[];
   const rows: unknown[][] = support
-    ? supportRows((token(value, '.CreditSupportList') ?? []) as unknown[][])
+    ? (token(value, '.CreditSupportList') ?? []) as unknown[][]
     : (Array.isArray(value) ? value : []).map((row) => columns.map(
       (column) => (row as Record<string, unknown>)[column]));
   const file = (next: unknown[][]) => onAmend(name, support
-    ? { '.CreditSupportList': supportRows(next) }
+    ? { '.CreditSupportList': next }
     : next.map((row) => Object.fromEntries(columns.map((column, at) => [column, row[at]]))));
   const cell = (form: string, column: string): Descriptor => ({
     widget: ['Float', 'Percent'].includes(form) ? 'Float' : form === 'Integer' ? 'Integer' : 'Text',

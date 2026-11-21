@@ -562,6 +562,30 @@ def test_a_barrier_s_monitoring_is_one_declaration_every_carrier_publishes():
                 ] == ['How often the barrier is observed, 0M meaning continuously'], name
 
 
+def test_a_credit_support_table_declares_its_columns_in_the_order_a_row_travels():
+    """A credit support row travels `[rating, amount]`, as `CustomJsonEncoder` writes one, and each
+    table carried as one declares its columns in that order: the rating's whole number, then the
+    amount. So a screen lays a row under the published headers, and writes one back, with no turn
+    of its own.
+
+    Killing mutation: a table declaring its amount first, which heads the rating with the amount.
+    """
+    import json
+
+    from derivus.config import CustomJsonEncoder
+
+    (row,) = json.loads(json.dumps(derivus.utils.CreditSupportList({3: 250000.0}),
+                                   cls=CustomJsonEncoder))['.CreditSupportList']
+    assert row == [3, 250000.0]
+    tables = [f for groups in declared_classes().values() for group in groups
+              for f in every_field(group) if f.type == 'CreditSupportList']
+    assert len(tables) == 5
+    for f in tables:
+        assert [(column.name == 'Credit Rating', column.type) for column in f.row.fields] == [
+            (True, 'Integer'), (False, 'Float')], f.name
+        assert f.descriptor()['col_names'] == [column.name for column in f.row.fields], f.name
+
+
 def test_the_factor_types_are_the_riskfactor_classes():
     """Both directions. `construct_factor` does `globals().get(factor.type)(block)`, so a declared
     type naming no class is `None(block)` - a TypeError at compile time rather than a logged miss;

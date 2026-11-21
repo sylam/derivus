@@ -64,7 +64,7 @@ const SET = {
     Cash_Collateral: table(['Currency', 'Amount', 'Haircut_Posted'], ['Text', 'Float', 'Percent']),
     Equity_Collateral: table(['Equity', 'Units'], ['Text', 'Float']) } }),
   Received_Threshold: field('Table', support([[1, 0]]), {
-    col_names: ['Threshold Amount', 'Credit Rating'], obj: 'CreditSupportList' }),
+    col_names: ['Credit Rating', 'Threshold Amount'], obj: 'CreditSupportList' }),
 };
 const paper = tokens.onPaper(SET, { fields: ['Opening_Balance'],
                                     collateral_columns: ['Amount', 'Units'] });

@@ -216,8 +216,8 @@ class TreePanel(metaclass=ABCMeta):
                          get_repr(value, 'Value', default_val)] for date, value in obj.data.items()]
                 return_value = to_json(data)
             elif isinstance(obj, rf.utils.CreditSupportList):
-                data = [[get_repr(value, 'Value', default_val),
-                         get_repr(rating, 'Value', default_val)] for rating, value in obj.data.items()]
+                # a row is shown as it travels, in the order its columns are declared
+                data = [[get_repr(cell, 'Value', default_val) for cell in row] for row in obj.data.items()]
                 return_value = to_json(data)
             elif isinstance(obj, list):
                 if field_name == 'Eigenvectors':
@@ -461,8 +461,7 @@ class PortfolioPage(TreePanel):
                 return [[pd.Timestamp(item[0])] + item[1:] for item in new_obj] if new_obj is not None else None
             elif obj_type == 'CreditSupportList':
                 new_obj = checkArray(json.loads(obj))
-                return rf.utils.CreditSupportList(
-                    {rating: val for val, rating in new_obj}) if new_obj is not None else None
+                return rf.utils.CreditSupportList(new_obj) if new_obj is not None else None
             elif obj_type == 'ResetArray':
                 resets = json.loads(obj)
                 field_types = ['DatePicker', 'DatePicker', 'DatePicker', 'Float', 'Period',

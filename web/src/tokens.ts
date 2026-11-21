@@ -25,10 +25,6 @@ export function fieldLabel(name: string, descriptor?: Descriptor): { text: strin
     : { text: description };
 }
 
-/** A credit support row travels [rating, amount], the reverse of the columns it declares; the
- * map is its own inverse, so it reads the wire and writes it. */
-export const supportRows = (rows: unknown[][]): unknown[][] => rows.map((row) => [...row].reverse());
-
 /** What one row of a credit support list is, as a run reads the list. */
 export const SUPPORT_ROW = 'Each row is the amount that applies at its credit rating; a run reads '
   + 'the first row.';
