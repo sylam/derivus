@@ -422,7 +422,8 @@ check('a field naming no factor never walks the market',
 const verbs = (held) => ({ book: [], approve: [], mark: [], document: [], settle: [], confirm: [],
                             collateral: [], validate: [], admin: [], ...held });
 // the map GET /book/seat answers where no capabilities document moves an act
-const DEMANDS = { fill: 'book', amendment: 'book', approval: 'approve', entity_declared: 'document',
+const DEMANDS = { fill: 'book', amendment: 'book', quote_filed: 'book', approval: 'approve',
+                  entity_declared: 'document',
                   agreement_declared: 'document', official_close_declared: 'mark',
                   status_transition: 'settle', confirmed: 'confirm', collateral: 'collateral' };
 const seated = (grants, seat = 'sales-1', extra = {}, demands = DEMANDS) => ({
@@ -478,6 +479,21 @@ check('a control is judged by the verb its act demands under the map in force an
        state.heldBack(seated({ approve: ['HARBOURLINE'] }, 'sales-1', {}, MOVED), 'mark')],
       [null, 'Needs mark: sales-1 holds it nowhere.', null,
        'Needs approve: sales-1 holds it nowhere.', 'Needs mark: sales-1 holds it nowhere.']);
+const QUOTED = { ...DEMANDS, quote_filed: 'approve' };
+check('an acceptance is held where either act it files is, the quote or its fill, at the node the '
+      + 'quote books at and the book where it states none',
+      'the accept asked by its fill alone, which shows a seat holding book an accept the record '
+      + 'refuses where a stored map moves the quote to approve; or the two acts judged at the '
+      + 'book, which holds a quote booking at HARBOURLINE/fx from the seat granted there',
+      [state.acceptHeld(seated({ book: ['HARBOURLINE'] }, 'sales-1', {}, QUOTED)),
+       state.acceptHeld(seated({ approve: ['HARBOURLINE'] }, 'sales-1', {}, QUOTED)),
+       state.acceptHeld(seated({ book: ['HARBOURLINE'], approve: ['HARBOURLINE'] }, 'sales-1', {},
+                               QUOTED)),
+       state.acceptHeld(seated({ book: ['HARBOURLINE'] })),
+       state.acceptHeld(seated({ book: ['HARBOURLINE/fx'] }), 'HARBOURLINE/fx'),
+       state.acceptHeld(seated({ book: ['HARBOURLINE/fx'] }))],
+      ['Needs approve: sales-1 holds it nowhere.', 'Needs book: sales-1 holds it nowhere.', null,
+       null, null, 'Needs book over HARBOURLINE: sales-1 holds it only over HARBOURLINE/fx.']);
 // --- every write of the market or its set-up names the seat: the requests a fetch stub catches,
 // so nothing leaves this process - no tick, no verification and no set-up is ever sent
 const api = await load('api');

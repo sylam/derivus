@@ -305,7 +305,9 @@ force at each frame, so an old frame is judged by the map of its day, and the wo
 each list by the verb its clearing act demands (`spine.demands`). `GET /book/seat` answers that
 map as `demands` beside the nodes the seat holds each verb at, so a screen judges a control by the
 act it performs (`heldBack` in `web/src/state.ts`): the act's verb under the map in force where
-the record files one, and the verb itself where the service asks it and files nothing. **Held by**
+the record files one, and the verb itself where the service asks it and files nothing. An
+acceptance files a quote and its fill, so its control is held where either is (`acceptHeld`).
+**Held by**
 `test_spine_engine.py::test_a_seat_reads_what_it_may_do_and_where`, `web/scripts/desk_check.mjs`,
 `test_spine_verbs.py::test_the_back_office_is_three_seats_and_none_of_them_does_anothers_work`,
 `test_spine_capability.py::test_every_verb_bearing_type_refuses_an_unscoped_actor_and_records_the_refusal`,

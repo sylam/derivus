@@ -10,7 +10,7 @@ import {
   type Kept, landedAt, requestOf, salesName, salesNames, solving, STANDS, standsAt, type Verdict,
   verdictOf,
 } from '../quote';
-import { heldBack, openTrade, useApp, useQuoteList, useQuotes } from '../state';
+import { acceptHeld, openTrade, useApp, useQuoteList, useQuotes } from '../state';
 import { formatNumber } from '../tokens';
 import type { PendingQuote, Quote, QuoteGiven, StructureType } from '../types';
 import { TicketCard } from '../components/TicketCard';
@@ -451,7 +451,7 @@ function Acceptance({ id, pending, verdict, quoting, onVerdict, onRequote }: {
   const [booking, setBooking] = useState(false);
   const paper = state.paper.data ?? NO_PAPER;
   const recording = state.record.spine !== null;
-  const hold = heldBack(state, 'fill');
+  const hold = acceptHeld(state, pending.portfolio);
   const { quote } = pending;
   const booked = pending.booked ?? verdict?.booked;
 

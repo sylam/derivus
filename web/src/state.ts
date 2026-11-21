@@ -431,8 +431,9 @@ export function blockHint(doc: JobDoc, path: string[]): string | undefined {
  * payment's `status_transition`, a confirmation's `confirmed` or a collateral movement's
  * `collateral` - or `mark`, the verb the service asks itself where a write of the market or of
  * this box's paths files nothing. */
-export type Act = 'fill' | 'amendment' | 'approval' | 'entity_declared' | 'agreement_declared'
-  | 'official_close_declared' | 'status_transition' | 'confirmed' | 'collateral' | 'mark';
+export type Act = 'fill' | 'amendment' | 'quote_filed' | 'approval' | 'entity_declared'
+  | 'agreement_declared' | 'official_close_declared' | 'status_transition' | 'confirmed'
+  | 'collateral' | 'mark';
 
 /** Why the seat may not `act` at `node` - the book by default, null for the firm's own facts, which
  * only a grant over every node reaches - in a line naming the verb the act demands under the map
@@ -455,6 +456,11 @@ export function heldBack(state: AppState, act: Act,
   return `Needs ${verb}${held.length ? ` over ${node ?? 'the whole firm'}` : ''}: ${read.seat} `
     + `holds it ${held.length ? `only over ${held.join(', ')}` : 'nowhere'}.`;
 }
+
+/** Why the seat may not accept a quote that books at `node`, the book where it states none: an
+ * acceptance files the quote and its fill, so it is held where either act is. */
+export const acceptHeld = (state: AppState, node?: string): string | null =>
+  heldBack(state, 'quote_filed', node) ?? heldBack(state, 'fill', node);
 
 /** The store, its dispatch, and each tab's label by its id. */
 export const AppContext = createContext<{
