@@ -4,9 +4,11 @@ import { useState, type ReactNode } from 'react';
 import { amendDeal } from '../api';
 import { cellText, describe, quoted, toRows, type Picked } from '../blotter';
 import { marketSource, stampText, valuationDay } from '../desk';
+import { byPath } from '../positions';
 import { verdictOf } from '../quote';
 import { heldBack, marketOf, spineOf, useApp, written } from '../state';
 import { formatNumber, type Kind } from '../tokens';
+import { judgedAt, tradeAt } from '../trade';
 import type { DealNode, JobDoc, Schema } from '../types';
 import { DealPanels, type AmendField } from './FieldView';
 
@@ -111,6 +113,9 @@ export function DealEditor({ path, node }: { path: string; node: DealNode }) {
   const recording = spineOf(state) !== null;
   const read = quoted(toRows([node], state.schema?.Instrument.containers ?? [], undefined)[0],
                       marketOf(state));
+  // the positions of the trade the path names, a leg's being its structure's
+  const trade = tradeAt(state.doc?.Calc.Deals.Deals.Children ?? [], path)?.path ?? path;
+  const held = byPath(state.paper.data?.positions ?? []).get(trade) ?? [];
   const beside = (key: string) => {
     const level = [read.strike, read.barrier].find((picked) => picked?.key === key);
     if (level?.title) return <span className="readas">the market quotes {level.title}</span>;
@@ -131,7 +136,7 @@ export function DealEditor({ path, node }: { path: string; node: DealNode }) {
     <>
       {said.map((words) => <div key={words} className="note">{words}</div>)}
       <DealPanels deal={node.Instrument['.Deal']} schema={state.schema} onAmend={onAmend}
-                  hold={heldBack(state, 'amendment')}
+                  hold={heldBack(state, 'amendment', judgedAt(held))}
                   beside={beside} ask={recording ? RESTRIKE : undefined} />
     </>
   );

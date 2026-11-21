@@ -46,6 +46,26 @@ check('a trade at the book\'s root sits in no set',
       'the set\'s reference left from a walk that never met one, naming a client nobody declared',
       trade.tradeAt(BOOK, '1'), { path: '1', set: null });
 
+// --- where its acts are judged
+const sits = (portfolio, quantity = 1) => ({ portfolio, quantity });
+check('a trade\'s acts are judged where its positions sit: one position\'s own node, the deepest '
+      + 'node holding every position standing where there are several, and no node - the book - '
+      + 'where the record holds none or only what it closed',
+      'the book taken for every trade, which tells a seat granted book at a desk\'s node it may '
+      + 'not amend or unwind what the record lets it; the first position\'s node taken for all, '
+      + 'which offers a restrike of a trade two desks hold to a seat granted one; a closed '
+      + 'position counted, which the record does not; or the nodes matched by their text, which '
+      + 'reads HARBOURLINE/FX as holding HARBOURLINE/FXO',
+      [trade.judgedAt([sits('HARBOURLINE/FX')]),
+       trade.judgedAt([sits('HARBOURLINE/FX/Options'), sits('HARBOURLINE/FX/Spot')]),
+       trade.judgedAt([sits('HARBOURLINE/FX'), sits('HARBOURLINE/RATES')]),
+       trade.judgedAt([sits('HARBOURLINE/FX'), sits('HARBOURLINE/FXO')]),
+       trade.judgedAt([sits('HARBOURLINE/FX/Options'), sits('HARBOURLINE/FX')]),
+       trade.judgedAt([sits('HARBOURLINE/FX'), sits('HARBOURLINE/RATES', 0)]),
+       trade.judgedAt([sits('HARBOURLINE/FX', 0)]), trade.judgedAt([])],
+      ['HARBOURLINE/FX', 'HARBOURLINE/FX', 'HARBOURLINE', 'HARBOURLINE', 'HARBOURLINE/FX',
+       'HARBOURLINE/FX', undefined, undefined]);
+
 // --- the mark
 const MARKS = [{ reference: 'ISDA-A', deal_path: '0', value: 5.5 },
                { reference: 'FWD', deal_path: '1', value: -2.25 },

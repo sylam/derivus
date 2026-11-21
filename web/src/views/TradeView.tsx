@@ -16,8 +16,8 @@ import {
 } from '../state';
 import { formatNumber, ungrouped } from '../tokens';
 import {
-  bookedBy, datesOf, historyOf, legsOf, markOf, movedTerms, tradeAt, tradeName, tradeSize,
-  unwindFill, unwindWords, wholeRecord, type Price,
+  bookedBy, datesOf, historyOf, judgedAt, legsOf, markOf, movedTerms, tradeAt, tradeName,
+  tradeSize, unwindFill, unwindWords, wholeRecord, type Price,
 } from '../trade';
 import type { ActivityRow, QuoteGiven } from '../types';
 import { Back, DealEditor, Money, OnStrip, Side, Value } from '../components/Desk';
@@ -372,6 +372,7 @@ function Actions({ row, held, recording }: {
   const [verdict, setVerdict] = useState<Verdict | null>(null);
   const children = state.doc?.Calc.Deals.Deals.Children ?? [];
   const live = state.source?.kind === 'book';
+  // each position is judged where it sits; a trade this seat is shown none of, at the book
   const hold = heldBack(state, 'fill');
   const open = held.filter((position) => !closed(position.quantity));
   return (
@@ -398,11 +399,12 @@ function Actions({ row, held, recording }: {
         {!recording ? (
           <div className="note">This desk keeps no record, so nothing is unwound at a price here:
             an unwind is a fill, and a fill is filed on a desk that records.</div>
-        ) : hold ? <div className="note">{hold}</div>
-          : open.length ? open.map((position) => (
-          <Unwind key={`${position.agreement}/${position.portfolio}`} row={row} position={position}
-                  onVerdict={setVerdict} />
-        )) : (
+        ) : open.length ? open.map((position) => {
+          const key = `${position.agreement}/${position.portfolio}`;
+          const kept = heldBack(state, 'fill', judgedAt([position]));
+          return kept ? <div key={key} className="note">{kept}</div>
+            : <Unwind key={key} row={row} position={position} onVerdict={setVerdict} />;
+        }) : hold ? <div className="note">{hold}</div> : (
           <div className="note">{held.length ? 'Closed: the record holds none of it'
             : 'Nothing of this trade is held on the record'}, so there is nothing to unwind.</div>
         )}

@@ -7,7 +7,7 @@ import {
   type Size,
 } from './blotter';
 import { instantMs, plural } from './desk';
-import type { Agreement, Position } from './positions';
+import { closed, type Agreement, type Position } from './positions';
 import { salesNames } from './quote';
 import {
   COLLATERAL, currencyOf, fieldLabel, formatNumber, setCurrency, uncollateralised,
@@ -35,6 +35,16 @@ export function tradeAt(nodes: DealNode[], path: string):
     level = node.Children ?? [];
   }
   return undefined;
+}
+
+/** The node an act on a trade is judged at, off the positions the record holds in it: the deepest
+ * one holding every position standing, as the record judges a restrike, which is one position's
+ * own for a fill of it - and none where none stands, an act there being judged at the book. */
+export function judgedAt(held: Position[]): string | undefined {
+  const [first = [], ...rest] = held.filter((position) => !closed(position.quantity))
+    .map((position) => position.portfolio.split('/'));
+  const parts = first.findIndex((step, at) => rest.some((path) => path[at] !== step));
+  return first.slice(0, parts < 0 ? undefined : parts).join('/') || undefined;
 }
 
 /** A trade's mark among the risk answer's rows: its own where they hold one - a top-level node's,
