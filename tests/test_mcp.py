@@ -852,7 +852,7 @@ def test_the_xva_view_answers_one_set_s_row_with_its_profile_and_no_place_on_the
         assert asyncio.run(mcp_server.recalc_xva(['NS_A']))['last']['status'] == 'done'
         view = mcp_server.xva_view()
         row = {row['reference']: row for row in view['sets']}['NS_A']
-        assert set(view) == {'as_of', 'sets'} and row['status'] == 'done'
+        assert set(view) == {'as_of', 'sets', 'funding'} and row['status'] == 'done'
         assert mcp_server.xva_view('NS_A') == dict(
             row, profile=CLIENT.get('/book/xva/NS_A/profile').json()['profile'])
         with pytest.raises(ToolError, match="no exposure profile is filed for 'NS_B'"):

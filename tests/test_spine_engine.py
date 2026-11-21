@@ -66,7 +66,8 @@ from derivus_spine import oracle, policy, projections
 from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 
 import test_spine_identity
-from test_service import VANILLA, file_world
+from test_service import (FUNDED, SHORT_CALL, VANILLA, answered, file_world, recalc, xva_book,
+                          xva_rows)
 
 ACTOR = 'subject-desk-one'
 BASE = pd.Timestamp('2024-06-28')
@@ -5980,3 +5981,316 @@ def test_the_official_calculation_is_judged_by_the_engine_before_the_record_take
         'subject': 'subject-nobody', 'verb': 'admin', 'book': '*',
         'attempted_type': 'policy_declared'}
     assert CLIENT.get('/book/calculations').json()['lsn'] == started + 1
+
+
+@pytest.fixture
+def credit_hub(recorded, tmp_path):
+    """A recording desk with a credit run to price: NS_A holds a bought call and NS_B one beside a
+    sold put, worth either sign, so its FVA's benefit leg reads a real exposure. The book's own
+    calculation funds both legs at `FUND` and states no batching."""
+    either = [dict(VANILLA, Reference='OPT_B'),
+              dict(VANILLA, Reference='PUT_B', Option_Type='Put', Buy_Sell='Sell')]
+    yield xva_book(tmp_path, [netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')]),
+                              netting_set('NS_B', 'CPTY_B', either)])
+    service.BOOK = None
+
+
+def stating(path, **calculation):
+    """The book file at `path` stating `calculation` over its own block, a None dropping its key."""
+    document = json.loads(path.read_text())
+    block = dict(document['Calc']['Calculation'], **calculation)
+    document['Calc']['Calculation'] = {key: value for key, value in block.items()
+                                       if value is not None}
+    path.write_text(json.dumps(document, indent=2), newline='\n')
+
+
+def credit_runs(netting_sets=None):
+    """A recalc drained: `{reference: (plan_hash, result_id, cva, fva)}` off the rows it landed."""
+    asked = [entry['reference'] for entry in recalc(netting_sets)['queued']]
+    rows = xva_rows()
+    assert {rows[reference]['status'] for reference in asked} == {'done'}, rows
+    return {reference: tuple(rows[reference][key] for key in (
+        'plan_hash', 'result_id', 'cva', 'fva')) for reference in asked}
+
+
+def drew(run):
+    """`(Batch_Size, Simulation_Batches)` the run a row names reported drawing."""
+    stats = CLIENT.get('/results/{}'.format(run[1])).json()['stats']
+    return stats['Batch_Size'], stats['Simulation_Batches']
+
+
+def test_a_credit_run_under_the_policy_is_the_run_of_the_same_block_written_in_the_book_file(
+        credit_hub):
+    """IDENTITY. The book file states two batches and an FVA costed at `FUND` with its benefit at
+    the dollar curve, and no policy stands: the recalc is one plan per set. The file is put back to
+    its own block - both legs at `FUND`, no batching - which is another plan and another FVA on
+    NS_B, whose benefit leg is real. The policy then declares what the file stated, over that
+    conflicting file: each set's plan, run, CVA and FVA are the first recalc's to the bit, the job
+    compiled under the policy being the same document, so the same run by its address.
+
+    Killing mutations: the policy not read (`official_calculation` answering the document's own
+    block), where the third recalc is the second's; the file's block laid over the policy's, where
+    NS_B funds its benefit at the file's `FUND`.
+    """
+    stating(credit_hub, **OFFICIAL)
+    written = credit_runs()
+    stating(credit_hub, Simulation_Batches=None, Funding_Valuation_Adjustment=FUNDED)
+    own = credit_runs()
+    assert official({'CreditMonteCarlo': OFFICIAL}).status_code == 200
+    declared = credit_runs()
+
+    assert declared == written and sorted(declared) == ['NS_A', 'NS_B']
+    assert all(cva > 0.0 != fva for _, _, cva, fva in declared.values()), declared
+    assert all(own[name][0] != declared[name][0] for name in own), 'the file change moved no plan'
+    assert own['NS_B'][3] != declared['NS_B'][3], 'the benefit leg reads no exposure'
+    assert drew(declared['NS_A']) == (service.XVA_BATCH_SIZE, 2)
+
+
+def test_the_policy_stands_over_the_book_file_which_stands_where_the_policy_says_nothing(
+        credit_hub):
+    """PRECEDENCE, key by key. The file states a batch of 512 paths and the policy two batches and
+    no size: the run draws two batches of 512, the file's size standing where the policy states
+    none. The policy restated with a size of 256, both state it and the run draws 256, the
+    policy's. One job each way: two plans, each reporting what it drew.
+
+    Killing mutation: the file's block laid over the policy's, where the second run draws 512.
+    """
+    stating(credit_hub, Batch_Size=512)
+    assert official({'CreditMonteCarlo': {'Simulation_Batches': 2}}).status_code == 200
+    silent = credit_runs(['NS_A'])['NS_A']
+    assert official({'CreditMonteCarlo': {'Simulation_Batches': 2, 'Batch_Size': 256}}
+                    ).status_code == 200
+    both = credit_runs(['NS_A'])['NS_A']
+
+    assert (drew(silent), drew(both)) == ((512, 2), (256, 2))
+    assert silent[0] != both[0] and silent[2] != both[2]
+
+
+#: A one-factor Hull-White model for the dollar curve: with it the curve is simulated, so a credit
+#: run stating `Deflate_Stochastically: 'Yes'` has paths to deflate on.
+HULL_WHITE = {'Alpha': 0.05, 'Lambda': 0.0, 'Quanto_FX_Correlation': 0.0,
+              'Quanto_FX_Volatility': {'.Curve': {'meta': [], 'data': [[0.0, 0.0], [10.0, 0.0]]}},
+              'Sigma': {'.Curve': {'meta': [], 'data': [[0.0, 0.01], [10.0, 0.01]]}}}
+
+
+def test_a_field_an_adjustment_block_states_stands_over_the_recalc_s_floor(credit_hub):
+    """A recalc lays its floor under each adjustment block, and the floor says
+    `Deflate_Stochastically: 'No'`. The dollar curve here carries a Hull-White model, so the field
+    can be stated `'Yes'`. Stated in the CVA block of the book file's own calculation, with no
+    policy, and then by the policy over a file stating no CVA block, it reaches the run both ways:
+    one plan, whose job carries `'Yes'` over the floor's `'No'` beside the floor's other fields,
+    and a CVA that is not the floor run's.
+
+    Killing mutation: the floor laid over the block the calculation states (`xva_document`), where
+    the job carries the floor's `'No'` and both runs are the floor's.
+    """
+    document = json.loads(credit_hub.read_text())
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Price Models']['HullWhite1FactorInterestRateModel.USD'] = HULL_WHITE
+    market['Model Configuration']['.ModelParams']['modelfilters'] = {
+        'InterestRate': [[['ID', 'USD'], 'HullWhite1FactorInterestRateModel']]}
+    credit_hub.write_text(json.dumps(document, indent=2), newline='\n')
+    stated = {'Credit_Valuation_Adjustment': {'Deflate_Stochastically': 'Yes'}}
+
+    floor = credit_runs(['NS_A'])['NS_A']
+    stating(credit_hub, **stated)
+    own = credit_runs(['NS_A'])['NS_A']
+    stating(credit_hub, Credit_Valuation_Adjustment=None)
+    assert official({'CreditMonteCarlo': stated}).status_code == 200
+    declared = credit_runs(['NS_A'])['NS_A']
+
+    assert declared == own and own[2] != floor[2] and floor[2] > 0.0, (floor, own, declared)
+    compiled = service.priced(service.BOOK.read()[0], 'CreditMonteCarlo')
+    job = service.xva_document(compiled, dict(service.netting_sets(compiled))['0'], 'CPTY_A')
+    assert job['Calc']['Calculation']['Credit_Valuation_Adjustment'] == dict(
+        service.XVA_CVA_BLOCK, Deflate_Stochastically='Yes', Calculate='Yes', Counterparty='CPTY_A')
+    assert derivus.content_hash(job) == declared[0]
+
+
+def test_a_declaration_moves_no_plan_but_a_credit_run_s(recorded, quoting):
+    """A job compiled for anything but a credit run reads no policy. Across a declaration the
+    book's risk keeps its etag, a what-if of the book its result id and the book's own plan its
+    name; a quote struck after the declaration pins the plan the one struck before it pinned, and
+    that earlier quote books. At the seam, the book taken as a credit run's document: its diary and
+    its marks job compile to themselves, and its credit run to a job carrying the policy's block
+    over its own, the market shared and the document left as read.
+
+    Killing mutations: the credit block written into every compile (`official_calculation` reading
+    it for whatever the job runs as), where the risk's etag moves; the policy read for a job that
+    values nothing (`compiled_job` asking it of a diary), where the diary's document is rewritten.
+    """
+    document = json.loads(quoting.read_text())
+
+    def standing():
+        priced = CLIENT.post('/book/price', content=dump({}), headers=JSON).json()
+        planned = CLIENT.post('/prepare', content=dump({'Calc': document['Calc']}), headers=JSON)
+        return (CLIENT.get('/book/risk').json()['etag'], priced['result_id'],
+                planned.json()['plan_id'])
+
+    def pinned(quote):
+        return CLIENT.get('/book/quote/{}'.format(quote['quote_id'])).json()['pinned']['plan_hash']
+
+    before, struck = standing(), quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
+    assert official({'CreditMonteCarlo': OFFICIAL}).status_code == 200
+    assert standing() == before
+    assert pinned(quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)) == pinned(struck)
+
+    credit = dict(document, Calc=dict(document['Calc'], Calculation=dict(
+        document['Calc']['Calculation'], Object='CreditMonteCarlo')))
+    marks, read = spine.PnL.marks_job(credit, {}), derivus.content_hash(credit)
+    assert spine.compiled_job(credit, strict=False, runs=False) is credit, 'a diary read the policy'
+    assert spine.compiled_job(marks, strict=False) is marks, 'a marks job read the policy'
+    compiled = spine.compiled_job(credit, strict=False)
+    assert compiled['Calc']['Calculation'] == dict(credit['Calc']['Calculation'], **OFFICIAL)
+    assert compiled['Calc']['MergeMarketData'] is credit['Calc']['MergeMarketData']
+    assert derivus.content_hash(credit) == read, 'the compile wrote the document it read'
+
+    assert CLIENT.post('/book/quote', json={'quote_id': struck['quote_id']}).json()['written']
+
+
+def test_a_restated_policy_is_a_new_plan_and_a_job_compiled_before_it_is_the_earlier_run(
+        recorded, credit_hub):
+    """A recalc asked again over a book and a policy that stand hands back the id its row names.
+    The policy restated at three batches, the recalc is asked a run the row does not name - how a
+    row reads for a book that moved, a new plan under a new id - and once it lands the row names
+    that run and its plan. The book compiled at the position before the restatement is the first
+    run's job: the policy a job is written is the one standing where it is compiled.
+
+    Killing mutation: `official_calculation` reading the head whatever position it is asked at,
+    where the job compiled before the restatement hashes to the second plan.
+    """
+    def asked():
+        return CLIENT.post('/book/xva', content=dump({'netting_sets': ['NS_A']}),
+                           headers=JSON).json()['queued'][0]['result_id']
+
+    assert official({'CreditMonteCarlo': OFFICIAL}).status_code == 200
+    first, before = credit_runs(['NS_A'])['NS_A'], head(recorded)
+    assert asked() == first[1]
+    assert official({'CreditMonteCarlo': dict(OFFICIAL, Simulation_Batches=3)}).status_code == 200
+    moved = asked()
+    assert moved != first[1], 'the restatement left the credit run where it was'
+    second = credit_runs(['NS_A'])['NS_A']
+    assert (second[1], drew(second)) == (moved, (service.XVA_BATCH_SIZE, 3))
+    assert second[0] != first[0]
+
+    pinned = spine.compiled_job(service.BOOK.read()[0], lsn=before, strict=False,
+                                runs='CreditMonteCarlo')
+    job = service.xva_document(pinned, dict(service.netting_sets(pinned))['0'], 'CPTY_A')
+    assert derivus.content_hash(job) == first[0], 'the book compiled before is not the first run'
+
+
+def test_the_increment_and_the_credit_charge_start_from_the_policy(recorded, credit_hub):
+    """Every credit run starts from the policy. Under one stating two batches and the FVA's two
+    curves, the increment of the call NS_A holds runs, as its 'with' leg, the set as it prices:
+    the recalc's CVA and FVA to the bit, on two batches of paths. And the credit charge a ticket
+    asks of a candidate, a seven-month call, is priced as the set will be once it books: booked,
+    the set's recalc reads the charge's 'with' CVA and FVA to the bit.
+
+    Killing mutation: the increment's book compiled as the calculation the file names rather than
+    as a credit run (`book_price`), where its legs run at the file's own block, one batch.
+    """
+    assert official({'CreditMonteCarlo': OFFICIAL}).status_code == 200
+    standing = credit_runs(['NS_A'])['NS_A']
+    held = answered(deal_path='0/0', reference='OPT_A')
+    assert (held['cva']['with'], held['fva']['with']) == standing[2:]
+    assert held['paths']['count'] == 2 * service.XVA_BATCH_SIZE
+
+    charge = answered(deal=SHORT_CALL, parent_reference='NS_A')
+    booked = CLIENT.post('/book/deals', content=dump({
+        'action': 'add', 'deal': SHORT_CALL, 'parent_reference': 'NS_A', 'quantity': 1.0,
+        'execution_reference': 'EXEC-C'}), headers=JSON).json()
+    assert booked['written'] is True, booked
+    assert credit_runs(['NS_A'])['NS_A'][2:] == (charge['cva']['with'], charge['fva']['with'])
+    assert charge['cva']['increment'] > 0.0
+
+
+def test_a_seat_s_own_credit_calculation_goes_over_the_policy(recorded, credit_hub):
+    """A seat's own dials go over the policy as they go over the book's. Under a policy stating two
+    batches, a named credit calculation stating none runs at the policy's two, and one stating
+    three runs at its own three. Neither is official: the policy stands as declared.
+
+    Killing mutation: the compiled calculation laid over the seat's block (`with_overrides`), where
+    the calculation stating three runs at the policy's two.
+    """
+    assert official({'CreditMonteCarlo': OFFICIAL}).status_code == 200
+    standing = CLIENT.get('/book/calculations').json()
+
+    def ran(name, **stated):
+        saved = CLIENT.post('/calculations', content=dump({'name': name, 'calculation': dict(
+            stated, Object='CreditMonteCarlo')}), headers=JSON).json()
+        assert saved['written'] is True, saved
+        submitted = CLIENT.post('/calculations/run', content=dump(
+            {'name': name, 'deal_path': '0'}), headers=JSON).json()
+        service.EXECUTOR.queue.join()
+        result = CLIENT.get('/results/{}'.format(submitted['result_id'])).json()
+        assert result['status'] == 'done', result.get('error')
+        return result['stats']['Simulation_Batches']
+
+    assert (ran('as the policy'), ran('my own', Simulation_Batches=3)) == (2, 3)
+    assert CLIENT.get('/book/calculations').json() == standing
+
+
+def test_the_xva_view_names_the_curves_a_credit_run_would_fund_at_and_keeps_the_answer(
+        recorded, credit_hub):
+    """`GET /book/xva` answers, beside its rows, the curves a recalc asked now funds its FVA at,
+    read as the run reads its calculation. With no policy they are the file's, `FUND` both. A
+    policy stating both, they are the policy's. One stating the cost alone leaves the benefit null:
+    the container it states replaces the file's whole. One stating no FVA block, the file's stand
+    again. The answer is kept on the book under the poll's key, so a poll with nothing moved is a
+    lookup, and a declaration, a frame, moves the key.
+
+    Killing mutations: the view reading the book file's own block, which answers `FUND` under
+    every policy; the answer worked out on every poll, where the book keeps none under the key.
+    """
+    def funding():
+        return CLIENT.get('/book/xva').json()['funding']
+
+    def kept():
+        return service.BOOK.polls.get(('funding',) + service.poll_key(service.BOOK))
+
+    assert kept() is None and funding() == {'cost': 'FUND', 'benefit': 'FUND'}
+    first = kept()
+    assert first == funding() and kept() is first, 'a poll with nothing moved worked it out again'
+
+    assert official({'CreditMonteCarlo': OFFICIAL}).status_code == 200
+    assert kept() is None, 'the declaration left the poll key where it was'
+    assert funding() == {'cost': 'FUND', 'benefit': 'USD'} == kept()
+    cost = {'Funding_Valuation_Adjustment': {'Funding_Cost_Interest_Curve': 'USD'}}
+    assert official({'CreditMonteCarlo': cost}).status_code == 200
+    assert funding() == {'cost': 'USD', 'benefit': None}
+    assert official({'CreditMonteCarlo': {'Simulation_Batches': 2}}).status_code == 200
+    assert funding() == {'cost': 'FUND', 'benefit': 'FUND'}
+
+
+def test_a_block_declared_past_the_engine_s_judge_refuses_the_credit_run_by_name(
+        recorded, credit_hub, tmp_path, capsys):
+    """The operator's `DV_Spine declare` takes a calculation policy on its shape alone, so a block
+    misspelling a field lands. It is judged where it is read: the recalc, the increment and the
+    view's funding answer each refuse naming the policy and the field, nothing is queued and no
+    row is filed, while a what-if of the book, a base valuation, reads no policy and runs. The
+    block declared again through the service, the recalc runs.
+
+    Killing mutation: the judge dropped from `official_calculation`, where the recalc is queued
+    and runs at one batch, the field it was meant to state ignored.
+    """
+    from derivus_spine import cli
+
+    misspelt = tmp_path / 'calculation.json'
+    misspelt.write_text(json.dumps({'calculations': {'CreditMonteCarlo': {
+        'Simulation_Batchs': 2}}}), encoding='utf-8')
+    assert cli.main(['declare', 'calculation', str(misspelt), '--home', str(recorded),
+                     '--actor', ACTOR]) == 0, capsys.readouterr().err
+    said = ('the calculation policy in force states a CreditMonteCarlo block this engine refuses '
+            '- CreditMonteCarlo declares no Simulation_Batchs - it declares ')
+
+    for refused in (CLIENT.post('/book/xva', content=dump({}), headers=JSON),
+                    CLIENT.post('/book/price', content=dump(
+                        {'deal_path': '0/0', 'xva_increment': True}), headers=JSON),
+                    CLIENT.get('/book/xva')):
+        assert refused.status_code == 422 and refused.json()['detail'].startswith(said), (
+            refused.text)
+    assert not (tmp_path / service.XVA_FILE).exists(), 'a refused recalc filed a row'
+    assert CLIENT.post('/book/price', content=dump({}), headers=JSON).status_code == 200
+
+    assert official({'CreditMonteCarlo': {'Simulation_Batches': 2}}).status_code == 200
+    assert drew(credit_runs(['NS_A'])['NS_A']) == (service.XVA_BATCH_SIZE, 2)

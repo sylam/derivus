@@ -1566,7 +1566,9 @@ def xva_view(reference: str | None = None) -> dict:
     run's largest `EE` and `PFE_<percentile>`, each `{value, day}`; a set's whole exposure profile
     is not in this list. Name one set as `reference` and the answer is that set's row alone with
     its `profile`, `{columns, index, data}` by day, a set whose last run filed none refusing by
-    name.
+    name. Beside the rows, `funding` names the two curves a recalc asked now would fund its FVA
+    at, `cost` and `benefit`, null for one the calculation does not state - the official
+    calculation's where the desk declares one (`describe_official_calculation`), else the book's.
     """
     if reference is None:
         return service().call('GET', '/book/xva')
@@ -2029,8 +2031,10 @@ def declare_official_calculation(calculations: dict, actor: str | None = None) -
 
     Never choose these numbers or curves yourself: they are the desk's policy, so declare what you
     are told. The engine judges the block before anything is recorded and a refusal names the field
-    to fix; a curve the book does not carry is refused by the run that reads it. The last
-    declaration stands, and `{}` declares that nothing is stated. Answers `{recorded: {lsn}, blob}`.
+    to fix; a curve the book does not carry is refused by the run that reads it. Every credit run
+    from then on - `recalc_xva`, `xva_increment`, a credit `run_calculation` - reads the block over
+    the book's own calculation, a seat's own dials going over it. The last declaration stands, and
+    `{}` declares that nothing is stated. Answers `{recorded: {lsn}, blob}`.
     """
     return service().call('POST', '/book/calculations', json=dict(
         {'calculations': calculations}, **_stated(actor=actor)))

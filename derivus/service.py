@@ -1175,10 +1175,11 @@ def quote_edit(document, pending, baseline):
 
 def priced(document, runs=None):
     """The book as it PRICES: the file with what the record holds written in - every position at
-    its net, every print the declared sources order, and the balance of every collateralised set
-    where it `runs` as a calculation that reads one - and the file as it stands where no home is
-    configured. A read never refuses a print nobody ordered, so the compile is not strict; a
-    balance in an asset the book carries no spot for refuses it all the same."""
+    its net, every print the declared sources order, and where it `runs` as a calculation that
+    reads one the balance of every collateralised set and the `calculation` policy's block over
+    the file's own - and the file as it stands where no home is configured. A read never refuses a
+    print nobody ordered, so the compile is not strict; a balance in an asset the book carries no
+    spot for refuses it all the same."""
     return spine.compiled_job(document, strict=False, runs=runs, folds=folds(), market=market_of)
 
 
@@ -3668,7 +3669,10 @@ def book_agreements():
 def book_calculations_declared(request: dict):
     """`{calculations, actor}` - declare the `calculation` policy: per calculation type the block
     of that type's own fields its official run runs at, `{"CreditMonteCarlo": {...}}`, the one
-    type an official run reads a block for.
+    type an official run reads a block for. Every credit run compiled from the declaration on
+    reads it over the book file's own block, a container it states replacing the file's whole, and
+    a seat's own dials - a named calculation, a what-if's overrides - go over it and are not
+    official.
 
     The record checks the document's shape and the engine judges each block against its own type's
     declarations before anything appends, so an undeclared field or a value its field does not
@@ -4234,8 +4238,9 @@ def xva_document(document, node, counterparty):
     counterparty. No deflation or risk-free curve is written: the engine reads both as the base
     currency's own, so nothing here reads the market.
 
-    THE FVA FUNDS AT THE CURVES THE BOOK'S CALCULATION STATES, `Funding_Cost_Interest_Curve` and
-    `Funding_Benefit_Interest_Curve`, for every set alike. A calculation stating neither leaves
+    THE FVA FUNDS AT THE CURVES THE CALCULATION IT IS HANDED STATES, `Funding_Cost_Interest_Curve`
+    and `Funding_Benefit_Interest_Curve`, for every set alike: the book file's own block, under the
+    `calculation` policy's where the desk records (`priced`). A calculation stating neither leaves
     both blank, which the engine reads as the curve it deflates on, and the FVA is exactly 0.0. A
     set's own `Funding_Rate` is its collateral adjustment's term and no FVA funds at it.
     """
@@ -4369,7 +4374,8 @@ def book_xva(request: dict):
     Each job composes a `CreditMonteCarlo` over the book carrying THAT set's subtree, with both
     adjustment blocks on against the counterparty the set's own `Credit_Support_Amounts` names, so
     `cva` and `fva` share an `as_of` and a replay tuple. A reference that names no netting set
-    refuses BY NAME and queues nothing at all.
+    refuses BY NAME and queues nothing at all. WHAT IT RUNS AT is the book file's own calculation,
+    and on a desk that records the `calculation` policy's credit block over it: the official run.
 
     NOTHING IS PARSED HERE. A set's stamp is the content hash of its document, the sha256 of the
     market data and calendar files it names, the engine version and the two seeds; the worker loads
@@ -4544,8 +4550,25 @@ def book_xva_view():
     `currency` is the one the row's own run reported in, and `peaks` the largest `EE` and each
     `PFE_<percentile>` the run's exposure profile reached, `{value, day}`. The profile itself is
     kept on the row and read one set at a time (`/book/xva/{reference}/profile`).
+
+    `funding` is `{cost, benefit}`, the two curves a recalc asked NOW would fund its FVA at, null
+    for one its calculation does not state: read as the run reads its calculation (`funded`), the
+    `calculation` policy's block over the book file's own on a desk that records. A row says what
+    its own run cost; this says what the next one funds at. Kept under the poll's key (`polled`).
     """
-    return {'as_of': as_of(), 'sets': xva_entries(live_book().read()[0])}
+    live = live_book()
+    return {'as_of': as_of(), 'sets': xva_entries(live.read()[0]),
+            'funding': polled(live, 'funding', funded)}
+
+
+def funded(document, _):
+    """`{cost, benefit}` - the curves a credit run of `document` asked now funds its FVA at, off
+    the calculation that run reads (`spine.official_calculation`), None for one it does not
+    state."""
+    stated = spine.official_calculation(document, 'CreditMonteCarlo').get(
+        'Funding_Valuation_Adjustment') or {}
+    return {leg.lower(): stated.get('Funding_{}_Interest_Curve'.format(leg)) or None
+            for leg in ('Cost', 'Benefit')}
 
 
 def xva_entries(document):

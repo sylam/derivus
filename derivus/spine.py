@@ -665,6 +665,32 @@ def judge_calculation(calculation, stated, known=('Object',)):
         raise ValueError('; '.join(refused))
 
 
+def official_calculation(document, runs=None, lsn=None):
+    """`document`'s `Calculation` block as its OFFICIAL run reads it at `lsn`, `runs` the type it
+    runs as and the document's own where None: the block the `calculation` policy standing there
+    states for that type laid over the document's own key by key, so a container the policy states
+    replaces the document's whole - the merge `service.with_overrides` makes of a seat's own dials,
+    which go over this. The document's own block, itself, where no home is configured, for a type
+    no official run reads a block for, and where the policy states none. The policy's block is
+    judged here as its declaring verb judges it (`judge_calculation`), so one declared past that
+    verb refuses the run by name."""
+    block = document['Calc']['Calculation']
+    name = runs or block.get('Object')
+    if not configured() or name not in package().policy.OFFICIAL_RUNS:
+        return block
+    stated = folded(lambda log: package().policy.calculations_in_force(log, lsn)).get(name)
+    if not stated:
+        return block
+    try:
+        judge_calculation({'Object': name}, stated, ())
+    except ValueError as refused:
+        raise SpineRefused(
+            'the calculation policy in force states a {} block this engine refuses - {} - so no '
+            'official run reads it: declare the block again through `POST /book/calculations`, '
+            'which judges it first'.format(name, refused)) from None
+    return dict(block, **stated)
+
+
 def compiled_job(document, lsn=None, strict=True, runs=None, folds=None, market=None):
     """The job the plan hashes, with every position the record holds at `lsn` written at its net
     and every declared observation filled. Unchanged where no home is configured.
@@ -704,6 +730,11 @@ def compiled_job(document, lsn=None, strict=True, runs=None, folds=None, market=
     paper is not the terms standing at `lsn` (`paper`) is written those terms, keeping its children,
     its balance and its holdings' amounts, so a corrected agreement reaches every run from the event
     that recorded it; the file keeps its copy, which `/book/reconcile` names.
+
+    A job compiled for a run the `calculation` policy states a block for - a credit run - is written
+    that block standing at `lsn` over its own (`official_calculation`). Every other job reads no
+    policy, one that values nothing included, so a declaration moves neither its plan nor what it
+    caches.
     """
     if not configured():
         return document
@@ -717,10 +748,14 @@ def compiled_job(document, lsn=None, strict=True, runs=None, folds=None, market=
         balances = {} if runs is False else _balances(document, papers, lsn, folds)
         if (runs or document['Calc']['Calculation'].get('Object')) == BaseValuation.__name__:
             balances = {}
-        if not held and not balances and not papers and not _observing(document):
+        calculation = document['Calc']['Calculation'] if runs is False else official_calculation(
+            document, runs, lsn)
+        if not held and not balances and not papers and not _observing(document) \
+                and calculation is document['Calc']['Calculation']:
             return document
-        # every write below lands in the deal tree, so the market is shared and not copied
-        filled = dict(document, Calc=dict(document['Calc'],
+        # the calculation is replaced and every other write lands in the deal tree, so the market
+        # is shared and not copied
+        filled = dict(document, Calc=dict(document['Calc'], Calculation=calculation,
                                           Deals=deepcopy(document['Calc']['Deals'])))
         _hold(filled, held)
         for _, node in netting_sets(filled):

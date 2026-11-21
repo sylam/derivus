@@ -6775,6 +6775,39 @@ def test_a_calculation_stating_no_funding_curve_funds_every_set_at_no_spread(
     assert [row['fva'] for row in rows.values()] == [0.0, 0.0, 0.0], rows
 
 
+def test_a_desk_that_keeps_no_record_funds_at_what_its_document_states_and_declares_no_policy(
+        tmp_path, monkeypatch):
+    """On a desk that keeps no record the official calculation comes with the document. The XVA
+    view's `funding` is the document's own block: both curves where its calculation states both,
+    a null benefit where it states the cost alone, two nulls where it states no block - and its
+    recalc funds there, a real FVA at `FUND`. Both verbs of the `calculation` policy answer the
+    no-record sentence, a 404.
+
+    Killing mutations: both legs read off the cost's key (`funded`), which answers a benefit
+    where the calculation states the cost alone; `recorded()` dropped from `GET
+    /book/calculations`, which answers a 422 about a home nobody configured.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    monkeypatch.delenv('DV_SPINE_HOME', raising=False)
+    sets = [netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')])]
+    funding = []
+    try:
+        for stated in (None, {'Funding_Cost_Interest_Curve': 'FUND'}, FUNDED):
+            xva_book(tmp_path, sets, funding=stated)
+            funding.append(CLIENT.get('/book/xva').json()['funding'])
+        recalc()
+        row = xva_rows()['NS_A']
+        refused = [CLIENT.get('/book/calculations'),
+                   CLIENT.post('/book/calculations', json={'calculations': {}})]
+    finally:
+        service.BOOK = None
+    assert funding == [{'cost': None, 'benefit': None}, {'cost': 'FUND', 'benefit': None},
+                       {'cost': 'FUND', 'benefit': 'FUND'}]
+    assert row['status'] == 'done' and row['fva'] > 0.0, row
+    assert [(answer.status_code, answer.json()['detail']) for answer in refused] == [
+        (404, service.NO_RECORD.format('DV_SPINE_HOME'))] * 2
+
+
 def test_an_xva_row_keeps_its_peaks_and_one_set_s_profile_is_read_by_itself(desk_xva, tmp_path):
     """A ROW KEEPS WHAT ITS RUN SHOWED, AND THE LIST CARRIES ITS PEAKS ALONE. Each row a run files
     keeps its `exposure_profile` - on this desk 26 days by `EE`, `ENE` and `PFE_95` - in the
