@@ -5593,6 +5593,47 @@ def test_a_seat_is_shown_the_quotes_it_gave(recorded, quoting):
         assert other.status_code == 404 and 'Unknown quote' in other.json()['detail'], part
 
 
+def test_a_token_s_seat_is_shown_the_quotes_it_gave(recorded, quoting, tmp_path, idp,
+                                                    monkeypatch):
+    """THE SEAT A READ IS MADE AS IS THE TOKEN'S (`spine.reader`). Where the deployment checks
+    tokens, the seat a token names, granted at the FX node alone, quotes for `spine-desk/Rates`
+    and reads naming no seat: it lists the quote it gave and opens it, filed under its subject,
+    while a second seat's token, granted at the same node, lists none and is answered as for an id
+    the desk never filed.
+
+    Killing mutation: the seat a quote is shown to read off the name a request states alone, a
+    token-signed read being nobody's and shown no quote it gave.
+    """
+    import time
+
+    other = 'subject-other-token'
+    entitle(recorded, [(ACTOR, 'validate', '*')] + [
+        (seat, 'validate', 'spine-desk/FX') for seat in (test_spine_identity.SUBJECT, other)])
+    keys = tmp_path / 'jwks.json'
+    keys.write_text(json.dumps(idp.jwks))
+    for name, value in (('DV_SPINE_JWKS', str(keys)),
+                        ('DV_SPINE_ISSUER', test_spine_identity.ISSUER),
+                        ('DV_SPINE_AUDIENCE', test_spine_identity.AUDIENCE)):
+        monkeypatch.setenv(name, value)
+    now = time.time()
+    mine, theirs = (dict(JSON, authorization='Bearer ' + test_spine_identity.rs256(
+        idp.rsa_key, test_spine_identity.claims(
+            exp=now + 300.0, iat=now - 10.0, nbf=now - 10.0, **subject)))
+        for subject in ({}, {'sub': other}))
+    submitted = CLIENT.post('/book/structure', headers=mine, content=dump({
+        'structure': 'ZeroCostCollar', 'params': COLLAR, 'netting_set': CLIENT_SET,
+        'portfolio': 'spine-desk/Rates'})).json()
+    service.EXECUTOR.queue.join()
+    result = CLIENT.get('/results/{}'.format(submitted['result_id']), headers=mine).json()
+    assert result['status'] == 'done', result.get('error')
+    given = result['stats']['Quote']['quote_id']
+    assert [[row['quote_id'] for row in CLIENT.get('/book/quotes', headers=signed).json()['quotes']]
+            for signed in (mine, theirs)] == [[given], []]
+    own = CLIENT.get('/book/quote/' + given, headers=mine)
+    assert own.status_code == 200 and own.json()['quoted_by'] == test_spine_identity.SUBJECT
+    assert CLIENT.get('/book/quote/' + given, headers=theirs).status_code == 404
+
+
 def test_a_seat_reads_what_it_may_do_and_where(recorded, desk):
     """WHAT A SEAT MAY DO, read before it acts. With no capabilities document every seat holds every
     verb everywhere, null throughout, and a request naming none acts as the deployment's seat.

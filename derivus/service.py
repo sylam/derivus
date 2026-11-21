@@ -4004,7 +4004,7 @@ def book_worklist(actor: str = None):
     return dict({name: sorted(found, key=lambda row: (row['since'] or '', row['lsn'] or 0))[
         -WORKLIST_ROWS:] for name, found in lists.items()}, date=day,
         counts={name: len(found) for name, found in lists.items()},
-        seat=None if sight is None else actor or spine.REQUESTER.get())
+        seat=None if sight is None else spine.reader(actor))
 
 
 @app.get('/book/seat', summary='What the seat asking may do, and at which nodes')
@@ -7308,7 +7308,7 @@ def quotes_shown(actor):
     is shown as a position is, to a seat holding any grant at the `portfolio` it books under or
     above it (`spine.visible`), and to the seat that gave it, `quoted_by`. Every quote is shown
     where nothing narrows the seat."""
-    sight, seat = spine.sight(actor), actor or spine.REQUESTER.get()
+    sight, seat = spine.sight(actor), spine.reader(actor)
     return lambda pending: bool(spine.visible([pending], sight)) or pending.get('quoted_by') == seat
 
 

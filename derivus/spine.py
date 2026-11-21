@@ -525,13 +525,19 @@ def under(path, node):
     return package().capability.under(path, node)
 
 
+def reader(named=None):
+    """The seat a read is made as: the one `named`, else the one a request's token names, and None
+    where no seat signs it."""
+    return named or REQUESTER.get()
+
+
 def sight(named=None):
-    """Where the seat `named` - or the one a request's token names - acts: `{verb: nodes}`, a verb
+    """Where the seat a read is made as (`reader`) acts: `{verb: nodes}`, a verb
     it holds over `*` answering None. None throughout where nothing narrows a read: no home, no
     capabilities document, or a read no seat signs on a box checking no token, which is the
     deployment's own view - a filter a self-declared name could lift protects nothing it
     withholds."""
-    named = named or REQUESTER.get()
+    named = reader(named)
     if not named or not configured():
         return None
 

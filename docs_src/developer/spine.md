@@ -979,7 +979,8 @@ A client's pending quote is shown the same way, by the `portfolio` it books unde
 confidential to those who need it (FX Global Code, Principle 19): `GET /book/quotes` lists, and
 `GET /book/quote/{id}` and its sheet answer, the quotes under the seat's nodes and the quotes the
 seat gave itself (`quotes_shown`), one the seat is not shown answering as an id the desk holds
-nothing under.
+nothing under. The seat a read is made as is the one it names, else its token's (`spine.reader`),
+which `spine.sight` and the worklist read too.
 A trade's page tells a seat shown no position in it, no fill of it, no quote that landed at it or
 no row of its history that the record holds none only where the seat holds a grant at the book or
 above it, and else that the
@@ -994,6 +995,7 @@ the desk makes or gives up against it at the price (`unwindAgainst`), or why no 
 `::test_a_seat_reads_the_rows_under_the_nodes_it_acts_at`,
 `::test_a_seat_is_shown_the_quotes_booking_under_the_nodes_it_acts_at`,
 `::test_a_seat_is_shown_the_quotes_it_gave`,
+`::test_a_token_s_seat_is_shown_the_quotes_it_gave`,
 `web/scripts/desk_check.mjs`, `web/scripts/trade_check.mjs`.
 
 **The take-on.** A deal the book file holds that nobody booked - a book written before its record,
