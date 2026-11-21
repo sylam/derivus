@@ -7302,14 +7302,22 @@ def book_quote_pending(quote_id):
         return json.load(handle)
 
 
+def quotes_shown(actor):
+    """Whether the seat `actor` reading is shown a pending trade, as a predicate: a client's quote
+    is shown as a position is, to a seat holding any grant at the `portfolio` it books under or
+    above it (`spine.visible`), and to the seat that gave it, `quoted_by`. Every quote is shown
+    where nothing narrows the seat."""
+    sight, seat = spine.sight(actor), actor or spine.REQUESTER.get()
+    return lambda pending: bool(spine.visible([pending], sight)) or pending.get('quoted_by') == seat
+
+
 @app.get('/book/quote/{quote_id}', summary='The pending trade filed under a quote id')
 def book_quote_shown(quote_id: str, actor: str = None):
-    """The pending trade as `book_quote_pending` reads it, to the seat `actor` reading: a client's
-    quote is shown as a position is, to a seat holding any grant at the `portfolio` it books under
-    or above it (`spine.visible`), and one the seat is not shown answers as an id the desk holds
-    nothing under. Every quote is shown where nothing narrows the seat."""
+    """The pending trade as `book_quote_pending` reads it, to the seat `actor` reading where it is
+    shown it (`quotes_shown`); one the seat is not shown answers as an id the desk holds nothing
+    under."""
     pending = book_quote_pending(quote_id)
-    if not spine.visible([pending], spine.sight(actor)):
+    if not quotes_shown(actor)(pending):
         raise unknown_quote(quote_id)
     return pending
 
@@ -7322,12 +7330,12 @@ def book_quotes(actor: str = None):
     acceptance wrote them, both null while it is only quoted, `booked` also naming the `reference`
     of the deal it booked, which a path a node ahead of it moves does not. Whether it is still firm
     is the book's `Quote Policy`, read by the acceptance and never here. `actor` is the seat
-    reading, which is shown the quotes `book_quote_shown` shows it."""
-    directory, sight, rows = quote_dir(), spine.sight(actor), []
+    reading, which is shown the quotes `quotes_shown` shows it."""
+    directory, shown, rows = quote_dir(), quotes_shown(actor), []
     for name in os.listdir(directory) if os.path.isdir(directory) else ():
         if name.endswith('.json'):
             pending = book_quote_pending(name[:-len('.json')])
-            if not spine.visible([pending], sight):
+            if not shown(pending):
                 continue
             quoted, booked = pending.get('quote') or {}, pending.get('booked')
             rows.append(dict(

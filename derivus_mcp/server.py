@@ -1442,8 +1442,8 @@ def list_quotes(actor: str | None = None) -> dict:
     `booked.deal_path` where the trade landed once it is on the book and `booked.reference` the
     trade's own reference, which still finds it after a node ahead of it is deleted moves the path.
     Whether a quote is still firm is the book's `Quote Policy`, which `book_quote` reads when it is
-    asked. `actor` is the seat reading, which is shown a client's quote as it is shown a position:
-    where it holds a grant at the node the quote books under."""
+    asked. `actor` is the seat reading, which is shown a client's quote as it is shown a position,
+    where it holds a grant at the node the quote books under, and every quote it gave itself."""
     return service().call('GET', '/book/quotes', params=_stated(actor=actor))
 
 

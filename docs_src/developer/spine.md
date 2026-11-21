@@ -976,10 +976,12 @@ nodes, an expired one until it settles and one netted to nothing at a quantity o
 (`spine.visible`), totals summed over those - presentation while one class key opens every body.
 A client's pending quote is shown the same way, by the `portfolio` it books under, a quote being
 confidential to those who need it (FX Global Code, Principle 19): `GET /book/quotes` lists, and
-`GET /book/quote/{id}` and its sheet answer, the quotes under the seat's nodes, one the seat is not
-shown answering as an id the desk holds nothing under (`book_quote_shown`).
+`GET /book/quote/{id}` and its sheet answer, the quotes under the seat's nodes and the quotes the
+seat gave itself (`quotes_shown`), one the seat is not shown answering as an id the desk holds
+nothing under.
 A trade's page tells a seat shown no position in it, no fill of it, no quote that landed at it or
-no row of its history that the record holds none only where the seat holds a grant at the book or above it, and else that the
+no row of its history that the record holds none only where the seat holds a grant at the book or
+above it, and else that the
 seat is shown none, with the nodes it sees; the record's strip says the same to a seat shown no
 row (`noneShown` in `web/src/state.ts`). The book marks a node two positions hold at their net, and
 a screen showing one of them shows that mark at the position's own units, the positions adding to
@@ -990,6 +992,7 @@ the desk makes or gives up against it at the price (`unwindAgainst`), or why no 
 **Held by** `test_spine_engine.py::test_a_declared_tree_is_where_a_book_books_and_a_restrike_is_judged`,
 `::test_a_seat_reads_the_rows_under_the_nodes_it_acts_at`,
 `::test_a_seat_is_shown_the_quotes_booking_under_the_nodes_it_acts_at`,
+`::test_a_seat_is_shown_the_quotes_it_gave`,
 `web/scripts/desk_check.mjs`, `web/scripts/trade_check.mjs`.
 
 **The take-on.** A deal the book file holds that nobody booked - a book written before its record,

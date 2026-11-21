@@ -5564,6 +5564,35 @@ def test_a_seat_is_shown_the_quotes_booking_under_the_nodes_it_acts_at(recorded,
             'f' * 64, quotes['Rates']), (part, hidden.status_code)
 
 
+def test_a_seat_is_shown_the_quotes_it_gave(recorded, quoting):
+    """THE SEAT THAT GAVE A QUOTE KNOWS IT. Under a capabilities document a seat granted at the FX
+    node alone quotes a collar to book under `spine-desk/Rates`, a node it holds no grant at: it
+    lists that quote and opens it and its sheet, having given it, while a second seat granted at
+    the same FX node is answered as for an id the desk never filed and lists none. The seat granted
+    over `*` is shown it by its node, and a read no seat signs is shown what it was.
+
+    Killing mutations: a quote shown by its node alone, the seat that gave it answered 404; a quote
+    shown to every seat once a seat gave it, the second FX seat listing and opening it.
+    """
+    entitle(recorded, [(ACTOR, 'validate', '*')] + [
+        (seat, 'validate', 'spine-desk/FX') for seat in (DESK_FX, DESK_TWO)])
+    given = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET,
+                     portfolio='spine-desk/Rates', actor=DESK_FX)['quote_id']
+
+    def read(path, seat=None):
+        return CLIENT.get(path, params={} if seat is None else {'actor': seat})
+
+    assert {seat: [row['quote_id'] for row in read('/book/quotes', seat).json()['quotes']]
+            for seat in (DESK_FX, DESK_TWO, ACTOR, None)} == {
+                DESK_FX: [given], DESK_TWO: [], ACTOR: [given], None: [given]}
+    for part in ('', '/sheet'):
+        for seat in (DESK_FX, ACTOR, None):
+            own = read('/book/quote/{}{}'.format(given, part), seat)
+            assert own.status_code == 200 or 'has no sheet' in own.text, (seat, part, own.text)
+        other = read('/book/quote/{}{}'.format(given, part), DESK_TWO)
+        assert other.status_code == 404 and 'Unknown quote' in other.json()['detail'], part
+
+
 def test_a_seat_reads_what_it_may_do_and_where(recorded, desk):
     """WHAT A SEAT MAY DO, read before it acts. With no capabilities document every seat holds every
     verb everywhere, null throughout, and a request naming none acts as the deployment's seat.
