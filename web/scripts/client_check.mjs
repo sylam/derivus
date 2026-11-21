@@ -38,7 +38,7 @@ const SCHEMA = { Instrument: {
 const read = (terms) => {
   const reading = client.termsReading(terms, SCHEMA);
   const rows = (list) => list.map((term) => [term.words, term.value, term.unit, term.convention]);
-  return [reading.collateralised, reading.stated, reading.sides, reading.currency ?? null,
+  return [reading.collateralised, reading.stated, reading.currency ?? null,
           rows(reading.terms), rows(reading.conventions)];
 };
 const CSA = { Object: SET, Reference: 'CSA-1', Collateralized: 'True', Agreement_Currency: 'EUR',
@@ -53,7 +53,7 @@ check("a collateralised set reads every collateral term first, at its convention
       + "as its phrase, 'the agreement currency' for EUR; or a term at its convention listed with "
       + 'the stated ones',
       read(CSA),
-      [true, true, ['receives', 'posts'], 'EUR',
+      [true, true, 'EUR',
        [[THRESHOLD, '0', 'EUR', true], ['Minimum transfer the bank posts', '250,000', 'EUR', false],
         ['Agreement currency', 'EUR', '', false], ['Liquidation period', '10', 'calendar days', false],
         ['Counterparty', 'ALDER', '', false]],
@@ -63,14 +63,16 @@ check('a set whose collateral is off reads only what it states, and says the fla
       'the collateral terms of an uncollateralised set shown at their conventions, a threshold it '
       + 'does not have; or the flag read as stated where the terms say nothing',
       read({ Object: SET, Agreement_Currency: 'USD', Credit_Support_Amounts: { Counterparty: 'KES' } }),
-      [false, false, ['receives', 'posts'], 'USD',
+      [false, false, 'USD',
        [['Agreement currency', 'USD', '', false], ['Counterparty', 'KES', '', false]], []]);
 
-const ONE_WAY = structuredClone(SCHEMA);
-delete ONE_WAY.Instrument.sections['Set.Fields'].Credit_Support_Amounts.sub_fields.Minimum_Posted;
-check('the ways collateral moves are the sides its declared terms name, one where only one is named',
-      'two-way taken as given, which calls a set declaring only what the bank receives two-way',
-      client.termsReading({ ...CSA, Credit_Support_Amounts: {} }, ONE_WAY).sides, ['receives']);
+check('a collateralised set reads as collateralised and no more: its reading names no way its '
+      + 'collateral moves',
+      "a direction read off the sides the type's collateral terms name, which calls every "
+      + 'collateralised set two-way: the type declares both sides for every set, and says '
+      + 'nothing of this one',
+      Object.keys(client.termsReading(CSA, SCHEMA)).sort(),
+      ['collateralised', 'conventions', 'currency', 'stated', 'terms']);
 
 // ---- which agreements, and is it ready -----------------------------------------------------------
 

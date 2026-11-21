@@ -124,19 +124,19 @@ export const ready = (lines: Line[]): boolean => !lines.some((line) => line.tone
 
 /** One term as a credit officer reads it: the words its declaration says it in, its value - a
  * credit support list's first amount, which a run reads - with the currency or unit its description
- * names, whether it stands at its convention, and the way collateral moves where it says one. */
+ * names, whether it stands at its convention, and the side of the bank its description names -
+ * what marks a collateral term, and no word on which way a set's collateral moves. */
 export type Term = {
   key: string; words: string; value: string; unit: string; convention: boolean; side?: string;
 };
 
-/** Whether the set is collateralised and whether its terms say so, the ways collateral moves under
- * it, the currency its collateral amounts are in, its terms and those at their conventions apart. */
+/** Whether the set is collateralised and whether its terms say so, the currency its collateral
+ * amounts are in, its terms and those at their conventions apart. */
 export type TermsReading = {
-  collateralised: boolean; stated: boolean; sides: string[]; currency?: string; terms: Term[];
-  conventions: Term[];
+  collateralised: boolean; stated: boolean; currency?: string; terms: Term[]; conventions: Term[];
 };
 
-/** The words a declaration names the way collateral moves in. */
+/** The words a collateral term's declaration names the bank's side of it in. */
 const SIDE = /\bthe bank (receives|posts)\b/;
 
 function term(key: string, field: Descriptor, value: unknown,
@@ -173,7 +173,6 @@ export function termsReading(terms: Record<string, unknown>, schema: Schema): Te
   const rest = all.filter((row) => !row.side);
   return {
     collateralised: !off, stated: !isBlank(terms[COLLATERAL]),
-    sides: [...new Set(moving.map((row) => row.side!))],
     currency: moving.map((row) => row.unit).find(Boolean),
     terms: off ? all.filter((row) => !row.convention)
       : [...moving, ...rest.filter((row) => !row.convention)],

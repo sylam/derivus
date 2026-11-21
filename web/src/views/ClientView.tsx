@@ -192,15 +192,15 @@ function ClientPage({ id, lines, own, reads, rows, factor, market, schema }: {
 }
 
 /** An agreement as a credit officer says a CSA, every term off the netting set's declaration: the
- * collateral and the ways it moves, then each term with the currency or unit its description
- * names, a term at its convention marked so and the rest of those folded away. */
+ * collateral - whether it is held, never which way it moves, which no term read here says - then
+ * each term with the currency or unit its description names, a term at its convention marked so
+ * and the rest of those folded away. */
 function AgreementCard({ agreement, schema, amend }: {
   agreement: Agreement; schema: Schema; amend?: () => void;
 }) {
   const { state, dispatch } = useApp();
   const read = termsReading(agreement.terms, schema);
   const { path, moved } = standing(state.doc, state.record.reconcile, agreement);
-  const ways = read.sides.length > 1 ? 'two-way' : `one-way: the bank ${read.sides[0]} only`;
   return (
     <div className="agreement">
       <div className="pager">
@@ -219,7 +219,6 @@ function AgreementCard({ agreement, schema, amend }: {
       <div className="csa">
         {read.collateralised ? 'Collateralised' : 'Not collateralised'}
         {!read.stated && <span className="hint"> (its convention)</span>}
-        {read.collateralised && read.sides.length > 0 && `, ${ways}`}
         {read.collateralised && read.currency && `, every collateral amount in ${read.currency}`}.
       </div>
       <Terms terms={read.terms} />
