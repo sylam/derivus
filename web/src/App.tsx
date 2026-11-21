@@ -125,10 +125,10 @@ export function App() {
     return () => { live = false; };
   }, [riskWanted, riskAt]);
 
-  // The XVA view is a file read, not a run: it re-reads on FOCUS - a recalc asked for through the
-  // MCP verbs lands in that file while nobody is looking at this screen - and again whenever the
-  // clock moves under it, which is what says a row is of an earlier book, or an orphan.
-  const onXva = ['xva', 'client'].includes(state.tab);
+  // The XVA view is a file read, not a run: read on FOCUS of a tab that shows an FVA - a recalc
+  // asked for through the MCP verbs lands in that file while nobody is looking - and again whenever
+  // the clock moves under it, which is what says a row is of an earlier book, or an orphan.
+  const onXva = ['xva', 'client', 'quote', 'trade', 'backoffice'].includes(state.tab);
   useEffect(() => {
     if (clock === null || !onXva || !owed('xva', clock, state.xva.data)) return;
     let live = true;

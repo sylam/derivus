@@ -350,11 +350,17 @@ export type XvaSet = {
   peaks: Record<string, { value: number; day: string }> | null;
 };
 
+/** The two curves a credit run asked now funds its FVA at, null for one its calculation does not
+ * state; `refused` the record's sentence, beside two nulls, where that calculation cannot be read. */
+export type Funding = { cost: string | null; benefit: string | null; refused?: string[] };
+
 export type BookXva = {
   /** When THIS read happened. Each row's own `as_of` is when that row's run happened, and they
    * will differ by hours. */
   as_of: string;
   sets: XvaSet[];
+  /** What the NEXT run funds at: a row's own `fva` is what its run cost. */
+  funding: Funding;
 };
 
 /** `GET /book/xva/{reference}/profile`: one set's exposure profile off its row, under the run it

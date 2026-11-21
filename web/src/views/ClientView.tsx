@@ -4,8 +4,8 @@ import {
   baseDateOf, cellText, quoted, rowsByPath, sizeOf, toRows, type BlotterRow, type Picked,
 } from '../blotter';
 import {
-  CLIENT, RUNS, agreementsOf, bookedSince, bookedText, heldUnder, markText, readiness, ready,
-  termsReading, touching, type Held, type Line, type Term,
+  CLIENT, RUNS, agreementsOf, bookedSince, bookedText, fundedAt, heldUnder, markText, readiness,
+  ready, termsReading, touching, type Held, type Line, type Term,
 } from '../client';
 import { EmptyState } from '../components/EmptyState';
 import { Navigator } from '../components/Navigator';
@@ -419,7 +419,9 @@ function XvaRows({ id, xva, positions }: {
           </tbody>
         </table>
       )}
-      {sets.length > 0 && <div className="note">In this table {RUNS}.</div>}
+      {sets.length > 0 && (
+        <div className="note">In this table {RUNS}. {fundedAt(xva.data!.funding)}</div>
+      )}
     </section>
   );
 }

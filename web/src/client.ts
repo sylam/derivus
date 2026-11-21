@@ -16,7 +16,8 @@ import {
 } from './tokens';
 import { markOf } from './trade';
 import type {
-  ActivityRow, CollateralCall, DealMark, Descriptor, JobDoc, Market, Reconcile, Schema, XvaSet,
+  ActivityRow, CollateralCall, DealMark, Descriptor, Funding, JobDoc, Market, Reconcile, Schema,
+  XvaSet,
 } from './types';
 
 /** The screen a client's page is, and the store's pick of which client it shows. */
@@ -375,6 +376,22 @@ const RECALC = 'a recalc asked for through the chat';
 /** What every XVA row is, said once where the rows are read. */
 export const RUNS = 'each row is the last run of its set, refreshed at the close, and a recalc is '
   + 'asked for through the chat';
+
+/** What the next credit run funds its FVA at, said beside every FVA a screen shows, off the XVA
+ * read's `funding` alone: the one curve where cost and benefit name the same, each where they
+ * differ, the one stated where the other is not - a side stating none reads 0 - and the record's
+ * own sentence where the calculation cannot be read. */
+export function fundedAt({ cost, benefit, refused }: Funding): string {
+  if (refused) return refused.join(' ');
+  if (cost && benefit) {
+    return cost === benefit ? `The next run funds its FVA at ${cost}.`
+      : `The next run funds its FVA cost at ${cost} and its benefit at ${benefit}.`;
+  }
+  const [side, curve, other] = cost ? ['cost', cost, 'benefit'] : ['benefit', benefit, 'cost'];
+  return !curve ? "No funding curve is stated, so the next run's FVA reads 0."
+    : `The next run funds its FVA ${side} at ${curve}. No curve is stated for the ${other}, so `
+      + `the ${other} reads 0.`;
+}
 
 /** Who puts a failed run right, off the factor the engine could not find: a credit curve whoever
  * marks states, any other factor the market's owner adds. */

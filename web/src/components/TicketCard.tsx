@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { askCharge } from '../api';
 import { cellText, dateOf } from '../blotter';
+import { fundedAt } from '../client';
 import { instantMs, lagsBook, stampText } from '../desk';
 import { NO_PAPER } from '../positions';
 import {
@@ -183,6 +184,7 @@ export function CreditCharge({ ask }: { ask: ChargeAsk }) {
             Both runs drew the same {formatNumber(read.answer.paths.count, 'whole')} paths
             {lagsBook(read.clock, clockOf(state))
               && ': the book or its record has moved since, so ask again'}.
+            {state.xva.data && ` ${fundedAt(state.xva.data.funding)}`}
           </div>
         </>
       )}

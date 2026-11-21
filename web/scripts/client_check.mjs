@@ -368,6 +368,26 @@ check('a collateral read refused for want of a close reads no close marked - no 
         .map(client.unmarked),
       [true, true, true, false, false]);
 
+const UNREAD = 'the calculation policy in force states a CreditMonteCarlo block the engine refuses';
+const funded = (cost, benefit, refused) =>
+  client.fundedAt({ cost, benefit, ...(refused && { refused }) });
+check('the line beside an FVA says what the next run funds at: the one curve where cost and benefit '
+      + 'name the same, each where they differ, the one stated where the other is not, that the FVA '
+      + "reads 0 where neither is, and the record's own sentence where the calculation is unread",
+      'the benefit dropped where it differs, which says a run funding its benefit at USD funds at '
+      + 'USD-FUND alone; a curve named where none is stated, "at null"; the side stating none '
+      + 'named as the one funded; or the refusal swallowed, which reads a calculation nobody can '
+      + 'read as one stating no curve',
+      [funded('USD-FUND', 'USD-FUND'), funded('USD-FUND', 'USD'), funded('USD-FUND', null),
+       funded(null, 'USD'), funded(null, null), funded(null, null, [UNREAD])],
+      ['The next run funds its FVA at USD-FUND.',
+       'The next run funds its FVA cost at USD-FUND and its benefit at USD.',
+       'The next run funds its FVA cost at USD-FUND. No curve is stated for the benefit, so the '
+       + 'benefit reads 0.',
+       'The next run funds its FVA benefit at USD. No curve is stated for the cost, so the cost '
+       + 'reads 0.',
+       "No funding curve is stated, so the next run's FVA reads 0.", UNREAD]);
+
 const KES_LINES = client.creditLines('KES', CREDIT, SCHEMA);
 check("a client's sums are over every one of its book's sets or none - an unread set blanks it, and "
       + 'adjustments in two currencies, or a set that left the book, are never added',

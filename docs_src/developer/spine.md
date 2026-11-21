@@ -586,8 +586,10 @@ rows on every ask and keeps one part under the same key: `funding`, the two curv
 now would fund its FVA at (`service.funded`), read through `spine.official_calculation` as the run
 reads them, a null for one the calculation does not state. The view does not go down with the
 policy: where the record refuses that calculation the rows answer as ever and `funding` carries two
-nulls beside `refused`, the sentence in the list a write's refusal answers. **Held by**
-`web/scripts/paper_check.mjs`,
+nulls beside `refused`, the sentence in the list a write's refusal answers. The web client says
+what the next run funds at beside every FVA it shows - the XVA table, a client's rows, a credit
+charge - off that answer alone (`fundedAt` in `web/src/client.ts`). **Held by**
+`web/scripts/paper_check.mjs`, `web/scripts/client_check.mjs`,
 `test_spine_engine.py::test_the_xva_view_names_the_curves_a_credit_run_would_fund_at_and_keeps_the_answer`,
 `::test_the_xva_view_answers_its_rows_while_the_policy_in_force_cannot_be_read`,
 `test_service.py::test_a_status_poll_with_nothing_moved_is_a_lookup_and_all_it_reads_is_in_its_key`,

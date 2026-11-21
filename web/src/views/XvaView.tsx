@@ -3,8 +3,8 @@ import { getBookCollateral, getXvaProfile } from '../api';
 import { EXPORTS, SET, fieldsOf, rowsByPath, saveCsv, toRows } from '../blotter';
 import {
   RUNS, WRONG, actionFirst, agreementsOf, bookedText, creditExport, creditLines, exposureAfter,
-  openClient, paperText, runSum, statedHolding, summed, unmarked, wrongWith, type CreditLine,
-  type Wrong,
+  fundedAt, openClient, paperText, runSum, statedHolding, summed, unmarked, wrongWith,
+  type CreditLine, type Wrong,
 } from '../client';
 import { EmptyState } from '../components/EmptyState';
 import { TimeSeriesChart } from '../components/TimeSeriesChart';
@@ -167,6 +167,7 @@ export function XvaView() {
             + 'waiting on a second seat, and those booked under a set since its run, off the record.'
             : "This desk keeps no record: collateral is what each set's terms state it holds, no "
               + 'call is worked and no trade waits on a second seat.'}
+          <div>{fundedAt(view.funding)}</div>
         </div>
 
         <div className="tablewrap">
