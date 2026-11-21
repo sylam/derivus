@@ -441,7 +441,7 @@ table.desk th.sort:hover { color: var(--text); }
 
 table.desk th .arrow { display: inline-block; width: 10px; font-size: 8px; margin-left: 4px; }
 
-table.desk td.n.neg { color: var(--bad); }
+table.data td.n.neg { color: var(--bad); }
 
 table.desk td.tenor, table.desk td.path {
   color: var(--text-muted); font-family: var(--mono); font-size: 12px;

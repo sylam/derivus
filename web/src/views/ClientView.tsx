@@ -25,7 +25,7 @@ import type {
 } from '../types';
 import { AgreementForm } from '../components/AgreementForm';
 import { CreditCard, SpreadTable } from '../components/CreditCard';
-import { Back, Money, Side, Value } from '../components/Desk';
+import { Amount, Back, Money, Side, Value } from '../components/Desk';
 
 /** What the page reads beside the store: on a desk that keeps one the record's paper, the XVA
  * projection, and the consolidated risk for the marks. */
@@ -381,8 +381,7 @@ function TradeRow({ trade, market, schema, recording, mark }: {
             {closed ? 'closed' : statusText([position!])}</td>
         </>
       )}
-      <td className={`n${mark && mark.value < 0 ? ' neg' : ''}`} title={mark && String(mark.value)}>
-        {mark ? formatNumber(mark.value, 'money') : ''}</td>
+      <Amount value={mark?.value ?? null} kind="money" />
     </tr>
   );
 }

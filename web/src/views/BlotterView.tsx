@@ -14,7 +14,7 @@ import { actingSeat, clockOf, marketOf, openTrade, spineOf, useApp } from '../st
 import { formatNumber } from '../tokens';
 import { markOf } from '../trade';
 import type { DealMark, Market, Schema } from '../types';
-import { SIDE, Side, Value } from '../components/Desk';
+import { Amount, SIDE, Side, Value } from '../components/Desk';
 
 /** The desk blotter: one row per booked deal over the live book, the tree flattened with
  * containers still holding their legs, sorted by days-to-roll so "who rolls off this week" is one
@@ -270,11 +270,7 @@ function Row(props: {
         <td className="date">{row.next && row.next !== row.expiry ? row.next : ''}</td>
         <Days row={row} />
         {props.held && <Held held={props.held} entities={props.entities} />}
-        {props.held && (
-          <td className="n" title={props.mark && String(props.mark.value)}>
-            {props.mark && formatNumber(props.mark.value, 'money')}
-          </td>
-        )}
+        {props.held && <Amount value={props.mark?.value ?? null} kind="money" />}
         <td className="opener">
           <span onClick={(e) => { e.stopPropagation(); props.onOpen(); }}>
             {opened ? '×' : '⋯'}

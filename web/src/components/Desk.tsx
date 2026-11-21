@@ -60,15 +60,16 @@ export function Money({ value, currency, kind = 'money' }: {
   );
 }
 
-/** Table cell for an optional amount (whole units by default); null shows a dash with hover. */
+/** Table cell for an optional amount (whole units by default), a negative one in the loss
+ * colour; null shows a dash under the hover `absent`, and nothing where none is given. */
 export function Amount({ value, currency, absent, kind = 'whole' }: {
-  value: number | null; currency?: string | null; absent: string; kind?: 'whole' | 'money';
+  value: number | null; currency?: string | null; absent?: string; kind?: 'whole' | 'money';
 }) {
   return (
     <td className={`n${value !== null && value < 0 ? ' neg' : ''}`}
         title={value === null ? undefined : String(value)}>
-      {value === null ? <span className="hint" title={absent}>—</span>
-        : <Money value={value} currency={currency} kind={kind} />}
+      {value !== null ? <Money value={value} currency={currency} kind={kind} />
+        : absent && <span className="hint" title={absent}>—</span>}
     </td>
   );
 }
