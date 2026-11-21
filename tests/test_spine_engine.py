@@ -6290,33 +6290,48 @@ def test_the_xva_view_names_the_curves_a_credit_run_would_fund_at_and_keeps_the_
     assert funding() == {'cost': 'FUND', 'benefit': 'FUND'}
 
 
-def test_a_block_declared_past_the_engine_s_judge_refuses_the_credit_run_by_name(
-        recorded, credit_hub, tmp_path, capsys):
-    """The operator's `DV_Spine declare` takes a calculation policy on its shape alone, so a block
-    misspelling a field lands. It is judged where it is read: the recalc, the increment and the
-    view's funding answer each refuse naming the policy and the field, nothing is queued and no
-    row is filed, while a what-if of the book, a base valuation, reads no policy and runs. The
-    block declared again through the service, the recalc runs.
-
-    Killing mutation: the judge dropped from `official_calculation`, where the recalc is queued
-    and runs at one batch, the field it was meant to state ignored.
-    """
+def misdeclared(home, folder):
+    """A calculation policy misspelling a field, put on the record at `home` by the operator's
+    `DV_Spine declare`, which takes a block on its shape alone."""
     from derivus_spine import cli
 
-    misspelt = tmp_path / 'calculation.json'
+    misspelt = folder / 'calculation.json'
     misspelt.write_text(json.dumps({'calculations': {'CreditMonteCarlo': {
         'Simulation_Batchs': 2}}}), encoding='utf-8')
-    assert cli.main(['declare', 'calculation', str(misspelt), '--home', str(recorded),
-                     '--actor', ACTOR]) == 0, capsys.readouterr().err
-    said = ('the calculation policy in force states a CreditMonteCarlo block this engine refuses '
-            '- CreditMonteCarlo declares no Simulation_Batchs - it declares ')
+    assert cli.main(['declare', 'calculation', str(misspelt), '--home', str(home),
+                     '--actor', ACTOR]) == 0
 
+
+#: What a refusal of a policy block the engine will not read says: what happened, in the engine's
+#: own words for the field, and who puts it right.
+MISDECLARED = ('the calculation policy in force states a CreditMonteCarlo block the engine refuses',
+               'CreditMonteCarlo declares no Simulation_Batchs - it declares ',
+               'a seat holding admin declares the block again')
+
+
+def test_a_block_declared_past_the_engine_s_judge_refuses_the_credit_run_by_name(
+        recorded, credit_hub, tmp_path):
+    """The operator's `DV_Spine declare` takes a calculation policy on its shape alone, so a block
+    misspelling a field lands. It is judged where it is read: the recalc, the increment and the
+    view's funding answer each refuse in a sentence a desk user can act on - the policy in force,
+    the engine's own words for the field, and that a seat holding `admin` declares the block again
+    - naming no route and no command. Nothing is queued and no row is filed, while a what-if of
+    the book, a base valuation, reads no policy and runs. The block declared again through the
+    service, the recalc runs.
+
+    Killing mutations: the judge dropped from `official_calculation`, where the recalc is queued
+    and runs at one batch, the field it was meant to state ignored; the sentence sending its
+    reader to a route, which a desk user has none of.
+    """
+    misdeclared(recorded, tmp_path)
     for refused in (CLIENT.post('/book/xva', content=dump({}), headers=JSON),
                     CLIENT.post('/book/price', content=dump(
                         {'deal_path': '0/0', 'xva_increment': True}), headers=JSON),
                     CLIENT.get('/book/xva')):
-        assert refused.status_code == 422 and refused.json()['detail'].startswith(said), (
-            refused.text)
+        assert refused.status_code == 422, refused.text
+        said = refused.json()['detail']
+        assert all(words in said for words in MISDECLARED), said
+        assert not any(place in said for place in ('/book/', 'POST', 'DV_Spine')), said
     assert not (tmp_path / service.XVA_FILE).exists(), 'a refused recalc filed a row'
     assert CLIENT.post('/book/price', content=dump({}), headers=JSON).status_code == 200
 

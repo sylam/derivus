@@ -685,9 +685,9 @@ def official_calculation(document, runs=None, lsn=None):
         judge_calculation({'Object': name}, stated, ())
     except ValueError as refused:
         raise SpineRefused(
-            'the calculation policy in force states a {} block this engine refuses - {} - so no '
-            'official run reads it: declare the block again through `POST /book/calculations`, '
-            'which judges it first'.format(name, refused)) from None
+            'the calculation policy in force states a {} block the engine refuses - {} - so no '
+            'official run reads it: a seat holding admin declares the block again, the declaring '
+            'verb judging a block before the record takes it'.format(name, refused)) from None
     return dict(block, **stated)
 
 
