@@ -2148,8 +2148,9 @@ NOT_A_DAY = ('{!r} is not a day: a close is declared for a calendar date and mon
 NOT_AN_LSN = ('{!r} is not a position: `since` takes the `lsn` the last page answered, or nothing '
               'at all for the newest page')
 
-#: The market a close is declared on when the caller names none. Officialness is a property of the
-#: NAME rather than of the data, and this is the name a desk's own close carries.
+#: The market a close is declared on when the caller names none and the record designates none for
+#: its P&L. Officialness is a property of the NAME rather than of the data, and this is the name a
+#: desk's own close carries.
 OFFICIAL_MARKET = 'official'
 
 
@@ -4051,8 +4052,9 @@ def book_close_check(date: str):
 def book_close(request: dict):
     """`{market?, date?, actor}` - declare the official close over the live book's values vector.
 
-    `market` defaults to `official` and `date` to the book's own `Calculation.Base_Date`, parsed
-    exactly as the check parses its `?date=`.
+    `market` defaults to the one the record designates for the P&L, which the marks and the P&L
+    read - a desk has one official close - and to `official` where it designates none; `date` to
+    the book's own `Calculation.Base_Date`, parsed exactly as the check parses its `?date=`.
 
     THE CLOSE RUNS BEHIND THE CHECK. `close_verdict` is the catch-up rule `/book/close/check`
     answers with, and a day it calls illegal refuses HERE naming what it waits on, with nothing
@@ -4070,7 +4072,8 @@ def book_close(request: dict):
                    'official_close_declared', 'no close is declared')
     # both defaults are CONVENTIONS, so only an omitted key takes one: a date or a market that
     # names nothing is a value to refuse, and an empty day is one a string compare calls legal
-    market = OFFICIAL_MARKET if request.get('market') is None else request['market']
+    market = (spine.designation(spine.PNL) or OFFICIAL_MARKET if request.get('market') is None
+              else request['market'])
     day = spine.base_day(document) if request.get('date') is None else read_day(request['date'])
     verdict = close_verdict(announced(document, hub_diary(document)['rows']), day)
     if not verdict['legal']:

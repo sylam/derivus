@@ -129,14 +129,14 @@ def marked():
     return answer.json()
 
 
-def designated(home, fixings=True, indices=(INDEX,), processes=('pnl',)):
+def designated(home, fixings=True, indices=(INDEX,), processes=('pnl',), market='official'):
     """The desk's workflow on the record: the close each of `processes` reads, and the fixings'
     source."""
     log = SpineLog(home)
     try:
         policy.declare(log, ACTOR, policy.TIERS_POLICY,
                        {'tiers': [{'name': 'desk', 'four_eyes': True}],
-                        'designations': dict.fromkeys(processes, 'official')})
+                        'designations': dict.fromkeys(processes, market)})
         if fixings:
             policy.declare(log, ACTOR, policy.FIXINGS_POLICY,
                            {'sources': {index: ['EXCHANGE'] for index in indices}})
@@ -1729,6 +1729,41 @@ def test_a_past_day_restated_after_today_s_close_restates_that_day_alone(recorde
     assert on('2024-06-28', restated['recorded']['lsn']) == spine.PnL.rates(json.loads(spine.stored(
         restated['values_hash']).decode('utf-8')), 'USD', 'USD') != on('2024-06-28', today['lsn'])
     assert oracle.report(recorded)['closes_superseded_never_edited']['held'] is True
+
+
+def test_a_close_naming_no_market_is_declared_on_the_market_the_p_and_l_reads(recorded, desk):
+    """ONE OFFICIAL CLOSE, STRUCK ON THE MARKET DESIGNATED FOR THE P&L. On a record designating
+    none, a close naming no market is declared on `official`. Once the desk designates `desk-close`
+    for its P&L the same post is declared there, over the same values vector and over no close
+    before it, `official` gaining none; the marks run on it, and the P&L reads from that day to the
+    next closed the same way. A close naming its market is declared on the one it names.
+
+    Killing mutations: the omitted market back to the literal `official`, the designating desk's
+    close answering a name its P&L never reads; a market named passed over for the designated one.
+    """
+    def closed_on(**named):
+        answer = CLIENT.post('/book/close', content=dump(dict({'actor': ACTOR}, **named)),
+                             headers=JSON)
+        assert answer.status_code == 200, answer.text
+        return answer.json()
+
+    booked(LONG, 1.0, 'EXEC-A', BOOK + '/Rates', 17_800_000.0)
+    before = closed_on()
+    assert before['market'] == 'official' and [row['lsn'] for row in spine.closes('official')] == [
+        before['recorded']['lsn']]
+    designated(recorded, fixings=False, market='desk-close')
+    first = closed_on()
+    assert (first['market'], first['values_hash'], first['supersedes_lsn']) == (
+        'desk-close', before['values_hash'], None), first
+    assert [row['lsn'] for row in spine.closes('desk-close')] == [first['recorded']['lsn']]
+    assert len(spine.closes('official')) == 1 and marked()['market'] == 'desk-close'
+    assert closed_on(market='official')['market'] == 'official'
+    assert len(spine.closes('desk-close')) == 1, 'a close naming its market landed beside it'
+    rolled(desk, END, 18.0)
+    closed_on()
+    marked()
+    window = between('2024-06-28', '2024-07-01')
+    assert window['complete'] is True and len(window['rows']) == 1 and window['total']['pnl'] != 0.0
 
 
 def test_a_seat_marking_one_book_marks_it_and_the_hub_attests_the_marks(recorded, desk):

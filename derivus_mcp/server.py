@@ -1758,7 +1758,8 @@ def declare_close(market: str | None = None, date: str | None = None,
                   actor: str | None = None) -> dict:
     """Declare the official close - the day the desk agrees what the book was worth.
 
-    `market` defaults to `official` and `date` to the book's own base date. IT RUNS BEHIND
+    `market` defaults to the one the desk designates for its P&L, and to `official` where it
+    designates none, and `date` to the book's own base date. IT RUNS BEHIND
     `close_check`: a day that check calls illegal is refused here naming what it waits on, and
     nothing is recorded - so call `close_check` first and file the missing fixings, settlements and
     elections. A `private/<subject>/...` board belongs to that subject alone and a close on it is

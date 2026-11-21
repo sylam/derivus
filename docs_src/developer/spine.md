@@ -556,7 +556,9 @@ A close is legal when nothing due by its day waits: a fixing nobody printed, a p
 premium nobody settled, an expiry nobody elected, or any `unreadable` row. A deal the compile left out is judged
 as what its history made it, so a barrier its prints knocked out waits on its rebate and on nothing
 after. `GET /book/close/check?date=` answers that, and `POST /book/close` refuses an illegal day
-with nothing appended; a second close for a day supersedes the first. `POST /book/settlements`
+with nothing appended; a second close for a day supersedes the first. A close naming no market is
+declared on the one the `tiers` policy designates for `pnl`, which the marks and the P&L read - a
+desk has one official close - and on `official` where it designates none. `POST /book/settlements`
 takes only `due_before`, a file being struck for a day, on the market the `tiers` policy
 designates, so pointing it elsewhere is unrepresentable. It instructs every payment and premium due
 by that day that nobody settled, totalled by currency, each row naming the `kind` its settlement is
@@ -565,7 +567,8 @@ filed under; a premium due on no day is never instructed.
 `::test_a_barrier_its_prints_knocked_out_owes_its_rebate_and_nothing_after`,
 `::test_a_close_is_declared_only_on_a_day_the_check_calls_legal`,
 `::test_the_settlement_file_is_struck_on_the_market_the_record_designates`,
-`test_pnl.py::test_a_premium_announced_and_settled_moves_no_figure_of_the_p_and_l`.
+`test_pnl.py::test_a_premium_announced_and_settled_moves_no_figure_of_the_p_and_l`,
+`::test_a_close_naming_no_market_is_declared_on_the_market_the_p_and_l_reads`.
 
 ## The record's readers on the desk {#readers}
 
