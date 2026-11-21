@@ -876,7 +876,8 @@ def test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar(tmp_path,
     `DV_HOME` is set for real - where a pending trade waits is the contract under test.
 
     Killing mutations: `solve_structure` dropping the margin it takes, which quotes the charged
-    collar at zero cost; `list_quotes` unregistered, which the registry gate names.
+    collar at zero cost; `list_quotes` unregistered, which the registry gate names;
+    `price_candidate` dropping the `quote_id` it takes, which prices the book alone.
     """
     from test_service import fx_vol_quotes
     monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
@@ -935,6 +936,11 @@ def test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar(tmp_path,
         else:
             with pytest.raises(ResourceError, match='derivus'):
                 read_resource(quote['resources']['sheet'])
+
+        # the what-if of a quote is asked by its id, and is the run the service gives that id
+        trial = asyncio.run(mcp_server.price_candidate(quote_id=quote['quote_id']))
+        assert trial['status'] == 'done' and trial['result_id'] == CLIENT.post(
+            '/book/price', json={'quote_id': quote['quote_id']}).json()['result_id']
 
         booked = mcp_server.book_quote(quote['quote_id'])
         assert booked['written'] is True and 'validate' not in booked

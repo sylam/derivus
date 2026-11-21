@@ -680,22 +680,24 @@ def delete_deal(deal_path: str, reference: str | None = None,
 
 @MCP.tool()
 async def price_candidate(deal: dict | None = None, parent_reference: str | None = None,
-                          calculation_overrides: dict | None = None, actor: str | None = None,
-                          wait_seconds: float = 120.0, ctx: Context = None) -> dict:
+                          quote_id: str | None = None, calculation_overrides: dict | None = None,
+                          actor: str | None = None, wait_seconds: float = 120.0,
+                          ctx: Context = None) -> dict:
     """Price the book PLUS a candidate deal without booking anything - the what-if verb, and the
     solving half of a par booking: price a trial amount, price a second, solve the affine
     relation for the amount that lands the value on your target, then `book_deal` the answer.
 
-    The candidate joins an in-memory copy only; the book file never moves. `calculation_overrides`
-    merges into the calculation block: `{"Greeks": "First"}` for the AAD delta vector,
-    `{"Greeks": "All"}` for the full second-order block - `Greeks_Second` is the cross-gamma
+    The candidate is `deal` under `parent_reference`, or the `quote_id` `solve_structure` answered,
+    priced as accepting that quote would book it. It joins an in-memory copy only; the book file
+    never moves. `calculation_overrides` merges into the calculation block: `{"Greeks": "First"}`
+    for the AAD delta vector, `{"Greeks": "All"}` for the full second-order block - `Greeks_Second` is the cross-gamma
     matrix a trading read of an options book needs (spot gamma on the diagonal, vanna against the
     surface's own nodes beside it), one backward pass however many factors. Waits up to
     `wait_seconds` for the run; the answer carries `tables` and `stats`, and `deal_values`
     projects per-deal values from it. Content-addressed: the same what-if twice is one run.
     `actor` is the seat reading.
     """
-    request = _stated(deal=deal, parent_reference=parent_reference,
+    request = _stated(deal=deal, parent_reference=parent_reference, quote_id=quote_id,
                       calculation_overrides=calculation_overrides or None, actor=actor)
     submitted = await asyncio.to_thread(service().call, 'POST', '/book/price', json=request)
     return await _await_result(submitted['result_id'], wait_seconds, ctx)

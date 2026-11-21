@@ -61,7 +61,7 @@ structure takes it as `name`. **Held by**
 | `book_deal`, `amend_deal`, `delete_deal` | `POST /book/deals`: add, or take on a deal the file holds; merge fields at a path; remove |
 | `validate_book`, `describe_book` | `POST /validate`, `/describe` over the live book |
 | `describe_portfolios`, `declare_portfolio` | `GET`/`POST /book/portfolios`: the declared tree |
-| `price_candidate`, `execute_book` | `POST /book/price`: the book with a candidate, or alone; nothing written |
+| `price_candidate`, `execute_book` | `POST /book/price`: the book with a candidate or a quote, or alone; nothing written |
 | `xva_increment` | `POST /book/price` with `xva_increment`: what a candidate or a quote adds to its netting set's CVA, FVA and peak exposure, both runs on the same paths; nothing written |
 | `describe_calculations`, `configure_calculation`, `run_calculation` | `GET`/`POST /calculations`, `POST /calculations/run`: the desk's named calculations |
 | `solve_deal` | `POST /book/solve`: one field solved to a target, the deal ready to book |
