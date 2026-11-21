@@ -7,7 +7,7 @@ import {
   type Size,
 } from './blotter';
 import { instantMs, plural } from './desk';
-import { closed, type Agreement, type Position } from './positions';
+import { closed, netOf, type Agreement, type Position } from './positions';
 import { salesNames } from './quote';
 import {
   COLLATERAL, currencyOf, fieldLabel, formatNumber, setCurrency, uncollateralised,
@@ -54,6 +54,22 @@ export function markOf(marks: DealMark[], path: string): { own?: DealMark; insid
   const top = path.split('/')[0];
   return { own: marks.find((row) => row.deal_path === path),
            inside: top === path ? undefined : marks.find((row) => row.deal_path === top) };
+}
+
+/** What `units` of a deal are marked at, off the deal's `mark` and the `net` units the book prices
+ * it at - every position on it, netted: the unit mark times the units, from the desk's side, so
+ * the positions on one deal add to its mark. None where there are no units, or the deal nets to
+ * nothing and has no unit mark to read. */
+export const markFor = (mark: number, units: number, net: number | undefined): number | undefined =>
+  (units && net ? mark * (units / net) : undefined);
+
+/** The mark a row shows among the risk answer's rows: the deal's own at `path` (`markOf`), and for
+ * one `position` of those the record holds there (`byPath`), what its own units are marked at. */
+export function markShown(marks: DealMark[], path: string, held: Map<string, Position[]>,
+                          position?: Position): number | undefined {
+  const mark = markOf(marks, path).own?.value;
+  return mark === undefined || !position ? mark
+    : markFor(mark, position.quantity, netOf(held.get(path) ?? []));
 }
 
 /** Every row a read of the record answers - the whole record, or one trade's rows - a page at a

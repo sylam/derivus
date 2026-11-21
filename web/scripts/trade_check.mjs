@@ -76,6 +76,19 @@ check('a trade has its own mark, at the top or inside a set, beside the set\'s n
         + 'the set\'s net dropped where the trade has its own, which loses what the mark sits in',
       [trade.markOf(MARKS, '1'), trade.markOf(MARKS, '0/1'), trade.markOf(MARKS, '0/1/0')],
       [{ own: MARKS[1] }, { own: MARKS[2], inside: MARKS[0] }, { inside: MARKS[0] }]);
+const [DESK, FX, ALONE, LONG, SHORT] = [1, 0.5, 3, 2, -2].map((quantity) => ({ quantity }));
+const ON = new Map([['0/1', [DESK, FX]], ['1', [ALONE]], ['0', [LONG, SHORT]]]);
+const shown = (path, position) => trade.markShown(MARKS, path, ON, position) ?? 'none';
+check('two positions on one deal each show its mark at their own units, the two adding to it; a '
+        + 'position alone shows the deal\'s mark as it was read, as a row that is no position '
+        + 'does; and positions netting to nothing show none',
+      'the deal\'s mark shown whole on each position, 1.5 units\' worth read on a line holding '
+        + '0.5; the share turned, the net over the position\'s units; a lone position\'s mark '
+        + 'scaled by its units, a mark of 3 units read three times over; or a deal netted to '
+        + 'nothing divided by, a mark of infinity',
+      [shown('0/1', DESK), shown('0/1', FX), shown('0/1', DESK) + shown('0/1', FX),
+       shown('1', ALONE), shown('0/1'), shown('0', LONG), shown('0/7', DESK)],
+      [1, 0.5, 1.5, -2.25, 1.5, 'none', 'none']);
 
 // --- the record, read whole
 const RECORD = Array.from({ length: 450 }, (_, at) => ({ lsn: at + 1 }));

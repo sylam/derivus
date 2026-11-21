@@ -12,8 +12,8 @@ import {
 } from '../positions';
 import { actingSeat, bookRisk, clockOf, marketOf, openTrade, spineOf, useApp } from '../state';
 import { formatNumber } from '../tokens';
-import { markOf } from '../trade';
-import type { DealMark, Market, Schema } from '../types';
+import { markShown } from '../trade';
+import type { Market, Schema } from '../types';
 import { Amount, SIDE, Side, Value } from '../components/Desk';
 
 /** The desk blotter: one row per booked deal over the live book, the tree flattened with
@@ -71,7 +71,8 @@ export function BlotterView() {
   const risk = bookRisk(state);
   const marks = risk.data && !lagsBook(risk.clock, clockOf(state))
     ? [...risk.data.per_deal, ...risk.data.in_sets] : [];
-  const markOn = (row: BlotterRow): DealMark | undefined => markOf(marks, markPath(row)).own;
+  const markOn = (row: BlotterRow): number | undefined =>
+    markShown(marks, markPath(row), heldAt, row.position);
   const currency = marks.length ? risk.data?.currency : null;
   // the deal path a trade's row opens its page at: its own, or the node its position is held at
   const tradeOf = (row: BlotterRow): string | undefined => (holdsTrades(row) ? undefined
@@ -89,8 +90,8 @@ export function BlotterView() {
   const download = () => saveCsv(`blotter ${base ?? 'undated'}`, [
     [...heads, ...(recording ? [`${MARKED} ccy`] : [])],
     ...rows.map((row) => [...exported(row, market, schema), ...(recording ? [
-      ...heldColumns(heldOf(row)!, paper.entities), markOn(row)?.value,
-      markOn(row) && currency] : [])])]);
+      ...heldColumns(heldOf(row)!, paper.entities), markOn(row),
+      markOn(row) !== undefined && currency] : [])])]);
 
   return (
     <div className="main">
@@ -217,7 +218,7 @@ const NUMERIC = ['Amount', 'Strike', 'Barrier', 'Days', 'Qty', MARKED];
 
 function Row(props: {
   row: BlotterRow; schema: Schema | null; market: Market | null; held: Position[] | null;
-  mark?: DealMark;
+  mark?: number;
   entities: Paper['entities']; selected: boolean; emphasised: boolean; collapsed: boolean;
   opened: boolean; onToggle: () => void; onOpen: () => void; onSelect: () => void;
   trade?: string;
@@ -270,7 +271,7 @@ function Row(props: {
         <td className="date">{row.next && row.next !== row.expiry ? row.next : ''}</td>
         <Days row={row} />
         {props.held && <Held held={props.held} entities={props.entities} />}
-        {props.held && <Amount value={props.mark?.value ?? null} kind="money" />}
+        {props.held && <Amount value={props.mark ?? null} kind="money" />}
         <td className="opener">
           <span onClick={(e) => { e.stopPropagation(); props.onOpen(); }}>
             {opened ? '×' : '⋯'}

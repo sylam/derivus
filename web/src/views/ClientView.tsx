@@ -14,14 +14,14 @@ import {
   spreads, stampText, valuationDay,
 } from '../desk';
 import {
-  positionName, statusText, type Agreement, type Entity, type Position,
+  byPath, positionName, statusText, type Agreement, type Entity, type Position,
 } from '../positions';
 import { pinnedAt } from '../spine';
 import { bookRisk, marketOf, opened, standing, useApp, useRead } from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
-import { markOf, wholeRecord } from '../trade';
+import { markOf, markShown, wholeRecord } from '../trade';
 import type {
-  ActivityRow, BookRisk, BookXva, DealMark, Market, Schema, SettlementState, XvaSet,
+  ActivityRow, BookRisk, BookXva, Market, Schema, SettlementState, XvaSet,
 } from '../types';
 import { AgreementForm } from '../components/AgreementForm';
 import { CreditCard, SpreadTable } from '../components/CreditCard';
@@ -287,8 +287,10 @@ function OnBook({ own, reads, rows, market, schema }: {
       {!own.length && <div className="note">No agreement, so nothing on: a trade books under one.</div>}
       {own.map((agreement) => {
         const { path } = standing(state.doc, state.record.reconcile, agreement);
-        const trades = heldUnder(path, rows, reads.positions && reads.positions.filter(
-          (position) => position.agreement === agreement.agreement));
+        const held = reads.positions && reads.positions.filter(
+          (position) => position.agreement === agreement.agreement);
+        const trades = heldUnder(path, rows, held);
+        const heldAt = byPath(held ?? []);
         const closed = trades.filter((trade) => trade.closed).length;
         const mark = risk && path !== null ? markOf(risk.per_deal, path).own : undefined;
         return (
@@ -322,7 +324,8 @@ function OnBook({ own, reads, rows, market, schema }: {
                     {trades.map((trade, at) => (
                       <TradeRow key={at} trade={trade} market={market} schema={schema}
                                 recording={!!reads.positions}
-                                mark={trade.row && markOf(marks, trade.row.path).own} />
+                                mark={trade.row
+                                  && markShown(marks, trade.row.path, heldAt, trade.position)} />
                     ))}
                   </tbody>
                 </table>
@@ -338,7 +341,7 @@ function OnBook({ own, reads, rows, market, schema }: {
 /** One trade in the blotter's reading, in the blotter's own cells: its side and size as the desk
  * holds it, its levels on the market's axis and its expiry; a click opens the trade's page. */
 function TradeRow({ trade, market, schema, recording, mark }: {
-  trade: Held; market: Market | null; schema: Schema; recording: boolean; mark?: DealMark;
+  trade: Held; market: Market | null; schema: Schema; recording: boolean; mark?: number;
 }) {
   const { state, dispatch } = useApp();
   const { row, position, closed } = trade;
@@ -379,7 +382,7 @@ function TradeRow({ trade, market, schema, recording, mark }: {
             {closed ? 'closed' : statusText([position!])}</td>
         </>
       )}
-      <Amount value={mark?.value ?? null} kind="money" />
+      <Amount value={mark ?? null} kind="money" />
     </tr>
   );
 }
