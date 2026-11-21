@@ -74,6 +74,12 @@ INDEX_VERSION = 1
 #: the record.
 WATCHERS = []
 
+#: What a seat without the grant an act asks is told, whoever turns it away: what did not happen,
+#: who puts it right, and where the refusal stands on the record.
+DENIED = 'actor {!r} holds no {} scope over {!r}, so {}: {}. The refusal is recorded at LSN {}'
+#: Who puts it right where the document in force simply grants the seat nothing there.
+UNGRANTED = 'a seat holding admin over {!r} can grant it'
+
 #: The nine pre-LSN envelope fields the body is sealed against. Listed once so the writer and the
 #: verifier build the same AAD; the order here is immaterial, since JCS sorts them.
 AAD_FIELDS = ('actor', 'book', 'effective_time', 'entitlement_class', 'event_type',
@@ -632,11 +638,9 @@ class SpineLog:
             verb, scope, doc, genesis, moved = refused
             denial = self.refuse(actor, verb, scope, event_type)
             shown = ANY_BOOK if scope is None else scope
-            raise CapabilityDenied(
-                'actor {0!r} holds no {1} scope over {2!r}, so the {3} does not append: {4}. '
-                'The refusal is itself recorded at LSN {5}'.format(
-                    actor, verb, shown, event_type,
-                    self._why(doc, genesis, actor, verb, shown, moved), denial['lsn']))
+            raise CapabilityDenied(DENIED.format(
+                actor, verb, shown, 'its {} is not filed'.format(event_type),
+                self._why(doc, genesis, actor, verb, shown, moved), denial['lsn']))
         if event_type == 'policy_declared' and isinstance(body, dict) \
                 and body.get('policy') == CAPABILITIES_POLICY:
             blob = body.get('blob')
@@ -688,11 +692,7 @@ class SpineLog:
                 'its own address, or is gone from the store - so it grants nothing to anybody. '
                 'Restore blobs/ from a verified replica, or have the genesis break-glass seat append '
                 '`break_glass_used` and declare a replacement through `DV_Spine grant --file`')
-        return (
-            'the capabilities document in force here grants it nothing that reaches this event. '
-            'Declare a document granting ({!r}, {}, {!r}) through `DV_Spine grant --file`, or - if '
-            'a declaration stranded the last admin - recover through the break-glass seat genesis '
-            'named'.format(actor, verb, scope))
+        return UNGRANTED.format(scope) + ', or the break-glass seat where no seat holds admin'
 
     def capabilities(self):
         """`(document, genesis)` in force at this head, folded once and then kept current.

@@ -5060,8 +5060,9 @@ def test_under_a_document_the_queue_asks_before_the_executor_does(recorded, desk
     Killing mutations: the check taken after `queue.put`, which pays for the run and then refuses
     it; the check taken only where the tuple is new, after which a seat asking for numbers the
     store already holds is served them; an unnamed request falling back on the environment's seat,
-    which lets the one grant a ticking desk cannot withhold admit every anonymous what-if; and the
-    job's own book dropped, which asks for a scope no desk document grants.
+    which lets the one grant a ticking desk cannot withhold admit every anonymous what-if; the
+    job's own book dropped, which asks for a scope no desk document grants; and the refusal's
+    remedy said as a command line and the queue's reasons, which a seat at a desk cannot act on.
     """
     entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate')])
     before = head(recorded)
@@ -5070,6 +5071,8 @@ def test_under_a_document_the_queue_asks_before_the_executor_does(recorded, desk
     assert refused.status_code == 422 and not ran, refused.text
     said = refused.json()['detail']
     assert STRANGER in said and 'validate' in said and 'spine-desk' in said, said
+    assert "does not run: a seat holding admin over 'spine-desk' can grant it" in said, said
+    assert 'DV_Spine' not in said and 'queue' not in said, said
     denials = facts(recorded, 'capability_denied')
     assert [row[2] for row in denials] == [{'subject': STRANGER, 'verb': 'validate',
                                             'book': 'spine-desk',
@@ -5895,7 +5898,7 @@ while ticker.failures < 2 and time.monotonic() < ends:
 def test_a_tick_the_hub_may_not_mark_is_refused_and_the_cadence_lives(recorded, desk):
     """THE SCHEDULED TICK ASKS `mark` OF THE HUB'S OWN SEAT. Under a capabilities document granting
     `DV_SPINE_ACTOR` no `mark` over the book served, a beat submits nothing, the cadence logs one
-    warning a beat naming the grant to declare, and its thread outlives the refusal to beat again;
+    warning a beat naming who can grant it, and its thread outlives the refusal to beat again;
     the beats' denials are one fact.
 
     Killing mutation: the gate removed from `Metronome.beat`, which goes on to submit the tick -
@@ -5915,9 +5918,9 @@ def test_a_tick_the_hub_may_not_mark_is_refused_and_the_cadence_lives(recorded, 
         'attempted_type': 'bloomberg_tick'}], ran.stdout
     assert said[:2] == [
         "bloomberg tick failed ({} in a row): actor '{}' holds no mark scope over 'spine-desk', "
-        "so no bloomberg tick is written. Declare a document granting ('{}', mark, 'spine-desk') "
-        "through `DV_Spine grant --file`. The refusal is itself recorded at LSN {} - the book is "
-        "untouched".format(beat, ACTOR, ACTOR, denial[0][0]) for beat in (1, 2)], ran.stdout
+        "so no bloomberg tick is written: a seat holding admin over 'spine-desk' can grant it. "
+        "The refusal is recorded at LSN {} - the book is untouched".format(
+            beat, ACTOR, denial[0][0]) for beat in (1, 2)], ran.stdout
 
 
 # --------------------------------------------------------------------------------------------

@@ -1891,10 +1891,8 @@ def admit(lane, actor_name=None, book=None):
     standing = lane == STANDING
     # the type the lane would have filed, or the lane itself where it files none
     entitled(MARK if standing else VALIDATE, actor_name,
-             book, STANDING_TYPE if standing else (lane or CURIOSITY), 'this job is not queued '
-             'and nothing runs: the hub\'s compute is reached through the queue and the queue asks '
-             'first, so work this seat is not scoped for is work this box does not pay for',
-             anywhere=not standing)
+             book, STANDING_TYPE if standing else (lane or CURIOSITY),
+             'the calculation asked for does not run', anywhere=not standing)
 
 
 def entitled(verb, actor_name, book, attempted, refused, anywhere=False):
@@ -1919,11 +1917,9 @@ def entitled(verb, actor_name, book, attempted, refused, anywhere=False):
         return
     with writing() as log:
         denial = log.refuse(subject, verb, book, attempted)
-    raise SpineRefused(
-        'actor {0!r} holds no {1} scope over {2!r}, so {3}. Declare a document granting ({0!r}, '
-        '{1}, {2!r}) through `DV_Spine grant --file`. The refusal is itself recorded at LSN '
-        '{4}'.format(subject, verb, book if book is not None else spine.capability.ANY_BOOK,
-                     refused, denial['lsn']))
+    over = book if book is not None else spine.capability.ANY_BOOK
+    raise SpineRefused(spine.log.DENIED.format(
+        subject, verb, over, refused, spine.log.UNGRANTED.format(over), denial['lsn']))
 
 
 def firmness_policy():

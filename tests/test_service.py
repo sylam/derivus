@@ -6621,7 +6621,8 @@ def test_the_market_is_the_marking_seats_on_a_recorded_desk(recorded, book, tmp_
     queues even where the seat is not asked.
 
     Killing mutations: `/book/market` asking no `mark`, which writes the spot the unscoped seat
-    patched; and `actor` read as a curve convention, which refuses the marking seat's own curve.
+    patched; `actor` read as a curve convention, which refuses the marking seat's own curve; and
+    the sentence naming `DV_Spine grant --file` for its remedy, a command no seat at a desk runs.
     """
     from derivus import spine
     from derivus_spine import SpineLog
@@ -6654,12 +6655,14 @@ def test_the_market_is_the_marking_seats_on_a_recorded_desk(recorded, book, tmp_
     assert [body for _, body in landed] == [
         {'subject': trader, 'verb': 'mark', 'book': 'service', 'attempted_type': attempted}
         for _, _, attempted in MARKET_WRITES]
-    assert [(answer.status_code, answer.json()['detail']) for answer in said] == [
-        (422, "actor 'subject-trader' holds no mark scope over 'service', so no {} is written. "
-              "Declare a document granting ('subject-trader', mark, 'service') through `DV_Spine "
-              "grant --file`. The refusal is itself recorded at LSN {}".format(
-                  attempted.replace('_', ' '), lsn))
-        for (_, _, attempted), (lsn, _) in zip(MARKET_WRITES, landed)]
+    assert [answer.status_code for answer in said] == [422] * len(MARKET_WRITES)
+    for answer, (_, _, attempted), (lsn, _) in zip(said, MARKET_WRITES, landed):
+        detail = answer.json()['detail']
+        # the seat, the verb, the node and what was not written; who grants it, and no command
+        assert detail.startswith("actor 'subject-trader' holds no mark scope over 'service', so "
+                                 'no {} is written: '.format(attempted.replace('_', ' '))), detail
+        assert "a seat holding admin over 'service' can grant it" in detail, detail
+        assert detail.endswith('recorded at LSN {}'.format(lsn)) and 'DV_Spine' not in detail
     unsigned = [CLIENT.post(route, content=dump(body), headers=JSON)
                 for route, body, _ in MARKET_WRITES]
     assert {(answer.status_code, answer.json()['detail']) for answer in unsigned} == {
