@@ -29,6 +29,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import ast
 import asyncio
 import datetime
 import hashlib
@@ -396,6 +397,111 @@ def test_every_path_the_web_client_names_is_a_route_this_service_declares():
     declared = {(method, PATH_HOLE.sub('{}', route.path)) for route in service.app.routes
                 for method in getattr(route, 'methods', None) or ()}
     assert sorted(called - declared) == []
+
+
+#: The modules a desk is refused or noted in: the service, its seam onto the record, the record's
+#: own refusals and the notes on a quote.
+SPOKEN = ('derivus/service.py', 'derivus/spine.py', 'derivus/structures.py',
+          'derivus_spine/log.py', 'derivus_spine/capability.py', 'derivus_spine/tiers.py',
+          'derivus_spine/policy.py', 'derivus_spine/verbs.py')
+
+#: What only an operator can act on: a command line, a flag, a variable, a folder of the home.
+OPERATORS_PART = re.compile(r'DV_[A-Za-z]|--[a-z]|\bblobs/')
+
+#: The sentences an operator's part rightly stands in, each by a phrase of its own and why: the
+#: fault is the deployment's and the desk is told first, or no seat at a desk meets the sentence.
+OPERATOR_SECOND = {
+    'this desk keeps no record': 'no home is configured, which the deployment decides',
+    'No book is being served': 'no book file is served, which the operator starts the service on',
+    'no book of its own to go back to': 'the service was started with no book of its own',
+    'the record is not installed': 'the deployment sets a home and lacks the package that keeps it',
+    "to the desk's own seat": 'a recording desk with no seat of its own, which the operator sets',
+    'does not read as a key set': 'the deployment names a key set that will not read, at start',
+    'no security map in': 'the scheduled tick on a workstation never verified, read in its log',
+    'is not admitted to read the': 'a replica pulling the store, whose reader runs the replica',
+    'the capabilities blob is not': 'met declaring a capabilities document, a command line act',
+    'a spine home is log/ and blobs/': 'the home configured is not a home, the deployment\'s',
+    'will not READ': 'the capabilities document is damaged in the store: an integrity report',
+    'or declare a replacement': 'a policy is damaged in the store: an integrity report'}
+
+
+def spoken_words(tree, named):
+    """`(line, words)` for everything `tree` can say to a desk: each string constant holding a
+    space, outside docstrings, route decorators and the command line's own `main`, and each
+    `.format` call with the strings of every module constant it names in `named`, which is how a
+    variable's name reaches a sentence."""
+    unspoken = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            if isinstance(node.body[0], ast.Expr):
+                unspoken.add(id(node.body[0].value))
+            parts = list(getattr(node, 'decorator_list', ()))
+            if getattr(node, 'name', None) == 'main':
+                parts.append(node)
+            unspoken.update(id(inner) for part in parts for inner in ast.walk(part))
+    for node in ast.walk(tree):
+        if id(node) in unspoken:
+            continue
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and ' ' in node.value:
+            yield node.lineno, node.value
+        elif isinstance(node, ast.Call) and getattr(node.func, 'attr', None) == 'format':
+            names = [getattr(inner, 'id', getattr(inner, 'attr', None)) for inner in ast.walk(node)]
+            yield node.lineno, ' '.join(constant_strings(node.func.value) + [
+                word for name in names for word in named.get(name, ())])
+
+
+def constant_strings(node):
+    """Every string constant under `node`."""
+    return [inner.value for inner in ast.walk(node)
+            if isinstance(inner, ast.Constant) and isinstance(inner.value, str)]
+
+
+def test_no_sentence_a_desk_reads_names_a_route_and_an_operators_part_is_listed():
+    """A REFUSAL SPEAKS TO SOMEONE AT A DESK, read off the SOURCE so the next route cannot creep
+    back unseen: every sentence the service, its record seam, the record and a quote's notes can
+    say (`SPOKEN`, `spoken_words`). None names a route of this service, a query string or an
+    install line, which no reader at a desk can act on. One naming an operator's part - a command
+    line, a flag, a variable, a folder of the home (`OPERATORS_PART`) - is on `OPERATOR_SECOND` by
+    a phrase of its own with its reason, and every phrase there still excuses a sentence.
+
+    Killing mutations: `GET /book/dependencies` put back into the candidate walk's refusal; and
+    `DV_Spine grant --file` put into the missing-grant sentence (`log.UNGRANTED`), on no list.
+    """
+    from derivus_spine import log, tiers
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    trees = {}
+    for name in SPOKEN:
+        with open(os.path.join(root, name), encoding='utf-8') as handle:
+            trees[name] = ast.parse(handle.read())
+    named = {}
+    for tree in trees.values():
+        for node in tree.body:
+            for target in node.targets if isinstance(node, ast.Assign) else ():
+                paired = isinstance(target, ast.Tuple) and isinstance(node.value, ast.Tuple)
+                for name, value in (zip(target.elts, node.value.elts) if paired
+                                    else [(target, node.value)]):
+                    if isinstance(name, ast.Name) and name.id.isupper():
+                        named.setdefault(name.id, []).extend(constant_strings(value))
+    said = [(name, line, words) for name, tree in trees.items()
+            for line, words in spoken_words(tree, named)]
+    # a collector that stopped collecting would pass anything: a module constant, a table of
+    # sentences, a refusal's own literal and a quote's note are each among what it read
+    read = {words for _, _, words in said}
+    assert {service.NO_RECORD, log.DENIED, 'a solve names the field it moves',
+            *tiers.FAILED.values()} <= read
+    assert any('there is no charge to tighten' in words for words in read)
+
+    roots = {route.path.split('/')[1] for route in service.app.routes} - {''}
+    route = re.compile(r'\b(?:GET|POST|PUT|PATCH|DELETE) /|/(?:{})\b|\?\w+=|pip install'.format(
+        '|'.join(sorted(map(re.escape, roots)))))
+    assert [site for site in said if route.search(site[2])] == []
+
+    excused = {site: [phrase for phrase in OPERATOR_SECOND if phrase in site[2]]
+               for site in said if OPERATORS_PART.search(site[2])}
+    assert [site for site, phrases in excused.items() if not phrases] == []
+    assert sorted(set(OPERATOR_SECOND) - {phrase for phrases in excused.values()
+                                          for phrase in phrases}) == []
 
 
 #: What a client books into the live book: the same cashflow shape, its own reference and size.

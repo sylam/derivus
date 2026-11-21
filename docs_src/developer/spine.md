@@ -299,12 +299,16 @@ naming the seat that can grant it, and beats on. **Held by**
 **What a refused seat is told.** A refusal speaks to someone at a desk. A seat without the grant
 an act asks reads one sentence, whoever turns it away (`log.DENIED`): the seat, the verb, the
 node, what did not happen, who puts it right (`log.UNGRANTED`, a seat holding `admin` over the
-node) and the LSN its denial stands at. No refusal a desk reads names a route, a command line or
-a variable as its remedy: it names the act, by the tool that performs it where there is one, and
-an operator's remedy follows second and only where the fault is the deployment's. **Held by**
+node) and the LSN its denial stands at. **Held by**
 `test_spine_engine.py::test_under_a_document_the_queue_asks_before_the_executor_does`,
-`test_service.py::test_the_market_is_the_marking_seats_on_a_recorded_desk`,
-`::test_a_desk_that_records_refuses_to_open_a_document`.
+`test_service.py::test_the_market_is_the_marking_seats_on_a_recorded_desk`.
+
+No sentence the service, the record or a quote's notes can say names a route, a query string or an
+install line: it names the act, by the tool that performs it where there is one. One naming a
+command line, a flag, a variable or a folder of the home is listed with its reason
+(`OPERATOR_SECOND`): the fault is the deployment's and the desk is told first, or no seat at a
+desk meets it. **Held by**
+`test_service.py::test_no_sentence_a_desk_reads_names_a_route_and_an_operators_part_is_listed`.
 
 `verbs` is the map in force, the verb each act demands. A declaration is stored with the
 vocabulary's verb for every act it does not move, governance staying `admin`, so the map in force
