@@ -5,7 +5,9 @@
 
 import type { Dispatch } from 'react';
 import { fieldsOf, type BlotterRow } from './blotter';
-import { SURVIVAL, entityText, instantMs, peaks, plural, type Peak } from './desk';
+import {
+  SURVIVAL, entityText, factorFamily, instantMs, peaks, plural, type Peak,
+} from './desk';
 import { byPath, closed, type Agreement, type Entity, type Position } from './positions';
 import { standing, type Action } from './state';
 import {
@@ -45,25 +47,51 @@ export type Line = {
   tone: 'ok' | 'todo' | 'warn' | 'note'; text: string; fix?: 'entity' | 'agreement' | 'curve';
 };
 
+/** The price factors an agreement's `terms` name that the market's `factors` do not hold, sorted:
+ * every type a field's declaration names under the name the terms state, a collateral table's by
+ * its column - less its counterparty's credit curve, which has a line of its own. */
+export function lacked(terms: Record<string, unknown>, fields: Record<string, Descriptor>,
+                       factors: Record<string, unknown>): string[] {
+  const named = (declared: Descriptor['factors'], stated: unknown): string[] => (
+    Array.isArray(declared)
+      ? (isBlank(stated) ? [] : declared.map((type) => `${type}.${label(stated)}`))
+      : Object.entries(declared ?? {}).flatMap(([column, types]) =>
+        (Array.isArray(stated) ? stated : []).flatMap((row) => named(types, token(row, column)))));
+  const walk = (level: Record<string, Descriptor>, stated: unknown): string[] =>
+    Object.entries(level).flatMap(([key, field]) => [...named(field.factors, token(stated, key)),
+      ...walk(field.sub_fields ?? {}, token(stated, key))]);
+  return [...new Set(walk(fields, terms))]
+    .filter((name) => !(name in factors) && factorFamily(name) !== SURVIVAL).sort();
+}
+
 /** Whether a client is ready to trade, line by line: its entity declared, an agreement in force
  * and where the book holds its netting set - each said on a desk that records, the netting sets
- * naming it on one that does not - and its credit curve, without which no CVA reads and its first
- * trade is refused; a booking is refused for a factor the book newly lacks, so a set the book
- * already prices without one still takes a trade. */
+ * naming it on one that does not - its credit curve, without which no CVA reads and its first
+ * trade is refused, and each factor its paper names that the market's `factors` lack, none said of
+ * a market not read yet; a booking is refused for a factor the book newly lacks, so a set the
+ * book already prices without one still takes a trade. */
 export function readiness(id: string, entities: Entity[] | null, agreements: Agreement[],
                           doc: JobDoc | null, reconcile: Reconcile | null,
-                          curve: unknown): Line[] {
+                          factors: Record<string, unknown> | undefined,
+                          schema: Schema | null): Line[] {
   const credit = `${SURVIVAL}.${id}`;
   const lines: Line[] = entities ? paperLines(id, entities, agreements, doc, reconcile) : [{
     tone: 'note', text: `This desk keeps no record: ${id} is the counterparty ${
       agreements.map((row) => row.agreement).join(', ')} name${agreements.length === 1 ? 's' : ''}.`,
   }];
-  const held = agreements.some((row) => standing(doc, reconcile, row).path !== null);
-  return [...lines, curve ? { tone: 'ok', text: `Its credit curve ${credit} is stated.` } : {
-    tone: 'todo', fix: 'curve', text: `No credit curve ${credit}: ${held
+  const booked = (row: Agreement) => standing(doc, reconcile, row).path !== null;
+  const wanting = !factors ? [] : agreements.flatMap((row) => lacked(
+    row.terms, fieldsOf(schema, String(row.terms.Object)) ?? {}, factors).map((factor): Line => ({
+    tone: 'todo', text: `${row.agreement} names ${factor}, which the market does not hold: ${
+      booked(row) ? 'a trade still books under the set the book already holds, and a run that '
+        + 'reads it fails' : 'the first trade under it is refused until the market holds it or '
+        + 'the agreement is amended'}.`,
+  })));
+  return [...lines, factors?.[credit] ? { tone: 'ok', text: `Its credit curve ${credit} is stated.` } : {
+    tone: 'todo', fix: 'curve', text: `No credit curve ${credit}: ${agreements.some(booked)
       ? 'its CVA cannot be read, though a trade still books under a set the book already prices '
         + 'without one' : 'its first trade is refused for want of it, and its CVA cannot be read'}.`,
-  }];
+  }, ...wanting];
 }
 
 function paperLines(id: string, entities: Entity[], agreements: Agreement[], doc: JobDoc | null,

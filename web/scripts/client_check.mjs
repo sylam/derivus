@@ -101,9 +101,11 @@ const ENTITIES = [{ entity: 'KES', name: 'Kestrel', parent: null },
                   { entity: 'MAR', name: 'Marrick', parent: null },
                   { entity: 'OFF', name: 'Offside', parent: null }];
 const RECONCILE = { terms_mismatch: [{ agreement: 'ISDA-OFF', deal_path: '2', fields: ['Netted'] }] };
+// the market as far as a client's readiness reads it: its credit curve, where one is stated
+const curved = (id, curve) => (curve ? { [`SurvivalProb.${id}`]: curve } : {});
 const lines = (id, entities, curve) => client.readiness(
-  id, entities, client.agreementsOf(id, entities && PAPER, ROWS), DOC, RECONCILE, curve)
-  .map((line) => [line.tone, line.fix ?? null]);
+  id, entities, client.agreementsOf(id, entities && PAPER, ROWS), DOC, RECONCILE, curved(id, curve),
+  SCHEMA).map((line) => [line.tone, line.fix ?? null]);
 check('a client is ready where nothing stops a booking: an agreement not yet in the book, or a set '
       + 'off its paper, books all the same; no agreement, no entity or no credit curve does not',
       'an agreement awaiting its first booking counted as stopping one, which calls a fresh client '
@@ -114,7 +116,7 @@ check('a client is ready where nothing stops a booking: an agreement not yet in 
        lines('OFF', ENTITIES, {}), lines('NOBODY', ENTITIES, {}), lines('KES', null, {}),
        ['KES', 'ALD', 'MAR'].map((id) => client.ready(client.readiness(
          id, ENTITIES, client.agreementsOf(id, PAPER, ROWS), DOC, null,
-         id === 'ALD' ? null : {})))],
+         curved(id, id === 'ALD' ? null : {}), SCHEMA)))],
       [[['ok', null], ['ok', null], ['ok', null]],
        [['ok', null], ['note', null], ['todo', 'curve']],
        [['ok', null], ['todo', 'agreement'], ['ok', null]],
@@ -124,7 +126,7 @@ check('a client is ready where nothing stops a booking: an agreement not yet in 
        [true, false, false]]);
 
 const curveless = (id, entities) => client.readiness(
-  id, entities, client.agreementsOf(id, entities && PAPER, ROWS), DOC, null, undefined).at(-1).text;
+  id, entities, client.agreementsOf(id, entities && PAPER, ROWS), DOC, null, {}, SCHEMA).at(-1).text;
 check("a client with no credit curve reads its first trade refused where the book holds no set "
       + 'naming it, and a trade still booking where the book already prices one without a curve',
       'the refusal said of a set the book already holds, where the service books all the same - it '
@@ -132,6 +134,54 @@ check("a client with no credit curve reads its first trade refused where the boo
       + 'fresh client trades',
       [curveless('ALD', ENTITIES), curveless('KES', null)].map((text) => /first trade is refused/.test(text)),
       [true, false]);
+
+// ---- its paper against the market ----------------------------------------------------------------
+
+const DECLARED = structuredClone(SCHEMA);
+const set = DECLARED.Instrument.sections['Set.Fields'];
+set.Agreement_Currency.factors = ['FxRate'];
+set.Funding_Rate = field('Text', '', 'Funding rate', { convention: true, factors: ['InterestRate'] });
+set.Credit_Support_Amounts.sub_fields.Counterparty.factors = ['SurvivalProb'];
+set.Collateral_Assets.sub_fields.Cash_Collateral.factors = {
+  Currency: ['FxRate'], Funding_Rate: ['InterestRate'] };
+set.Collateral_Assets.sub_fields.Equity_Collateral = field('Table', 'null', 'Equity Collateral', {
+  factors: { Equity: ['EquityPrice', 'DividendRate'] } });
+const NAMING = { Object: SET, Reference: 'CSA-MAR', Agreement_Currency: 'CHF', Funding_Rate: 'USD-FUND',
+  Credit_Support_Amounts: { Counterparty: 'MAR' }, Collateral_Assets: {
+    Cash_Collateral: [{ Currency: 'SEK', Funding_Rate: 'USD-FUND' }, { Currency: 'CHF' }, { Currency: '' }],
+    Equity_Collateral: [{ Equity: 'ACME' }] } };
+const HOLDS = { 'FxRate.USD': {}, 'InterestRate.USD-FUND': {}, 'EquityPrice.ACME': {} };
+const WHOLE = { ...HOLDS, 'FxRate.CHF': {}, 'FxRate.SEK': {}, 'DividendRate.ACME': {} };
+const declared = blotter.fieldsOf(DECLARED, SET);
+check('an agreement lacks each factor its terms name that the market does not hold, once: every '
+      + 'type a field declares, a collateral row by its column, a blank naming none - and never '
+      + "its counterparty's credit curve, which has a line of its own",
+      'the terms read at their top level alone, which misses the currency of a collateral row; one '
+      + 'type of the two an equity declares asked for; a blank cell read as a factor named '
+      + 'nothing; a factor two terms name said twice; or the credit curve said again',
+      [client.lacked(NAMING, declared, HOLDS), client.lacked(NAMING, declared, WHOLE),
+       client.lacked({ Object: SET }, declared, {})],
+      [['DividendRate.ACME', 'FxRate.CHF', 'FxRate.SEK'], [], []]);
+
+const wanting = (id, paper, factors) => client.readiness(id, ENTITIES, paper, DOC, null, factors, DECLARED)
+  .filter((line) => / names /.test(line.text)).map((line) => [
+    line.tone, /names (\S+), which the market does not hold/.exec(line.text)?.[1] ?? null,
+    /the first trade under it is refused/.test(line.text)]);
+const MAR_PAPER = [{ agreement: 'CSA-MAR', entity: 'MAR', kind: 'ISDA 2002 with CSA', terms: NAMING }];
+const KES_NAMING = [{ ...PAPER[0], terms: { ...KES_SET, Agreement_Currency: 'CHF' } }];
+check("a client's readiness says each factor its paper names that the market lacks, by name, as a "
+      + 'thing to put right: its first trade refused where the book holds no set of it, a trade '
+      + 'still booking where it does - and nothing of a market not read yet',
+      'the line absent where a currency has no spot, which calls ready a client whose first trade '
+      + 'the service refuses; the refusal said of a set the book already holds, where the service '
+      + 'books all the same; or a market still being read taken as holding nothing, which calls '
+      + 'every client unready until it lands',
+      [wanting('MAR', MAR_PAPER, HOLDS), wanting('KES', KES_NAMING, HOLDS),
+       wanting('MAR', MAR_PAPER, undefined), wanting('MAR', MAR_PAPER, WHOLE),
+       [WHOLE, HOLDS].map((held) => client.ready(client.readiness(
+         'MAR', ENTITIES, MAR_PAPER, DOC, null, { ...held, 'SurvivalProb.MAR': {} }, DECLARED)))],
+      [[['todo', 'DividendRate.ACME', true], ['todo', 'FxRate.CHF', true], ['todo', 'FxRate.SEK', true]],
+       [['todo', 'FxRate.CHF', false]], [], [], [true, false]]);
 
 // ---- what the desk has on with it ----------------------------------------------------------------
 
