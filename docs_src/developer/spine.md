@@ -844,7 +844,9 @@ every read and run the queue admits by that reach before it asks (`heldBack` ask
 refused ask filing a denial: a credit charge, a calculation run, a quote, and a tick or a
 verification after `mark`, each control saying what holds it; and the risk and a P&L to now or
 explained (`revalues` in `web/src/pnl.ts`), which a held seat is not sent, that line standing in
-the read's place with nothing another seat read (`readAs`, `bookRisk` in `web/src/state.ts`).
+the read's place with nothing another seat read (`readAs`, `bookRisk` in `web/src/state.ts`). The
+P&L page opens such a seat on the last two marked days, a window that asks no what-if (`opensOn`),
+and reads again for another seat (`pnlRead`).
 **Held by** `web/scripts/desk_check.mjs`, `web/scripts/pnl_check.mjs`,
 `test_spine_engine.py::test_under_a_document_the_queue_asks_before_the_executor_does`,
 `::test_the_poll_paths_own_jobs_are_admitted_under_the_deployments_seat`,

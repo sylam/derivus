@@ -110,6 +110,20 @@ export function behind(end: string, readAt: string | undefined, now: string | un
  * the book as it stands, and an explain values it three times more. */
 export const revalues = (end: string, explain: boolean): boolean => !end || explain;
 
+/** The window the page opens on, a blank being the service's own - the last marks, to now: both
+ * blank, and for a seat `held` from a read to now the last two of the marked `days`, which asks
+ * no what-if - null where fewer than two are marked, when that seat has no window to read. */
+export function opensOn(days: { day: string }[], held: boolean):
+  { start: string; end: string } | null {
+  if (!held) return { start: '', end: '' };
+  const [start, end] = days.slice(-2).map((marked) => marked.day);
+  return end === undefined ? null : { start, end };
+}
+
+/** What one P&L read is of, asked again where it moves: the seat reading, which is shown the
+ * positions under its own nodes, and the `query` asked (`pnlQuery`). */
+export const pnlRead = (seat: string, query: string): string => `${seat}|${query}`;
+
 /** The query `GET /book/pnl` is asked with: a blank end is the book as it stands now, and a
  * blank scope is the whole book. */
 export function pnlQuery(start: string, end: string, scope: Record<string, string>,

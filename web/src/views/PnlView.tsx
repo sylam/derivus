@@ -3,8 +3,8 @@ import { getMarkedDays, getPnl } from '../api';
 import { unmarked } from '../client';
 import { EmptyState } from '../components/EmptyState';
 import {
-  behind, explained, factorLabel, FIGURES, noPnl, pnlQuery, positionLabel, residualShare,
-  revalues, type Pnl,
+  behind, explained, factorLabel, FIGURES, noPnl, opensOn, pnlQuery, pnlRead, positionLabel,
+  residualShare, revalues, type Pnl,
 } from '../pnl';
 import { heldBack, readAs, spineOf, useApp, useRead } from '../state';
 import { formatNumber, type Kind } from '../tokens';
@@ -48,12 +48,18 @@ export function PnlView() {
   const marked = useRead(recording ? getMarkedDays : null, [recording]);
   const days = marked.data;
   const paper = state.paper.data ?? NO_PAPER;
-  // read again whenever the window or the scope moves, or the reader asks - the explain only when
-  // asked for - with the book it was read at; a what-if's work only of a seat that may ask one
-  const hold = revalues(end, explain) ? heldBack(state, 'validate') : null;
+  // a what-if's work - a read to now, an explain - only of a seat that may ask one: a seat held
+  // from it opens on the last two marked days, and reads no window where fewer are marked
+  const toNow = heldBack(state, 'validate');
+  const opens = opensOn(days?.days ?? [], toNow !== null);
+  const [from, to] = [start || opens?.start || '', end || opens?.end || ''];
+  const hold = revalues(to, explain) ? toNow : null;
+  // read again whenever the seat, the window or the scope moves, or the reader asks, with the
+  // book it was read at
+  const query = pnlQuery(from, to, scope, explain);
   const read = readAs(hold, useRead(recording && days?.days.length && !hold ? async () => ({
-    asked: current.current, answer: await getPnl(pnlQuery(start, end, scope, explain)) }) : null,
-  [recording, days, start, end, scope, explain, again, hold]));
+    asked: current.current, answer: await getPnl(query) }) : null,
+  [recording, days, pnlRead(state.seat, query), again, hold]));
   const { answer, asked: readAt } = read.data ?? {};
   const { loading } = read;
   const error = marked.error ?? read.error;
@@ -86,17 +92,18 @@ export function PnlView() {
       <div className="panel">
         <div className="blotterbar">
           <label className="hint">From{' '}
-            <select value={start || answer.start.day} onChange={(event) => setStart(event.target.value)}>
-              {(days?.days ?? []).map((marked) => (
+            <select value={from || answer.start.day} onChange={(event) => setStart(event.target.value)}>
+              {(days?.days ?? []).slice(0, toNow ? -1 : undefined).map((marked) => (
                 <option key={marked.day} value={marked.day}>{marked.day}</option>))}
             </select>
           </label>
           <label className="hint">to{' '}
-            <select value={end} onChange={(event) => setEnd(event.target.value)}>
-              <option value="">now</option>
+            <select value={to} onChange={(event) => setEnd(event.target.value)}>
+              {!toNow && <option value="">now</option>}
               {later.map((marked) => <option key={marked.day} value={marked.day}>{marked.day}</option>)}
             </select>
           </label>
+          {toNow && <><span className="hint">to now, or explained</span><span>{toNow}</span></>}
           <input placeholder="portfolio path" value={path}
                  onChange={(event) => setPath(event.target.value)} onBlur={commit}
                  onKeyDown={(event) => { if (event.key === 'Enter') commit(); }} />
@@ -113,11 +120,13 @@ export function PnlView() {
               <option key={row.entity} value={row.entity}>{entityText(paper.entities, row.entity)}
               </option>))}
           </select>
-          <button className={`ghost${explain ? ' on' : ''}`} onClick={() => setExplain(!explain)}>
-            explain
-          </button>
+          {!toNow && (
+            <button className={`ghost${explain ? ' on' : ''}`} onClick={() => setExplain(!explain)}>
+              explain
+            </button>
+          )}
           <span className="spacer" />
-          {!loading && behind(end, readAt, etag) && (
+          {!loading && behind(to, readAt, etag) && (
             <button className="ghost" onClick={() => setAgain(again + 1)}>
               the book has moved - read again
             </button>

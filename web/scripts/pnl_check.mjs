@@ -66,6 +66,29 @@ check("a read ending now, or explained, is a what-if's work, which the queue adm
        pnl.revalues('2024-07-02', false)],
       [true, true, true, false]);
 
+const DAYS = ['2024-06-28', '2024-07-01', '2024-07-02'].map((day) => ({ day, lsn: 1 }));
+const opens = (days, held) => {
+  const window = pnl.opensOn(days, held);
+  return window && [window.start, window.end, pnl.revalues(window.end, false)];
+};
+check('the page opens to now from the last marks for a seat that may ask a what-if; for a seat '
+      + 'held from one it opens on the last two marked days, a window that asks none, and on no '
+      + 'window where fewer than two days are marked',
+      'the held seat still opened to now, which holds it from every window the page could show '
+      + 'it; its window opened on the first two days marked; or one marked day read as a window',
+      [opens(DAYS, false), opens(DAYS, true), opens(DAYS.slice(0, 1), true), opens([], true)],
+      [['', '', true], ['2024-07-01', '2024-07-02', false], null, null]);
+
+const QUERY = pnl.pnlQuery('2024-07-01', '2024-07-02', {}, false);
+check('a P&L read is of the seat reading and the query asked: another seat reads again, and so '
+      + 'does another window',
+      "the seat left out of the key, which leaves the last seat's rows and totals under the "
+      + 'seat now named in the header; or the query left out, which reads no window chosen',
+      [pnl.pnlRead('sales-1', QUERY) === pnl.pnlRead('sales-9', QUERY),
+       pnl.pnlRead('sales-1', QUERY) === pnl.pnlRead('sales-1', pnl.pnlQuery('2024-06-28', '', {}, false)),
+       pnl.pnlRead('sales-1', QUERY) === pnl.pnlRead('sales-1', QUERY)],
+      [false, false, true]);
+
 check('only a window ending now falls behind the book, and only once the book has moved',
       'a struck day offered a re-read, which never moves; or every write reading the window again, '
       + 'which values the whole book per tick',
