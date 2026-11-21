@@ -497,6 +497,18 @@ export function reconciles(risk: BookRisk): boolean {
   return Math.abs(risk.mtm - marksTotal(risk.per_deal)) <= RECONCILE_TOLERANCE * scale;
 }
 
+/** What stands under the service's refusal to price the book's risk: that nothing was served, and
+ * who puts it right - the desk on its own book, its sender on a document `opened` here from
+ * another system. Undefined for any other refusal - a seat's - which says for itself. */
+export function unpriced(refusal: string, opened?: string): string | undefined {
+  if (!refusal.startsWith('the book will not price')) return undefined;
+  return `Nothing was cached and nothing partial was served. ${opened
+    ? `${opened} came from another system and will not price as it was sent: its sender puts it `
+      + 'right, the desk cannot, and the corrected file is opened here again.'
+    : 'The book will not price as it stands, and the desk puts it right in its own book: this '
+      + 'screen asks again as soon as the book moves.'}`;
+}
+
 /** The one clock an answer read off the live book is held against: the book's etag, and on a
  * desk that records how far the record stands (`pinnedAt`) - a booking moves the first, and an
  * approval, a declaration or a fill the record alone holds the second. */

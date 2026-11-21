@@ -3,7 +3,7 @@ import { NO_SEAT } from '../api';
 import {
   factorAxes, factorFamily, lagsBook, markHolds, marksTotal, onPair, perOf, perUnitText, plural,
   positionsUnder, quoteText, quoteView, reconciles, riskOf, riskReading, sharedPer, sortGreeks,
-  stampText, tenorText, type GreekKey, type Ladder,
+  stampText, tenorText, unpriced, type GreekKey, type Ladder,
 } from '../desk';
 import { EmptyState } from '../components/EmptyState';
 import { closed, type Position } from '../positions';
@@ -66,9 +66,7 @@ export function RiskView() {
           <div className="hint">
             {risk.error === NO_SEAT
               ? 'The risk is read again as soon as a seat is set.'
-              : risk.status === 422
-              ? 'Nothing was cached and nothing partial was served. Fix the book — the etag moves, and this screen asks again on its own.'
-              : 'The consolidated risk could not be read.'}
+              : unpriced(risk.error, source.opened) ?? 'The consolidated risk could not be read.'}
           </div>
         </div>
       </div>

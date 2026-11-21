@@ -201,6 +201,18 @@ check('an answer read before the record moved is behind the book, though the fil
        desk.lagsBook(desk.bookClock('e1', null), desk.bookClock('e2', null))],
       [true, false, true]);
 
+const UNPRICED = 'the book will not price a consolidated risk run: Cannot find InterestRate.ZAR-X';
+const who = (said) => said && [/the desk puts it right/.test(said), /its sender puts it right/.test(said),
+                               said.includes('from-fo.json')];
+check('a book that will not price says who puts it right: the desk on its own book, the sender of '
+      + 'a document opened from another system by its name; any other refusal says for itself',
+      "the document's name left unread, which tells a desk to fix in its own book a file another "
+      + 'system sent it; or every refusal read as a book that will not price, which says so under '
+      + "the record's sentence to a seat it does not admit",
+      [who(desk.unpriced(UNPRICED)), who(desk.unpriced(UNPRICED, 'from-fo.json')),
+       who(desk.unpriced('sales-9 holds no validate over HARBOURLINE', 'from-fo.json')) ?? null],
+      [[true, false, false], [false, true, true], null]);
+
 // --- pending approval inside the marks, off `GET /book/positions`
 const position = (reference, paths, pending) => ({ reference, deal_paths: paths, pending,
   instrument: reference, status: pending ? 'pending' : 'approved' });
