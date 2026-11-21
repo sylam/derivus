@@ -7349,7 +7349,8 @@ def live_spot_crosses(base_currency, currencies, host=None, port=None):
         from derivus_bloomberg import security_map
         from derivus_bloomberg.discover import provisioned
     except ImportError as error:
-        return None, NO_LIVE_SPOT.format('derivus_bloomberg is not importable ({})'.format(error))
+        return None, NO_LIVE_SPOT.format('this desk has no Bloomberg link installed ({})'.format(
+            error))
     try:
         path = provisioned()
         if path is None:
@@ -7469,7 +7470,8 @@ class StructureJob:
             from . import quote_sheet
         except ImportError as error:
             return {'sheet': None,
-                    'sheet_note': 'no quote sheet ({}) - pip install derivus[quote]'.format(error)}
+                    'sheet_note': 'no quote sheet was written, the desk lacking what writes one '
+                                  '({}); the operator installs derivus[quote]'.format(error)}
         path = os.path.join(directory, outcome['quote_id'] + '.xlsx')
         quote_sheet.write_sheet(path, outcome, self.document, market_of(self.document))
         return {'sheet': path}

@@ -823,7 +823,8 @@ def test_a_leg_the_two_way_cannot_reach_is_charged_nothing_and_says_so(book, two
 
     Nothing else moves: an unchargeable two-way quotes the mid quote, to the float.
 
-    Killing mutation: a leg no vega reaches charged zero rather than nothing.
+    Killing mutations: a leg no vega reaches charged zero rather than nothing; and either note
+    saying a leg "publishes" no sensitivity, the runner's word rather than the desk's.
     """
     ask = params(floor=SPOT * 0.95)
     blind = structures.quote(with_policy(no_quote_leaves(two_sided_book)), COLLAR, ask)
@@ -832,14 +833,15 @@ def test_a_leg_the_two_way_cannot_reach_is_charged_nothing_and_says_so(book, two
     assert [row['spread_charge'] for row in blind['legs']] == [None, None]
     assert [row['spread_source'] for row in blind['legs']] == [None, None]
     assert [row['spread'] for row in blind['legs']] == [None, None]
-    assert all('could not reach' in row['note'] for row in blind['legs']), blind['legs']
+    assert all('could not reach' in row['note'] and 'shows an FX vol quote sensitivity' in
+               row['note'] for row in blind['legs']), blind['legs']
     assert blind['spread_note'] is None, 'the book quotes a two-way; there is no absence to name'
     assert blind['edge'] == 0.0
     # the book DECLARES a policy here, so the risk step really runs and really has to answer: a
     # charge no leg could be read for is null, not a zero somebody could mistake for a measurement
     assert blind['risk']['policy'] is not None, 'the risk step never ran, so nothing is proved'
     assert blind['risk']['charge_full'] is None and blind['risk']['scale'] is None
-    assert 'quote sensitivity' in blind['risk']['note'], blind['risk']['note']
+    assert 'shows an FX vol quote sensitivity' in blind['risk']['note'], blind['risk']['note']
 
     for row, same in zip(blind['legs'], mid['legs']):
         assert (row['premium'], row['strike_market'], row['solved']) == (

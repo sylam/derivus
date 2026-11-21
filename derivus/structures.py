@@ -1220,7 +1220,7 @@ def leg_vega(book, leg, surface):
     return (vega, 'lognormal reading' if pinned else 'surface', leg.note) if vega \
         else (None, None, ' '.join(filter(None, (
             leg.note, 'the two-way could not reach this leg - neither the surface nor a lognormal '
-                      'reading of it publishes an FX vol quote sensitivity, so no spread was '
+                      'reading of it shows an FX vol quote sensitivity, so no spread was '
                       'charged on it'))))
 
 
@@ -1955,7 +1955,7 @@ def risk_impact(book, params, reference, surface, legs, halves, charge_full, cac
         return dict(empty, note='{} carries no two-way - there is no spread to tighten'.format(
             prices_block(surface)))
     if charge_full is None:
-        return dict(empty, note='no leg of this structure publishes an FX vol quote sensitivity - '
+        return dict(empty, note='no leg of this structure shows an FX vol quote sensitivity - '
                                 'the two-way reached none of them, so nothing was charged and '
                                 'there is no charge to tighten')
     if charge_full <= 0.0:
@@ -1970,9 +1970,9 @@ def risk_impact(book, params, reference, surface, legs, halves, charge_full, cac
     after = vol_risk(book, [candidate], surface)
     if not (before or after):
         return dict(empty, charge_full=charge_full,
-                    note='no FX vol quote leaves were published - the book carries no '
-                         'FXVol bootstrap, so there are no quote coordinates to '
-                         'measure the residual in and no tightening applies')
+                    note='the book bootstraps no FX vol surface from quotes, so the '
+                         'residual has no quotes to be measured against and no '
+                         'tightening applies')
 
     rows, cost = risk_buckets(before, after, halves)
     # a bp of NOTIONAL in the report currency: the notional is in its own currency and the charge
