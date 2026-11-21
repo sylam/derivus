@@ -647,3 +647,16 @@ export function csvText(rows: unknown[][]): string {
   };
   return rows.map((row) => row.map(field).join(',')).join('\r\n') + '\r\n';
 }
+
+/** What an export control says it saves. */
+export const EXPORTS = 'the rows as shown, in the columns shown, every number as itself';
+
+/** `rows`, their heads first, saved as `<name>.csv` - with a byte-order mark, so a spreadsheet
+ * reads the dots and dashes of a row's terms as written. */
+export function saveCsv(name: string, rows: unknown[][]): void {
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(new Blob(['﻿', csvText(rows)], { type: 'text/csv' }));
+  link.download = `${name}.csv`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}

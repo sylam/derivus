@@ -1,15 +1,16 @@
 import { useState, type ReactNode } from 'react';
 import { getBookCollateral, getXvaProfile } from '../api';
-import { SET, fieldsOf, rowsByPath, toRows } from '../blotter';
+import { EXPORTS, SET, fieldsOf, rowsByPath, saveCsv, toRows } from '../blotter';
 import {
-  RUNS, WRONG, actionFirst, agreementsOf, bookedText, creditLines, exposureAfter, openClient,
-  runSum, statedHolding, summed, unmarked, wrongWith, type CreditLine, type Wrong,
+  RUNS, WRONG, actionFirst, agreementsOf, bookedText, creditExport, creditLines, exposureAfter,
+  openClient, paperText, runSum, statedHolding, summed, unmarked, wrongWith, type CreditLine,
+  type Wrong,
 } from '../client';
 import { EmptyState } from '../components/EmptyState';
 import { TimeSeriesChart } from '../components/TimeSeriesChart';
 import {
   SURVIVAL, ageOf, currencyOf, entityText, lagsBook, peaks, plural, replayRows, spreads, stampText,
-  tableReading, xvaTotals, type Peak,
+  tableReading, valuationDay, xvaTotals, type Peak,
 } from '../desk';
 import { clockOf, marketOf, useApp, useRead } from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
@@ -153,6 +154,10 @@ export function XvaView() {
                 {sum.currency ?? '(currency unknown)'}</span>
             ))}
           </span>
+          <button className="ghost" title={EXPORTS} onClick={() => saveCsv(
+            `xva ${valuationDay(doc) || 'undated'}`, creditExport(clients, currency))}>
+            export CSV
+          </button>
         </div>
 
         <div className="note">
@@ -308,10 +313,9 @@ function LineCells({ line, reads }: { line: CreditLine; reads: Reads }) {
     )}</td>);
   return (
     <>
-      <td title={line.paper ?? undefined}>{line.paper === null
-        ? <span className="chip error">no agreement</span>
-        : <span className={`chip${line.collateralised ? ' on' : ''}`}>
-          {line.collateralised ? 'collateralised' : 'uncollateralised'}</span>}</td>
+      <td title={line.paper ?? undefined}>
+        <span className={`chip${line.paper === null ? ' error' : line.collateralised ? ' on' : ''}`}>
+          {paperText(line)}</span></td>
       <td className="n">{line.trades}
         {line.pending > 0 && <span className="badge pending">{line.pending} waiting</span>}</td>
       <Amount value={line.value} absent={reads.riskError ?? 'the risk marks top-level sets only'} />

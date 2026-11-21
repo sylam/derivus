@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react';
 import {
-  HEADS, RECORD_HEADS, WINDOWS, baseDateOf, cellText, csvText, exported, filterRows, flatten,
-  groupedRows, heldRows, holdsTrades, inWindow, nameOf, quoted, rollingCount, rowsByPath, sizeOf,
-  sortRows, toRows, type BlotterRow,
+  EXPORTS, HEADS, RECORD_HEADS, WINDOWS, baseDateOf, cellText, exported, filterRows, flatten,
+  groupedRows, heldRows, holdsTrades, inWindow, nameOf, quoted, rollingCount, rowsByPath, saveCsv,
+  sizeOf, sortRows, toRows, type BlotterRow,
 } from '../blotter';
 import { DealPanels } from '../components/FieldView';
 import {
@@ -71,18 +71,10 @@ export function BlotterView() {
     });
   }
 
-  /** The rows as shown, in the columns shown, saved as CSV - with a byte-order mark, so a
-   * spreadsheet reads the dots and dashes of a row's terms as written. */
-  function download() {
-    const table = rows.map((row) => [...exported(row, market, schema),
-      ...(recording ? heldColumns(heldOf(row)!, paper.entities) : [])]);
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(new Blob(['﻿', csvText([heads, ...table])],
-                                             { type: 'text/csv' }));
-    link.download = `blotter ${base ?? 'undated'}.csv`;
-    link.click();
-    URL.revokeObjectURL(link.href);
-  }
+  /** The rows as shown, in the columns shown, saved as CSV. */
+  const download = () => saveCsv(`blotter ${base ?? 'undated'}`, [heads, ...rows.map((row) => [
+    ...exported(row, market, schema),
+    ...(recording ? heldColumns(heldOf(row)!, paper.entities) : [])])]);
 
   return (
     <div className="main">
@@ -122,10 +114,7 @@ export function BlotterView() {
           <button className="ghost" onClick={() => setSort(sort === 'days' ? 'reference' : 'days')}>
             sort: {sort === 'days' ? 'days to roll' : 'reference'}
           </button>
-          <button className="ghost" onClick={download}
-                  title="the rows as shown, in the columns shown, every number as itself">
-            export CSV
-          </button>
+          <button className="ghost" onClick={download} title={EXPORTS}>export CSV</button>
         </div>
 
         {!base && (

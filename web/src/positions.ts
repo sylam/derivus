@@ -91,6 +91,10 @@ export const POSITION = 'position:';
 export const positionId = (position: Position): string =>
   POSITION + JSON.stringify([position.instrument, position.agreement, position.portfolio]);
 
+/** A position by the reference it was booked under, else by the head of its address. */
+export const positionName = (position: Position): string =>
+  position.reference ?? position.instrument.slice(0, 12);
+
 /** Whether the record holds nothing of a trade - a position netted to nothing, which stands only to
  * say it closed, or a row of the file the record holds at a net of none. Closed counts as live
  * nowhere. */

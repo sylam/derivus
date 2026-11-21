@@ -5,11 +5,12 @@
 
 import type { Dispatch } from 'react';
 import { fieldsOf, type BlotterRow } from './blotter';
-import { SURVIVAL, entityText, instantMs, plural } from './desk';
+import { SURVIVAL, entityText, instantMs, peaks, plural, type Peak } from './desk';
 import { byPath, closed, type Agreement, type Entity, type Position } from './positions';
 import { standing, type Action } from './state';
 import {
-  COLLATERAL, currencyOf, formatNumber, isBlank, label, setCurrency, token, uncollateralised,
+  COLLATERAL, currencyOf, formatNumber, isBlank, label, setCurrency, tenorLabel, token,
+  uncollateralised,
 } from './tokens';
 import { markOf } from './trade';
 import type {
@@ -297,6 +298,39 @@ export function runSum(lines: CreditLine[], key: 'cva' | 'fva'):
   const currencies = new Set(runs.map((run) => run.currency));
   return { currency: currencies.size === 1 ? [...currencies][0] : null,
            value: currencies.size === 1 ? summed(runs.map((run) => run[key])) : null };
+}
+
+/** What a line's paper reads: no agreement in force, or whether its terms collateralise. */
+export const paperText = (line: CreditLine): string => (line.paper === null ? 'no agreement'
+  : line.collateralised ? 'collateralised' : 'uncollateralised');
+
+/** The credit table as its export writes it, its heads first: a row per set under its client, a
+ * client with none a row of its own; every amount the number itself, its currency in a column
+ * beside it and a peak's day in the next; a PFE column per percentile the runs kept; and the
+ * service's note on a set that has left the book. A client's sums are left to the reader. */
+export function creditExport(
+  clients: { name: string; spread?: [number, number]; lines: CreditLine[] }[],
+  currency: string): unknown[][] {
+  const kept = (line?: CreditLine) => peaks(line?.run?.peaks ?? null);
+  const quantiles = [...new Set(clients.flatMap((client) => client.lines)
+    .flatMap((line) => kept(line).pfe.map((peak) => peak.quantile)))].sort((a, b) => a - b);
+  const peak = (found?: Peak) => [found?.value, found?.day];
+  return [
+    ['Client', 'Netting set', 'Spread bp', 'Spread tenor', 'Paper', 'Trades',
+      'Waiting on a second seat', 'Value to the desk', 'After collateral', 'Ccy', 'Collateral held',
+      'Call', 'Collateral ccy', 'Peak EE', 'Peak EE day',
+      ...quantiles.flatMap((quantile) => [`Peak PFE ${quantile}`, `Peak PFE ${quantile} day`]),
+      'CVA', 'FVA', 'Run ccy', 'Run', 'Note'],
+    ...clients.flatMap(({ name, spread, lines }) => (lines.length ? lines : [undefined]).map((line) => {
+      const held = line?.collateralised && typeof line.call?.balance === 'number' ? line.call : null;
+      return [name, line?.reference, spread && spread[1] * 1e4, spread && tenorLabel(spread[0]),
+        line && paperText(line), line?.trades, line?.pending, line?.value,
+        line && exposureAfter(line, currency), line && currency, held?.balance, held?.call,
+        held?.currency, ...peak(kept(line).ee),
+        ...quantiles.flatMap((quantile) => peak(kept(line).pfe.find((at) => at.quantile === quantile))),
+        line?.run?.cva, line?.run?.fva, line?.run?.currency, line?.run?.as_of, line?.run?.note];
+    })),
+  ];
 }
 
 /** What a row says to act on, worst first. */

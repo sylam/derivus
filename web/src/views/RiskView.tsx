@@ -1,12 +1,14 @@
 import { Fragment, useMemo, useState } from 'react';
 import { NO_SEAT } from '../api';
+import { EXPORTS, saveCsv } from '../blotter';
 import {
-  factorAxes, factorFamily, lagsBook, markHolds, marksTotal, onPair, perOf, perUnitText, plural,
-  positionsUnder, quoteText, quoteView, reconciles, riskOf, riskReading, sharedPer, sortGreeks,
-  stampText, tenorText, unpriced, type GreekKey, type Ladder,
+  MARK, QUOTE_HEADS, bucketAxes, factorFamily, lagsBook, markHolds, marksExport, marksHeads,
+  marksTotal, onPair, perOf, perUnitText, placeText, plural, positionsUnder, quoteView,
+  quotesExport, readingExport, reconciles, riskOf, riskReading, sharedPer, sortGreeks, stampText,
+  tenorText, unpriced, valuationDay, type GreekKey, type Ladder,
 } from '../desk';
 import { EmptyState } from '../components/EmptyState';
-import { closed, type Position } from '../positions';
+import { closed, positionName, type Position } from '../positions';
 import { clockOf, marketOf, openTrade, useApp } from '../state';
 import { axisText, formatNumber } from '../tokens';
 import { tradeAt } from '../trade';
@@ -134,6 +136,12 @@ export function RiskView() {
               </span>
               <span className="spacer" />
               {risk.loading && <span className="hint">refreshing…</span>}
+              <button className="ghost" title={EXPORTS} onClick={() => saveCsv(
+                `risk ${quotes ? 'by quote' : 'by factor'} ${valuationDay(state.doc) || 'undated'}`,
+                quotes ? quotesExport(rows, state.schema, currency)
+                  : readingExport(data.greeks, state.schema, market, currency))}>
+                export CSV
+              </button>
             </div>
             {quotes ? (
               <div className="tablewrap">
@@ -141,17 +149,17 @@ export function RiskView() {
                   <thead>
                     <tr>
                       <SortTh
-                        label="Block · Factor" mine="factor" key_={key} descending={descending}
+                        label={QUOTE_HEADS[0]} mine="factor" key_={key} descending={descending}
                         onSort={sortBy}
                         title="sorted by name, each factor's coordinates in curve order beneath it"
                       />
-                      <th>Quote · Tenor</th>
+                      <th>{QUOTE_HEADS[1]}</th>
                       <SortTh
-                        label={`Risk${currency ? ` (${currency})` : ''}`} mine="magnitude"
+                        label={`${QUOTE_HEADS[2]}${currency ? ` (${currency})` : ''}`} mine="magnitude"
                         key_={key} descending={descending} onSort={sortBy} numeric
                         title="sorted by size of exposure per each row's move, sign carried but not sorted on"
                       />
-                      <th>per</th>
+                      <th>{QUOTE_HEADS[3]}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -159,8 +167,7 @@ export function RiskView() {
                       <tr key={`${row.factor}:${tenorText(row.tenor)}:${position}`}>
                         <FactorCell factor={row.factor} pair={row.pair} />
                         <td className="tenor" title={row.quote ?? row.tenor?.join(' / ')}>
-                          {row.quote === undefined ? tenorText(row.tenor, factorAxes(
-                            state.schema, row.factor, row.tenor?.length ?? 0)) : quoteText(row.quote)}
+                          {placeText(row, state.schema)}
                         </td>
                         <Risk row={row} />
                         <td className="hint">{perOf(row)}</td>
@@ -249,8 +256,7 @@ function DeskReading({ rows, currency }: { rows: GreekRow[]; currency: string })
               {reading.units.map((row, position) => (
                 <tr key={`${row.factor}:${position}`}>
                   <FactorCell factor={row.factor} />
-                  <td className="tenor">{tenorText(row.tenor, factorAxes(
-                    state.schema, row.factor, row.tenor?.length ?? 0))}</td>
+                  <td className="tenor">{placeText(row, state.schema)}</td>
                   <Risk row={row} />
                 </tr>
               ))}
@@ -267,7 +273,7 @@ function DeskReading({ rows, currency }: { rows: GreekRow[]; currency: string })
 function LadderCard({ ladder, unit }: { ladder: Ladder; unit: string }) {
   const [opened, setOpened] = useState<string | null>(null);
   const summed = ladder.buckets.some((bucket) => bucket.nodes.length > 1);
-  const axes = ladder.axes.filter((_, at) => at !== ladder.across);
+  const axes = bucketAxes(ladder);
   return (
     <section className="card ladder">
       <h3 title={ladder.factor}>
@@ -399,17 +405,21 @@ function Marks({ risk, currency }: { risk: BookRisk; currency: string }) {
           desk; one row per top-level node of the book, a structure and a netting set each
           reporting their net
         </span>
+        <span className="spacer" />
+        <button className="ghost" title={EXPORTS} onClick={() => saveCsv(
+          `risk marks ${valuationDay(state.doc) || 'undated'}`,
+          marksExport(risk, recording ? holds : undefined))}>
+          export CSV
+        </button>
       </div>
       <div className="tablewrap">
         <table className="data desk marks">
           <thead>
             <tr>
-              <th>Reference</th>
-              {recording && <th>Client</th>}
-              <th>Path</th>
-              {recording && <th>Waiting on a second seat</th>}
-              <th className="n" title="the mark from the desk's side: positive is worth that much to the desk">
-                {`Desk's value${currency ? ` (${currency})` : ''}`}</th>
+              {marksHeads(recording).map((head) => (head !== MARK ? <th key={head}>{head}</th> : (
+                <th key={head} className="n" title="the mark from the desk's side: positive is worth that much to the desk">
+                  {`${head}${currency ? ` (${currency})` : ''}`}</th>
+              )))}
             </tr>
           </thead>
           <tbody>
@@ -473,8 +483,7 @@ function PendingCell({ held }: { held: Position[] }) {
   if (!held.length) return <span className="hint">—</span>;
   return (
     <span className="badge pending" title="booked, and waiting on a second seat to approve it: the mark prices it all the same">
-      {plural(held.length, 'trade')} pending: {held.map((position) => position.reference
-        ?? position.instrument.slice(0, 12)).join(', ')}
+      {plural(held.length, 'trade')} pending: {held.map(positionName).join(', ')}
     </span>
   );
 }

@@ -124,6 +124,13 @@ The arithmetic behind both — ages, sorts, totals, staleness, the quote reading
 pure and free of React, the way `src/blotter.ts` is for the blotter; the quote reading and the
 dials a named calculation takes from the book are checked by `scripts/desk_check.mjs`.
 
+**A table a desk takes to a spreadsheet saves as CSV through one writer** (`csvText` and `saveCsv`
+in `src/blotter.ts`): the blotter, the marks, the gradient as it is being read - by factor or by
+quote - and the credit table, one row per netting set. The rows are the ones shown under the
+screen's own heads, every number the one behind its cell with no grouping and no rounding, and a
+currency in a column of its own. Checked per export by `scripts/blotter_check.mjs`,
+`scripts/desk_check.mjs` and `scripts/client_check.mjs`.
+
 The UI is optional to the core library. Nothing here enters the `derivus` package: it is a client
 of the same endpoints every other client uses, built separately and handed to the service as a
 directory of static files.

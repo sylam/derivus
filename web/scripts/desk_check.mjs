@@ -310,6 +310,56 @@ check("a turned spot's delta is per 1% of the pair: the engine's number with its
        Math.round(zar.value * zar.level * 0.01)],
       ['USDZAR', 17.35, -Math.round(GREEKS[0].risk), -Math.round(GREEKS[0].risk)]);
 
+// --- the exports: each table's rows under its own heads, every number as itself
+const MARKED = { ...RISK, per_deal: [{ reference: 'ISDA-KESTREL', deal_path: '0', value: 1234567.891 },
+                                     { reference: 'TWICE', deal_path: null, value: -(0.1 + 0.2) }] };
+const inside = (path) => (path === '0' ? {
+  clients: ['Kestrel (KES)', 'Alderby (ALD)'],
+  pending: [{ reference: 'NDF-2', instrument: 'a'.repeat(64) }, { reference: null, instrument: 'b'.repeat(64) }],
+} : { clients: [], pending: [] });
+check('the marks export under the heads the table shows, each mark the number itself and its '
+      + 'currency in a column of its own; on a desk that records, its clients and the trades '
+      + 'waiting in it by name',
+      'a mark written as displayed - `formatNumber` over the value - which exports 1,234,567.89 '
+      + 'as text a spreadsheet cannot add and rounds what it keeps; the currency left in the head; '
+      + "or the record's two columns headed on a desk keeping none, every value under the wrong head",
+      [desk.marksExport(MARKED), desk.marksExport(MARKED, inside)],
+      [[['Reference', 'Path', "Desk's value", 'Ccy'], ['ISDA-KESTREL', '0', 1234567.891, 'USD'],
+        ['TWICE', null, -0.30000000000000004, 'USD']],
+       [['Reference', 'Client', 'Path', 'Waiting on a second seat', "Desk's value", 'Ccy'],
+        ['ISDA-KESTREL', 'Kestrel (KES), Alderby (ALD)', '0', `NDF-2, ${'b'.repeat(12)}`, 1234567.891, 'USD'],
+        ['TWICE', '', null, '', -0.30000000000000004, 'USD']]]);
+
+const QUOTED = { factor: 'FXVolPrices.USD.ZAR', quote: 'ATM 0.5', value: 513753.0, level: 0.15,
+                 risk: 5137.53, per: 'per vol point' };
+check('the quote reading exports under its own heads: a quote as a dealer names it, a spot on its '
+      + 'pair, each risk per its move the number itself and the report currency in its own column',
+      'a risk written as displayed, which exports 5,137.53 as text; the per-unit derivative '
+      + "written for the risk per the row's move; or a turned spot written under its engine name "
+      + 'alone, its sign then reading the wrong way',
+      desk.quotesExport([QUOTED, zar], SCHEMA, 'USD'),
+      [['Block · Factor', 'Quote · Tenor', 'Risk', 'per', 'Ccy'],
+       ['FXVolPrices.USD.ZAR', '6M ATM', 5137.53, 'per vol point', 'USD'],
+       ['USDZAR FxRate.ZAR', '', zar.risk, 'per 1%', 'USD']]);
+
+check('the desk reading exports as one table: every spot on its pair at its level, each curve and '
+      + 'surface a row per bucket - a surface\'s the sum its row shows - then each row read per '
+      + 'unit, every risk the number itself',
+      'a risk written as displayed, which exports 78,720 as text and rounds a ladder to cents; a '
+      + "surface's nodes written each under its bucket's coordinates, which a sum then counts as "
+      + 'the screen does not; or the spots written before they are read on their pairs',
+      desk.readingExport(GREEKS, SCHEMA, PAIRS, 'USD'),
+      [['Factor', 'Coordinates', 'Level', 'Risk', 'per', 'Ccy'],
+       ['FxRate.GBP', null, 1.312, GREEKS[1].risk, 'per 1%', 'USD'],
+       ['USDZAR FxRate.ZAR', null, zar.level, zar.risk, 'per 1%', 'USD'],
+       ['InterestRate.ZAR', '3M', null, GREEKS[3].risk, 'per bp', 'USD'],
+       ['InterestRate.ZAR', '3Y', null, GREEKS[2].risk, 'per bp', 'USD'],
+       ['FXVol.USD.ZAR', '3M', null, GREEKS[6].risk, 'per vol point', 'USD'],
+       ['FXVol.USD.ZAR', '6M', null, GREEKS[4].risk + GREEKS[5].risk, 'per vol point', 'USD'],
+       ['ForwardPriceVol.GOLD', '47,073 / 6M', null, GREEKS[7].risk + GREEKS[8].risk, 'per vol point', 'USD'],
+       ['FXVol.EUR.USD.rho', '0.4Y', null, 17851.2, 'per unit', 'USD'],
+       ['EquityPrice.NOLEVEL', '', null, 42, 'per unit', 'USD']]);
+
 // --- a credit curve stated as spreads and read back as them. `POST /book/survival`'s own answers
 // on a book valued 2026-11-16: 1Y/3Y/5Y at 100/150/200bp and a recovery of 0.35, and flat 21bp
 // and 120bp at the convention's 0.4, each run on to fifty years

@@ -9,7 +9,7 @@
 // module has no vocabulary for one on purpose.
 
 import { fieldsOf, levelOnAxis } from './blotter';
-import { clientName, type Entity, type Position } from './positions';
+import { clientName, positionName, type Entity, type Position } from './positions';
 import {
   COLLATERAL, axisText, curveOf, formatNumber, isObject, label, tenorLabel, token, uncollateralised,
   ungrouped,
@@ -483,6 +483,67 @@ export function factorNames(descriptor: Descriptor | undefined, market: Market |
 
 export function marksTotal(rows: DealMark[]): number {
   return rows.reduce((total, row) => total + row.value, 0);
+}
+
+// ---- the exports: a table's rows under its own heads, every number as itself --------------------
+
+/** The head of a mark's column. */
+export const MARK = "Desk's value";
+
+/** The marks table's heads: on a desk that records, each row's clients and what waits in it too. */
+export const marksHeads = (recording: boolean): string[] => ['Reference',
+  ...(recording ? ['Client'] : []), 'Path', ...(recording ? ['Waiting on a second seat'] : []), MARK];
+
+/** The marks as their export writes them, their heads first: each mark the number itself, its
+ * currency in a column of its own, and - with `holds`, on a desk that records - each row's clients
+ * and the trades waiting in it by name. */
+export function marksExport(risk: BookRisk,
+                            holds?: (path: string | null) => ReturnType<typeof markHolds>):
+  unknown[][] {
+  return [[...marksHeads(!!holds), 'Ccy'], ...risk.per_deal.map((row) => {
+    const held = holds?.(row.deal_path);
+    return [row.reference, ...(held ? [held.clients.join(', ')] : []), row.deal_path,
+      ...(held ? [held.pending.map(positionName).join(', ')] : []), row.value, risk.currency];
+  })];
+}
+
+/** The by-quote table's heads. */
+export const QUOTE_HEADS = ['Block · Factor', 'Quote · Tenor', 'Risk', 'per'];
+
+/** Where a gradient row sits, as its cell reads: its quote as a dealer names it, else its
+ * coordinates as its factor's axes name them. */
+export const placeText = (row: GreekRow, schema: Schema | null): string => (row.quote === undefined
+  ? tenorText(row.tenor, factorAxes(schema, row.factor, row.tenor?.length ?? 0))
+  : quoteText(row.quote));
+
+/** The axes a ladder's buckets are keyed by: its factor's, less the one they sum across. */
+export const bucketAxes = (ladder: Ladder): string[] =>
+  ladder.axes.filter((_, at) => at !== ladder.across);
+
+/** A gradient row's factor as its cell reads: an FX spot the pair it is read on, its name beside. */
+const factorText = (row: GreekRow & { pair?: string }): string =>
+  (row.pair ? `${row.pair} ${row.factor}` : row.factor);
+
+/** The quote reading's `rows` as their export writes them, under the table's own heads: each
+ * risk per its move the number itself, the report currency in a column of its own. */
+export const quotesExport = (rows: GreekRow[], schema: Schema | null, currency: string):
+  unknown[][] => [[...QUOTE_HEADS, 'Ccy'], ...rows.map((row) =>
+  [factorText(row), placeText(row, schema), riskOf(row), perOf(row), currency])];
+
+/** The desk reading as the one table its export writes: every spot on its pair at its level, each
+ * curve's and surface's buckets under its factor - a surface's the sum its row shows - then each
+ * row read per unit; every risk the number itself, the report currency in a column of its own. */
+export function readingExport(rows: GreekRow[], schema: Schema | null, market: Market | null,
+                              currency: string): unknown[][] {
+  const reading = riskReading(rows, schema);
+  return [['Factor', 'Coordinates', 'Level', 'Risk', 'per', 'Ccy'],
+    ...reading.spots.map((spot) => onPair(spot, market)).map((row) =>
+      [factorText(row), undefined, row.level, riskOf(row), perOf(row), currency]),
+    ...[...reading.curves, ...reading.surfaces].flatMap((ladder) => ladder.buckets.map((bucket) =>
+      [ladder.factor, tenorText(bucket.key, bucketAxes(ladder)), undefined, bucket.risk,
+        sharedPer(bucket.nodes), currency])),
+    ...reading.units.map((row) =>
+      [row.factor, placeText(row, schema), undefined, riskOf(row), perOf(row), currency])];
 }
 
 /** Relative, because one number reached by two roads - the same rows summed in a different order -

@@ -13,7 +13,9 @@ import {
   SURVIVAL, ageOf, creditCounterparties, entityText, lastRunChip, plural, spreads, stampText,
   valuationDay,
 } from '../desk';
-import { statusText, type Agreement, type Entity, type Position } from '../positions';
+import {
+  positionName, statusText, type Agreement, type Entity, type Position,
+} from '../positions';
 import { pinnedAt } from '../spine';
 import { marketOf, opened, standing, useApp, useRead } from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
@@ -345,7 +347,7 @@ function TradeRow({ trade, market, schema, recording, mark }: {
   if (!row) {
     return (
       <tr className="muted">
-        <td className="ref">{position!.reference ?? position!.instrument.slice(0, 12)}</td>
+        <td className="ref">{positionName(position!)}</td>
         <td colSpan={9} className="hint">booked under this agreement and not in the book file under
           its set, so nothing prices it</td>
         <td className="n">{formatNumber(position!.quantity)}</td><td>{statusText([position!])}</td>
