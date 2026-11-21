@@ -203,8 +203,10 @@ Grouped by where a validator meets them.
   `Risk_Premium` (GBM term-structure model) is the market price of risk a real-world measure adds to
   a risk-neutral calibration; `Distribution_Type` (PCA rate model) will offer a normal process
   beside the lognormal; `Dividend_Timing` (equity swap leg) will price `Continuous` apart from
-  `Terminal`; `Commodity_Collateral` (netting set) will join the collateral assets. Until each is
-  built a stated value prices as the default, unrefused.
+  `Terminal`; `Commodity_Collateral` (netting set) will join the collateral assets;
+  `Settlement_Style` (TARF) will deliver a fixing's two amounts under `Physical`, where every
+  fixing pays its cash difference today. Until each is built a stated value prices as the default,
+  unrefused.
 - **A factor read between scenario dates is interpolated** (2026-10-04). A fixing off the grid reads
   the factor linearly, 5e-7 of an FX level on a monthly grid; a price-index month in force on no
   scenario date reads between prints, a linker's payment row 1e-6 to 6e-6 high on a quarterly grid.

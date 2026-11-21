@@ -38,13 +38,15 @@ Out of this release, a row under Designed, not built saying more where one stand
   and reports each one's values.
 - Option settlement amounts, the diary's payoff-shaped amount.
 - An entity's static data beyond its id, name and parent: its LEI, its rating, its KYC standing.
-- Structure variations and add-leg on the screen.
+- On the screen, a leg added to a structure and a variation the structure does not declare: a
+  ticket deals a structure in the variations it declares.
 
 Next, after it:
 
 - Gamma on the risk screen, on demand.
 - A second seat's approval for a declared entity or agreement.
-- A physically delivered TARF.
+- A physically delivered TARF, whose settlement style is declared and not read today
+  ([Model Limitations](../limitations.md#the-engine), the declared fields not yet read).
 
 ## Designed, not built
 
