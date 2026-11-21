@@ -963,8 +963,8 @@ def table(result_id: str, table: str, offset: int = 0, limit: int = None, width:
 
 def live_book():
     if BOOK is None:
-        raise HTTPException(404, 'No book is being served - start DV_Service (it serves '
-                                 'DV_HOME/book.json by default; --book names another file)')
+        raise HTTPException(404, 'No book is being served, so there is nothing here to read or '
+                                 'write; the operator starts DV_Service on one (--book names it)')
     return BOOK
 
 
@@ -1051,14 +1051,14 @@ def book_open(request: dict):
     fold, and an amendment to a document from another system would append facts about it."""
     global BOOK
     if spine.configured():
-        raise HTTPException(422, "this desk records, and its book is the record's fold - an "
-                                 'amendment to a document from another system would append facts '
-                                 'about it, so it is opened on a desk that records nothing')
+        raise HTTPException(422, 'this desk keeps a record and its book is what the record holds, '
+                                 'so a document from another system is not opened here: open it '
+                                 'on a desk that keeps no record')
     over = ()
     if 'name' not in request:
         if DESK is None:
-            raise HTTPException(404, 'this service serves no book of its own - it was started '
-                                     'with --no-book')
+            raise HTTPException(404, 'this desk has no book of its own to go back to; the '
+                                     'operator started the service with --no-book')
         path = DESK
     else:
         name = os.path.join(INBOX, os.path.basename(request['name']))
@@ -1073,8 +1073,8 @@ def book_open(request: dict):
                     over = (None,)
             write_desk_file(name, request['document'])
         if not os.path.isfile(path):
-            raise HTTPException(404, 'nothing is filed under {} in {}'.format(
-                os.path.basename(path), os.path.dirname(path)))
+            raise HTTPException(404, 'nothing is filed under {} on this desk; it looked in '
+                                     '{}'.format(os.path.basename(path), os.path.dirname(path)))
     # read before it is served, so a document that is no job leaves the book served standing
     served = Book(path)
     answer = {'path': path, 'etag': served.read()[1]}
@@ -3128,7 +3128,7 @@ def book_marks(request: dict):
     if close is None:
         raise HTTPException(422, 'the market designated for {} is {!r}, and it stands on a '
                                  'declaration that is not a close - a book is marked at a close, so '
-                                 'declare one (POST /book/close) and mark again'.format(
+                                 'declare one (declare_close) and mark again'.format(
                                      spine.PNL, market['name']))
     day = spine.base_day(document)
     marks = book_marks_on(book, spine.closes(market['name']))
@@ -3139,7 +3139,7 @@ def book_marks(request: dict):
     if close['date'] != day:
         raise HTTPException(422, 'the close standing on {!r} is for {} and the book stands at {} '
                                  '- a day is marked on its own close, so declare the close for {} '
-                                 '(POST /book/close) and mark again'.format(
+                                 '(declare_close) and mark again'.format(
                                      market['name'], close['date'], day, day))
     # the marks close the business day where the book was READ, not where the run is attested:
     # a ticket booked while the run waits on the worker is the next day's
@@ -3230,7 +3230,7 @@ def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreemen
     for day in [start_day] + ([] if end_day is None else [end_day]):
         if day not in marks:
             raise HTTPException(422, 'no marks stand for {} on {!r} - the days marked are {}; mark '
-                                     'the book at a close with POST /book/marks'.format(
+                                     'the book at a close (mark_book)'.format(
                                          day or end_day and 'a day before {}'.format(end_day)
                                          or 'any day', market['name'],
                                          ', '.join(days) or 'none'))
@@ -3535,8 +3535,8 @@ def book_collateral(date: str = None, actor: str = None):
     day = read_day(date) if date is not None else spine.base_day(document)
     if day not in marks:
         raise HTTPException(422, 'no marks stand for {} on {!r} - the days marked are {}; a call '
-                                 'is read on a marked close, so mark the book at it with POST '
-                                 '/book/marks'.format(day, market, ', '.join(sorted(marks))
+                                 'is read on a marked close, so mark the book at it '
+                                 '(mark_book)'.format(day, market, ', '.join(sorted(marks))
                                                       or 'none'))
     return collateral_calls(document, marks, day, market, spine.sight(actor))
 
@@ -4077,8 +4077,8 @@ def book_close(request: dict):
         raise HTTPException(422, 'a close on {} is not legal here and nothing is declared - it '
                                  'waits on {}. A close does not pass over a payment nobody '
                                  'settled, a fixing nobody printed or an expiry nobody elected: '
-                                 'file those facts and declare again, or read the whole list from '
-                                 'GET /book/close/check?date={}'.format(
+                                 'file those facts and declare again, or read the whole list with '
+                                 'close_check(date={!r})'.format(
                                      day, ', '.join(
                                          '{} {} on {}'.format(row['kind'], row['leg'],
                                                               row['due_date'] or 'every day')
@@ -5775,7 +5775,7 @@ def book_bloomberg(request: dict):
 #: What a verification refuses on where this workstation cannot reach a terminal at all: the map is
 #: EVIDENCE and only a terminal writes one, so a sandboxed desk reads its map and never verifies.
 NO_TERMINAL = ('this workstation has no terminal (blpapi does not import) and only a terminal '
-               'writes the security map - read the vocabulary with GET /book/securities, and '
+               'writes the security map - read the vocabulary with describe_securities, and '
                'verify it on the workstation whose terminal answers for these securities')
 
 #: A curve row quoted off a security no entry and no rejection carries - the join's third answer,
@@ -5888,7 +5888,7 @@ def seed_entry(block, key, entry):
                              if candidate.path[0] == block})
     except (AttributeError, KeyError, TypeError, ValueError) as error:
         raise ValueError('{}/{} spells no vocabulary a terminal can be asked about ({}: {}) - read'
-                         ' the block back with GET /book/securities and post that shape'.format(
+                         ' the block back with describe_securities and state that shape'.format(
                              block, key, type(error).__name__, error))
 
 
@@ -5941,7 +5941,7 @@ def book_securities_entry(request: dict):
     block, key = request.get('block'), request.get('key')
     if not block or not key:
         raise HTTPException(422, 'a vocabulary entry is named by its `block` and its `key` - '
-                                 'GET /book/securities reads back what this desk carries')
+                                 'describe_securities reads back what this desk carries')
     try:
         seed, candidates = seed_entry(block, key, request.get('entry'))
     except (BloombergFXError, ValueError) as error:
@@ -6102,7 +6102,7 @@ def book_securities_verify(request: dict):
 #: factor TYPE that names it. A type absent here is one this desk seeds nothing for - written by a
 #: verb of its own where `WRITTEN_BY` names one, and by hand otherwise.
 SUPPLY_BLOCKS = {'InterestRate': 'rates', 'FxRate': 'fx_spot', 'FXVol': 'fx_vol'}
-WRITTEN_BY = {'SurvivalProb': 'the CVA desk writes it from its spread with POST /book/survival, '
+WRITTEN_BY = {'SurvivalProb': 'the CVA desk writes it from its spread with declare_survival_curve, '
                                'or its SurvivalProbPrices block of CDS quotes bootstraps it',
               'InflationRate': 'its InflationRatePrices block of zero-coupon swap breakevens '
                                'bootstraps it'}
@@ -6137,7 +6137,7 @@ def supply_of(factor, base_currency, seed, mapped):
                     ((seed.get(block) or {}).get('pairs') or [])), None)
         missing = 'the seed spells no {} pair for {}'.format(block, ' or '.join(spellings))
     if key is None:
-        return None, '{} - name one with POST /book/securities and verify it'.format(missing)
+        return None, '{} - name one with configure_securities and verify it'.format(missing)
     entry = {'block': block, 'key': key,
              'securities': sum(1 for _ in discover.candidates_from_seed(
                  scoped_seed(seed, block, key))),
@@ -6309,7 +6309,7 @@ def setup_scope(request, document, baseline):
             raise ValueError(
                 'this desk seeds {} rather than {} - ask for that'.format(reverse, scope['pair'])
                 if reverse in spelled else
-                'this desk seeds no fx_vol surface for {} - name it through POST /book/securities '
+                'this desk seeds no fx_vol surface for {} - name it with configure_securities '
                 '(block `fx_vol`, key `pairs`), then set it up'.format(scope['pair']))
     return scope
 
@@ -6339,8 +6339,8 @@ def unsupplied_curve(curve, rows, dated, error):
     printed = max([read_date(row.last_update) for row in rows
                    if read_date(row.last_update)], default=None)
     return ('{} kept {} of {} seeded benchmarks - {}. The book is dated {} and {}; roll the book '
-            'onto its market with POST /book/date where it stands ahead of one, or state the rows '
-            'by hand with POST /book/curve').format(
+            'onto its market with set_base_date where it stands ahead of one, or state the rows '
+            'by hand with configure_curve').format(
                 curve, len(rows) - len(screened), len(rows),
                 ', '.join('{} {}'.format(count, verdict) for verdict, count
                           in sorted(Counter(row.verdict for row in screened).items())),
@@ -6509,8 +6509,8 @@ class SetupJob:
                             entry = (mapped['blocks'].get('fx_spot') or {}).get(key)
                             if entry is None:
                                 raise BloombergConfigurationError(
-                                    'the map verified no spot for {} - verify it through POST '
-                                    '/book/securities/verify'.format(key))
+                                    'the map verified no spot for {} - verify it with '
+                                    'verify_securities'.format(key))
                             routes[key] = entry['security']
                         else:
                             strips[key] = ir_curve.curve_conventions(seed, key)
@@ -7142,8 +7142,8 @@ def pending_quote(quote_id, suffix='.json'):
         raise HTTPException(422, '{!r} is not a quote id'.format(quote_id))
     path = os.path.join(quote_dir(), quote_id + suffix)
     if not os.path.isfile(path):
-        raise HTTPException(404, 'Unknown quote {} - nothing under that id in {}'.format(
-            quote_id, quote_dir()))
+        raise HTTPException(404, 'Unknown quote {} - this desk holds no quote under that id; it '
+                                 'looked in {}'.format(quote_id, quote_dir()))
     return path
 
 
@@ -7683,8 +7683,8 @@ def book_quote(request: dict):
     path, pending = pending_quote(quote_id), book_quote_pending(quote_id)
     if request.get('portfolio') is not None:
         raise HTTPException(422, 'an acceptance books where its quote was quoted for - a '
-                                 '`portfolio` is stated when quoting, through POST '
-                                 '/book/structure - so the {!r} this one names is refused: '
+                                 '`portfolio` is stated when quoting (solve_structure) - so the '
+                                 '{!r} this one names is refused: '
                                  'accept quote {} as quoted, or quote again for that '
                                  'node'.format(request['portfolio'], quote_id))
     landed = booked_already(pending, quote_id)
@@ -7803,7 +7803,7 @@ def decided(request, verb):
         if not accepted:
             raise HTTPException(422, 'quote {} has not been accepted, so there is no ticket to '
                                      'rule on: a ticket is minted when the client takes the price '
-                                     '- accept it first, through POST /book/quote'.format(quote_id))
+                                     '- accept it first (book_quote)'.format(quote_id))
         quoted, ticket = [spine.quote_at(accepted['lsn'], quote_id)], accepted['ticket']
 
     def carrying():

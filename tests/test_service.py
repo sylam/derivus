@@ -3269,13 +3269,15 @@ def test_a_verification_needs_a_terminal_and_re_verifies_the_scope_it_is_given(
 
     Killing mutations: the scope dropped, and the whole packaged vocabulary is re-probed - which
     `asked` measures; the recheck reading the entry's own recorded name rather than the terminal's,
-    which then never drifts.
+    which then never drifts; the refusal naming `GET /book/securities` for the read that still
+    works, a route its reader cannot ask.
     """
     monkeypatch.setitem(sys.modules, 'blpapi', None)
     refused = CLIENT.post('/book/securities/verify', json={'block': 'rates'})
 
     assert refused.status_code == 422 and 'blpapi' in refused.json()['detail']
-    assert 'GET /book/securities' in refused.json()['detail']
+    assert 'with describe_securities' in refused.json()['detail']
+    assert '/book/' not in refused.json()['detail']
     assert not (vocabulary / 'security_map.json').exists()
 
     terminal = canned_terminal(monkeypatch, canned(
@@ -4028,7 +4030,8 @@ def test_a_set_up_refuses_at_submission_and_a_routine_tick_never_discovers(
         {'deal': {'Object': 'CrossCurrencySwap', 'Reference': 'T'}}), headers=JSON)
 
     assert unseeded.status_code == 422 and 'EURNOK' in unseeded.json()['detail']
-    assert '/book/securities' in unseeded.json()['detail']
+    assert 'with configure_securities' in unseeded.json()['detail']
+    assert '/book/' not in unseeded.json()['detail']
     assert backwards.status_code == 422
     assert backwards.json()['detail'] == 'this desk seeds EURZAR rather than ZAREUR - ask for that'
     assert ambiguous.status_code == 422 and 'deal_path' in ambiguous.json()['detail']
@@ -4321,8 +4324,8 @@ def test_a_book_ahead_of_its_prints_is_told_which_day_to_roll(desk_setup, tmp_pa
     beside two dozen held-out rows, which is what the emitter's own census says when the rows were
     held rather than rejected.
 
-    Killing mutation: the emitter's sentence handed back verbatim, which counts the rejections it
-    never made.
+    Killing mutations: the emitter's sentence handed back verbatim, which counts the rejections it
+    never made; and the way out said as `POST /book/date`, a route its reader cannot post to.
     """
     scopes = (('fx_vol', 'EURZAR'), ('fx_spot', 'EURUSD'), ('rates', 'EUR'))
     seeded_map(tmp_path / 'home', *scopes)
@@ -4335,7 +4338,7 @@ def test_a_book_ahead_of_its_prints_is_told_which_day_to_roll(desk_setup, tmp_pa
 
     assert result['status'] == 'done' and outcome['written'] is False, outcome
     assert 'kept 0 of 24 seeded benchmarks' in reason and '24 stale' in reason
-    assert ahead in reason and 'POST /book/date' in reason
+    assert ahead in reason and 'with set_base_date' in reason and '/book/' not in reason
     # the screen does not keep a rejected print's own date, so the window it judged by stands in
     assert 'no print more than 5 days older than that' in reason
     assert 'nothing refused' not in reason, 'the emitter counted rejections it never made'
@@ -8566,16 +8569,17 @@ def test_a_document_opened_is_served_as_the_book_and_the_desks_own_stands(book, 
 
 def test_a_desk_that_records_refuses_to_open_a_document(recorded, book, tmp_path):
     """Under a spine home `POST /book/open` refuses a document from another system with a 422
-    saying why - a recording desk's book is the record's fold, and an amendment to the document
-    would append facts about it - and the served book and its bytes stand as they were, nothing
-    filed in the inbox.
+    saying why - a recording desk's book is what its record holds, and the document is opened on a
+    desk that keeps none - and the served book and its bytes stand as they were, nothing filed in
+    the inbox.
 
     KILLING MUTATIONS: no refusal, which serves the document; the refusal after the copy is filed,
-    which leaves it in the inbox.
+    which leaves it in the inbox; the reason said as "the record's fold", the machine's word.
     """
     before, live = book.read_bytes(), CLIENT.get('/book').json()
     refused = CLIENT.post('/book/open', json={'name': 'NS_FOREIGN.json', 'document': wire(job())})
-    assert refused.status_code == 422 and "the record's fold" in refused.json()['detail']
+    assert refused.status_code == 422 and 'this desk keeps a record' in refused.json()['detail']
+    assert 'open it on a desk that keeps no record' in refused.json()['detail']
     after = CLIENT.get('/book').json()
     assert (after['path'], after['etag'], book.read_bytes()) == (live['path'], live['etag'], before)
     assert not (tmp_path / 'inbox').exists()
