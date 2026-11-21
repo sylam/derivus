@@ -58,6 +58,26 @@ check('the verb is asked for the window and the scope stated, a blank end being 
        pnl.pnlQuery('', '2024-07-02', { portfolio: 'desk/FX' }, true)],
       ['start=2024-07-01&agreement=ISDA-1', 'end=2024-07-02&portfolio=desk%2FFX&explain=true']);
 
+// what leaves for the service, caught by a fetch stub: nothing leaves this process
+const api = await load('api');
+const wire = async (seat, query) => {
+  let asked;
+  globalThis.localStorage = { getItem: (key) => (key === 'derivus.seat' ? seat : null) };
+  globalThis.fetch = async (url) => { asked = url; return { ok: true, json: async () => ({}) }; };
+  await api.getPnl(query);
+  return asked;
+};
+check('the P&L is asked on the wire with its query and the seat joined by one `&`, the seat alone '
+      + 'after the `?` where the query is empty, and the bare path where neither is',
+      'the seat joined with `&` to a query asking nothing, `?&actor=` on the wire; a `?` left '
+      + 'on a path that asks nothing; or the seat dropped from a read that is shown by seat',
+      [await wire('sales-1', pnl.pnlQuery('', '', {}, false)),
+       await wire('', pnl.pnlQuery('', '', {}, false)),
+       await wire('sales-1', pnl.pnlQuery('2024-07-01', '', {}, false)),
+       await wire('', pnl.pnlQuery('2024-07-01', '', {}, false))],
+      ['/book/pnl?actor=sales-1', '/book/pnl', '/book/pnl?start=2024-07-01&actor=sales-1',
+       '/book/pnl?start=2024-07-01']);
+
 check("a read ending now, or explained, is a what-if's work, which the queue admits a seat to; a "
       + 'window between two marked days read plain is a read of the record, asked of any seat',
       'the explain dropped, which asks three valuations of a seat the queue refuses; or every '

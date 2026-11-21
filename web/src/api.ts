@@ -31,10 +31,14 @@ export function stored(key: string): string {
 /** The seat a request names: the settings control's, where no token proves one. */
 const seat = () => (stored(TOKEN) ? '' : stored(SEAT));
 
-/** A write's body naming the seat, and a read's path asking as it - which `call` does. */
+/** A write's body naming the seat, and a read's path asking as it - which `call` does: the seat
+ * joined to what the path's query asks, and no `?` left on a path whose query asks nothing. */
 const signed = <T extends object>(body: T) => (seat() ? { ...body, actor: seat() } : body);
-const seated = (path: string) => (seat()
-  ? `${path}${path.includes('?') ? '&' : '?'}actor=${encodeURIComponent(seat())}` : path);
+const seated = (path: string) => {
+  const [base, query] = path.split('?');
+  const asked = [query, seat() && `actor=${encodeURIComponent(seat())}`].filter(Boolean).join('&');
+  return asked ? `${base}?${asked}` : base;
+};
 
 export class ApiError extends Error {
   status: number;
