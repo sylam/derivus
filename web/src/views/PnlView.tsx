@@ -3,8 +3,8 @@ import { getMarkedDays, getPnl } from '../api';
 import { declaredOn, unmarked } from '../client';
 import { EmptyState } from '../components/EmptyState';
 import {
-  behind, explained, factorLabel, FIGURES, noPnl, opensOn, pnlQuery, pnlRead, positionLabel,
-  residualShare, revalues, type Pnl,
+  behind, explained, factorLabel, FIGURES, noPnl, noWindow, opensOn, pnlQuery, pnlRead,
+  positionLabel, residualShare, revalues, type Pnl,
 } from '../pnl';
 import {
   grantsOwed, heldBack, noPositions, readAs, spineOf, useApp, useRead,
@@ -81,9 +81,11 @@ export function PnlView() {
     );
   }
   if (!answer) {
+    const held = read.held && !marked.error;
     return error ? (
       <div className="main"><div className="panel">
-        <div className={read.held && !marked.error ? 'note' : 'error-box'}>{error}</div>
+        <div className={held ? 'note' : 'error-box'}>
+          {held && !opens ? noWindow(error, days?.days ?? []) : error}</div>
       </div></div>
     ) : <EmptyState title="Reading the P&L…" hint="The marks of both days, the trades and the cash between them." />;
   }

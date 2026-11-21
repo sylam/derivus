@@ -120,6 +120,13 @@ export function opensOn(days: { day: string }[], held: boolean):
   return end === undefined ? null : { start, end };
 }
 
+/** What a seat `hold` keeps from a P&L to now is told where `opensOn` finds it no window among
+ * the marked `days`: that line, and that a P&L between two marked days, which is not held from
+ * it, reads once two are marked - beside the one day that is. */
+export const noWindow = (hold: string, days: { day: string }[]): string =>
+  `${hold} A P&L between two marked days is not held from this seat, and reads once two days `
+  + `are marked: ${days.length ? `only ${days[0].day} is` : 'none is'}.`;
+
 /** What one P&L read is of, asked again where it moves: the seat reading, which is shown the
  * positions under its own nodes, and the `query` asked (`pnlQuery`). */
 export const pnlRead = (seat: string, query: string): string => `${seat}|${query}`;

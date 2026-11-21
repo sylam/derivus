@@ -78,6 +78,16 @@ check('the page opens to now from the last marks for a seat that may ask a what-
       + 'it; its window opened on the first two days marked; or one marked day read as a window',
       [opens(DAYS, false), opens(DAYS, true), opens(DAYS.slice(0, 1), true), opens([], true)],
       [['', '', true], ['2024-07-01', '2024-07-02', false], null, null]);
+const HOLD = 'Needs validate: sales-9 holds it nowhere.';
+check('a held seat with no window is told, after the line holding it, that a P&L between two '
+      + 'marked days is not held from it and reads once two are marked, beside the one that is',
+      'the held line left alone, which reads as though the seat may never read a P&L here; or '
+      + 'the day marked left out, which leaves it to guess how many closes are owed',
+      [pnl.noWindow(HOLD, DAYS.slice(0, 1)), pnl.noWindow(HOLD, [])],
+      [`${HOLD} A P&L between two marked days is not held from this seat, and reads once two `
+        + 'days are marked: only 2024-06-28 is.',
+       `${HOLD} A P&L between two marked days is not held from this seat, and reads once two `
+        + 'days are marked: none is.']);
 
 const QUERY = pnl.pnlQuery('2024-07-01', '2024-07-02', {}, false);
 check('a P&L read is of the seat reading and the query asked: another seat reads again, and so '
