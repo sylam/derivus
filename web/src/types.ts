@@ -354,7 +354,6 @@ export type BookXva = {
   /** When THIS read happened. Each row's own `as_of` is when that row's run happened, and they
    * will differ by hours. */
   as_of: string;
-  path: string;
   sets: XvaSet[];
 };
 
