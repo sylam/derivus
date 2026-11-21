@@ -1639,24 +1639,6 @@ def test_a_curve_states_its_own_interpolation_and_the_read_verb_resolves_it(book
     assert (cleared['interpolation'], cleared['interpolation_source']) == ('Linear', 'default')
 
 
-def test_a_block_authored_without_its_definition_reads_with_a_note_naming_the_tool(book):
-    """A curve block that does not carry a convention it is re-rolled under still reads: its rows
-    answer, no `conventions`, and a `note` naming the convention it lacks and the tool that authors
-    the curve again.
-
-    Killing mutation: the note naming `POST /book/curve`, a route its reader cannot post to.
-    """
-    assert set_up_curve().status_code == 200
-    document = json.loads(book.read_text())
-    del document['Calc']['MergeMarketData']['ExplicitMarketData']['Market Prices'][CURVE_BLOCK][
-        'instrument']['Spot_Days']
-    book.write_text(json.dumps(document, indent=2), newline='\n')
-
-    entry = CLIENT.get('/book/curve').json()['curves'][CURVE_BLOCK]
-    assert 'conventions' not in entry and len(entry['rows']) == len(CURVE_ROWS)
-    assert entry['note'] == "authored without 'Spot_Days' - set it up again with configure_curve"
-
-
 def test_the_status_verb_says_what_the_desk_is_set_up_with(book, tmp_path, monkeypatch):
     """The read a client opens with, composed out of the readers beside it: the book's date and
     currency, what it holds, every curve with the knots it solved on, the latest print its rows
@@ -8709,8 +8691,11 @@ def test_a_quote_is_firm_only_for_the_window_the_book_declares(quoting, tmp_path
 def test_a_curve_authored_before_it_carried_its_definition_reads_back_with_a_note(tmp_path):
     """An older book's curve block has quotes and no definition: no tenor on its rows, no
     conventions on the block. The read verb answers it as far as it goes, blank tenors and the
-    quotes, with a note naming what is missing and the verb that re-authors it, rather than dying
-    on the first missing key."""
+    quotes, with a note naming what is missing and the tool that re-authors it, rather than dying
+    on the first missing key.
+
+    Killing mutation: the note naming `POST /book/curve`, a route its reader cannot post to.
+    """
     old = {'instrument': {'Currency': 'ZAR', 'Day_Count': 'ACT_365', 'Discount_Rate': '', 'Points': [
         {'Use': 'Yes', 'Descriptor': 'ZAR 3M', 'DealType': 'DepositDeal', 'Quote_Type': 'Par_Rate',
          'Quoted_Market_Value': 7.1, 'Deal': {}}]}}
@@ -8722,7 +8707,8 @@ def test_a_curve_authored_before_it_carried_its_definition_reads_back_with_a_not
         answer = CLIENT.get('/book/curve')
         assert answer.status_code == 200
         curve = answer.json()['curves']['InterestRatePrices.ZAR']
-        assert 'Tenor' in curve['note'] and '/book/curve' in curve['note']
+        assert curve['note'] == (
+            "authored without 'Tenor' - set it up again with configure_curve")
         assert curve['rows'] == [{'tenor': '', 'security': '', 'quote': 7.1, 'use': 'Yes'}]
         assert 'conventions' not in curve
     finally:
