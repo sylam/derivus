@@ -2,9 +2,10 @@ import { useRef, useState } from 'react';
 import { getMarkedDays, getPnl } from '../api';
 import { EmptyState } from '../components/EmptyState';
 import {
-  behind, explained, factorLabel, FIGURES, pnlQuery, positionLabel, residualShare, type Pnl,
+  behind, explained, factorLabel, FIGURES, noPnl, pnlQuery, positionLabel, residualShare,
+  type Pnl,
 } from '../pnl';
-import { useApp, useRead } from '../state';
+import { spineOf, useApp, useRead } from '../state';
 import { formatNumber, type Kind } from '../tokens';
 import { entityText } from '../desk';
 import { NO_PAPER } from '../positions';
@@ -28,7 +29,7 @@ function Figure({ value, kind = 'money' }: { value: number | null | undefined; k
  * run only when it is asked for. */
 export function PnlView() {
   const { state } = useApp();
-  const live = state.source?.kind === 'book';
+  const recording = spineOf(state) !== null;
   const etag = state.source?.kind === 'book' ? state.source.etag : undefined;
   const [start, setStart] = useState('');
   const [end, setEnd] = useState('');
@@ -43,26 +44,20 @@ export function PnlView() {
   current.current = etag;
   const [again, setAgain] = useState(0);
 
-  const marked = useRead(live ? getMarkedDays : null, [live]);
+  const marked = useRead(recording ? getMarkedDays : null, [recording]);
   const days = marked.data;
   const paper = state.paper.data ?? NO_PAPER;
   // read again whenever the window or the scope moves, or the reader asks - the explain only when
   // asked for - with the book it was read at
-  const read = useRead(live && days?.days.length ? async () => ({ asked: current.current,
+  const read = useRead(recording && days?.days.length ? async () => ({ asked: current.current,
     answer: await getPnl(pnlQuery(start, end, scope, explain)) }) : null,
-  [live, days, start, end, scope, explain, again]);
+  [recording, days, start, end, scope, explain, again]);
   const { answer, asked: readAt } = read.data ?? {};
   const { loading } = read;
   const error = marked.error ?? read.error;
 
-  if (!live) {
-    return (
-      <EmptyState
-        title="The P&L is a reading of the live book's record."
-        hint="This document was opened from a file. Start the service with --book and a spine home, mark a close, and the desk's P&L appears here."
-      />
-    );
-  }
+  const none = noPnl(recording, state.source?.kind === 'book');
+  if (none) return <EmptyState {...none} />;
   if (days && !days.days.length) {
     // the verb the declaration demands under the map in force, where the seat's grants are read
     const verb = state.grants?.read?.demands.official_close_declared;

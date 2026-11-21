@@ -3,6 +3,19 @@
 // and in total, and the explain of what the held positions made: the carry, the market per risk
 // factor, and the residual left over.
 
+import { unrecorded } from './positions';
+
+/** What the P&L page says in the P&L's place where no record is kept, null on a desk that
+ * records: a P&L runs between marked closes, and where the `live` book's worth is read instead. */
+export function noPnl(recording: boolean, live: boolean): { title: string; hint: string } | null {
+  if (recording) return null;
+  return {
+    title: unrecorded(live, 'there is no P&L to read here', 'no P&L is read of it'),
+    hint: `A P&L runs between two marked closes, and a close is marked on a record${
+      live ? ': the Risk tab reads what the book is worth as it stands' : ''}.`,
+  };
+}
+
 /** Something the P&L could not know, named. */
 export type Unknown = { instrument: string | null; what: string };
 

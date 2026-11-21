@@ -65,15 +65,17 @@ export const NO_PAPER: Paper = { positions: [], entities: [], agreements: [],
 export function noPaper(recording: boolean, live: boolean): { title: string; hint: string } | null {
   if (recording) return null;
   const terms = "A netting set's own terms are the agreement";
-  return live ? {
-    title: 'This desk keeps no record, so agreements are not declared here.',
-    hint: `${terms}: each client's page under Clients reads them set by set, and they are `
-      + 'amended on the set in the Portfolio.',
-  } : {
-    title: 'A file opened here has no record, so no agreements are declared for it.',
-    hint: `${terms}, read on the set in the Portfolio.`,
+  return {
+    title: unrecorded(live, 'agreements are not declared here', 'no agreements are declared for it'),
+    hint: live ? `${terms}: each client's page under Clients reads them set by set, and they are `
+      + 'amended on the set in the Portfolio.' : `${terms}, read on the set in the Portfolio.`,
   };
 }
+
+/** How a screen reading the record starts what it says where none is kept: of the desk's `live`
+ * book what follows `here`, of a file opened in this browser what follows for the `file`. */
+export const unrecorded = (live: boolean, here: string, file: string): string =>
+  (live ? `This desk keeps no record, so ${here}.` : `A file opened here has no record, so ${file}.`);
 
 /** How a screen groups the book: as the file nests it, or by one of the record's two keys. */
 export type Grouping = 'book' | 'portfolio' | 'client';

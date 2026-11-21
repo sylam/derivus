@@ -8,6 +8,19 @@ import { check, done, load } from './check.mjs';
 
 const pnl = await load('pnl');
 
+const [desk, file] = [pnl.noPnl(false, true), pnl.noPnl(false, false)];
+check("a desk keeping no record is told so in the Paper tab's voice, and where the book's worth "
+      + 'is read; a file opened here that no P&L is read of it; a desk that records nothing in '
+      + "the P&L's place; and nobody a flag, a route or a variable",
+      "the state dropped, which shows the service's refusal of a read no such desk answers, a "
+      + "route and a variable in a red box; the state shown on a desk that records; or the "
+      + "operator's words back, --book and a spine home",
+      [pnl.noPnl(true, true), desk.title, /Risk tab/.test(desk.hint), file.title,
+       /Risk tab/.test(file.hint),
+       [desk, file].some((said) => /--book|spine|DV_|\/book|the service/.test(said.title + said.hint))],
+      [null, 'This desk keeps no record, so there is no P&L to read here.', true,
+       'A file opened here has no record, so no P&L is read of it.', false, false]);
+
 const moved = (named) => ({ delta: 2, start: 1, end: 1.5, move: 0.5, pnl: 1, ...named });
 
 check('a risk factor reads as its quote in its block, or as the factor at its coordinates',
