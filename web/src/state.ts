@@ -343,9 +343,16 @@ export function bookLoaded(live: BookResponse, refresh = false): Action {
  * edit state anywhere - the file is the truth, so a write is answered by reading it back. */
 export async function written(dispatch: Dispatch<Action>, outcome: BookDealOutcome) {
   if (!outcome.written) return outcome.refused ?? ['refused'];
-  const [live, status] = await Promise.all([getBook(), getBookStatus()]);
-  dispatch({ type: 'BEAT', etag: status.etag, live, spine: status.spine, page: null });
+  await readBook(dispatch);
   return null;
+}
+
+/** The book and where the record stands, read in one step, so no screen holds a book without
+ * knowing whether its desk records - the book alone where the status read fails. */
+export async function readBook(dispatch: Dispatch<Action>) {
+  const [live, status] = await Promise.all([getBook(), getBookStatus().catch(() => null)]);
+  dispatch(status === null ? bookLoaded(live)
+    : { type: 'BEAT', etag: status.etag, live, spine: status.spine, page: null });
 }
 
 /** The screens showing the record's paper - the entities legal declares and their agreements -
@@ -477,6 +484,11 @@ export function heldBack(state: AppState, act: Act,
   return `Needs ${verb}${held.length ? ` over ${node ?? 'the whole firm'}` : ''}: ${read.seat} `
     + `holds it ${held.length ? `only over ${held.join(', ')}` : 'nowhere'}.`;
 }
+
+/** Whether a read the seat's grants gate must wait: on a desk that records, until the grants are
+ * read for the seat on screen, what holds it is not known, and a held seat's ask files a denial. */
+export const grantsOwed = (state: AppState): boolean =>
+  spineOf(state) !== null && state.grants?.asked !== state.seat;
 
 /** Why the seat may not accept a quote that books at `node`, the book where it states none: an
  * acceptance files the quote and its fill, so it is held where either act is. */

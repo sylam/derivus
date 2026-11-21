@@ -609,6 +609,20 @@ check('nothing is held back off a desk that records, before the grants of the se
        state.heldBack(seated(null, '', { grants: { asked: '', read: null, refused: NO_SEAT } }),
                       'fill')],
       [null, null, null, null, null, NO_SEAT]);
+const UNREAD = { asked: 'sales-1', read: null, refused: null };
+check('a read the grants gate waits on a desk that records until they are read for the seat on '
+      + 'screen - none read yet, or those of the seat typed before - and no longer once they are, '
+      + 'refused or failed; a desk keeping no record, or showing a file, never waits',
+      "the wait dropped, which asks the risk of a held seat before its grants say it is held and "
+      + 'files its denial; a plain desk made to wait on grants it never reads; or a grants read '
+      + 'that failed read as one still owed, which leaves the risk unread for good',
+      [state.grantsOwed(seated(null)), state.grantsOwed({ ...seated({}), seat: 'sales-9' }),
+       state.grantsOwed(seated({ validate: null })),
+       state.grantsOwed(seated(null, '', { grants: { asked: '', read: null, refused: NO_SEAT } })),
+       state.grantsOwed(seated(null, 'sales-1', { grants: UNREAD })),
+       state.grantsOwed(seated(null, 'sales-1', { record: { spine: null } })),
+       state.grantsOwed(seated(null, 'sales-1', { source: { kind: 'local' } }))],
+      [true, true, false, false, false, false, false]);
 const MOVED = { ...DEMANDS, approval: 'mark' };
 check('a control is judged by the verb its act demands under the map in force and says that verb: '
       + 'where a stored map moves the approval to mark the sign control is the marking seat\'s '

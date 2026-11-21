@@ -6,7 +6,7 @@ import {
   behind, explained, factorLabel, FIGURES, noPnl, opensOn, pnlQuery, pnlRead, positionLabel,
   residualShare, revalues, type Pnl,
 } from '../pnl';
-import { heldBack, readAs, spineOf, useApp, useRead } from '../state';
+import { grantsOwed, heldBack, readAs, spineOf, useApp, useRead } from '../state';
 import { formatNumber, type Kind } from '../tokens';
 import { entityText } from '../desk';
 import { NO_PAPER } from '../positions';
@@ -57,9 +57,10 @@ export function PnlView() {
   // read again whenever the seat, the window or the scope moves, or the reader asks, with the
   // book it was read at
   const query = pnlQuery(from, to, scope, explain);
-  const read = readAs(hold, useRead(recording && days?.days.length && !hold ? async () => ({
+  const owed = grantsOwed(state);
+  const read = readAs(hold, useRead(recording && days?.days.length && !hold && !owed ? async () => ({
     asked: current.current, answer: await getPnl(query) }) : null,
-  [recording, days, pnlRead(state.seat, query), again, hold]));
+  [recording, days, pnlRead(state.seat, query), again, hold, owed]));
   const { answer, asked: readAt } = read.data ?? {};
   const { loading } = read;
   const error = marked.error ?? read.error;

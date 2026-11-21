@@ -12,8 +12,8 @@ import { NO_BOOK } from './desk';
 import { WORKSPACES } from './registry';
 import { bookOwed, polled, ringsAhead, single, worklistAt } from './spine';
 import {
-  AppContext, INITIAL, PAPER_TABS, bookLoaded, bookRisk, clockOf, paperAt, paperOwed, reducer,
-  seatClock, spineOf,
+  AppContext, INITIAL, PAPER_TABS, bookRisk, clockOf, grantsOwed, paperAt, paperOwed, readBook,
+  reducer, seatClock, spineOf,
 } from './state';
 
 const BOOK_POLL_MS = 2000;
@@ -37,9 +37,7 @@ export function App() {
 
   // the live book, if the service serves one - silence (a 404) just means "open a file instead"
   useEffect(() => {
-    getBook()
-      .then((live) => dispatch(bookLoaded(live)))
-      .catch(() => undefined);
+    readBook(dispatch).catch(() => undefined);
   }, []);
 
   // a hidden window is nobody looking - the one thing the tab does not say
@@ -111,7 +109,7 @@ export function App() {
   // for a seat the queue admits to a what-if: taking the tab prices it, every move of the clock
   // under that gaze re-prices it, and a tab left behind or a window gone hidden costs nothing.
   const riskWanted = ['risk', 'trade', 'xva', 'client'].includes(state.tab) && visible
-    && !bookRisk(state).held;
+    && !bookRisk(state).held && !grantsOwed(state);
   const riskAt = seatClock(state);
   useEffect(() => {
     if (clock === null || riskAt === null || !riskWanted
@@ -205,7 +203,7 @@ export function App() {
       .then((read) => held({ asked, read, refused: null }))
       .catch((error) => {
         const { status, error: refused } = failure(error);
-        held(status === 422 ? { asked, read: null, refused } : null);
+        held({ asked, read: null, refused: status === 422 ? refused : null });
       });
     return () => { live = false; };
   }, [grantsAt]);
