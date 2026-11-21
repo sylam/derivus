@@ -902,6 +902,10 @@ declared terms, and every compile writes the terms standing at its LSN over it
 book or a declared node. `GET /book/positions` answers each standing position beside the file's
 nodes, an expired one until it settles and one netted to nothing at a quantity of nothing. A seat with grants at nodes reads only the rows under them
 (`spine.visible`), totals summed over those - presentation while one class key opens every body.
+A client's pending quote is shown the same way, by the `portfolio` it books under, a quote being
+confidential to those who need it (FX Global Code, Principle 19): `GET /book/quotes` lists, and
+`GET /book/quote/{id}` and its sheet answer, the quotes under the seat's nodes, one the seat is not
+shown answering as an id the desk holds nothing under (`book_quote_shown`).
 A trade's page tells a seat shown no position in it, no fill of it or no row of its history that
 the record holds none only where the seat holds a grant at the book or above it, and else that the
 seat is shown none, with the nodes it sees; the record's strip says the same to a seat shown no
@@ -912,8 +916,9 @@ it (`markShown` in `web/src/trade.ts`), off a risk read of the book as it stands
 the desk makes or gives up against it at the price (`unwindAgainst`), or why no mark is read
 (`noMark`).
 **Held by** `test_spine_engine.py::test_a_declared_tree_is_where_a_book_books_and_a_restrike_is_judged`,
-`::test_a_seat_reads_the_rows_under_the_nodes_it_acts_at`, `web/scripts/desk_check.mjs`,
-`web/scripts/trade_check.mjs`.
+`::test_a_seat_reads_the_rows_under_the_nodes_it_acts_at`,
+`::test_a_seat_is_shown_the_quotes_booking_under_the_nodes_it_acts_at`,
+`web/scripts/desk_check.mjs`, `web/scripts/trade_check.mjs`.
 
 **The take-on.** A deal the book file holds that nobody booked - a book written before its record,
 or landed by another system - prices as written, one unit, outside the positions, the marks and

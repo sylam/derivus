@@ -75,7 +75,7 @@ structure takes it as `name`. **Held by**
 | `describe_calculations`, `configure_calculation`, `run_calculation` | `GET`/`POST /calculations`, `POST /calculations/run`: the desk's named calculations |
 | `solve_deal` | `POST /book/solve`: one field solved to a target, the deal ready to book |
 | `solve_structure`, `book_quote` | `POST /book/structure`, `/book/quote`: a quote filed pending; its acceptance |
-| `list_quotes` | `GET /book/quotes`: every quote given, newest first, with where each stands |
+| `list_quotes` | `GET /book/quotes`: every quote given that the seat `actor` is shown, newest first, with where each stands |
 | `approve_ticket`, `reject_ticket`, `approve_quote`, `reject_quote` | `POST /book/approve`, `/book/reject`: a second seat's verdict |
 | `worklist` | `GET /book/worklist`: what waits on the seat asking |
 | `describe_seat` | `GET /book/seat`: the nodes the seat asking holds each verb at, and the verb each act demands under the map in force |
@@ -120,7 +120,8 @@ document), `derivus://schema/{store}` (`Instrument`, `Structure`, `Calculation`,
 `.xlsx`, so the client's workbook travels as a file rather than a path on the service's disk); a
 quote answers with those two URIs under `resources`. **Held by**
 `test_the_host_is_offered_three_walks_and_four_documents`. **Not gated:** what each walk says, the
-gate reading the prompts' arguments.
+gate reading the prompts' arguments; that a quote's two resources, naming no seat, read it as the
+seat the server's token names is shown it.
 
 ## The contracts
 

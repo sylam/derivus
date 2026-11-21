@@ -7142,13 +7142,18 @@ def pending_quote(quote_id, suffix='.json'):
         raise HTTPException(422, '{!r} is not a quote id'.format(quote_id))
     path = os.path.join(quote_dir(), quote_id + suffix)
     if not os.path.isfile(path):
-        raise HTTPException(404, 'Unknown quote {} - this desk holds no quote under that id; it '
-                                 'looked in {}'.format(quote_id, quote_dir()))
+        raise unknown_quote(quote_id)
     return path
 
 
-@app.get('/book/quote/{quote_id}', summary='The pending trade filed under a quote id')
-def book_quote_pending(quote_id: str):
+def unknown_quote(quote_id):
+    """What an id the desk holds no quote under is refused with, and so a quote the seat reading
+    is not shown."""
+    return HTTPException(404, 'Unknown quote {} - this desk holds no quote under that id; it '
+                              'looked in {}'.format(quote_id, quote_dir()))
+
+
+def book_quote_pending(quote_id):
     """The pending trade exactly as the runner filed it: the `quote` it answered with, the `deal`
     that books it, `quoted_at` and any pins - the two hashes and the board's age, the values vector
     itself kept apart under its hash (`pinned_values`). It stays after the approval, being the
@@ -7158,18 +7163,33 @@ def book_quote_pending(quote_id: str):
         return json.load(handle)
 
 
+@app.get('/book/quote/{quote_id}', summary='The pending trade filed under a quote id')
+def book_quote_shown(quote_id: str, actor: str = None):
+    """The pending trade as `book_quote_pending` reads it, to the seat `actor` reading: a client's
+    quote is shown as a position is, to a seat holding any grant at the `portfolio` it books under
+    or above it (`spine.visible`), and one the seat is not shown answers as an id the desk holds
+    nothing under. Every quote is shown where nothing narrows the seat."""
+    pending = book_quote_pending(quote_id)
+    if not spine.visible([pending], spine.sight(actor)):
+        raise unknown_quote(quote_id)
+    return pending
+
+
 @app.get('/book/quotes', summary='Every quote the desk has given, newest first')
-def book_quotes():
+def book_quotes(actor: str = None):
     """`{quotes}` - one row per pending file under `DV_HOME/tmp`, newest first: its `quote_id`, the
     `structure` and the `variation` it was dealt as, the client's `netting_set`, the `net` in its
     `currency`, `quoted_at` and `quoted_by`, and where it stands - `accepted` and `booked` as the
     acceptance wrote them, both null while it is only quoted, `booked` also naming the `reference`
     of the deal it booked, which a path a node ahead of it moves does not. Whether it is still firm
-    is the book's `Quote Policy`, read by the acceptance and never here."""
-    directory, rows = quote_dir(), []
+    is the book's `Quote Policy`, read by the acceptance and never here. `actor` is the seat
+    reading, which is shown the quotes `book_quote_shown` shows it."""
+    directory, sight, rows = quote_dir(), spine.sight(actor), []
     for name in os.listdir(directory) if os.path.isdir(directory) else ():
         if name.endswith('.json'):
             pending = book_quote_pending(name[:-len('.json')])
+            if not spine.visible([pending], sight):
+                continue
             quoted, booked = pending.get('quote') or {}, pending.get('booked')
             rows.append(dict(
                 quote_id=name[:-len('.json')],
@@ -7181,14 +7201,15 @@ def book_quotes():
 
 
 @app.get('/book/quote/{quote_id}/sheet', summary='The quote sheet, as the .xlsx a client is sent')
-def book_quote_sheet(quote_id: str):
+def book_quote_sheet(quote_id: str, actor: str = None):
     """The sheet beside the pending trade, streamed as the spreadsheet itself - so a client of this
-    service hands a salesperson the file rather than a path on the service's own disk.
+    service hands a salesperson the file rather than a path on the service's own disk - to the
+    seat `actor` the quote is shown to (`book_quote_shown`).
 
     The sheet is the `quote` extra's and genuinely optional: where `xlsxwriter` was not installed
     when the quote was given, this is a 404 carrying the quote's own `sheet_note`, which names the
     install. The quote is still there and still approvable."""
-    pending = book_quote_pending(quote_id)
+    pending = book_quote_shown(quote_id, actor)
     path = os.path.join(quote_dir(), quote_id + '.xlsx')
     if not os.path.isfile(path):
         raise HTTPException(404, 'quote {} has no sheet: {}'.format(

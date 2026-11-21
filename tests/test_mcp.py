@@ -1117,12 +1117,16 @@ def test_a_recorded_desk_books_and_accepts_through_the_binding(recorded, tmp_pat
     service: the acceptance books the trade PENDING into the node the quote named, `approve_quote`
     under another seat clears it, and a second acceptance is told it is already booked; the tree
     and the worklist read back what waits. Nothing is monkeypatched - a real home under tmp, a real
-    policy declared through the record's own verb, the fault injected as DATA.
+    policy declared through the record's own verb, the fault injected as DATA. Under a capabilities
+    document `list_quotes` lists the quote for the seat granted at its node and not for one granted
+    beside it.
 
-    Killing mutation: `solve_structure` not sending the `portfolio` it takes, which books the trade
-    at the book and leaves the node the desk named empty.
+    Killing mutations: `solve_structure` not sending the `portfolio` it takes, which books the trade
+    at the book and leaves the node the desk named empty; `list_quotes` not forwarding its `actor`,
+    an unsigned read listing the quote for the seat beside its node.
     """
     from derivus_spine import SpineLog, policy
+    from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 
     from test_service import fx_vol_quotes
     home = recorded
@@ -1183,6 +1187,17 @@ def test_a_recorded_desk_books_and_accepts_through_the_binding(recorded, tmp_pat
         again = mcp_server.book_quote(quote['quote_id'], actor='subject-desk-one')
         assert again['written'] is False and again['booked'], 'a second acceptance booked again'
         assert mcp_server.worklist()['pending'] == []
+
+        log = SpineLog(home)
+        try:
+            policy.declare_bytes(log, 'subject-desk-one', CAPABILITIES_POLICY, canonical_document(
+                {'grants': [{'subject': seat, 'verb': 'validate', 'book': 'service/' + node}
+                            for seat, node in (('subject-desk-two', 'FX'),
+                                               ('subject-desk-three', 'Rates'))], 'read': []}))
+        finally:
+            log.close()
+        assert [[row['quote_id'] for row in mcp_server.list_quotes(actor=seat)['quotes']]
+                for seat in ('subject-desk-two', 'subject-desk-three')] == [[quote['quote_id']], []]
     finally:
         service.BOOK = None
 

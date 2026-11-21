@@ -1425,7 +1425,7 @@ def book_quote(quote_id: str, actor: str | None = None) -> dict:
 
 
 @MCP.tool(annotations=READ_ONLY)
-def list_quotes() -> dict:
+def list_quotes(actor: str | None = None) -> dict:
     """Every quote this desk has given, newest first, one row each - enough to pick one without
     opening it: `quote_id`, the `structure` and the `variation` it was dealt as, the client's
     `netting_set`, the `net` in its `currency`, when it was given (`quoted_at`) and by whom
@@ -1433,8 +1433,9 @@ def list_quotes() -> dict:
     `booked.deal_path` where the trade landed once it is on the book and `booked.reference` the
     trade's own reference, which still finds it after a node ahead of it is deleted moves the path.
     Whether a quote is still firm is the book's `Quote Policy`, which `book_quote` reads when it is
-    asked."""
-    return service().call('GET', '/book/quotes')
+    asked. `actor` is the seat reading, which is shown a client's quote as it is shown a position:
+    where it holds a grant at the node the quote books under."""
+    return service().call('GET', '/book/quotes', params=_stated(actor=actor))
 
 
 @MCP.tool()

@@ -5526,6 +5526,44 @@ def test_a_seat_reads_the_rows_under_the_nodes_it_acts_at(recorded, desk):
     assert read('/book/activity', DESK_FX)['lsn'] == head(recorded), 'the cursor stood still'
 
 
+def test_a_seat_is_shown_the_quotes_booking_under_the_nodes_it_acts_at(recorded, quoting):
+    """QUOTES BY NODE, AS POSITIONS ARE. A client's quote is shown to a seat holding any grant at
+    the node it books under or above it: of two collars quoted to book under `spine-desk/FX` and
+    `spine-desk/Rates`, the seat granted at the FX node lists the first alone and opens it and its
+    sheet, and is answered for the second, and for its sheet, in the words of an id the desk never
+    filed. The seat granted over `*` and a read no seat signs are shown both, as every seat is
+    before a capabilities document stands.
+
+    Killing mutations: the list left unnarrowed, the FX seat listing both; the single read
+    answering the file whatever the seat, the Rates quote opening for the FX seat; the sheet read
+    past the seat, the Rates sheet answered to it.
+    """
+    quotes = {node: quote_of('ZeroCostCollar', dict(COLLAR, notional=AMOUNT * size),
+                             netting_set=CLIENT_SET, portfolio='spine-desk/' + node)['quote_id']
+              for size, node in enumerate(('FX', 'Rates'), 1)}
+
+    def read(path, seat=None):
+        return CLIENT.get(path, params={} if seat is None else {'actor': seat})
+
+    def listed(seat=None):
+        return sorted(row['quote_id'] for row in read('/book/quotes', seat).json()['quotes'])
+
+    both = sorted(quotes.values())
+    assert listed() == listed(DESK_FX) == both, 'no document narrows'
+    entitle(recorded, [(ACTOR, 'validate', '*'), (DESK_FX, 'validate', 'spine-desk/FX')])
+    assert listed(DESK_FX) == [quotes['FX']] and listed(ACTOR) == listed() == both
+    never = read('/book/quote/' + 'f' * 64, DESK_FX).json()['detail']
+    for part in ('', '/sheet'):
+        shown = read('/book/quote/{}{}'.format(quotes['FX'], part), DESK_FX)
+        assert shown.status_code == 200 or 'has no sheet' in shown.text, shown.text
+        for seat in (ACTOR, None):
+            whole = read('/book/quote/{}{}'.format(quotes['Rates'], part), seat)
+            assert whole.status_code == 200 or 'has no sheet' in whole.text, whole.text
+        hidden = read('/book/quote/{}{}'.format(quotes['Rates'], part), DESK_FX)
+        assert hidden.status_code == 404 and hidden.json()['detail'] == never.replace(
+            'f' * 64, quotes['Rates']), (part, hidden.status_code)
+
+
 def test_a_seat_reads_what_it_may_do_and_where(recorded, desk):
     """WHAT A SEAT MAY DO, read before it acts. With no capabilities document every seat holds every
     verb everywhere, null throughout, and a request naming none acts as the deployment's seat.
