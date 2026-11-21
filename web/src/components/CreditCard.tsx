@@ -5,7 +5,7 @@ import { failure, stateSurvival } from '../api';
 import {
   SURVIVAL, refusedAt, spreadForm, spreadRequest, spreads, survivalCurve, type SpreadForm,
 } from '../desk';
-import { heldBack, useApp, written } from '../state';
+import { actingSeat, heldBack, useApp, written } from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
 import { Whose } from './Whose';
 
@@ -169,7 +169,7 @@ export function CreditCard({ id, title, factor, base, convention, recording }: {
           <button className="primary" onClick={() => void write()} disabled={saving}>
             write {SURVIVAL}.{request.counterparty || '…'}
           </button>
-          {recording && state.seat && <span className="hint">as {state.seat}</span>}
+          {recording && actingSeat(state) && <span className="hint">as {actingSeat(state)}</span>}
           {saving && <span className="chip running">writing</span>}
           {said?.at === 'done' && <span className="chip done">{said.text}</span>}
           {refusal('act')}{id && refusal('counterparty')}

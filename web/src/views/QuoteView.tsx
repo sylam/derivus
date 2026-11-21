@@ -12,7 +12,9 @@ import {
   type Kept, landedAt, requestOf, salesName, salesNames, solving, STANDS, standsAt, type Verdict,
   verdictOf,
 } from '../quote';
-import { acceptHeld, openTrade, useApp, useQueued, useQuoteList, useQuotes } from '../state';
+import {
+  acceptHeld, actingSeat, openTrade, useApp, useQueued, useQuoteList, useQuotes,
+} from '../state';
 import { formatNumber } from '../tokens';
 import type { PendingQuote, Quote, QuoteGiven, StructureType } from '../types';
 import { TicketCard } from '../components/TicketCard';
@@ -413,6 +415,7 @@ function Acceptance({ id, pending, verdict, quoting, onVerdict, onRequote }: {
   const [booking, setBooking] = useState(false);
   const paper = state.paper.data ?? NO_PAPER;
   const recording = state.record.spine !== null;
+  const seat = actingSeat(state);
   const hold = acceptHeld(state, pending.portfolio);
   const { quote } = pending;
   const booked = pending.booked ?? verdict?.booked;
@@ -471,7 +474,7 @@ function Acceptance({ id, pending, verdict, quoting, onVerdict, onRequote }: {
             </button>
             <span className="hint">
               {recording ? `This desk keeps a record: the acceptance files the quote and its fill${
-                state.seat ? ` under ${state.seat}` : ', under the seat at the top right'}.`
+                seat ? ` under ${seat}` : ', under the seat at the top right'}.`
                 : 'This desk keeps no record: the acceptance writes the trade into the book file.'}
             </span>
           </div>

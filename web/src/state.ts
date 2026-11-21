@@ -483,6 +483,12 @@ export function heldBack(state: AppState, act: Act,
 export const acceptHeld = (state: AppState, node?: string): string | null =>
   heldBack(state, 'quote_filed', node) ?? heldBack(state, 'fill', node);
 
+/** The seat this client acts as, however it was set: the one the service answers its acts are
+ * filed under (`GET /book/seat`), a sign-in token's or the header box's, and the box's own where
+ * that is not read for it. */
+export const actingSeat = (state: AppState): string =>
+  (state.grants?.asked === state.seat && state.grants.read?.seat) || state.seat;
+
 /** What a seat shown no position in a trade is told, the record showing a seat what sits under the
  * nodes it holds a grant at: that the record holds none, where that is the whole book - a node at
  * or above it, or no grants read - and else that the seat is shown none, with what it sees. */

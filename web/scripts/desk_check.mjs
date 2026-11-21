@@ -510,6 +510,16 @@ const seated = (grants, seat = 'sales-1', extra = {}, demands = DEMANDS) => ({
   doc: { Calc: { Deals: { Reference: 'HARBOURLINE' } } },
   grants: grants && { asked: seat, read: { seat, verbs: verbs(grants), demands }, refused: null },
   ...extra });
+check('the seat a client acts as is the one the service answers its acts are filed under, a '
+      + "token's with no seat in the header's box; the box's own until that is read for it, and "
+      + 'on a desk that asks no grants',
+      "the box's seat alone read, which leaves a seat a token names no trades of its own in the "
+      + "blotter; or the answer read for the seat the box held before, which names that seat's",
+      [state.actingSeat(seated({})), state.actingSeat({ ...seated({}, 'fx-trader'), seat: '',
+                                                        grants: { ...seated({}, 'fx-trader').grants, asked: '' } }),
+       state.actingSeat({ ...seated({}), seat: 'sales-2' }), state.actingSeat(seated(null))],
+      ['sales-1', 'fx-trader', 'sales-2', 'sales-1']);
+
 const NONE = 'The record holds none of it now';
 check('a seat shown no position in a trade is told the record holds none only where it is shown '
       + 'the whole book; a seat seeing part of it, another book or nothing is told it is shown '

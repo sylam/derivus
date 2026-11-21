@@ -10,7 +10,7 @@ import {
   GROUPINGS, NO_PAPER, POSITION, bookedBy, byId, byPath, clientTree, closed, heldColumns,
   portfolioTree, type Paper, type Position,
 } from '../positions';
-import { clockOf, marketOf, openTrade, spineOf, useApp } from '../state';
+import { actingSeat, clockOf, marketOf, openTrade, spineOf, useApp } from '../state';
 import { formatNumber } from '../tokens';
 import { markOf } from '../trade';
 import type { DealMark, Market, Schema } from '../types';
@@ -57,8 +57,8 @@ export function BlotterView() {
 
   const heldOf = (row: BlotterRow): Position[] | null => (!recording ? null
     : row.position ? [row.position] : grouping === 'book' ? heldAt.get(row.path) ?? [] : []);
-  // what the seat in the header booked, where one is set on a desk that records
-  const seat = recording ? state.seat : '';
+  // what the seat this client acts as booked, on a desk that records
+  const seat = recording ? actingSeat(state) : '';
   const own = mine && seat
     ? keptRows(tree, (row) => bookedBy(heldOf(row) ?? []).includes(seat)) : tree;
   const horizon = WINDOWS.find((w) => w.id === horizonId)?.days ?? null;
