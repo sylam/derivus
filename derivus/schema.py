@@ -1083,6 +1083,10 @@ EQUITY_OPTION = Exposure('Units', underlying='Equity', long=('Buy_Sell', 'Buy'),
 EXPIRY_PRINT = F('Price_Fixing', 'DateValueList', default='null', convention=True,
                  row=Row([F('Date', 'Date'), F('Value', 'Float')]))
 
+#: How often a barrier is watched, one declaration for every type that carries one.
+BARRIER_MONITORING = F('Barrier_Monitoring_Frequency', 'Period', default='0M', convention=True,
+                       description='How often the barrier is observed, 0M meaning continuously')
+
 #: An FX strike or barrier is a level of the rate the ENGINE prices, never the pair's market
 #: quote - said on every FX field that carries one, since the declarations are what a model reads
 #: before it books.
@@ -1123,7 +1127,7 @@ FX_OPTION_STYLE = Group('FXOptionStyle', 'Exercise and settlement', [
 TOUCH = Group('Touch', 'Touch terms', [
     F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
     F('Cash_Payoff', 'Float', default=REQUIRED, sized=True),
-    F('Barrier_Monitoring_Frequency', 'Period', default='0M', convention=True),
+    BARRIER_MONITORING,
     F('Barrier_Type', 'Text', default='Up', values=['Up', 'Down'])
 ])
 

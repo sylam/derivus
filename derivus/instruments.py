@@ -19,7 +19,7 @@ from . import utils, pricing
 from .schema import (
     Cash, DAY_COUNTS, F, Observes, REQUIRED, Row, own, DealFields, declared_factors, declared_fields,
     declared_settlements, engine_default, Exposure, KNOWN_CASH, settlement_days,
-    ADMIN, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, COMMODITY_TOUCH, EQUITYOPTIONBASE, EQUITY_OPTION, EQUITY_TOUCH,
+    ADMIN, BARRIER_MONITORING, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, COMMODITY_TOUCH, EQUITYOPTIONBASE, EQUITY_OPTION, EQUITY_TOUCH,
     EXPIRY_PRINT, FX_OPTION, FX_TOUCH, FXOPTIONBASE, FX_OPTION_STYLE, PRICING, FLOATING_INDEX, COUPON_SCHEDULE,
     CAP_FLOOR, OPTION_STYLE, TOUCH, QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP, TIMING, FX_STRIP_ADMIN)
 
@@ -5080,7 +5080,7 @@ class EquityBarrierOption(BarrierLifecycle, Deal):
         F('Units', 'Float', default=0.0, sized=True),
         F('Barrier_Dates', 'Table', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Observed', 'Float')])),
-        F('Barrier_Monitoring_Frequency', 'Period', default='0M', convention=True),
+        BARRIER_MONITORING,
         F('Barrier_Type', 'Text', default='Down_And_In',
           values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
         F('Barrier_Price', 'Float', default=0.0),
@@ -5533,7 +5533,7 @@ class CommodityBarrierOption(BarrierLifecycle, CommodityFixingWatch, Deal):
         F('Cash_Rebate', 'Float', default=0.0, convention=True, sized=True),
         F('Barrier_Type', 'Text', default='Down_And_In',
           values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
-        F('Barrier_Monitoring_Frequency', 'Period', default='0M', convention=True),
+        BARRIER_MONITORING,
         F('Settlement_Date', 'Date', default='', convention=True,
           settles=Cash('Currency', otherwise='Expiry_Date')),
         EXPIRY_PRINT
@@ -6302,7 +6302,7 @@ class FXBarrierOption(BarrierLifecycle, Deal):
     exposure = FX_OPTION
     fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, own('FXBarrierOption', [
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
-        F('Barrier_Monitoring_Frequency', 'Period', default='0M', convention=True),
+        BARRIER_MONITORING,
         F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate']),
         F('Barrier_Price', 'Float', default=0.0,
           description=FX_AXIS.format('Barrier price')),
@@ -6385,7 +6385,7 @@ class FXPartialTimeBarrierOption(Deal):
           values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
         F('Barrier_At_Start', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Barrier_Limit_Date', 'Date', default=''),
-        F('Barrier_Monitoring_Frequency', 'Period', default='0M', convention=True),
+        BARRIER_MONITORING,
         F('Cash_Rebate', 'Float', default=0.0, convention=True, sized=True),
         EXPIRY_PRINT
     ])]

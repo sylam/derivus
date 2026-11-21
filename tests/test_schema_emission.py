@@ -541,6 +541,27 @@ def test_shared_groups_are_shared_not_copied():
     assert len(groups) == 1, f'FXAdmin exists as {len(groups)} distinct objects, not one'
 
 
+def test_a_barrier_s_monitoring_is_one_declaration_every_carrier_publishes():
+    """`Barrier_Monitoring_Frequency` is declared once and listed by every type that watches a
+    barrier - the four barrier options and the six touches - so each publishes the one sentence
+    saying what the period is and what `0M` means.
+
+    Killing mutation: a barrier option declaring the field for itself, which publishes the
+    field's own name for a description.
+    """
+    key = schema.BARRIER_MONITORING.name
+    declared = {name: [f for group in groups for f in group.fields if f.name == key]
+                for name, groups in declared_classes().items()}
+    carriers = {name for name, found in declared.items() if found}
+    assert {'EquityBarrierOption', 'CommodityBarrierOption', 'FXBarrierOption',
+            'FXPartialTimeBarrierOption', 'FXOneTouchOption', 'EquityNoTouchOption'} <= carriers
+    for name in carriers:
+        assert all(f is schema.BARRIER_MONITORING for f in declared[name]), name
+        assert [INSTRUMENT['sections'][section][key]['description']
+                for section in INSTRUMENT['types'][name] if key in INSTRUMENT['sections'][section]
+                ] == ['How often the barrier is observed, 0M meaning continuously'], name
+
+
 def test_the_factor_types_are_the_riskfactor_classes():
     """Both directions. `construct_factor` does `globals().get(factor.type)(block)`, so a declared
     type naming no class is `None(block)` - a TypeError at compile time rather than a logged miss;
