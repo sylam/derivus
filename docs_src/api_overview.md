@@ -394,6 +394,20 @@ the curve it deflates on. A row says what its own run cost; `funding` says what 
 at. Where the policy in force states a block the engine refuses, the recalc refuses by name and the
 view still answers its rows, `funding` carrying two nulls and the sentence under `refused`.
 
+A COUNTERPARTY CREDIT LIMIT is declared on a desk that records: `POST /book/limits`
+`{limits, actor}` declares the `limits` policy under `admin`, `{entity: {amount, currency}}` with
+the amount above zero, an entity the record does not hold refused by name, and `GET /book/limits`
+answers the one in force with its `blob` and `lsn`, nulls where none is declared. `GET /book/xva`
+then answers `limits` beside its rows, one entry per limited entity:
+`{entity, name, limit, usage, headroom, sets, unrun, breached, not_comparable}`. `usage` is the sum
+of the peak PFE of every netting set the book carries against the entity or an entity under it,
+`sets` how many it sums and `unrun` how many have no finished run, where `headroom` is null. A
+limit in another currency than the rows' is not converted: `usage`, `headroom` and `breached` are
+null and `not_comparable` says why. An increment whose set draws on a limit answers the entries
+under `stats.Increment.limits`, each at the usage with the trade beside `usage_without`. A breach
+is reported and nothing is blocked. On a desk keeping no record the list is empty and both routes
+answer 404.
+
 THE POLL IS `GET /book/status`. Its `etag` names the book's text, so a client fetches the book only
 where it moved, and under a spine home its `spine.paper` is the LSN of the last entity or agreement
 declaration standing, so a client holding the paper re-reads it only where that moved. A poll with

@@ -589,12 +589,16 @@ rows on every ask and keeps one part under the same key: `funding`, the two curv
 now would fund its FVA at (`service.funded`), read through `spine.official_calculation` as the run
 reads them, a null for one the calculation does not state. The view does not go down with the
 policy: where the record refuses that calculation the rows answer as ever and `funding` carries two
-nulls beside `refused`, the sentence in the list a write's refusal answers. The web client says
+nulls beside `refused`, the sentence in the list a write's refusal answers. Its `limits` are the
+[credit limits](#credit-limits) held against those same rows: what they read of the record
+(`service.credit_limits`) is kept under the key, and each sum is of the rows the answer carries,
+so a restated limit reads at the next poll and nothing runs. The web client says
 what the next run funds at beside every FVA it shows - the XVA table, a client's rows, a credit
 charge - off that answer alone (`fundedAt` in `web/src/client.ts`). **Held by**
 `web/scripts/paper_check.mjs`, `web/scripts/client_check.mjs`,
 `test_spine_engine.py::test_the_xva_view_names_the_curves_a_credit_run_would_fund_at_and_keeps_the_answer`,
 `::test_the_xva_view_answers_its_rows_while_the_policy_in_force_cannot_be_read`,
+`::test_the_limits_are_kept_under_the_poll_s_key_and_a_restated_one_is_read_at_once`,
 `test_service.py::test_a_status_poll_with_nothing_moved_is_a_lookup_and_all_it_reads_is_in_its_key`,
 `test_spine_engine.py::test_a_status_poll_is_answered_anew_once_the_record_moves_and_the_paper_has_its_own_stamp`,
 `::test_a_risk_poll_with_nothing_moved_is_a_lookup_and_a_frame_that_moves_no_number_runs_nothing`,
@@ -649,6 +653,7 @@ declaration, so one nobody could read never lands; the last declaration stands (
 | `fixings` | `{"sources": {index: [source, ...]}}`, ordered | no index resolves |
 | `tiers` | `{"tiers": [...], "designations": {process: market}}`, [below](#tiers) | fills land unsigned |
 | `calculation` | `{"calculations": {type: block}}`, a block of the engine's own fields per calculation type, [below](#official-calculation) | a credit run reads its own document |
+| `limits` | `{"limits": {entity: {"amount": a, "currency": c}}}`, a credit limit per legal entity, [below](#credit-limits) | no exposure is held against anything |
 
 **Held by** `test_spine_verbs.py::test_a_policy_document_is_closed_at_the_field_level_and_refuses_where_it_is_declared`,
 `::test_the_tolerance_comparison_is_structural_first_and_numeric_second`.
@@ -704,6 +709,67 @@ policy: its official calculation comes with its document. **Held by**
 `::test_a_seat_s_own_credit_calculation_goes_over_the_policy`,
 `::test_a_block_declared_past_the_engine_s_judge_refuses_the_credit_run_by_name`,
 `test_service.py::test_a_desk_that_keeps_no_record_funds_at_what_its_document_states_and_declares_no_policy`.
+
+### Credit limits {#credit-limits}
+
+The convention. A counterparty credit limit is set per legal entity, and for a group on its
+parent, on potential future exposure at a high percentile. Exposure nets inside a netting set and
+adds across sets, the netting set being the unit of netting (the Basel Framework's counterparty
+credit risk standard, CRE). Usage against a limit is monitored after each run and checked before a
+trade: a trade that would take usage over the limit needs a credit officer's approval, and an
+excess that market moves cause is reported and managed, not blocked (the interagency supervisory
+guidance on counterparty credit risk management; the Basel Committee's guidelines for counterparty
+credit risk management).
+
+The `limits` policy declares the limits: per legal entity an amount above zero and the currency it
+is an amount of. The record checks the shape and never whether it holds the entity
+(`policy.parse_limits`). The declaring verb judges that: `spine.declare_limits`, behind
+`POST /book/limits` and the `declare_credit_limits` tool, refuses by name a limit on an entity the
+record does not hold before anything appends, a limit on one being a rule nothing enforces.
+`GET /book/limits` answers the document in force with its blob and its position. The last
+declaration stands whole. A document limiting a group on its parent and one member on its own, as
+`DV_Spine declare limits` takes it and as the route takes its one section beside `actor`:
+
+```json
+{"limits": {
+  "LEI-GROUP": {"amount": 25000000, "currency": "USD"},
+  "LEI-A": {"amount": 10000000, "currency": "USD"}}}
+```
+
+**Held by**
+`test_spine_verbs.py::test_a_limits_policy_is_a_credit_limit_per_legal_entity_and_the_record_checks_its_shape_alone`,
+`test_spine_engine.py::test_a_limit_is_declared_on_a_legal_entity_the_record_holds_and_on_no_other`,
+`test_mcp.py::test_the_credit_limits_reach_a_model_as_the_record_declares_them`.
+
+`service.limit_usage` is the one owner of usage. An entity's usage is the sum, over the netting
+sets the book carries against it and against every entity under it by the record's `parent` chain
+(`service.credit_limits`, the walk `service.clients_under` makes), of each set's peak in the
+highest-percentile `PFE_` column its standing XVA row carries (`service.draws_on`,
+`service.pfe_column`). A set is its counterparty's, the `Credit_Support_Amounts.Counterparty` an
+agreement's terms write as its entity. The rules:
+
+- A peak below nothing counts as nothing: a set that owes the desk nothing takes none of another
+  set's exposure away.
+- A set with no run that is done is not guessed at. `sets` counts the sets summed and `unrun` the
+  rest, and `headroom`, the limit less the usage, is stated only where `unrun` is nothing.
+- A limit in another currency than the rows' is not converted, the position a tier's size check
+  takes of a notional: the entry states no usage and `not_comparable` says so naming both.
+- `breached` is usage above the limit. Nothing is blocked and nothing runs.
+
+`GET /book/xva` answers one entry per limited entity under `limits`, beside its rows
+([the readers](#readers)). The credit charge, `POST /book/price` with `xva_increment`, answers the
+same entry under `stats.Increment.limits` for each limit its set draws on, its counterparty's and
+each above it (`service.limits_against`): this set's peak is the run's own in place of its row's,
+so `usage`, `headroom` and `breached` are with the trade and `usage_without` is the same sum at
+the peak of the run without it. What the other sets draw is read where the charge is asked and its
+hash is part of what the result is named by, so the charge asked again after a limit is restated
+or another row moves runs again. A set drawing on no limit, and every desk keeping no record, is
+named and answered as it was. No tier reads a limit: a breach is reported and
+[the approval it needs](#open) is not built. **Held by**
+`test_spine_engine.py::test_usage_against_a_limit_is_the_peak_exposure_of_the_entity_s_sets_and_of_those_under_it`,
+`::test_the_limits_are_kept_under_the_poll_s_key_and_a_restated_one_is_read_at_once`,
+`::test_a_credit_charge_holds_each_limit_its_set_draws_on_against_the_usage_with_the_trade`,
+`test_service.py::test_a_desk_that_keeps_no_record_declares_no_credit_limit_and_claims_none`.
 
 ## Tiers and tickets {#tiers}
 
@@ -1046,13 +1112,15 @@ beside an adversary and scripted faults; its roles are callables, so a model hos
 | Doorbell heartbeat; fallback interval | 15 s; 2 s | `service.DOORBELL_SECONDS`, `replica.INTERVAL` |
 | Activity page; worklist rows | 200 | `book_activity(limit=)`, `service.WORKLIST_ROWS` |
 | Quote firmness | 600 s | `Quote Policy.firm_seconds` |
-| Pillar staleness, tolerance, capabilities, the official calculation | none declared | `policy.py`, `capability.py` |
+| Pillar staleness, tolerance, capabilities, the official calculation, credit limits | none declared | `policy.py`, `capability.py` |
 
 ## Open {#open}
 
 Unbuilt parts of the design: the deal tree is the book file with nets and paper written on, not
-composed from the fold; and a print is not yet one fact feeding both a calibration's archive and a
-deal's fixings ([designed, not built](roadmap.md#designed-not-built)). The rotation and replay limits are
+composed from the fold; a print is not yet one fact feeding both a calibration's archive and a
+deal's fixings ([designed, not built](roadmap.md#designed-not-built)); and a trade that would
+breach a [credit limit](#credit-limits) is reported, with no approval routed to a credit officer.
+The rotation and replay limits are
 [trust limits](#trust-limits) and the replay tuple's reach is on
 [Model Limitations](../limitations.md#the-engine); which verbs take a seat and whether a rotation
 is signed by the key it retires are

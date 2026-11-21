@@ -103,6 +103,7 @@ structure takes it as `name`. **Held by**
 | `book_positions` | `GET /book/positions`: positions under agreement and portfolio |
 | `declare_legal_entity`, `declare_agreement`, `describe_agreements` | `/book/entities`, `/book/agreements`: the paper the book trades under |
 | `describe_official_calculation`, `declare_official_calculation` | `GET`/`POST /book/calculations`: what the desk's official credit run runs at, the `calculation` policy |
+| `describe_credit_limits`, `declare_credit_limits` | `GET`/`POST /book/limits`: the credit limit each legal entity is held to, the `limits` policy |
 
 A tool of the record answers the service's 404 on a desk that keeps none, never an empty answer a
 model would read as agreement, in the service's one sentence (`service.NO_RECORD`): the desk's
@@ -214,8 +215,11 @@ trade gave as a candidate. What a credit run of the book runs at is the book's c
 on a recording desk, the `calculation` policy `declare_official_calculation` declares
 ([the official calculation](spine.md#official-calculation)); a named calculation's dials go over
 it and are the seat's own. `xva_view`'s list carries `funding`, the two curves a recalc asked now
-would fund its FVA at. **Held by**
+would fund its FVA at, and `limits`, each [credit limit](spine.md#credit-limits)
+`declare_credit_limits` declares against the usage the rows add up to; `xva_increment` answers
+what its trade does to each limit its set draws on. Neither tool adds a call for it. **Held by**
 `test_the_official_calculation_reaches_a_model_as_the_record_declares_it`,
+`test_the_credit_limits_reach_a_model_as_the_record_declares_them`,
 `test_spine_engine.py::test_the_xva_view_names_the_curves_a_credit_run_would_fund_at_and_keeps_the_answer`,
 `test_the_increment_tool_answers_the_services_own_increment`,
 `test_the_xva_view_answers_one_set_s_row_with_its_profile_and_no_place_on_the_server`,
