@@ -10,7 +10,7 @@
 import { check, done, load, node, support } from './check.mjs';
 
 const tokens = await load('tokens');
-const { paperOwed, standing } = await load('state');
+const { paperAt, paperOwed, standing } = await load('state');
 const { noPaper } = await load('positions');
 
 // ---- the declaration, trimmed to what the rules turn on ------------------------------------------
@@ -166,5 +166,25 @@ check('a booking re-reads the holdings on a screen showing them and the paper on
        owes('settings', null, {}, '27', 'e2')],
       [[false, false], [false, true], [true, false], [true, true], [true, true], [false, false],
        [false, false]]);
+
+const seen = (seat, etag = 'e1', paper = 27) => ({
+  source: { kind: 'book', etag }, seat,
+  record: { spine: { lsn: 5, events_behind: 0, positions_behind: 0, paper } } });
+const asSales = paperAt(seen('sales-1'));
+check('what a seat holds is read for that seat: another seat named owes the holdings again and '
+      + 'the paper not, as a booking does; a declaration owes the paper; a file opened here is '
+      + 'held against nothing',
+      'the holdings keyed on the clock alone, which leaves the positions of the seat before on '
+      + 'screen until the clock moves; or the paper keyed on the seat too, which reads it again '
+      + 'at every change of the seat box',
+      [asSales, paperOwed('portfolio', HELD, asSales, paperAt(seen('fx-desk'))),
+       paperOwed('portfolio', HELD, asSales, paperAt(seen('sales-1', 'e2'))),
+       paperOwed('portfolio', HELD, asSales, paperAt(seen('sales-1', 'e1', 41))),
+       paperOwed('portfolio', HELD, asSales, paperAt(seen('sales-1'))),
+       paperAt({ source: { kind: 'local', name: 'a.json' }, seat: 'sales-1',
+                 record: { spine: null } })],
+      [{ paper: '27', holdings: 'e1@5/0/0|sales-1' }, { paper: false, holdings: true },
+       { paper: false, holdings: true }, { paper: true, holdings: false },
+       { paper: false, holdings: false }, null]);
 
 done();

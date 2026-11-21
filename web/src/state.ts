@@ -356,7 +356,7 @@ const HOLDING_TABS = ['portfolio', 'blotter', 'trade', 'risk', 'xva', 'backoffic
 
 /** Which parts of the paper `tab` owes a read: all of it where none is held, else each part it
  * shows whose answer in hand (`answered`) was read elsewhere than where that part now stands
- * (`at`) - the paper at the record's last declaration of it, the holdings on the clock. */
+ * (`at`, `paperAt`). */
 export function paperOwed(tab: string, held: Paper | null, answered: Record<string, string>,
                           at: { paper: string; holdings: string }):
   { paper: boolean; holdings: boolean } {
@@ -376,6 +376,21 @@ export const spineOf = (state: AppState): SpineBlock | null =>
 export function clockOf(state: AppState): string | null {
   return state.source?.kind === 'book'
     ? bookClock(state.source.etag, pinnedAt(state.record.spine)) : null;
+}
+
+/** The clock an answer read AS the seat on screen is held against - the risk, the positions: the
+ * book's clock and that seat, so another seat named reads again. Null off the live book. */
+export function seatClock(state: AppState): string | null {
+  const clock = clockOf(state);
+  return clock === null ? null : `${clock}|${state.seat}`;
+}
+
+/** Where each part of the paper stands, which `paperOwed` holds the answers in hand against: the
+ * paper at the record's last declaration of it, and the holdings, of which a seat is shown its
+ * own, on the seat's clock. Null off the live book. */
+export function paperAt(state: AppState): { paper: string; holdings: string } | null {
+  const holdings = seatClock(state);
+  return holdings === null ? null : { paper: String(spineOf(state)?.paper), holdings };
 }
 
 /** The market a screen shows: for the live book what `GET /book/market` answered, the file it

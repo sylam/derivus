@@ -10,7 +10,8 @@ import { ActivityStrip, ReconcileBanner, SeatControl, WorklistBanner } from './c
 import { WORKSPACES } from './registry';
 import { bookOwed, polled, ringsAhead, single, worklistAt } from './spine';
 import {
-  AppContext, INITIAL, PAPER_TABS, bookLoaded, clockOf, paperOwed, reducer, spineOf,
+  AppContext, INITIAL, PAPER_TABS, bookLoaded, clockOf, paperAt, paperOwed, reducer, seatClock,
+  spineOf,
 } from './state';
 
 const BOOK_POLL_MS = 2000;
@@ -108,9 +109,10 @@ export function App() {
   // then: taking the tab prices it, every move of the clock under that gaze re-prices it, and a tab
   // left behind or a window gone hidden costs nothing until it is looked at again.
   const riskWanted = ['risk', 'trade', 'xva', 'client'].includes(state.tab) && visible;
-  const riskAt = `${clock}|${state.seat}`;
+  const riskAt = seatClock(state);
   useEffect(() => {
-    if (clock === null || !riskWanted || !owed('risk', riskAt, state.risk.data)) return;
+    if (clock === null || riskAt === null || !riskWanted
+        || !owed('risk', riskAt, state.risk.data)) return;
     let live = true;
     dispatch({ type: 'RISK_FETCHING' });
     getBookRisk()
@@ -160,13 +162,12 @@ export function App() {
 
   // The record's paper and the holdings under it, for every screen that names its clients,
   // groups the book by them or signs its tickets: each part a screen shows read while it is looked
-  // at on a desk that records - the holdings once per clock, the paper once per declaration of it
-  // (`spine.paper`) - however often the tabs that show it are taken.
+  // at on a desk that records - the holdings once per clock and seat, the paper once per
+  // declaration of it (`paperAt`) - however often the tabs that show it are taken.
   const paperWanted = PAPER_TABS.includes(state.tab) && visible && recording;
-  const paperAt = String(spineOf(state)?.paper);
+  const at = paperAt(state);
   useEffect(() => {
-    if (clock === null || !paperWanted) return;
-    const at = { paper: paperAt, holdings: clock };
+    if (at === null || !paperWanted) return;
     const owes = paperOwed(state.tab, state.paper.data, answered.current, at);
     if (!owes.paper && !owes.holdings) return;
     let live = true;
@@ -185,7 +186,7 @@ export function App() {
       })
       .catch((error) => { if (live) dispatch({ type: 'PAPER_FAILED', ...failure(error) }); });
     return () => { live = false; };
-  }, [clock, paperAt, paperWanted, state.tab]);
+  }, [at?.paper, at?.holdings, paperWanted, state.tab]);
 
   // What the seat may do, asked again where the seat or the record's head moved. A refusal - no
   // seat named, under grants - stands in its place; any other failure leaves acts to the service.
