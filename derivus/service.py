@@ -3657,7 +3657,8 @@ def book_agreement_declared(request: dict):
     The entity must already be declared, the terms are judged by the engine before anything
     appends (`agreement_terms`), and the act is `document`, enforced by the record. A second
     declaration under one id restates the agreement, and a read before it still answers the terms
-    it answered. 404 where no home is configured.
+    it answered; an id standing under another entity is refused in the record's words, a 422: an
+    agreement's id belongs to one entity. 404 where no home is configured.
     """
     recorded()
     agreement, entity = request.get('agreement'), request.get('entity')

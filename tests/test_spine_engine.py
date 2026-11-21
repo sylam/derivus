@@ -1343,6 +1343,34 @@ def test_a_name_another_entity_holds_is_refused_in_the_record_s_words(recorded):
     assert [row['entity'] for row in CLIENT.get('/book/entities').json()['entities']] == ['LEI-A']
 
 
+def test_an_agreement_id_another_entity_holds_is_refused_in_the_record_s_words(recorded):
+    """Through the service: an agreement declared under an id standing under another entity, its
+    terms that entity's own, answers 422 with the record's own sentence - the id, the entity it
+    stands under, the remedy - and records nothing, while the entity that holds the id declares it
+    again as the fact already standing.
+
+    Killing mutation: the check dropped from `declare_agreement`, which answers 200 and moves the
+    agreement, and every position under it, to the other entity.
+    """
+    def declared(entity):
+        return CLIENT.post('/book/agreements', content=dump({
+            'agreement': CLIENT_SET, 'entity': entity, 'kind': 'ISDA 2002',
+            'terms': netting_set(CLIENT_SET, entity)['Instrument']['.Deal']}), headers=JSON)
+
+    for entity in ('LEI-A', 'LEI-B'):
+        assert CLIENT.post('/book/entities', content=dump({'entity': entity, 'name': entity}),
+                           headers=JSON).status_code == 200
+    first = declared('LEI-A').json()['recorded']['lsn']
+    refused = declared('LEI-B')
+    assert refused.status_code == 422 and refused.json()['detail'] == (
+        "declare_agreement: the agreement 'CLIENT_A' stands under entity 'LEI-A', and an "
+        "agreement's id belongs to one legal entity - declare the agreement with 'LEI-B' under an "
+        'id of its own'), refused.text
+    assert declared('LEI-A').json()['recorded']['lsn'] == head(recorded) == first
+    assert [row['entity'] for row in CLIENT.get('/book/agreements').json()['agreements']] == [
+        'LEI-A']
+
+
 def test_a_declared_tree_is_where_a_book_books_and_a_restrike_is_judged(recorded, desk):
     """THE TREE IS DECLARED, BOOK BY BOOK. A book declaring no node books wherever its paths say,
     whatever another book declared; once any node of it stands, a fill books into the book itself

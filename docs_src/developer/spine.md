@@ -789,8 +789,10 @@ counterparty (`Credit_Support_Amounts.Counterparty`). A later declaration under 
 one whose content it replaced (`supersedes`), as a file's does, so a return to earlier content is a
 new fact while the content in force declared again coalesces. An entity's name identifies one
 entity: `verbs.declare_entity` refuses, by name, a declaration whose name stands under another id,
-compared as written, and the fold reads two ids a log already holds under one name as it did. A
-fill's `quantity` is the signed
+compared as written, and the fold reads two ids a log already holds under one name as it did. An
+agreement's id belongs to one entity: `verbs.declare_agreement` refuses, by name, a declaration
+under an id standing under another entity, and the fold reads an agreement a log already holds
+moved to another as it did. A fill's `quantity` is the signed
 change in units; its optional `agreement`, `portfolio` and `price` say where and at what, and
 `value_date` the day that price's consideration settles - refused by name without a price. One
 instrument under two agreements is two positions, credit exposure being per agreement; in two
@@ -799,10 +801,12 @@ declared terms, and every compile writes the terms standing at its LSN over it
 ([the plan](#the-plan)). **Held by** `test_spine_paper.py::test_a_position_is_keyed_where_it_sits`,
 `::test_a_return_to_earlier_paper_is_a_new_fact_and_a_repeat_of_the_standing_paper_is_one`,
 `::test_a_name_identifies_one_legal_entity`,
+`::test_an_agreement_s_id_belongs_to_one_legal_entity`,
 `test_spine_engine.py::test_the_first_booking_under_a_declared_agreement_brings_its_set`,
 `::test_the_set_s_counterparty_is_the_agreement_s_entity`,
 `::test_paper_restated_and_then_restored_stands_restored`,
-`::test_a_name_another_entity_holds_is_refused_in_the_record_s_words`.
+`::test_a_name_another_entity_holds_is_refused_in_the_record_s_words`,
+`::test_an_agreement_id_another_entity_holds_is_refused_in_the_record_s_words`.
 
 `portfolio_declared` is judged at its parent. Once any node of a book stands, a fill books into the
 book or a declared node. `GET /book/positions` answers each standing position beside the file's

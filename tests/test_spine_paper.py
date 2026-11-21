@@ -243,6 +243,44 @@ def test_a_name_identifies_one_legal_entity(tmp_path):
     log.close()
 
 
+def test_an_agreement_s_id_belongs_to_one_legal_entity(tmp_path):
+    """An agreement's id stands under one entity. A declaration under a standing id naming ANOTHER
+    entity is refused in the record's words, naming the id, the entity it stands under and the
+    remedy, and appends nothing. Under the entity that holds the id nothing moves: a repeat
+    coalesces, and new terms or a new kind is a new fact. An agreement a log already holds moved
+    to another entity folds as it did, the refusal being the verb's alone, and then stands under
+    that one.
+
+    Killing mutations: the check dropped, which moves `ISDA-A` to `LEI-Y`; the check refusing the
+    entity that holds the id too, which refuses `LEI-X`'s own repeat.
+    """
+    log = SpineLog(seeded(tmp_path, clips=()))
+    first = declare_agreement(log, ACTOR, 'ISDA-A', 'LEI-X', 'ISDA 2002', PAPER)
+    head = log.head()[0]
+    with pytest.raises(MalformedEvent) as refused:
+        declare_agreement(log, ACTOR, 'ISDA-A', 'LEI-Y', 'ISDA 2002', PAPER)
+    assert str(refused.value) == (
+        "declare_agreement: the agreement 'ISDA-A' stands under entity 'LEI-X', and an "
+        "agreement's id belongs to one legal entity - declare the agreement with 'LEI-Y' under an "
+        'id of its own')
+    assert log.head()[0] == head == first['lsn'], 'a refused declaration appended'
+
+    assert declare_agreement(log, ACTOR, 'ISDA-A', 'LEI-X', 'ISDA 2002', PAPER)['lsn'] == head
+    filed = [declare_agreement(log, ACTOR, agreement, entity, kind, terms)['lsn']
+             for agreement, entity, kind, terms in (
+                 ('ISDA-A', 'LEI-X', 'ISDA 2002', RESTRUCK),
+                 ('ISDA-A', 'LEI-X', 'ISDA 2002 with CSA', RESTRUCK),
+                 ('ISDA-B', 'LEI-Y', 'ISDA 2002', PAPER))]
+    assert filed == [head + 1, head + 2, head + 3]
+    log.append('agreement_declared', {'agreement': 'ISDA-A', 'entity': 'LEI-Y', 'kind': 'ISDA 2002',
+                                      'terms': first['terms']}, actor=ACTOR,
+               blob_refs=(first['terms'],))
+    rows = PROJECTORS['agreements'].rows(fold(log, PROJECTORS['agreements']))
+    assert [(row['agreement'], row['entity']) for row in rows] == [
+        ('ISDA-A', 'LEI-Y'), ('ISDA-B', 'LEI-Y')]
+    log.close()
+
+
 def test_a_reader_starts_at_the_newest_seed_a_named_folder_holds(tmp_path):
     """A seed filed where the deployment says - a folder every seat reads, not the home's own - is
     where a reader starts: the newest at or behind its head, verified, and the state it advances to

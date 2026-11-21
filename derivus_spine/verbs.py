@@ -407,13 +407,11 @@ def declare_entity(log, actor, entity, name, parent=None, effective_time=None):
     naming the one it replaced, and a repeat of the content in force coalesces. Firm-level, so it
     carries no book.
     """
-    from .projections import PROJECTORS, fold
-
     body = {'entity': _name(entity, 'entity', 'declare_entity'),
             'name': _name(name, 'name', 'declare_entity')}
     if parent is not None:
         body['parent'] = _name(parent, 'parent', 'declare_entity')
-    standing = fold(log, PROJECTORS['entities'])
+    standing = standing_under(log, 'entities', state=True)
     holder = next((held for held, row in standing.items()
                    if held != entity and row['name'] == name), None)
     if holder is not None:
@@ -431,12 +429,19 @@ def declare_agreement(log, actor, agreement, entity, kind, terms, effective_time
 
     `terms` is the canonical JSON of the netting set the agreement's positions are compiled into,
     as bytes - the caller canonicalises and validates, the engine knowing what a netting set may
-    say - and `kind` the document's label as its declarer states it. A second declaration under one
-    id restates the agreement as `declare_entity` restates an entity. Firm-level, so it carries no
+    say - and `kind` the document's label as its declarer states it. The id belongs to one entity:
+    an id standing under another entity raises `MalformedEvent`. A second declaration under one id
+    restates the agreement as `declare_entity` restates an entity. Firm-level, so it carries no
     book.
     """
+    standing = standing_under(log, 'agreements', agreement, state=True) or {}
+    if standing and standing['entity'] != entity:
+        raise MalformedEvent(
+            "declare_agreement: the agreement {!r} stands under entity {!r}, and an agreement's "
+            'id belongs to one legal entity - declare the agreement with {!r} under an id of its '
+            'own'.format(agreement, standing['entity'], entity))
     address = _blob(log, terms, 'the canonical agreement terms')
-    body = restated(log, standing_under(log, 'agreements', agreement), {
+    body = restated(log, standing.get('lsn'), {
         'agreement': _name(agreement, 'agreement', 'declare_agreement'),
         'entity': _name(entity, 'entity', 'declare_agreement'),
         'kind': _name(kind, 'kind', 'declare_agreement'), 'terms': address})
@@ -746,15 +751,16 @@ def keyed(log, event_type, body, standing, actor, book=None, effective_time=None
                       **appended)
 
 
-def standing_under(log, projector, *key):
+def standing_under(log, projector, *key, state=False):
     """The LSN of the declaration `projector`'s fold has standing under `key`, a path into its
-    state, or None where none stands there - its row's, or the LSN the fold files there itself."""
+    state, or None where none stands there - its row's, or the LSN the fold files there itself -
+    or, with `state`, what the fold holds there."""
     from .projections import PROJECTORS, fold
 
     held = fold(log, PROJECTORS[projector])
     for name in key:
         held = held.get(name) if isinstance(held, dict) else None
-    return held['lsn'] if isinstance(held, dict) else held
+    return held['lsn'] if isinstance(held, dict) and not state else held
 
 
 def _movement(log, subject, status, amount, asset, kind, reference, effective_time, agreement):
