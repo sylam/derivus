@@ -3,7 +3,7 @@ import { declareEntity, failure } from '../api';
 import { entityText } from '../desk';
 import { openClient } from '../client';
 import { EmptyState } from '../components/EmptyState';
-import { type Agreement, type Entity, NO_PAPER } from '../positions';
+import { type Agreement, type Entity, NO_PAPER, noPaper } from '../positions';
 import { heldBack, opened, spineOf, standing, useApp } from '../state';
 import { AgreementForm, AgreementTerms, type Said } from '../components/AgreementForm';
 
@@ -23,14 +23,9 @@ export function PaperView() {
 
   const paper = { ...(state.paper.data ?? NO_PAPER), error: state.paper.error };
 
-  if (!recording || !schema) {
-    return (
-      <EmptyState
-        title="The paper is the live book's record."
-        hint="Start the service with --book and a spine home: the counterparties and the agreements the book trades under appear here, and a seat holding `document` declares them."
-      />
-    );
-  }
+  const none = noPaper(recording, state.source?.kind === 'book');
+  if (none) return <EmptyState {...none} />;
+  if (!schema) return null;
   const named = (id: string) => entityText(paper.entities, id);
   // what a row of the record opened here: an agreement, or an entity
   const picked = state.selection.picks.paper;

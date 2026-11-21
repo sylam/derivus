@@ -59,6 +59,22 @@ export type Paper = {
 export const NO_PAPER: Paper = { positions: [], entities: [], agreements: [],
                                  unstated: { fields: [], collateral_columns: [] }, nodes: [] };
 
+/** What the Paper tab says in place of the paper where no record is kept, null on a desk that
+ * records: agreements are not declared here, and a set's own terms are read on its client's page
+ * on the desk's `live` book - on the set alone in a file opened in this browser, which has none. */
+export function noPaper(recording: boolean, live: boolean): { title: string; hint: string } | null {
+  if (recording) return null;
+  const terms = "A netting set's own terms are the agreement";
+  return live ? {
+    title: 'This desk keeps no record, so agreements are not declared here.',
+    hint: `${terms}: each client's page under Clients reads them set by set, and they are `
+      + 'amended on the set in the Portfolio.',
+  } : {
+    title: 'A file opened here has no record, so no agreements are declared for it.',
+    hint: `${terms}, read on the set in the Portfolio.`,
+  };
+}
+
 /** How a screen groups the book: as the file nests it, or by one of the record's two keys. */
 export type Grouping = 'book' | 'portfolio' | 'client';
 

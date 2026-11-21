@@ -11,6 +11,7 @@ import { check, done, load, node, support } from './check.mjs';
 
 const tokens = await load('tokens');
 const { paperOwed, standing } = await load('state');
+const { noPaper } = await load('positions');
 
 // ---- the declaration, trimmed to what the rules turn on ------------------------------------------
 
@@ -128,6 +129,21 @@ check('an agreement stands where the book holds a set of its type under its id, 
        standing(null, null, { agreement: 'ISDA-1', terms: ISDA })],
       [{ path: '1', moved: [] }, { path: '2/0', moved: ['Netted'] }, { path: null, moved: [] },
        { path: null, moved: [] }]);
+
+// ---- no record, no paper ------------------------------------------------------------------------
+
+const [desk, file] = [noPaper(false, true), noPaper(false, false)];
+check('a desk keeping no record is told agreements are not declared here and that Clients reads '
+      + "each set's terms, a file opened here that it has none, a desk that records nothing in "
+      + "the paper's place, and nobody how to start a service",
+      'the state shown on a desk that records - while its schema is unread, as it was - which '
+      + 'tells it it keeps no record; a file opened in this browser pointed at Clients, which '
+      + "reads the live book alone; or the operator's words back, a spine home and --book",
+      [noPaper(true, true), /^This desk keeps no record, so agreements are not declared/.test(desk.title),
+       /Clients/.test(desk.hint), /^A file opened here has no record/.test(file.title),
+       /Clients/.test(file.hint),
+       [desk, file].some((said) => /--book|spine home|the service/.test(said.title + said.hint))],
+      [null, true, true, true, false, false]);
 
 // ---- which parts of the paper a screen reads ----------------------------------------------------
 
