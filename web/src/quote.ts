@@ -1,18 +1,18 @@
 // A quote as a desk reads one - pure, free of React and the network, the way `blotter.ts` is for
 // the blotter: what a structure asks for, read off its `/schema` declaration and never off a list
 // of structure names; the ticket a quote answers, its levels on the market's axis by the blotter's
-// own rule; and what an acceptance says.
+// own rule; what its trade does to the client's credit numbers; and what an acceptance says.
 
 import {
   SET, STRIP_FIELDS, fieldsOf, levelOnAxis, pick, quoted, rowsByPath, sizeOf, toRows,
   type BlotterRow, type Quoted, type Size,
 } from './blotter';
-import { entityText, instantMs } from './desk';
+import { entityText, instantMs, peaks } from './desk';
 import type { Agreement, Entity } from './positions';
 import { formatNumber, isBlank, isObject } from './tokens';
 import type {
-  Acceptance, DealNode, Descriptor, JobDoc, Quote, QuoteGiven, QuotedLeg, Schema, Section,
-  StructureType,
+  Acceptance, DealNode, Descriptor, Increment, JobDoc, PendingQuote, Quote, QuoteGiven, QuotedLeg,
+  ResultSummary, Schema, Section, Stepped, StructureType,
 } from './types';
 
 // ---- the ticket asked for -----------------------------------------------------------------------
@@ -214,6 +214,52 @@ export function spreadText(quote: Quote): string {
   return `The market's two-way spread costs the client ${formatNumber(quote.edge, 'money')} `
     + `${quote.currency}, ${on}; at mid the legs are worth ${formatNumber(quote.net_mid, 'money')} `
     + `${quote.currency}.`;
+}
+
+// ---- what its trade does to the client's credit numbers -----------------------------------------
+
+/** What a polled run reads as: the answer it filed under `stats[stat]` once done, the service's
+ * own sentence where it failed, and nothing while it waits or runs. */
+export function ranAs<T>(summary: ResultSummary, stat: string):
+  { answer: T } | { refused: string } | null {
+  if (summary.status === 'done') return { answer: summary.stats?.[stat] as T };
+  return summary.status === 'error'
+    ? { refused: summary.error ?? `the run failed and answered no ${stat}` } : null;
+}
+
+/** Whether a quote's credit charge is asked: until it books. The what-if prices the quote's trade
+ * into the book as it stands, so of a booked quote it would answer for a second one beside it. */
+export const chargeable = (pending: Pick<PendingQuote, 'booked'>): boolean => !pending.booked;
+
+/** One line of a credit charge: a number of the client's netting set with the trade and without
+ * it - a peak with the day each falls on - and what the trade does to it, as a word and a size. */
+export type ChargeLine = {
+  what: string; plus?: string; kind: 'money' | 'whole'; with: number; without: number;
+  days?: { with: string; without: string }; moves: 'adds' | 'takes off' | 'no change'; by: number;
+};
+
+/** A credit charge as the lines a ticket reads, off a run's `stats.Increment`: its CVA and FVA,
+ * then the peak of each exposure column - the expected exposure's and every PFE's by its
+ * percentile (`desk.peaks`) - a trade that lowers a number taking that much off it. */
+export function chargeLines(answer: Increment): ChargeLine[] {
+  const moved = (increment: number): Pick<ChargeLine, 'moves' | 'by'> => ({
+    moves: increment > 0 ? 'adds' : increment < 0 ? 'takes off' : 'no change',
+    by: Math.abs(increment) });
+  const cost = (what: string, plus: string, step: Stepped<number>): ChargeLine => ({
+    what, plus, kind: 'money', with: step.with, without: step.without, ...moved(step.increment) });
+  return [
+    cost('CVA', 'an expected loss', answer.cva), cost('FVA', 'a funding cost', answer.fva),
+    ...Object.entries(answer).flatMap(([column, held]): ChargeLine[] => {
+      const step = held as Stepped<{ peak: number; day: string }>;
+      if (!isObject(step) || !isObject(step.with)) return [];
+      const read = peaks({ [column]: { value: step.with.peak, day: step.with.day } });
+      const what = read.ee ? 'Peak expected exposure (EE)' : read.pfe.length
+        ? `Peak exposure at the ${formatNumber(read.pfe[0].quantile)}th percentile (PFE)` : column;
+      return [{ what, kind: 'whole', with: step.with.peak, without: step.without.peak,
+                days: { with: step.with.day, without: step.without.day },
+                ...moved(step.increment) }];
+    }),
+  ];
 }
 
 // ---- how long it stands, and what an acceptance says -------------------------------------------

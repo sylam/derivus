@@ -479,6 +479,19 @@ check('a control is judged by the verb its act demands under the map in force an
        state.heldBack(seated({ approve: ['HARBOURLINE'] }, 'sales-1', {}, MOVED), 'mark')],
       [null, 'Needs mark: sales-1 holds it nowhere.', null,
        'Needs approve: sales-1 holds it nowhere.', 'Needs mark: sales-1 holds it nowhere.']);
+check('a what-if is admitted to a seat holding validate at the book, above it or at any node under '
+      + 'it, as the queue asks it; every other act reaches down alone',
+      'the what-if judged as a booking is, which holds the credit charge from a seat pricing one '
+      + 'node of the book that the queue admits; a grant under another book read as under this '
+      + 'one; or every act reaching up, which offers a booking at the book to a seat granted a desk',
+      [state.heldBack(seated({ validate: ['HARBOURLINE/fx'] }), 'validate'),
+       state.heldBack(seated({ validate: ['HARBOURLINE'] }), 'validate'),
+       state.heldBack(seated({ validate: ['HARBOURLINE-2/fx'] }), 'validate'),
+       state.heldBack(seated({}), 'validate'),
+       state.heldBack(seated({ book: ['HARBOURLINE/fx'], validate: ['HARBOURLINE/fx'] }), 'fill')],
+      [null, null, 'Needs validate over HARBOURLINE: sales-1 holds it only over HARBOURLINE-2/fx.',
+       'Needs validate: sales-1 holds it nowhere.',
+       'Needs book over HARBOURLINE: sales-1 holds it only over HARBOURLINE/fx.']);
 const QUOTED = { ...DEMANDS, quote_filed: 'approve' };
 check('an acceptance is held where either act it files is, the quote or its fill, at the node the '
       + 'quote books at and the book where it states none',

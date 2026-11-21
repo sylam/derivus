@@ -1,7 +1,7 @@
 // Drives `src/quote.ts` where the eye cannot: what a structure's ticket asks for off its `/schema`
-// declaration, what is sent, how a quote's levels read on the market's axis, and what an
-// acceptance says. Every check names the MUTATION it kills - the change to the module that would
-// still typecheck, still render, and still be wrong.
+// declaration, what is sent, how a quote's levels read on the market's axis, what its credit
+// charge reads as, and what an acceptance says. Every check names the MUTATION it kills - the
+// change to the module that would still typecheck, still render, and still be wrong.
 //
 //   node web/scripts/quote_check.mjs          # exits 1 on a miss
 //
@@ -367,5 +367,56 @@ check('a booked quote lands where the file holds its trade now: the trade under 
        quote.landedAt(QUOTED_BOOK, { lsn: 1, deal_path: '0/0' }),
        quote.landedAt(QUOTED_BOOK, { lsn: 1, deal_path: '0', reference: 'ISDA-K' })],
       ['1', undefined, '0/0', undefined]);
+
+// --- what its trade does to the client's credit numbers: a `stats.Increment` as the service
+// files it, a collar that adds to the set's CVA and takes off its funding cost and its peak EE
+const peak = (value, day) => ({ peak: value, day });
+const INCREMENT = {
+  netting_set: 'ISDA-K', counterparty: 'KESTREL', currency: 'USD',
+  paths: { seed: 5120, dates: 24, factors: ['FxRate.ZAR', 'FxRate.GBP'], count: 1024 },
+  cva: { with: 1163.61, without: 1060.61, increment: 103 },
+  fva: { with: 141.77, without: 150.07, increment: -8.3 },
+  EE: { with: peak(172251.57, '2027-02-15'), without: peak(194513.87, '2027-02-16'),
+        increment: -22262.3 },
+  'PFE_97.5': { with: peak(731445.76, '2027-05-14'), without: peak(731445.76, '2027-02-16'),
+                increment: 0 },
+};
+check('a credit charge reads its CVA and FVA, then each exposure column\'s peak with the day it '
+        + 'falls on in either run, and what the trade does to each as a word and a size',
+      'the sign read the other way, which tells a salesperson a trade adding to the client\'s CVA '
+        + 'takes it off; a signed size kept under the word, which reads "takes off -8.30"; the '
+        + 'paths or the run\'s terms read as an exposure column; one run\'s day printed under both '
+        + 'peaks; or a PFE read without its percentile',
+      quote.chargeLines(INCREMENT),
+      [{ what: 'CVA', plus: 'an expected loss', kind: 'money', with: 1163.61, without: 1060.61,
+         moves: 'adds', by: 103 },
+       { what: 'FVA', plus: 'a funding cost', kind: 'money', with: 141.77, without: 150.07,
+         moves: 'takes off', by: 8.3 },
+       { what: 'Peak expected exposure (EE)', kind: 'whole', with: 172251.57, without: 194513.87,
+         days: { with: '2027-02-15', without: '2027-02-16' }, moves: 'takes off', by: 22262.3 },
+       { what: 'Peak exposure at the 97.5th percentile (PFE)', kind: 'whole', with: 731445.76,
+         without: 731445.76, days: { with: '2027-05-14', without: '2027-02-16' },
+         moves: 'no change', by: 0 }]);
+
+check('a polled run reads as the answer it filed under its stat once done, the service\'s own '
+        + 'sentence where it failed, and nothing while it waits or runs',
+      'a failed run read as done, which shows a ticket no numbers and no reason; a run still '
+        + 'queued read as answered; or the answer read off another stat',
+      [quote.ranAs({ status: 'done', stats: { Quote: { quote_id: 'q1' }, Increment: 7 } }, 'Quote'),
+       quote.ranAs({ status: 'error', error: 'Cannot find SurvivalProb.MARRICK' }, 'Increment'),
+       quote.ranAs({ status: 'error' }, 'Increment'),
+       quote.ranAs({ status: 'queued' }, 'Increment'),
+       quote.ranAs({ status: 'running', stats: {} }, 'Increment')],
+      [{ answer: { quote_id: 'q1' } }, { refused: 'Cannot find SurvivalProb.MARRICK' },
+       { refused: 'the run failed and answered no Increment' }, null, null]);
+
+check('a credit charge is asked of a quote until it books, an acceptance no tier booked included',
+      'the charge asked of a booked quote, which prices a second trade beside the one the book '
+        + 'holds and reads as the first one\'s; or an acceptance read as a booking, which hides '
+        + 'the charge of a trade the book does not hold',
+      [quote.chargeable({ booked: null }), quote.chargeable({}),
+       quote.chargeable({ booked: { lsn: 38, deal_path: '0/2' } }),
+       quote.chargeable({ booked: null, accepted: { lsn: 37, ticket: 't' } })],
+      [true, true, false, true]);
 
 done();

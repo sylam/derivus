@@ -2,12 +2,14 @@
 // user action (describe/validate/execute) and by the book poll, which only re-fetches when the
 // etag moved - a booking made by any other client appears within a tick.
 
-import { createContext, useContext, useEffect, useState, type Dispatch } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, type Dispatch } from 'react';
 import {
-  SEAT, failure, getBook, getBookStatus, getQuote, getQuotes, stored, type BookDealOutcome,
+  SEAT, failure, getBook, getBookStatus, getQuote, getQuotes, getResult, stored,
+  type BookDealOutcome,
 } from './api';
 import { bookClock } from './desk';
 import { NO_PAPER, type Grouping, type Paper } from './positions';
+import { ranAs } from './quote';
 import { pinnedAt, readRecord, reconciledRecord, type RecordHeld } from './spine';
 import { isObject } from './tokens';
 import { tradeAt } from './trade';
@@ -429,17 +431,18 @@ export function blockHint(doc: JobDoc, path: string[]): string | undefined {
 
 /** What a control does: an act the record files, as the map in force keys it - a transition's a
  * payment's `status_transition`, a confirmation's `confirmed` or a collateral movement's
- * `collateral` - or `mark`, the verb the service asks itself where a write of the market or of
- * this box's paths files nothing. */
+ * `collateral` - or a verb the service asks itself where nothing is filed: `mark`, of a write of
+ * the market or of this box's paths, and `validate`, which its queue asks of a what-if. */
 export type Act = 'fill' | 'amendment' | 'quote_filed' | 'approval' | 'entity_declared'
   | 'agreement_declared' | 'official_close_declared' | 'status_transition' | 'confirmed'
-  | 'collateral' | 'mark';
+  | 'collateral' | 'mark' | 'validate';
 
 /** Why the seat may not `act` at `node` - the book by default, null for the firm's own facts, which
  * only a grant over every node reaches - in a line naming the verb the act demands under the map
  * in force (`demands`), a verb the service asks being itself; null where it may: off a desk that
  * records, until its grants are read for this seat, and where it holds that verb at `node` or at
- * a node above it. */
+ * a node above it - a what-if at any node under it too, the queue admitting a seat that works one
+ * node of a book to price the book. */
 export function heldBack(state: AppState, act: Act,
                          node: string | null = String(state.doc?.Calc.Deals.Reference ?? '')):
   string | null {
@@ -452,7 +455,9 @@ export function heldBack(state: AppState, act: Act,
   const verb = read?.demands[act] ?? act;
   const held = read?.verbs[verb];
   if (!read || !held || (node !== null && held.some((at) => node === at
-                                                     || node.startsWith(`${at}/`)))) return null;
+    || node.startsWith(`${at}/`) || (act === 'validate' && at.startsWith(`${node}/`))))) {
+    return null;
+  }
   return `Needs ${verb}${held.length ? ` over ${node ?? 'the whole firm'}` : ''}: ${read.seat} `
     + `holds it ${held.length ? `only over ${held.join(', ')}` : 'nowhere'}.`;
 }
@@ -489,6 +494,53 @@ export function useRead<T>(read: (() => Promise<T>) | null, keys: unknown[]) {
     return () => { live = false; };
   }, keys);
   return held;
+}
+
+const QUEUE_POLL_MS = 500;
+
+/** A job asked of the service's queue: submitted, then polled until its run answers under its
+ * `stats[stat]` - handed to `landed` - or with the service's own sentence, a refused ask's or a
+ * failed run's (`ranAs`). One at a time. */
+export function useQueued<R, T>(
+  submit: (request: R) => Promise<{ result_id: string; status: string }>, stat: string,
+  landed: (answer: T) => void) {
+  const [run, setRun] = useState<{ id: string; status: string; since: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const busy = useRef(false);
+  const finish = (said: string | null) => { busy.current = false; setRun(null); setError(said); };
+
+  useEffect(() => {
+    if (!run?.id) return;
+    const timer = setInterval(async () => {
+      try {
+        const summary = await getResult(run.id);
+        const read = ranAs<T>(summary, stat);
+        if (!read) setRun((standing) => standing && { ...standing, status: summary.status });
+        else if ('refused' in read) finish(read.refused);
+        else {
+          finish(null);
+          landed(read.answer);
+        }
+      } catch (thrown) {
+        finish(failure(thrown).error);
+      }
+    }, QUEUE_POLL_MS);
+    return () => clearInterval(timer);
+  }, [run?.id]);
+
+  async function start(request: R) {
+    if (busy.current) return;
+    busy.current = true;
+    setError(null);
+    setRun({ id: '', status: 'sending', since: Date.now() });
+    try {
+      const submitted = await submit(request);
+      setRun({ id: submitted.result_id, status: submitted.status, since: Date.now() });
+    } catch (thrown) {
+      finish(failure(thrown).error);
+    }
+  }
+  return { run, error, start };
 }
 
 /** The desk's quotes, newest first, read again where the book or the record moves and on `again`;

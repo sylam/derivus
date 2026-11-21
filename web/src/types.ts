@@ -119,6 +119,20 @@ export type PendingQuote = {
   booked?: { lsn: number | null; deal_path: string } | null;
 };
 
+/** A number of a netting set's run with a candidate trade, of its run without, and the first less
+ * the second. */
+export type Stepped<T> = { with: T; without: T; increment: number };
+
+/** `stats.Increment` of a what-if asked for its XVA increment: what the candidate does to the
+ * netting set it goes into, in the run's `currency` - its CVA and FVA, and under each exposure
+ * column (`EE`, every `PFE_<percentile>`) a `Stepped` peak with its day - on the `paths` both
+ * runs drew. */
+export type Increment = {
+  netting_set: string; counterparty: string | null; currency: string | null;
+  paths: { count: number }; cva: Stepped<number>; fva: Stepped<number>;
+  [column: string]: unknown;
+};
+
 /** One row of `GET /book/quotes`, newest first: what was quoted, for whom, its net, who quoted it
  * and when, and - once the acceptance wrote them - `accepted` and where it was `booked`, beside the
  * `reference` of the trade it booked. */

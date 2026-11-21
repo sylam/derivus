@@ -1,17 +1,18 @@
 // Quote ticket card and its expandable leg table.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { chargeQuote } from '../api';
 import { cellText, dateOf } from '../blotter';
-import { instantMs, stampText } from '../desk';
+import { instantMs, lagsBook, stampText } from '../desk';
 import { NO_PAPER } from '../positions';
 import {
-  STANDS, clientText, firmSeconds, firmText, onMarketAxis, salesName, solvedNumbers, spreadText,
-  standsAt, ticketLegs, type TicketLeg,
+  STANDS, chargeLines, chargeable, clientText, firmSeconds, firmText, onMarketAxis, salesName,
+  solvedNumbers, spreadText, standsAt, ticketLegs, type TicketLeg,
 } from '../quote';
-import { useApp } from '../state';
+import { clockOf, heldBack, useApp, useQueued } from '../state';
 import { formatNumber } from '../tokens';
-import type { PendingQuote, Schema } from '../types';
-import { Money } from './Desk';
+import type { Increment, PendingQuote, Schema } from '../types';
+import { Money, Waiting } from './Desk';
 import { DealPanels, FieldView } from './FieldView';
 
 /** Quote ticket card: client, solved terms, net, market axis levels, spread, margin and window. */
@@ -104,8 +105,80 @@ export function TicketCard({ pending }: { pending: PendingQuote }) {
             {stampText(pending.quoted_at)}</span>
           <span className="hint">{firmText(window, state.record.spine !== null)}</span>
         </div>
+        {chargeable(pending) && <CreditCharge id={quote.quote_id} />}
       </div>
     </section>
+  );
+}
+
+/** What booking the quote does to its client's credit numbers, asked on demand and never on a
+ * poll: its netting set's CVA, FVA and peak exposures with the trade and without it, both runs on
+ * the same paths - or the service's own sentence. A what-if, held from a seat that may run none. */
+function CreditCharge({ id }: { id: string }) {
+  const { state } = useApp();
+  const [read, setRead] = useState<{ answer: Increment; clock: string | null } | null>(null);
+  const asked = useRef<string | null>(null);
+  const asking = useQueued(chargeQuote, 'Increment',
+                           (answer: Increment) => setRead({ answer, clock: asked.current }));
+  const hold = heldBack(state, 'validate');
+  const ask = () => {
+    asked.current = clockOf(state);
+    setRead(null);
+    asking.start(id);
+  };
+  return (
+    <>
+      <div className="statusrow">
+        {hold ? <><span className="hint">credit charge</span><span>{hold}</span></> : (
+          <>
+            <button className="ghost" disabled={!!asking.run} onClick={ask}>credit charge</button>
+            <Waiting {...asking} />
+            {!asking.run && !asking.error && (
+              <span className="hint">what booking it does to the client's CVA, FVA and peak
+                exposure: a what-if, which writes nothing</span>
+            )}
+          </>
+        )}
+      </div>
+      {read && (
+        <>
+          <div className="tablewrap">
+            <table className="data desk">
+              <thead>
+                <tr>
+                  <th>{read.answer.netting_set}</th><th className="n">With the trade</th>
+                  <th className="n">Without it</th><th className="n">The trade</th>
+                </tr>
+              </thead>
+              <tbody>
+                {chargeLines(read.answer).map((line) => (
+                  <tr key={line.what}>
+                    <td>{line.what}
+                      {line.plus && <span className="hint"> · + is {line.plus}</span>}</td>
+                    {(['with', 'without'] as const).map((run) => (
+                      <td key={run} className="n">
+                        <Money value={line[run]} currency={read.answer.currency}
+                               kind={line.kind} />
+                        {line.days && <div className="hint">{line.days[run]}</div>}
+                      </td>
+                    ))}
+                    <td className="n">{line.moves}{line.by !== 0 && (
+                      <> <Money value={line.by} currency={read.answer.currency}
+                                kind={line.kind} /></>
+                    )}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="hint">
+            Both runs drew the same {formatNumber(read.answer.paths.count, 'whole')} paths
+            {lagsBook(read.clock, clockOf(state))
+              && ': the book or its record has moved since, so ask again'}.
+          </div>
+        </>
+      )}
+    </>
   );
 }
 

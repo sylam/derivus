@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
-import { acceptQuote, failure, getQuoteSheet, getResult, quoteStructure } from '../api';
+import { useEffect, useState } from 'react';
+import { acceptQuote, failure, getQuoteSheet, quoteStructure } from '../api';
+import { Waiting } from '../components/Desk';
 import { EmptyState } from '../components/EmptyState';
 import { DescriptorPanel } from '../components/FieldView';
 import { Navigator } from '../components/Navigator';
@@ -10,12 +11,10 @@ import {
   type Kept, landedAt, requestOf, salesName, salesNames, solving, STANDS, standsAt, type Verdict,
   verdictOf,
 } from '../quote';
-import { acceptHeld, openTrade, useApp, useQuoteList, useQuotes } from '../state';
+import { acceptHeld, openTrade, useApp, useQueued, useQuoteList, useQuotes } from '../state';
 import { formatNumber } from '../tokens';
 import type { PendingQuote, Quote, QuoteGiven, StructureType } from '../types';
 import { TicketCard } from '../components/TicketCard';
-
-const POLL_MS = 500;
 
 /** The page listing the desk's quotes, and the one a new ticket is written on. */
 const LIST = 'list';
@@ -208,60 +207,10 @@ function OpenById({ onOpen }: { onOpen: (id: string) => void }) {
   );
 }
 
-/** A quote asked of the service: submitted under the acting seat, then polled until its run
- * answers - the id of the quote it filed, or the service's own sentence. One at a time. */
-function useQuoting(onQuoted: (id: string) => void) {
-  const [run, setRun] = useState<{ id: string; status: string; since: number } | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const busy = useRef(false);
-  const finish = (said: string | null) => { busy.current = false; setRun(null); setError(said); };
-
-  useEffect(() => {
-    if (!run?.id) return;
-    const timer = setInterval(async () => {
-      try {
-        const summary = await getResult(run.id);
-        if (summary.status === 'done') {
-          finish(null);
-          onQuoted(String((summary.stats?.Quote as Quote | undefined)?.quote_id));
-        } else if (summary.status === 'error') {
-          finish(summary.error ?? 'the quote did not price');
-        } else setRun((standing) => standing && { ...standing, status: summary.status });
-      } catch (thrown) {
-        finish(failure(thrown).error);
-      }
-    }, POLL_MS);
-    return () => clearInterval(timer);
-  }, [run?.id]);
-
-  async function start(request: Record<string, unknown>) {
-    if (busy.current) return;
-    busy.current = true;
-    setError(null);
-    setRun({ id: '', status: 'sending', since: Date.now() });
-    try {
-      const submitted = await quoteStructure(request);
-      setRun({ id: submitted.result_id, status: submitted.status, since: Date.now() });
-    } catch (thrown) {
-      finish(failure(thrown).error);
-    }
-  }
-  return { run, error, start };
-}
-
-/** The wait, and what ended it where it was a refusal. */
-function Waiting({ run, error }: ReturnType<typeof useQuoting>) {
-  return (
-    <>
-      {run && (
-        <span className="chip running">
-          pricing - {run.status}, {Math.floor((Date.now() - run.since) / 1000)} s
-        </span>
-      )}
-      {error && <div className="error-box">{error}</div>}
-    </>
-  );
-}
+/** A quote asked of the service under the acting seat (`useQueued`), answering the id of the
+ * quote it filed. */
+const useQuoting = (onQuoted: (id: string) => void) => useQueued(
+  quoteStructure, 'Quote', (quote: Quote | undefined) => onQuoted(String(quote?.quote_id)));
 
 const EMPTY: Draft = {
   structure: '', variation: null, values: {}, nettingSet: '', margin: { amount: '', currency: '' },

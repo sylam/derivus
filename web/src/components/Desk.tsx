@@ -73,6 +73,22 @@ export function Amount({ value, currency, absent, kind = 'whole' }: {
   );
 }
 
+/** A queued job's wait, and what ended it where that was a refusal (`useQueued`). */
+export function Waiting({ run, error }: {
+  run: { status: string; since: number } | null; error: string | null;
+}) {
+  return (
+    <>
+      {run && (
+        <span className="chip running">
+          pricing - {run.status}, {Math.floor((Date.now() - run.since) / 1000)} s
+        </span>
+      )}
+      {error && <div className="error-box">{error}</div>}
+    </>
+  );
+}
+
 /** Header strip stating valuation day, timestamp, currency and market for a screen's numbers. */
 export function OnStrip({ computed, title, currency, lagging, loading, doc, again }: {
   computed: ReactNode; title?: string; currency: ReactNode; lagging: boolean; loading: boolean;
