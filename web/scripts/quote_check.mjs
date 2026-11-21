@@ -96,6 +96,19 @@ check('a blank states nothing: no premium, no client and no margin travel where 
                         nettingSet: '', margin: { amount: ' ', currency: '' } }, CAKE),
       { structure: 'RangeAccrual', params: { pair: 'USDZAR', tiers: [{ floor: 17, cap: 18 }] } });
 
+const TREE = ['HARBOURLINE', 'HARBOURLINE/RATES', 'HARBOURLINE/FX', 'HARBOURLINE-2/FX', 'OTHER'];
+check('a quote says where it books: the node the ticket states travels with the request, and a '
+      + 'desk declaring a tree offers its book, then every node under it - a desk declaring none, '
+      + 'nothing',
+      'the node left off the request, which books the quote of a seat granted one desk at the '
+      + 'book, where it may not accept it; the nodes matched by their text, which offers another '
+      + 'book its own; or the book offered alone, a choice of one',
+      [quote.requestOf({ ...collarDraft, portfolio: 'HARBOURLINE/FX' }, COLLAR).portfolio,
+       'portfolio' in quote.requestOf({ ...collarDraft, portfolio: '' }, COLLAR),
+       quote.bookingNodes(TREE, 'HARBOURLINE'), quote.bookingNodes(['HARBOURLINE'], 'HARBOURLINE'),
+       quote.bookingNodes([], 'HARBOURLINE')],
+      ['HARBOURLINE/FX', false, ['HARBOURLINE', 'HARBOURLINE/FX', 'HARBOURLINE/RATES'], [], []]);
+
 check('the recipe says which leg\'s level it solves, and to what, off its declared steps',
       'the target\'s sign dropped, which tells a desk the financing leg is worth the protection '
       + 'premium rather than minus it; or a parameter solve left unsaid',
@@ -242,10 +255,11 @@ check('a quote quoted again starts from its ticket as priced, every cell the rec
       'the solved coupon kept, which states every cell and the premium - the service refuses '
       + 'that, leaving nothing to solve; or the tiers left as the arrays the quote filed, which the '
       + 'table cannot read by column',
-      [quote.draftOf(CAKED, CAKE), quote.draftOf(ZARUSD, COLLAR).values],
+      [quote.draftOf(CAKED, CAKE, 'HARBOURLINE/FX'), quote.draftOf(ZARUSD, COLLAR).values],
       [{ structure: 'RangeAccrual', variation: null,
          values: { premium: 5000, pair: 'USDZAR', tiers: [{ floor: 17, cap: 18.2, coupon: '' }] },
-         nettingSet: 'ISDA-KESTREL', margin: { amount: '20000', currency: 'ZAR' } },
+         nettingSet: 'ISDA-KESTREL', margin: { amount: '20000', currency: 'ZAR' },
+         portfolio: 'HARBOURLINE/FX' },
        ZARUSD.params]);
 
 // --- the firm window and the acceptance

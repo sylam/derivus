@@ -7,7 +7,8 @@ import { Navigator } from '../components/Navigator';
 import { stampText } from '../desk';
 import { NO_PAPER, nodeAt } from '../positions';
 import {
-  clients, clientText, directions, type Draft, draftOf, firmSeconds, firmText, ticketFields, keep,
+  bookingNodes, clients, clientText, directions, type Draft, draftOf, firmSeconds, firmText,
+  ticketFields, keep,
   type Kept, landedAt, requestOf, salesName, salesNames, solving, STANDS, standsAt, type Verdict,
   verdictOf,
 } from '../quote';
@@ -214,6 +215,7 @@ const useQuoting = (onQuoted: (id: string) => void) => useQueued(
 
 const EMPTY: Draft = {
   structure: '', variation: null, values: {}, nettingSet: '', margin: { amount: '', currency: '' },
+  portfolio: '',
 };
 
 /** A ticket written off what `/schema` declares for the structure picked: its forms as the
@@ -230,6 +232,8 @@ function QuoteForm({ draft: initial = EMPTY, from, onQuoted }: {
   const declared: StructureType | undefined = types[draft.structure];
   const edit = (change: Partial<Draft>) => setDraft((standing) => ({ ...standing, ...change }));
   const sets = clients(state.doc, paper.agreements);
+  const book = String(state.doc?.Calc.Deals.Reference ?? '');
+  const places = bookingNodes(paper.nodes, book);
 
   return (
     <section className="card quoteform">
@@ -291,6 +295,15 @@ function QuoteForm({ draft: initial = EMPTY, from, onQuoted }: {
                      value={draft.margin.currency}
                      onChange={(event) => edit({ margin: { ...draft.margin,
                                                            currency: event.target.value } })} />
+              {places.length > 0 && (
+                <>
+                  <span className="hint">books at</span>
+                  <select value={draft.portfolio || book}
+                          onChange={(event) => edit({ portfolio: event.target.value })}>
+                    {places.map((node) => <option key={node} value={node}>{node}</option>)}
+                  </select>
+                </>
+              )}
             </div>
           </>
         )}
@@ -324,7 +337,7 @@ function Ticket({ id, from, requotes, onMade }: {
 
   const { quote } = pending;
   const declared = state.schema?.Structure?.types[quote.structure];
-  const again = declared && draftOf(quote, declared);
+  const again = declared && draftOf(quote, declared, pending.portfolio);
   return (
     <>
       <div className="pager">

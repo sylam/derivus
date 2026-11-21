@@ -51,15 +51,23 @@ export function directions(declared: StructureType, pair: unknown):
 }
 
 /** What a ticket says before it is priced: the structure, the form chosen, the parameters as
- * typed, the client's netting set and the margin - an amount and its currency, as typed. */
+ * typed, the client's netting set, the margin - an amount and its currency, as typed - and the
+ * node of the book's tree it books at, blank for the book itself. */
 export type Draft = {
   structure: string; variation: string | null; values: Record<string, unknown>;
-  nettingSet: string; margin: { amount: string; currency: string };
+  nettingSet: string; margin: { amount: string; currency: string }; portfolio: string;
 };
+
+/** Where a quote may say it books on a desk whose record declares a tree: the book, then every
+ * node under it - none where it declares no node under the book, a ticket then stating nothing. */
+export function bookingNodes(nodes: string[], book: string): string[] {
+  const under = nodes.filter((node) => node.startsWith(`${book}/`)).sort();
+  return under.length ? [book, ...under] : [];
+}
 
 /** The ticket as `POST /book/structure` takes it: every parameter of the form stated, a blank
  * being no statement; on a form chosen over a pair, the currency its client buys, the buying
- * selector saying it; the client and the margin where they are named. */
+ * selector saying it; the client, the margin and the node it books at where they are named. */
 export function requestOf(draft: Draft, declared: StructureType): Record<string, unknown> {
   const fields = ticketFields(declared, draft.variation);
   const params = Object.fromEntries(Object.entries(draft.values)
@@ -75,16 +83,17 @@ export function requestOf(draft: Draft, declared: StructureType): Record<string,
     ...(draft.nettingSet ? { netting_set: draft.nettingSet } : {}),
     ...(margin ? { margin: { amount: Number(margin), currency: draft.margin.currency.trim() } }
       : {}),
+    ...(draft.portfolio ? { portfolio: draft.portfolio } : {}),
   };
 }
 
 /** A parameter path the recipe solved, `key` or a table's `key[row].cell`. */
 const PATH = /^(\w+)(?:\[(\d+)\]\.(\w+))?$/;
 
-/** A quote's ticket to quote again: the structure, form, client and margin it was quoted on, its
- * parameters as priced - a table's rows by their declared columns - with every parameter the recipe
- * SOLVED blank again, so the same solve runs. */
-export function draftOf(quote: Quote, declared: StructureType): Draft {
+/** A quote's ticket to quote again: the structure, form, client and margin it was quoted on and
+ * the node it said it books at (`portfolio`), its parameters as priced - a table's rows by their
+ * declared columns - with every parameter the recipe SOLVED blank again, so the same solve runs. */
+export function draftOf(quote: Quote, declared: StructureType, portfolio = ''): Draft {
   const fields = ticketFields(declared, quote.variation);
   const values: Record<string, unknown> = Object.fromEntries(Object.entries(quote.params)
     .map(([key, value]) => {
@@ -104,6 +113,7 @@ export function draftOf(quote: Quote, declared: StructureType): Draft {
     nettingSet: quote.netting_set ?? '',
     margin: quote.margin ? { amount: String(quote.margin.amount), currency: quote.margin.currency }
       : { amount: '', currency: '' },
+    portfolio,
   };
 }
 
