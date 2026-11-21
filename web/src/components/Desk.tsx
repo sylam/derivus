@@ -3,6 +3,7 @@
 import { useState, type ReactNode } from 'react';
 import { amendDeal } from '../api';
 import { cellText, describe, quoted, toRows, type Picked } from '../blotter';
+import { LIMIT_USAGE, type LimitRead } from '../client';
 import { marketSource, stampText, valuationDay } from '../desk';
 import { byPath } from '../positions';
 import { verdictOf } from '../quote';
@@ -57,6 +58,23 @@ export function Money({ value, currency, kind = 'money' }: {
 }) {
   return (
     <>{formatNumber(value, kind)}{currency && <> <span className="unit">{currency}</span></>}</>
+  );
+}
+
+/** One credit limit in a line (`limitRead`): whose it is where the line stands off its entity's
+ * own row, its amounts, the flag where it is breached, and what is said after. */
+export function LimitLine({ read, whose }: { read: LimitRead; whose?: string }) {
+  return (
+    <div className="ticketline limitline" title={LIMIT_USAGE}>
+      {whose && <b>{whose}</b>}
+      {read.figures.map((figure) => (
+        <span key={figure.label}><span className="hint">{figure.label}</span>{' '}
+          <b className={figure.value < 0 ? 'neg' : undefined}>
+            <Money value={figure.value} currency={read.currency} kind="whole" /></b></span>
+      ))}
+      {read.flag && <span className="chip error">{read.flag}</span>}
+      {read.notes.map((note) => <span key={note} className="hint">{note}</span>)}
+    </div>
   );
 }
 

@@ -130,7 +130,20 @@ export type Stepped<T> = { with: T; without: T; increment: number };
 export type Increment = {
   netting_set: string; counterparty: string | null; currency: string | null;
   paths: { count: number }; cva: Stepped<number>; fva: Stepped<number>;
+  /** Each credit limit the set draws on, held against the usage with the trade; absent for none. */
+  limits?: CreditLimit[];
   [column: string]: unknown;
+};
+
+/** One credit limit held against the peak exposure of the netting sets drawn on it - the entity's
+ * and those of every entity under it: `sets` summed into `usage` and `unrun` left out for want of
+ * a run, `headroom` stated only where none is and negative where `breached`, and all three null
+ * beside the `not_comparable` sentence. On a credit charge `usage`, `headroom` and `breached`
+ * are with the trade, and `usage_without` is the usage without it. */
+export type CreditLimit = {
+  entity: string; name: string | null; limit: { amount: number; currency: string };
+  sets: number; unrun: number; usage: number | null; headroom: number | null;
+  breached: boolean | null; not_comparable: string | null; usage_without?: number | null;
 };
 
 /** Whose XVA increment is asked: a quote's pending trade, priced into the book as its acceptance
@@ -361,6 +374,8 @@ export type BookXva = {
   sets: XvaSet[];
   /** What the NEXT run funds at: a row's own `fva` is what its run cost. */
   funding: Funding;
+  /** The credit limits the record declares, by entity; none where it declares none. */
+  limits: CreditLimit[];
 };
 
 /** `GET /book/xva/{reference}/profile`: one set's exposure profile off its row, under the run it

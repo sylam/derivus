@@ -594,7 +594,10 @@ nulls beside `refused`, the sentence in the list a write's refusal answers. Its 
 (`service.credit_limits`) is kept under the key, and each sum is of the rows the answer carries,
 so a restated limit reads at the next poll and nothing runs. The web client says
 what the next run funds at beside every FVA it shows - the XVA table, a client's rows, a credit
-charge - off that answer alone (`fundedAt` in `web/src/client.ts`). **Held by**
+charge - off that answer alone (`fundedAt` in `web/src/client.ts`), and each credit limit on its
+entity's row and page and under a credit charge: the limit, the usage of the sets run, the headroom
+where every set has run, a flag where it is breached, and for a charge the usage without the trade
+ahead of the usage with it (`limitRead`). **Held by**
 `web/scripts/paper_check.mjs`, `web/scripts/client_check.mjs`,
 `test_spine_engine.py::test_the_xva_view_names_the_curves_a_credit_run_would_fund_at_and_keeps_the_answer`,
 `::test_the_xva_view_answers_its_rows_while_the_policy_in_force_cannot_be_read`,

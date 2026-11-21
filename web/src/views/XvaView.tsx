@@ -2,9 +2,9 @@ import { useState, type ReactNode } from 'react';
 import { getBookCollateral, getXvaProfile } from '../api';
 import { EXPORTS, SET, fieldsOf, rowsByPath, saveCsv, toRows } from '../blotter';
 import {
-  RUNS, WRONG, actionFirst, agreementsOf, bookedText, creditExport, creditLines, exposureAfter,
-  fundedAt, openClient, paperText, runSum, statedHolding, summed, unmarked, wrongWith,
-  type CreditLine, type Wrong,
+  LIMIT_USAGE, RUNS, WRONG, actionFirst, agreementsOf, bookedText, creditExport, creditLines,
+  exposureAfter, fundedAt, limitOf, openClient, paperText, runSum, statedHolding, summed, unmarked,
+  wrongWith, type CreditLine, type LimitRead, type Wrong,
 } from '../client';
 import { EmptyState } from '../components/EmptyState';
 import { TimeSeriesChart } from '../components/TimeSeriesChart';
@@ -14,15 +14,16 @@ import {
 } from '../desk';
 import { bookRisk, clockOf, marketOf, nothingWrong, useApp, useRead } from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
-import { Amount, Money, OnStrip } from '../components/Desk';
+import { Amount, LimitLine, Money, OnStrip } from '../components/Desk';
 
 /** What a cell says of a done run whose row keeps no peaks. */
 const UNKEPT = 'this row was filed before rows kept a run\'s peaks: a recalc keeps them';
 
-/** A client as the screen holds it: its lines, what is wrong under them, and its sums. */
+/** A client as the screen holds it: its lines, what is wrong under them, its sums, and the credit
+ * limit declared on it. */
 type Client = {
   id: string; name: string; spread?: [number, number]; lines: CreditLine[]; wrong: Wrong[];
-  value: number | null; after: number | null;
+  value: number | null; after: number | null; limit?: LimitRead;
 };
 
 /** Every counterparty as a credit officer reads it, the ones to act on first: what the desk is
@@ -94,6 +95,7 @@ export function XvaView() {
       id, name: entityText(paper?.entities ?? null, id), lines, wrong: wrongWith(lines),
       spread: first && [first[0], first[1]], value: summed(own.map((line) => line.value)),
       after: summed(own.map((line) => exposureAfter(line, currency))),
+      limit: limitOf(id, view.limits, paper?.entities ?? null),
     };
   }));
   const acting = clients.filter((client) => client.wrong.length);
@@ -158,6 +160,7 @@ export function XvaView() {
             : "This desk keeps no record: collateral is what each set's terms state it holds, no "
               + 'call is worked and no trade waits on a second seat.'}
           <div>{fundedAt(view.funding)}</div>
+          {view.limits.length > 0 && <div>{LIMIT_USAGE}</div>}
         </div>
 
         <div className="tablewrap">
@@ -249,6 +252,9 @@ function ClientRows({ client, reads, opened, onOpen }: {
         )}
         {one ? opener(one) : <td />}
       </tr>
+      {client.limit && (
+        <tr className="limit"><td colSpan={13}><LimitLine read={client.limit} /></td></tr>
+      )}
       {!one && lines.map((line) => (
         <tr key={line.reference} className={`node pick${line.run?.note ? ' muted' : ''}`}
             onClick={() => onOpen(line.reference)}>

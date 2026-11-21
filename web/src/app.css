@@ -665,7 +665,9 @@ table.credit tr.acting td:first-child { box-shadow: inset 3px 0 0 var(--bad); }
 table.credit tr.node td:first-child { padding-left: 28px; }
 table.credit td .hint { font-size: 11px; color: var(--text-muted); }
 table.credit td .call { font-size: 11px; color: var(--warn); font-weight: 600; }
-table.credit tr.wrongs td { background: var(--bg); padding: 0 6px; white-space: normal; }
+table.credit :is(tr.wrongs, tr.limit) td { background: var(--bg); padding: 0 6px; white-space: normal; }
+table.credit tr.limit .limitline { margin: 4px 8px; font-size: 12.5px; }
+.limitline .neg { color: var(--bad); }
 table.credit tr.wrongs .facts { padding: 4px 8px 6px; font-size: 12.5px; }
 table.credit tr.detail .card.profile { margin-bottom: 10px; }
 table.credit tr.detail .card.profile > :is(.hint, .error-box, .tablenote) { margin: 6px 14px; }

@@ -412,6 +412,63 @@ check('the line beside an FVA says what the next run funds at: the one curve whe
        + 'reads 0.',
        "No funding curve is stated, so the next run's FVA reads 0.", UNREAD]);
 
+// ---- a credit limit, its usage and its headroom ------------------------------------------------
+
+const limited = (entity, amount, extra) => ({
+  entity, name: `${entity} Ltd`, limit: { amount, currency: 'USD' }, sets: 2, unrun: 0,
+  usage: 30000, headroom: amount - 30000, breached: 30000 > amount, not_comparable: null,
+  ...extra });
+const OTHER = 'this limit is stated in EUR and the exposure against it is reported in USD';
+const LIMITS = [
+  limited('WITHIN', 50000), limited('OVER', 25000),
+  limited('UNRUN', 50000, { sets: 1, unrun: 2, headroom: null }),
+  limited('NEVER', 50000, { sets: 0, unrun: 1, usage: 0, headroom: null }),
+  limited('OTHER', 50000, { usage: null, headroom: null, breached: null, not_comparable: OTHER }),
+  limited('GROUP', 90000)];
+const GROUPED = [{ entity: 'GROUP', parent: null }, { entity: 'WITHIN', parent: 'GROUP' },
+                 { entity: 'OVER', parent: 'WITHIN' }, { entity: 'UNRUN', parent: null }];
+const lineOf = (read) => read && [read.figures.map((figure) => `${figure.label} ${figure.value}`)
+  .join(', '), read.currency, read.flag, ...read.notes];
+check('a credit limit reads as the limit, the usage of the sets run and the headroom, flagged where '
+      + 'usage is over it; with a set unrun it says how many and states no headroom, and no usage '
+      + "where none has run; not comparable, it is the limit and the service's sentence; a "
+      + "parent's says the entities under it at any depth; and an entity with no limit reads none",
+      'headroom stated with a set unrun, room promised against exposure nobody has run; the '
+      + 'breach flag turned, a limit within its usage flagged and one over it not; the '
+      + 'not-comparable sentence swallowed, a limit in another currency read as unused; a usage '
+      + "of nothing said where no set has run; or a parent's limit read as the parent's alone",
+      [...LIMITS.map((entry) => lineOf(client.limitOf(entry.entity, LIMITS, GROUPED))),
+       lineOf(client.limitOf('NONE', LIMITS, GROUPED)) ?? null],
+      [['credit limit 50000, usage of 2 sets 30000, headroom 20000', 'USD', null,
+        'It covers the entity under it.'],
+       ['credit limit 25000, usage of 2 sets 30000, headroom -5000', 'USD', 'over its limit'],
+       ['credit limit 50000, usage of 1 set 30000', 'USD', null,
+        '2 of its 3 sets have no run that is done, so no headroom is stated.'],
+       ['credit limit 50000', 'USD', null,
+        'Its set has no run that is done, so neither usage nor headroom is stated.'],
+       ['credit limit 50000', 'USD', null, OTHER],
+       ['credit limit 90000, usage of 2 sets 30000, headroom 60000', 'USD', null,
+        'It covers the 2 entities under it.'],
+       null]);
+const WITH = (without, amount = 50000) =>
+  `credit limit ${amount}, usage without the trade ${without}, with it 30000`;
+const charged = (amount, without, extra) => lineOf(client.limitRead(
+  limited('KES', amount, { usage_without: without, ...extra })));
+check('a credit charge reads each limit its set draws on as the usage without the trade, then '
+      + 'with it, and the headroom after it, and says where the trade takes it over the limit - '
+      + 'or that it is over with or without the trade',
+      'with and without swapped, the trade read as taking usage down; the trade blamed for a '
+      + 'breach that stands without it; or a trade that would breach left unflagged',
+      [charged(50000, 20000), charged(25000, 20000), charged(25000, 28000),
+       charged(50000, 20000, { sets: 1, unrun: 1, headroom: null })],
+      [[`${WITH(20000)}, headroom after it 20000`, 'USD', null],
+       [`${WITH(20000, 25000)}, headroom after it -5000`, 'USD',
+        'the trade would take it over its limit'],
+       [`${WITH(28000, 25000)}, headroom after it -5000`, 'USD',
+        'over its limit with or without the trade'],
+       [WITH(20000), 'USD', null,
+        '1 of its 2 sets has no run that is done, so no headroom is stated.']]);
+
 const KES_LINES = client.creditLines('KES', CREDIT, SCHEMA);
 check("a client's sums are over every one of its book's sets or none - an unread set blanks it, and "
       + 'adjustments in two currencies, or a set that left the book, are never added',

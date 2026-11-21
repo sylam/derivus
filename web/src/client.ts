@@ -8,7 +8,9 @@ import { fieldsOf, type BlotterRow } from './blotter';
 import {
   SURVIVAL, entityText, factorFamily, instantMs, peaks, plural, type Peak,
 } from './desk';
-import { byPath, closed, type Agreement, type Entity, type Position } from './positions';
+import {
+  byPath, closed, entitiesUnder, type Agreement, type Entity, type Position,
+} from './positions';
 import { standing, type Action } from './state';
 import {
   COLLATERAL, currencyOf, formatNumber, isBlank, label, onScreen, setCurrency, tenorLabel, token,
@@ -16,8 +18,8 @@ import {
 } from './tokens';
 import { markOf } from './trade';
 import type {
-  ActivityRow, CollateralCall, DealMark, Descriptor, Funding, JobDoc, Market, Reconcile, Schema,
-  XvaSet,
+  ActivityRow, CollateralCall, CreditLimit, DealMark, Descriptor, Funding, JobDoc, Market,
+  Reconcile, Schema, XvaSet,
 } from './types';
 
 /** The screen a client's page is, and the store's pick of which client it shows. */
@@ -412,6 +414,61 @@ export function fundedAt({ cost, benefit, refused }: Funding): string {
   return !curve ? "No funding curve is stated, so the next run's FVA reads 0."
     : `The next run funds its FVA ${side} at ${curve}. No curve is stated for the ${other}, so `
       + `the ${other} reads 0.`;
+}
+
+/** What a credit limit's usage is and what a breach does, said where limits are first shown. */
+export const LIMIT_USAGE = 'A credit limit is held against the peak exposure of every netting set '
+  + "drawn on it, each at its run's highest PFE percentile, added: a breach is reported here, and "
+  + 'nothing is blocked.';
+
+/** One credit limit as a screen reads it: its amounts in the limit's `currency` in reading order,
+ * the flag where usage is over it, and what is said after. */
+export type LimitRead = {
+  currency: string; figures: { label: string; value: number }[]; flag: string | null;
+  notes: string[];
+};
+
+/** A credit limit read off one entry of the XVA read's `limits`, or of a credit charge's, which
+ * states the usage without the trade ahead of the usage with it. Usage is said only of sets that
+ * have run and headroom only where every set has; the flag says a breach, of a charge whether the
+ * trade makes it; the notes say the entities `under` it that it covers, how many sets have no run
+ * and that no headroom is stated for it, and the service's sentence where it is not comparable. */
+export function limitRead(entry: CreditLimit, under = 0): LimitRead {
+  const { limit, sets, unrun, usage, headroom, usage_without: without } = entry;
+  const charge = without !== undefined;
+  const summed = usage !== null && (sets > 0 || !unrun);
+  return {
+    currency: limit.currency,
+    figures: [
+      { label: 'credit limit', value: limit.amount },
+      ...(summed && charge && without !== null
+        ? [{ label: 'usage without the trade', value: without }] : []),
+      ...(summed ? [{ label: charge ? 'with it' : `usage of ${plural(sets, 'set')}`,
+                      value: usage }] : []),
+      ...(headroom !== null
+        ? [{ label: charge ? 'headroom after it' : 'headroom', value: headroom }] : []),
+    ],
+    flag: !entry.breached ? null : !charge ? 'over its limit'
+      : (without ?? 0) > limit.amount ? 'over its limit with or without the trade'
+        : 'the trade would take it over its limit',
+    notes: [
+      ...(under ? [`It covers the ${under === 1 ? 'entity' : `${under} entities`} under it.`] : []),
+      ...(!unrun ? [] : [sets
+        ? `${unrun} of its ${sets + unrun} sets ${unrun === 1 ? 'has' : 'have'} no run that is `
+          + 'done, so no headroom is stated.'
+        : `${unrun === 1 ? 'Its set has' : `Its ${unrun} sets have`} no run that is done, so `
+          + 'neither usage nor headroom is stated.']),
+      ...(entry.not_comparable ? [entry.not_comparable] : []),
+    ],
+  };
+}
+
+/** The credit limit declared on entity `id` as its row and its page read it (`limitRead`), with
+ * how many of `entities` are declared under it; undefined where none is declared on it. */
+export function limitOf(id: string, limits: CreditLimit[], entities: Entity[] | null):
+  LimitRead | undefined {
+  const entry = limits.find((row) => row.entity === id);
+  return entry && limitRead(entry, entitiesUnder(id, entities ?? []));
 }
 
 /** Who puts a failed run right, off the factor the engine could not find: a credit curve whoever

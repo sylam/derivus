@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { askCharge } from '../api';
 import { cellText, dateOf } from '../blotter';
-import { fundedAt } from '../client';
+import { fundedAt, limitRead } from '../client';
 import { instantMs, lagsBook, stampText } from '../desk';
 import { NO_PAPER } from '../positions';
 import {
@@ -14,7 +14,7 @@ import { clockOf, runHeld, useApp, useQueued } from '../state';
 import { formatNumber } from '../tokens';
 import { tradeAt } from '../trade';
 import type { ChargeAsk, Increment, PendingQuote, Schema } from '../types';
-import { Money, Waiting } from './Desk';
+import { LimitLine, Money, Waiting } from './Desk';
 import { DealPanels, FieldView } from './FieldView';
 
 /** Quote ticket card: client, solved terms, net, market axis levels, spread, margin and window. */
@@ -180,6 +180,10 @@ export function CreditCharge({ ask }: { ask: ChargeAsk }) {
               </tbody>
             </table>
           </div>
+          {read.answer.limits?.map((entry) => (
+            <LimitLine key={entry.entity} read={limitRead(entry)}
+                       whose={entry.name ?? entry.entity} />
+          ))}
           <div className="hint">
             Both runs drew the same {formatNumber(read.answer.paths.count, 'whole')} paths
             {lagsBook(read.clock, clockOf(state))

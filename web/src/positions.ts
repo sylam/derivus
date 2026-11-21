@@ -224,6 +224,21 @@ function loops(parents: Map<string, string | null>, id: string): boolean {
   return false;
 }
 
+/** How many of `entities` are declared under `id`, at any depth of the parent chain: those whose
+ * netting sets draw on a limit on it. A chain that loops counts each entity once. */
+export function entitiesUnder(id: string, entities: Entity[]): number {
+  const found = new Set<string>();
+  for (let size = -1; size !== found.size;) {
+    size = found.size;
+    for (const { entity, parent } of entities) {
+      if (entity !== id && parent !== null && (parent === id || found.has(parent))) {
+        found.add(entity);
+      }
+    }
+  }
+  return found.size;
+}
+
 /** The client tree: a folder per legal entity holding its agreements and then the entities
  * declared under it, every declared entity and agreement standing whether or not anything is
  * booked under it. A position files under its OWN counterparty - the record's word on the fill -

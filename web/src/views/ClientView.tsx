@@ -4,8 +4,8 @@ import {
   baseDateOf, cellText, quoted, rowsByPath, sizeOf, toRows, type BlotterRow, type Picked,
 } from '../blotter';
 import {
-  CLIENT, RUNS, agreementsOf, bookedSince, bookedText, fundedAt, heldUnder, markText, readiness,
-  ready, termsReading, touching, type Held, type Line, type Term,
+  CLIENT, RUNS, agreementsOf, bookedSince, bookedText, fundedAt, heldUnder, limitOf, markText,
+  readiness, ready, termsReading, touching, type Held, type Line, type Term,
 } from '../client';
 import { EmptyState } from '../components/EmptyState';
 import { Navigator } from '../components/Navigator';
@@ -25,7 +25,7 @@ import type {
 } from '../types';
 import { AgreementForm } from '../components/AgreementForm';
 import { CreditCard, SpreadTable } from '../components/CreditCard';
-import { Amount, Back, Money, Side, Value } from '../components/Desk';
+import { Amount, Back, LimitLine, Money, Side, Value } from '../components/Desk';
 
 /** What the page reads beside the store: on a desk that keeps one the record's paper, the XVA
  * projection, and the consolidated risk for the marks. */
@@ -185,7 +185,7 @@ function ClientPage({ id, lines, own, reads, rows, factor, market, schema }: {
       </div>
 
       <OnBook own={own} reads={reads} rows={rows} market={market} schema={schema} />
-      <XvaRows id={id} xva={reads.xva} positions={reads.positions} />
+      <XvaRows id={id} xva={reads.xva} positions={reads.positions} entities={reads.entities} />
       <Happened history={entities && history} />
     </div>
   );
@@ -390,15 +390,17 @@ function TradeRow({ trade, market, schema, recording, mark }: {
 
 /** The client's XVA rows - each the last run of a set naming it - with when each ran and, on a
  * desk that records, the trades booked under the set since off the record's `positions`. */
-function XvaRows({ id, xva, positions }: {
-  id: string; xva: Reads['xva']; positions: Position[] | null;
+function XvaRows({ id, xva, positions, entities }: {
+  id: string; xva: Reads['xva']; positions: Position[] | null; entities: Entity[] | null;
 }) {
   const sets = (xva.data?.sets ?? []).filter((set) => set.counterparty === id);
+  const limit = xva.data && limitOf(id, xva.data.limits, entities);
   return (
     <section className="card">
       <h3>XVA</h3>
       {xva.error && <div className="error-box">{xva.error}</div>}
       {!xva.data && !xva.error && <div className="hint">Reading the projection…</div>}
+      {limit && <LimitLine read={limit} />}
       {xva.data && !sets.length && (
         <div className="note">No netting set names {id} in the book, and the projection holds no
           row for one: there is no XVA to read.</div>
