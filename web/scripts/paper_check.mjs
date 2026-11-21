@@ -131,22 +131,24 @@ check('an agreement stands where the book holds a set of its type under its id, 
 
 // ---- which parts of the paper a screen reads ----------------------------------------------------
 
-const AT = { paper: 'e1', holdings: 'e1' };
+const AT = { paper: '27', holdings: 'e1' };
 const HELD = { entities: [], agreements: [] };
-const owes = (tab, held, answered, clock) => {
-  const parts = paperOwed(tab, held, answered, clock);
+const owes = (tab, held, answered, paper, clock) => {
+  const parts = paperOwed(tab, held, answered, { paper, holdings: clock });
   return [parts.paper, parts.holdings];
 };
-check('a booking re-reads the paper on every screen naming clients, and the holdings only on '
-      + 'one showing them; a screen with none held reads it all, one showing no paper nothing',
-      'the holdings read on every screen naming a client, which sends the Paper tab four reads per '
-      + 'booking for two it shows; the whole read dropped, which shows a desk holding nothing on '
-      + 'the first screen that groups the book after the Paper tab; or a part read again under the '
-      + 'clock it was read at',
-      [owes('paper', HELD, AT, 'e2'), owes('portfolio', HELD, AT, 'e2'),
-       owes('portfolio', HELD, { paper: 'e2', holdings: 'e1' }, 'e2'),
-       owes('paper', null, {}, 'e2'), owes('portfolio', HELD, AT, 'e1'),
-       owes('settings', null, {}, 'e2')],
-      [[true, false], [true, true], [false, true], [true, true], [false, false], [false, false]]);
+check('a booking re-reads the holdings on a screen showing them and the paper on none: the paper '
+      + 'is read again where a declaration moved it, on every screen naming clients; a screen '
+      + 'with none held reads it all, one showing no paper nothing',
+      'the paper re-read under the clock, which sends every screen naming a client two reads per '
+      + 'booking of a paper no booking moves; the holdings read on every screen naming a client; '
+      + 'the whole read dropped, which shows a desk holding nothing on the first screen that '
+      + 'groups the book after the Paper tab; or a part read again where it was read',
+      [owes('paper', HELD, AT, '27', 'e2'), owes('portfolio', HELD, AT, '27', 'e2'),
+       owes('paper', HELD, AT, '41', 'e1'), owes('portfolio', HELD, AT, '41', 'e2'),
+       owes('paper', null, {}, '27', 'e2'), owes('portfolio', HELD, AT, '27', 'e1'),
+       owes('settings', null, {}, '27', 'e2')],
+      [[false, false], [false, true], [true, false], [true, true], [true, true], [false, false],
+       [false, false]]);
 
 done();

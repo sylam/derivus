@@ -160,11 +160,14 @@ export function App() {
 
   // The record's paper and the holdings under it, for every screen that names its clients,
   // groups the book by them or signs its tickets: each part a screen shows read while it is looked
-  // at on a desk that records, once per clock however often the tabs that show it are taken.
+  // at on a desk that records - the holdings once per clock, the paper once per declaration of it
+  // (`spine.paper`) - however often the tabs that show it are taken.
   const paperWanted = PAPER_TABS.includes(state.tab) && visible && recording;
+  const paperAt = String(spineOf(state)?.paper);
   useEffect(() => {
     if (clock === null || !paperWanted) return;
-    const owes = paperOwed(state.tab, state.paper.data, answered.current, clock);
+    const at = { paper: paperAt, holdings: clock };
+    const owes = paperOwed(state.tab, state.paper.data, answered.current, at);
     if (!owes.paper && !owes.holdings) return;
     let live = true;
     dispatch({ type: 'PAPER_FETCHING' });
@@ -177,12 +180,12 @@ export function App() {
                           unstated: signed[1].settlement_state }),
           ...(held && { positions: held[0].positions,
                         nodes: held[1].portfolios.map((node) => node.path) }) } });
-        if (signed) answered.current.paper = clock;
-        if (held) answered.current.holdings = clock;
+        if (signed) answered.current.paper = at.paper;
+        if (held) answered.current.holdings = at.holdings;
       })
       .catch((error) => { if (live) dispatch({ type: 'PAPER_FAILED', ...failure(error) }); });
     return () => { live = false; };
-  }, [clock, paperWanted, state.tab]);
+  }, [clock, paperAt, paperWanted, state.tab]);
 
   // What the seat may do, asked again where the seat or the record's head moved. A refusal - no
   // seat named, under grants - stands in its place; any other failure leaves acts to the service.

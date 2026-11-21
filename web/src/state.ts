@@ -352,13 +352,15 @@ export const PAPER_TABS = ['portfolio', 'blotter', 'quote', 'trade', 'risk', 'xv
                            'backoffice', 'client', 'paper', 'pnl'];
 const HOLDING_TABS = ['portfolio', 'blotter', 'trade', 'risk', 'xva', 'backoffice', 'client'];
 
-/** Which parts of the paper `tab` owes a read at `clock`: all of it where none is held, else each
- * part it shows whose answer in hand was read at another clock (`answered`). */
+/** Which parts of the paper `tab` owes a read: all of it where none is held, else each part it
+ * shows whose answer in hand (`answered`) was read elsewhere than where that part now stands
+ * (`at`) - the paper at the record's last declaration of it, the holdings on the clock. */
 export function paperOwed(tab: string, held: Paper | null, answered: Record<string, string>,
-                          clock: string): { paper: boolean; holdings: boolean } {
+                          at: { paper: string; holdings: string }):
+  { paper: boolean; holdings: boolean } {
   const shown = PAPER_TABS.includes(tab);
-  const holdings = HOLDING_TABS.includes(tab) && answered.holdings !== clock;
-  return { paper: shown && (!held || answered.paper !== clock),
+  const holdings = HOLDING_TABS.includes(tab) && answered.holdings !== at.holdings;
+  return { paper: shown && (!held || answered.paper !== at.paper),
            holdings: shown && (!held || holdings) };
 }
 

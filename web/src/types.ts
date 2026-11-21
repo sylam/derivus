@@ -352,12 +352,14 @@ export type XvaProfile = {
 
 /** Where the book FILE stands against the record: the LSN it was last hydrated at, and how far the
  * record has moved since - in events, and in the fills and amendments among them. Null throughout
- * on a file nothing has pinned, which is a file with nothing to compare. */
+ * on a file nothing has pinned, which is a file with nothing to compare. `paper` is the LSN of the
+ * last entity or agreement declaration standing, which moves when the paper does and only then. */
 export type SpineBlock = {
   lsn: number | null;
   head: string | null;
   events_behind: number | null;
   positions_behind: number | null;
+  paper: number;
 };
 
 /** `GET /book/status`. It carries the desk's whole orientation; this client renders the rest off

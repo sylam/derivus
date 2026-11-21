@@ -558,7 +558,9 @@ exactly when a frame lands and costs no open. A poll with nothing moved is a loo
 The risk asks admission before either of its two levels on every poll, and keeps its second level,
 the hash of all the run reads, so a frame that moves none of it runs nothing. The status's
 `spine.paper` is the LSN of the last entity or agreement declaration standing (`spine.papered`):
-what a client holding the paper re-reads it on. **Held by**
+what a client holding the paper re-reads it on, the web client its entities and agreements
+(`paperOwed` in `web/src/state.ts`), a booking moving its holdings alone. **Held by**
+`web/scripts/paper_check.mjs`,
 `test_service.py::test_a_status_poll_with_nothing_moved_is_a_lookup_and_all_it_reads_is_in_its_key`,
 `test_spine_engine.py::test_a_status_poll_is_answered_anew_once_the_record_moves_and_the_paper_has_its_own_stamp`,
 `::test_a_risk_poll_with_nothing_moved_is_a_lookup_and_a_frame_that_moves_no_number_runs_nothing`,
