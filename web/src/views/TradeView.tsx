@@ -182,6 +182,11 @@ function Origin({ recording, held, history, quote }: {
   const booked = Array.isArray(history) ? bookedBy(history) : undefined;
   const tickets: Ticket[] = held.flatMap((position) => position.tickets)
     .sort((a, b) => a.fill - b.fill);
+  // what stands where no fill is read, and the quote's line, said once where the two are one
+  const unbooked = typeof history === 'string' ? `the record did not answer: ${history}`
+    : history === null ? 'reading the record…'
+      : noneShown(state, 'no fill on the record opens this trade');
+  const unquoted = noneShown(state, 'No quote this desk gave landed here');
   return (
     <section className="card">
       <h3>Where it came from</h3>
@@ -194,11 +199,7 @@ function Origin({ recording, held, history, quote }: {
             {booked ? (
               <span>booked by <b>{booked.by}</b> at {stampText(booked.record_time)}, record
                 position {booked.lsn}</span>
-            ) : (
-              <span className="hint">{typeof history === 'string'
-                ? `the record did not answer: ${history}` : history === null ? 'reading the record…'
-                  : noneShown(state, 'no fill on the record opens this trade')}</span>
-            )}
+            ) : <span className="hint">{unbooked}</span>}
           </div>
         )}
         {quote ? (
@@ -211,7 +212,9 @@ function Origin({ recording, held, history, quote }: {
               {showing ? 'hide its ticket' : 'show its ticket'}
             </button>
           </div>
-        ) : quote === null && <div className="hint">No quote this desk gave landed here.</div>}
+        ) : quote === null && (booked || !recording || unquoted !== unbooked) && (
+          <div className="hint">{unquoted}.</div>
+        )}
         {showing && (read.error ? <div className="error-box">{read.error}</div>
           : pending ? <TicketCard pending={pending} />
             : <div className="hint">reading its ticket…</div>)}

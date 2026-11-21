@@ -563,14 +563,19 @@ check('a seat shown no position in a trade is told the record holds none only wh
        'sales-9 is shown none of it, holding no grant at any node']);
 
 const YET = 'nothing has been recorded here yet';
+const NO_QUOTE = 'No quote this desk gave landed here';
 check("a seat shown the whole book is told each place's own sentence - no fill opens the trade, "
-      + 'nothing is recorded yet - and a seat shown none of it is told so in every place',
+      + 'nothing is recorded yet, no quote landed here - and a seat shown none of it, whose list '
+      + 'of quotes the service narrows as its positions, is told so in every place',
       "the place's sentence dropped for the trade's, which tells the reader of an empty strip "
       + "that the record holds none of it now; or the place's sentence said to a seat shown "
       + 'none, which tells it nothing has been recorded on a record that holds the book',
       [state.noneShown(seated({ book: ['HARBOURLINE'] }), YET), state.noneShown(seated(null), YET),
-       state.noneShown(seated({ book: ['HARBOURLINE/FX'] }, 'sales-9'), YET)],
-      [YET, YET, 'sales-9 is shown none of it, seeing only what sits under HARBOURLINE/FX']);
+       state.noneShown(seated({ book: ['HARBOURLINE/FX'] }, 'sales-9'), YET),
+       state.noneShown(seated({ book: ['HARBOURLINE'] }), NO_QUOTE),
+       state.noneShown(seated({ book: ['HARBOURLINE/FX'] }, 'sales-9'), NO_QUOTE)],
+      [YET, YET, 'sales-9 is shown none of it, seeing only what sits under HARBOURLINE/FX',
+       NO_QUOTE, 'sales-9 is shown none of it, seeing only what sits under HARBOURLINE/FX']);
 
 const DONE = "Every client's sets have a run that is done";
 check('an XVA table with nothing to act on says every run is done, and on a desk that records '
