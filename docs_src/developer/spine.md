@@ -847,8 +847,8 @@ explained (`revalues` in `web/src/pnl.ts`), which a held seat is not sent, that 
 the read's place with nothing another seat read (`readAs`, `bookRisk` in `web/src/state.ts`). The
 P&L page opens such a seat on the last two marked days, a window that asks no what-if (`opensOn`),
 tells it where fewer are marked that such a window reads once two are (`noWindow`), and reads
-again for another seat (`pnlRead`). Neither read is asked before the grants are read for
-the seat on screen (`grantsOwed`), the book loading with where the record stands (`readBook`).
+again for another seat (`pnlRead`). Neither read is asked, and no such run is offered (`runHeld`),
+before the grants are read for the seat on screen (`grantsOwed`), the book loading with where the record stands (`readBook`).
 **Held by** `web/scripts/desk_check.mjs`, `web/scripts/pnl_check.mjs`,
 `test_spine_engine.py::test_under_a_document_the_queue_asks_before_the_executor_does`,
 `::test_the_poll_paths_own_jobs_are_admitted_under_the_deployments_seat`,

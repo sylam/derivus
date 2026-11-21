@@ -10,7 +10,7 @@ import {
   STANDS, chargeAsk, chargeLines, clientText, firmSeconds, firmText, onMarketAxis, salesName,
   solvedNumbers, spreadText, standsAt, ticketLegs, type TicketLeg,
 } from '../quote';
-import { clockOf, heldBack, useApp, useQueued } from '../state';
+import { clockOf, runHeld, useApp, useQueued } from '../state';
 import { formatNumber } from '../tokens';
 import { tradeAt } from '../trade';
 import type { ChargeAsk, Increment, PendingQuote, Schema } from '../types';
@@ -126,7 +126,7 @@ export function CreditCharge({ ask }: { ask: ChargeAsk }) {
   const asked = useRef<string | null>(null);
   const asking = useQueued(askCharge, 'Increment',
                            (answer: Increment) => setRead({ answer, clock: asked.current }));
-  const hold = heldBack(state, 'validate');
+  const hold = runHeld(state);
   const start = () => {
     asked.current = clockOf(state);
     setRead(null);

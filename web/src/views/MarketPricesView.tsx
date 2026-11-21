@@ -5,7 +5,9 @@ import { DescriptorPanel, EditableScalar } from '../components/FieldView';
 import { Navigator } from '../components/Navigator';
 import { Whose } from '../components/Whose';
 import { factorFamily } from '../desk';
-import { blockHint, heldBack, marketOf, useApp, useQueued, written } from '../state';
+import {
+  blockHint, heldBack, marketOf, runHeld, useApp, useQueued, written,
+} from '../state';
 import { isObject } from '../tokens';
 import type { Descriptor, Schema, Section } from '../types';
 
@@ -98,7 +100,7 @@ function MarketPriceBlock({ schema, name, block, live }: {
  * Nothing here names a pair - the scope defaults to the desk's. */
 function BloombergTick() {
   const { state, dispatch } = useApp();
-  const hold = heldBack(state, 'validate');
+  const hold = runHeld(state);
   const [outcome, setOutcome] = useState<Record<string, unknown> | null>(null);
   const asking = useQueued<void, Record<string, unknown> | undefined>(tickBloomberg, 'Bloomberg',
                                                                       (answer) => {

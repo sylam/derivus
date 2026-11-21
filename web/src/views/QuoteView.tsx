@@ -13,7 +13,7 @@ import {
   verdictOf,
 } from '../quote';
 import {
-  acceptHeld, actingSeat, heldBack, openTrade, useApp, useQueued, useQuoteList, useQuotes,
+  acceptHeld, actingSeat, openTrade, runHeld, useApp, useQueued, useQuoteList, useQuotes,
 } from '../state';
 import { formatNumber } from '../tokens';
 import type { PendingQuote, Quote, QuoteGiven, StructureType } from '../types';
@@ -228,7 +228,7 @@ function QuoteForm({ draft: initial = EMPTY, from, onQuoted }: {
   const paper = state.paper.data ?? NO_PAPER;
   const [draft, setDraft] = useState<Draft>(initial);
   const quoting = useQuoting(onQuoted);
-  const hold = heldBack(state, 'validate');
+  const hold = runHeld(state);
   const declared: StructureType | undefined = types[draft.structure];
   const edit = (change: Partial<Draft>) => setDraft((standing) => ({ ...standing, ...change }));
   const sets = clients(state.doc, paper.agreements);
@@ -417,7 +417,7 @@ function Acceptance({ id, pending, verdict, quoting, onVerdict, onRequote }: {
   const recording = state.record.spine !== null;
   const seat = actingSeat(state);
   const hold = acceptHeld(state, pending.portfolio);
-  const priceHold = heldBack(state, 'validate');
+  const priceHold = runHeld(state);
   const { quote } = pending;
   const booked = pending.booked ?? verdict?.booked;
 

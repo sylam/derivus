@@ -9,7 +9,7 @@ import {
   USED_COLUMNS, mapPages, mapRows, mergeRequest, rejectedRows, seedDescriptor, setAt, usedRows,
   verifyRequest, withMember,
 } from '../securities';
-import { heldBack, useApp, useQueued, useRead } from '../state';
+import { heldBack, runHeld, useApp, useQueued, useRead } from '../state';
 import { isObject } from '../tokens';
 import type { SecuritiesAnswer, SeedOutcome, UsedRow, VerifyOutcome } from '../types';
 
@@ -287,7 +287,7 @@ export function SecuritiesView() {
   const hold = heldBack(state, 'mark');
   const note = hold && <div className="note">{hold}</div>;
   // a verification is the marking seat's and a job of the queue, which admits under validate
-  const queueHold = heldBack(state, 'validate');
+  const queueHold = runHeld(state);
   const panes: Record<string, { pages: Page[]; empty: string; head?: ReactNode }> = {
     vocabulary: { pages: vocabularyPages(answer.seed, saved), empty: 'the seed names nothing',
                   head: note },

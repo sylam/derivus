@@ -490,6 +490,13 @@ export function heldBack(state: AppState, act: Act,
 export const grantsOwed = (state: AppState): boolean =>
   spineOf(state) !== null && state.grants?.asked !== state.seat;
 
+/** Why a run the queue admits is not asked now, in its button's place - a calculation, a quote, a
+ * credit charge, a tick, a verification: that the seat's grants are being read until they are
+ * (`grantsOwed`), a held seat's ask filing a denial, and then the line holding it from a what-if
+ * (`heldBack`). Null where it may be asked. */
+export const runHeld = (state: AppState): string | null =>
+  (grantsOwed(state) ? 'reading what this seat may do…' : heldBack(state, 'validate'));
+
 /** Why the seat may not accept a quote that books at `node`, the book where it states none: an
  * acceptance files the quote and its fill, so it is held where either act is. */
 export const acceptHeld = (state: AppState, node?: string): string | null =>

@@ -639,6 +639,17 @@ check('a read the grants gate waits on a desk that records until they are read f
        state.grantsOwed(seated(null, 'sales-1', { record: { spine: null } })),
        state.grantsOwed(seated(null, 'sales-1', { source: { kind: 'local' } }))],
       [true, true, false, false, false, false, false]);
+const WAIT = 'reading what this seat may do…';
+check('a run the queue admits waits in its button\'s place while the seat\'s grants are being '
+      + 'read, then is held from a seat holding validate nowhere and offered to one holding it; a '
+      + 'desk keeping no record never waits',
+      'the button offered before the grants are read, which a seat they hold from the run can '
+      + 'press and file a denial; the wait kept once they are read; or a plain desk made to wait',
+      [state.runHeld(seated(null)),
+       state.runHeld({ ...seated({ validate: ['HARBOURLINE'] }), seat: 'sales-9' }),
+       state.runHeld(seated({})), state.runHeld(seated({ validate: ['HARBOURLINE'] })),
+       state.runHeld(seated(null, 'sales-1', { record: { spine: null } }))],
+      [WAIT, WAIT, 'Needs validate: sales-1 holds it nowhere.', null, null]);
 const MOVED = { ...DEMANDS, approval: 'mark' };
 check('a control is judged by the verb its act demands under the map in force and says that verb: '
       + 'where a stored map moves the approval to mark the sign control is the marking seat\'s '

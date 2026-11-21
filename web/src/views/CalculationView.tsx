@@ -8,7 +8,7 @@ import { DataTable } from '../components/DataTable';
 import { Navigator, type Page } from '../components/Navigator';
 import { TimeSeriesChart } from '../components/TimeSeriesChart';
 import { currencyOf, lagsBook, ownDials, stampText, tableReading } from '../desk';
-import { clockOf, heldBack, marketOf, useApp, usePolled, useRead } from '../state';
+import { clockOf, marketOf, runHeld, useApp, usePolled, useRead } from '../state';
 import { formatNumber, isObject, token } from '../tokens';
 import type { JobDoc, Schema, TableShape } from '../types';
 import { OnStrip } from '../components/Desk';
@@ -212,7 +212,7 @@ function RunStrip({ origin, submit, extra }: {
   const [refused, setRefused] = useState<string | null>(null);
   const mine = run.origin === origin;
   const busy = run.status === 'queued' || run.status === 'running';
-  const hold = heldBack(state, 'validate');
+  const hold = runHeld(state);
   return (
     <>
       <div className="statusrow">
