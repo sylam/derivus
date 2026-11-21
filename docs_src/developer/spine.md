@@ -305,7 +305,8 @@ node) and the LSN its denial stands at. **Held by**
 
 No sentence the service, the record or a quote's notes can say names a route, a query string or an
 install line: it names the act, by the tool that performs it where there is one. One naming a
-command line, a flag, a variable or a folder of the home is listed with its reason
+command line, a flag, a variable or a folder of the home, or printing a path on the service's own
+disk (`SERVER_PATHS`), is listed with its reason
 (`OPERATOR_SECOND`): the fault is the deployment's and the desk is told first, or no seat at a
 desk meets it. **Held by**
 `test_service.py::test_no_sentence_a_desk_reads_names_a_route_and_an_operators_part_is_listed`.

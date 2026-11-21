@@ -1073,8 +1073,8 @@ def book_open(request: dict):
                     over = (None,)
             write_desk_file(name, request['document'])
         if not os.path.isfile(path):
-            raise HTTPException(404, 'nothing is filed under {} on this desk; it looked in '
-                                     '{}'.format(os.path.basename(path), os.path.dirname(path)))
+            raise HTTPException(404, 'nothing is filed under {} on this desk'.format(
+                os.path.basename(path)))
     # read before it is served, so a document that is no job leaves the book served standing
     served = Book(path)
     answer = {'path': path, 'etag': served.read()[1]}
@@ -1745,8 +1745,9 @@ def read_calculations():
     except FileNotFoundError:
         return {}
     except (ValueError, KeyError) as error:
-        raise HTTPException(422, '{} is not readable as the desk\'s calculations: {}'.format(
-            os.path.join(dv_home(), CALCULATIONS_FILE), error))
+        raise HTTPException(422, 'the desk\'s saved calculations are not readable ({}): the file '
+                                 'that keeps them is damaged, which the operator puts '
+                                 'right'.format(error))
 
 
 @app.get('/calculations', summary="The desk's own named calculations")
@@ -7288,8 +7289,8 @@ def pending_quote(quote_id, suffix='.json'):
 def unknown_quote(quote_id):
     """What an id the desk holds no quote under is refused with, and so a quote the seat reading
     is not shown."""
-    return HTTPException(404, 'Unknown quote {} - this desk holds no quote under that id; it '
-                              'looked in {}'.format(quote_id, quote_dir()))
+    return HTTPException(404, 'Unknown quote {} - this desk holds no quote under that id, or none '
+                              'the seat asking is shown'.format(quote_id))
 
 
 def book_quote_pending(quote_id):

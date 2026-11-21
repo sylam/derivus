@@ -408,6 +408,9 @@ SPOKEN = ('derivus/service.py', 'derivus/spine.py', 'derivus/structures.py',
 #: What only an operator can act on: a command line, a flag, a variable, a folder of the home.
 OPERATORS_PART = re.compile(r'DV_[A-Za-z]|--[a-z]|\bblobs/')
 
+#: The calls answering a path on the service's own disk, which a sentence printing one names.
+SERVER_PATHS = ('dv_home', 'quote_dir', 'dirname', 'abspath')
+
 #: The sentences an operator's part rightly stands in, each by a phrase of its own and why: the
 #: fault is the deployment's and the desk is told first, or no seat at a desk meets the sentence.
 OPERATOR_SECOND = {
@@ -461,11 +464,13 @@ def test_no_sentence_a_desk_reads_names_a_route_and_an_operators_part_is_listed(
     back unseen: every sentence the service, its record seam, the record and a quote's notes can
     say (`SPOKEN`, `spoken_words`). None names a route of this service, a query string or an
     install line, which no reader at a desk can act on. One naming an operator's part - a command
-    line, a flag, a variable, a folder of the home (`OPERATORS_PART`) - is on `OPERATOR_SECOND` by
-    a phrase of its own with its reason, and every phrase there still excuses a sentence.
+    line, a flag, a variable, a folder of the home (`OPERATORS_PART`), or printing a path on the
+    service's own disk (`SERVER_PATHS`) - is on `OPERATOR_SECOND` by a phrase of its own with its
+    reason, and every phrase there still excuses a sentence.
 
-    Killing mutations: `GET /book/dependencies` put back into the candidate walk's refusal; and
-    `DV_Spine grant --file` put into the missing-grant sentence (`log.UNGRANTED`), on no list.
+    Killing mutations: `GET /book/dependencies` put back into the candidate walk's refusal;
+    `DV_Spine grant --file` put into the missing-grant sentence (`log.UNGRANTED`), on no list; and
+    the folder `quote_dir()` answers printed again by the unknown-quote sentence.
     """
     from derivus_spine import log, tiers
 
@@ -483,6 +488,8 @@ def test_no_sentence_a_desk_reads_names_a_route_and_an_operators_part_is_listed(
                                     else [(target, node.value)]):
                     if isinstance(name, ast.Name) and name.id.isupper():
                         named.setdefault(name.id, []).extend(constant_strings(value))
+    # a sentence printing a path on the service's own disk says a folder of the home
+    named.update(dict.fromkeys(SERVER_PATHS, ['DV_HOME']))
     said = [(name, line, words) for name, tree in trees.items()
             for line, words in spoken_words(tree, named)]
     # a collector that stopped collecting would pass anything: a module constant, a table of
@@ -5660,7 +5667,8 @@ def test_a_pending_quote_and_its_sheet_are_read_back_by_id(quoting, tmp_path):
     assert sheet.headers['content-type'] == service.QUOTE_SHEET_MIME
 
     unknown = CLIENT.get('/book/quote/nosuchquoteid')
-    assert unknown.status_code == 404 and str(tmp_path / 'tmp') in unknown.json()['detail']
+    assert unknown.status_code == 404 and 'holds no quote under that id' in unknown.json()['detail']
+    assert str(tmp_path) not in unknown.text, 'the refusal names a path on the service\'s own disk'
     escaping = CLIENT.get('/book/quote/..%5C..%5Cbook')
     assert escaping.status_code == 422 and 'is not a quote id' in escaping.json()['detail']
 

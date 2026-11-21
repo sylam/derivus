@@ -1392,7 +1392,7 @@ def book_quote(quote_id: str, actor: str | None = None) -> dict:
     opposite side from the one quoted - through the SAME validate-before-write seam
     `book_deal` uses: validated against the book as it is NOW, written atomically, and refused as
     `{written: false, refused: [messages]}` with the file untouched. A refusal is an answer; an id
-    with no file behind it is a tool error naming the directory it looked in.
+    with no file behind it is a tool error saying the desk holds no quote under it.
 
     WHERE it books is the quote's own `netting_set`: the mirror lands UNDER that
     `NettingCollateralSet` node, which is what makes `recalc_xva` see the trade - the client's CVA
