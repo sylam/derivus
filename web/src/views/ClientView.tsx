@@ -17,7 +17,7 @@ import {
   byPath, positionName, statusText, type Agreement, type Entity, type Position,
 } from '../positions';
 import { pinnedAt } from '../spine';
-import { bookRisk, marketOf, opened, standing, useApp, useRead } from '../state';
+import { bookRisk, marketOf, opened, riskNow, standing, useApp, useRead } from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
 import { markOf, markShown, wholeRecord } from '../trade';
 import type {
@@ -280,7 +280,9 @@ function OnBook({ own, reads, rows, market, schema }: {
 }) {
   const { state } = useApp();
   const risk = reads.risk.data;
-  const marks = risk ? [...risk.per_deal, ...risk.in_sets] : [];
+  // a position's share is of the units held when its mark was read: none while the book has moved
+  const now = riskNow(state).data;
+  const marks = now ? [...now.per_deal, ...now.in_sets] : [];
   return (
     <section className="card">
       <h3>What the desk has on with it</h3>

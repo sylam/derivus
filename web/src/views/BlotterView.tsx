@@ -5,12 +5,11 @@ import {
   rollingCount, rowsByPath, saveCsv, sizeOf, sortRows, toRows, type BlotterRow,
 } from '../blotter';
 import { DealPanels } from '../components/FieldView';
-import { lagsBook } from '../desk';
 import {
   GROUPINGS, NO_PAPER, POSITION, bookedBy, byId, byPath, clientTree, closed, heldColumns,
   portfolioTree, type Paper, type Position,
 } from '../positions';
-import { actingSeat, bookRisk, clockOf, marketOf, openTrade, spineOf, useApp } from '../state';
+import { actingSeat, marketOf, openTrade, riskNow, spineOf, useApp } from '../state';
 import { formatNumber } from '../tokens';
 import { markShown } from '../trade';
 import type { Market, Schema } from '../types';
@@ -68,9 +67,8 @@ export function BlotterView() {
   const rolling = rollingCount(tree, 30);
   const heads = recording ? [...HEADS, ...RECORD_HEADS] : HEADS;
   // a mark is of the book it was read on: the risk in the store, where the book has not moved since
-  const risk = bookRisk(state);
-  const marks = risk.data && !lagsBook(risk.clock, clockOf(state))
-    ? [...risk.data.per_deal, ...risk.data.in_sets] : [];
+  const risk = riskNow(state);
+  const marks = risk.data ? [...risk.data.per_deal, ...risk.data.in_sets] : [];
   const markOn = (row: BlotterRow): number | undefined =>
     markShown(marks, markPath(row), heldAt, row.position);
   const currency = marks.length ? risk.data?.currency : null;

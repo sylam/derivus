@@ -12,13 +12,13 @@ import {
 import { clientText, quoteAt, verdictOf, type Verdict } from '../quote';
 import { pinnedAt } from '../spine';
 import {
-  bookRisk, clockOf, heldBack, marketOf, noneShown, spineOf, useApp, useQuoteList, useQuotes,
-  useRead, written,
+  bookRisk, clockOf, heldBack, marketOf, noneShown, riskNow, spineOf, useApp, useQuoteList,
+  useQuotes, useRead, written,
 } from '../state';
 import { formatNumber, ungrouped } from '../tokens';
 import {
-  bookedBy, datesOf, historyOf, judgedAt, legsOf, markOf, movedTerms, tradeAt, tradeName,
-  tradeSize, unwindFill, unwindWords, wholeRecord, type Price,
+  bookedBy, datesOf, historyOf, judgedAt, legsOf, markOf, movedTerms, noMark, tradeAt, tradeName,
+  tradeSize, unwindAgainst, unwindFill, unwindWords, wholeRecord, type Price,
 } from '../trade';
 import type { ActivityRow, QuoteGiven } from '../types';
 import { Back, DealEditor, Money, OnStrip, Side, Value } from '../components/Desk';
@@ -273,7 +273,7 @@ function Worth({ path, reference, legs, shut }: {
     if (risk.error) {
       return <div className={risk.held ? 'note' : 'error-box'}>{risk.error}</div>;
     }
-    if (!risk.data) return <div className="hint">pricing the book…</div>;
+    if (!risk.data) return <div className="hint">{noMark(risk)}</div>;
     const { own, inside } = markOf([...risk.data.per_deal, ...risk.data.in_sets], path);
     const currency = risk.data.currency ?? '';
     const stat = (label: string, value: number, title: string) => (
@@ -296,10 +296,7 @@ function Worth({ path, reference, legs, shut }: {
           {inside && stat(`the net of ${inside.reference}, which holds it`, inside.value,
                           'the netting set\'s value to the desk, this trade inside it')}
         </div>
-        {!own && (
-          <div className="note">{shut ? 'Closed: the record holds none of it, so the book marks '
-            + 'it at nothing.' : 'The risk answer holds no mark of this trade\'s own.'}</div>
-        )}
+        {!own && <div className="note">{noMark(risk, own, shut)}</div>}
         {legs > 0 && (
           <div className="hint">Its {legs} legs have no mark of their own: the book marks the
             structure whole.</div>
@@ -415,7 +412,8 @@ function Actions({ row, held, recording }: {
           const key = `${position.agreement}/${position.portfolio}`;
           const kept = heldBack(state, 'fill', judgedAt([position]));
           return kept ? <div key={key} className="note">{kept}</div>
-            : <Unwind key={key} row={row} position={position} onVerdict={setVerdict} />;
+            : <Unwind key={key} row={row} position={position} net={netOf(held)}
+                      onVerdict={setVerdict} />;
         }) : hold ? <div className="note">{hold}</div> : (
           <div className="note">{held.length ? 'Closed: the record holds none of it'
             : noneShown(state)}, so there is nothing to unwind.</div>
@@ -440,8 +438,8 @@ function Actions({ row, held, recording }: {
  * currency and, where the price moves cash, settling on which day, asked once more in words saying
  * who pays whom what and when and what is left, then filed as a fill toward nothing under an
  * execution reference minted for that confirm. */
-function Unwind({ row, position, onVerdict }: {
-  row: BlotterRow; position: Position; onVerdict: (said: Verdict | null) => void;
+function Unwind({ row, position, net, onVerdict }: {
+  row: BlotterRow; position: Position; net?: number; onVerdict: (said: Verdict | null) => void;
 }) {
   const { state, dispatch } = useApp();
   const held = position.quantity;
@@ -459,6 +457,13 @@ function Unwind({ row, position, onVerdict }: {
   const size = tradeSize(row, state.schema);
   const client = clientName(state.paper.data?.entities ?? [], position.counterparty)
     || 'the client';
+  // the reference the price is typed beside: the desk's mark of these units, or why none is read
+  const risk = riskNow(state);
+  const own = risk.data ? markOf([...risk.data.per_deal, ...risk.data.in_sets], row.path).own
+    : undefined;
+  const against = own ? unwindAgainst(held, count, own.value, net, risk.data!.currency ?? '',
+                                      price.trim() !== '' && isFinite(at) ? cost : undefined)
+    : `the desk's mark of these units: ${noMark(risk)}`;
 
   async function file(execution: string) {
     setFiling(true);
@@ -510,6 +515,7 @@ function Unwind({ row, position, onVerdict }: {
         <span className="hint">a unit is the trade as written, and the price is what one unit
           changes hands at</span>
       </div>
+      {against && <div className="hint">{against}</div>}
       {asking && typed && (
         <div className="banner">
           {unwindWords(held, count, size, cost, client)}{' '}

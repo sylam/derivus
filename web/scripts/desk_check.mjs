@@ -672,6 +672,16 @@ check('the risk is a what-if the queue admits: held from a seat holding validate
        risked({ book: ['HARBOURLINE'], mark: ['HARBOURLINE'] }).held,
        risked({}, { record: { spine: null } }).held],
       [{ ...READ, data: null, error: HOLD, held: true }, { ...READ, held: false }, true, false]);
+const booked = (etag, grants) => seated(grants, 'sales-1', { source: { kind: 'book', etag } });
+const priced = (etag, grants = { validate: ['HARBOURLINE'] }) => state.riskNow({
+  ...booked(etag, grants), risk: { ...READ, clock: state.clockOf(booked('e1', {})) } });
+check('a mark set against what the record holds now is read off a risk of the book as it stands: '
+      + 'the answer where the book has not moved since it was read, none once it has, and the '
+      + 'line holding a seat from the read either way',
+      'the answer kept after the book moved, which sets a mark of the units held before a fill '
+      + 'against the units held after it; or blanked on a book that has not moved',
+      [priced('e1').data, priced('e2').data, priced('e2').loading, priced('e1', {}).error],
+      [READ.data, null, false, HOLD]);
 
 const QUOTED = { ...DEMANDS, quote_filed: 'approve' };
 check('an acceptance is held where either act it files is, the quote or its fill, at the node the '

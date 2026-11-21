@@ -7,7 +7,7 @@ import {
   SEAT, failure, getBook, getBookStatus, getQuote, getQuotes, getResult, stored,
   type BookDealOutcome,
 } from './api';
-import { bookClock } from './desk';
+import { bookClock, lagsBook } from './desk';
 import { NO_PAPER, type Grouping, type Paper } from './positions';
 import { ranAs } from './quote';
 import { pinnedAt, readRecord, reconciledRecord, type RecordHeld } from './spine';
@@ -507,6 +507,14 @@ export function readAs<T extends { data: unknown; error: string | null }>(
 
 /** The consolidated risk as a screen shows it, its read a what-if the queue admits (`readAs`). */
 export const bookRisk = (state: AppState) => readAs(heldBack(state, 'validate'), state.risk);
+
+/** The consolidated risk where it is of the book as it stands, for a mark set against what the
+ * record holds now: a mark is of the book it was read on and a position's share of it of the units
+ * held then, so a read the book has moved since answers nothing until it is read again. */
+export function riskNow(state: AppState) {
+  const risk = bookRisk(state);
+  return lagsBook(risk.clock, clockOf(state)) ? { ...risk, data: null } : risk;
+}
 
 /** The seat this client acts as, however it was set: the one the service answers its acts are
  * filed under (`GET /book/seat`), a sign-in token's or the header box's, and the box's own where

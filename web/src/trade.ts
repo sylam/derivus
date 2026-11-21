@@ -72,6 +72,18 @@ export function markShown(marks: DealMark[], path: string, held: Map<string, Pos
     : markFor(mark, position.quantity, netOf(held.get(path) ?? []));
 }
 
+/** Why a trade's page reads no mark of the trade's `own` off the risk as its screen shows it
+ * (`bookRisk`), null where it reads one: the line holding the seat from the read or the service's
+ * refusal, that the book is pricing where nothing has answered, and else that the answer holds no
+ * row of its own - the book marking a trade the record `shut` at nothing. */
+export function noMark(risk: { data: unknown; error: string | null }, own?: DealMark,
+                       shut = false): string | null {
+  if (risk.error) return risk.error;
+  if (!risk.data) return 'pricing the book…';
+  return own ? null : shut ? 'Closed: the record holds none of it, so the book marks it at nothing.'
+    : 'The risk answer holds no mark of this trade\'s own.';
+}
+
 /** Every row a read of the record answers - the whole record, or one trade's rows - a page at a
  * time from its first event: each page asked from the cursor the one before answered, until one
  * comes back short of `size`. */
@@ -151,6 +163,25 @@ export function unwindOf(held: number, units: number, price: number):
   { quantity: number; left: number; receives: number } {
   const quantity = -Math.sign(held) * units;
   return { quantity, left: held + quantity, receives: -quantity * price };
+}
+
+/** What an unwind's price is set against, in a line: the desk's mark of the `units` unwound - the
+ * deal's `mark` at them (`markFor`), in its `currency` and in whose favour it stands - and, once a
+ * `price` is typed in that currency, what the desk makes at it over that mark - the cash it
+ * receives less the worth it parts with - or gives up against it. Undefined where no units are. */
+export function unwindAgainst(held: number, units: number, mark: number, net: number | undefined,
+                              currency: string, price?: Price): string | undefined {
+  const worth = markFor(mark, Math.sign(held) * units, net);
+  if (worth === undefined) return undefined;
+  const money = (value: number) => `${formatNumber(Math.abs(value), 'money')} ${currency}`.trim();
+  const makes = price && unwindOf(held, units, price.amount).receives - worth;
+  return `The desk marks the ${formatNumber(units)} unwound at ${money(worth)}${
+    worth > 0 ? ' in its favour' : worth < 0 ? " in the client's favour" : ''}${
+    makes === undefined ? '.' : price!.currency !== currency
+      ? `: a price in ${price!.currency || 'no currency'} is not set against it.`
+      : makes === 0 ? ', and this price is that mark.'
+        : `, so at this price it ${makes > 0 ? 'makes' : 'gives up'} ${money(makes)} against `
+          + 'its mark.'}`;
 }
 
 /** The fill an unwind posts: its signed quantity and its price a unit, settling on the price's day
