@@ -564,6 +564,17 @@ check("a seat shown the whole book is told each place's own sentence - no fill o
        state.noneShown(seated({ book: ['HARBOURLINE/FX'] }, 'sales-9'), YET)],
       [YET, YET, 'sales-9 is shown none of it, seeing only what sits under HARBOURLINE/FX']);
 
+const DONE = "Every client's sets have a run that is done";
+check('an XVA table with nothing to act on says every run is done, and on a desk that records '
+      + 'that no trade waits, to a seat shown the whole book; a seat shown none of it is told that',
+      'the sentence said whatever the seat is shown, which tells a seat shown no trade that sets '
+      + 'never run have a run that is done; or the second seat named on a desk that has none',
+      [state.nothingWrong(seated({ book: ['HARBOURLINE'] })),
+       state.nothingWrong(seated(null, 'sales-1', { record: { spine: null } })),
+       state.nothingWrong(seated({ book: ['HARBOURLINE/FX'] }, 'sales-9'))],
+      [`${DONE}, and no trade waits on a second seat`, DONE,
+       'sales-9 is shown none of it, seeing only what sits under HARBOURLINE/FX']);
+
 const NO_SEAT = 'No seat is set, and this desk files every act under the seat that asks.';
 check('a seat may act where a node it holds the act\'s verb at is the node or above it, the book '
       + 'by default and the whole firm only by a grant over every node; and says, naming the '

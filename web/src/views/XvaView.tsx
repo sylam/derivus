@@ -12,7 +12,7 @@ import {
   NO_BOOK, PLUS, SURVIVAL, ageOf, currencyOf, entityText, lagsBook, offBook, peaks, plural,
   replayRows, spreads, stampText, tableReading, valuationDay, xvaTotals, type Peak,
 } from '../desk';
-import { bookRisk, clockOf, marketOf, useApp, useRead } from '../state';
+import { bookRisk, clockOf, marketOf, nothingWrong, useApp, useRead } from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
 import { Amount, Money, OnStrip } from '../components/Desk';
 
@@ -130,8 +130,7 @@ export function XvaView() {
             </span>
           ) : (
             <span className="hint">
-              <b>Nothing to act on.</b> Every client's sets have a run that is done{recording
-                ? ', and no trade waits on a second seat' : ''}.
+              <b>Nothing to act on.</b> {nothingWrong(state)}.
             </span>
           )}
           <span className="spacer" />

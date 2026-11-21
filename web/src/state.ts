@@ -518,6 +518,12 @@ export function noneShown(state: AppState, whole = 'The record holds none of it 
     ? `seeing only what sits under ${sees.join(', ')}` : 'holding no grant at any node'}`;
 }
 
+/** What the XVA table says where it shows nothing to act on: to a seat shown the whole book
+ * (`noneShown`) that every set's run is done, and where the desk records that no trade waits. */
+export const nothingWrong = (state: AppState): string => noneShown(
+  state, `Every client's sets have a run that is done${state.record.spine !== null
+    ? ', and no trade waits on a second seat' : ''}`);
+
 /** The store, its dispatch, and each tab's label by its id. */
 export const AppContext = createContext<{
   state: AppState; dispatch: Dispatch<Action>; labels: Record<string, string>;
