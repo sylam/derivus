@@ -330,14 +330,14 @@ check('the marks export under the heads the table shows, each mark the number it
         ['ISDA-KESTREL', 'Kestrel (KES), Alderby (ALD)', '0', `NDF-2, ${'b'.repeat(12)}`, 1234567.891, 'USD'],
         ['TWICE', '', null, '', -0.30000000000000004, 'USD']]]);
 
-const QUOTED = { factor: 'FXVolPrices.USD.ZAR', quote: 'ATM 0.5', value: 513753.0, level: 0.15,
+const QUOTE_ROW = { factor: 'FXVolPrices.USD.ZAR', quote: 'ATM 0.5', value: 513753.0, level: 0.15,
                  risk: 5137.53, per: 'per vol point' };
 check('the quote reading exports under its own heads: a quote as a dealer names it, a spot on its '
       + 'pair, each risk per its move the number itself and the report currency in its own column',
       'a risk written as displayed, which exports 5,137.53 as text; the per-unit derivative '
       + "written for the risk per the row's move; or a turned spot written under its engine name "
       + 'alone, its sign then reading the wrong way',
-      desk.quotesExport([QUOTED, zar], SCHEMA, 'USD'),
+      desk.quotesExport([QUOTE_ROW, zar], SCHEMA, 'USD'),
       [['Block · Factor', 'Quote · Tenor', 'Risk', 'per', 'Ccy'],
        ['FXVolPrices.USD.ZAR', '6M ATM', 5137.53, 'per vol point', 'USD'],
        ['USDZAR FxRate.ZAR', '', zar.risk, 'per 1%', 'USD']]);
