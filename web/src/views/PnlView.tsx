@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { getMarkedDays, getPnl } from '../api';
+import { unmarked } from '../client';
 import { EmptyState } from '../components/EmptyState';
 import {
   behind, explained, factorLabel, FIGURES, noPnl, pnlQuery, positionLabel, residualShare,
@@ -57,7 +58,7 @@ export function PnlView() {
   const { loading } = read;
   const error = marked.error ?? read.error;
 
-  const none = noPnl(recording, state.source?.kind === 'book');
+  const none = noPnl(recording, state.source?.kind === 'book') ?? unmarked(marked.error);
   if (none) return <EmptyState {...none} />;
   if (days && !days.days.length) {
     // the verb the declaration demands under the map in force, where the seat's grants are read

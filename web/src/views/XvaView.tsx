@@ -114,8 +114,9 @@ export function XvaView() {
   const counts = (Object.keys(WRONG) as (keyof typeof WRONG)[]).map((kind) =>
     [kind, clients.flatMap((client) => client.wrong).filter((wrong) => wrong.kind === kind).length] as const)
     .filter(([, count]) => count);
+  const close = unmarked(collateral.error);
   const marked = collateral.data ? `close of ${collateral.data.date}`
-    : unmarked(collateral.error) ? 'no close marked' : null;
+    : close ? 'no close marked' : null;
   const reads = { currency, recording, marked, collateralError: collateral.error,
                   riskError: risk.error, read: view.as_of };
 
@@ -132,9 +133,9 @@ export function XvaView() {
           <div className={risk.held ? 'note' : 'error-box'}>
             The value to the desk is not read{risk.held ? '. ' : ': '}{risk.error}</div>
         )}
-        {collateral.error && (
-          <div className="error-box">The collateral is not read: {collateral.error}</div>
-        )}
+        {collateral.error && (close
+          ? <div className="note">The collateral is not read. {close.title} {close.hint}</div>
+          : <div className="error-box">The collateral is not read: {collateral.error}</div>)}
         <div className={`blotterbar wrongs${acting.length ? ' act' : ''}`}>
           {acting.length ? (
             <span className="hint">

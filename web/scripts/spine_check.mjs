@@ -320,6 +320,19 @@ check('lists read with no seat named say they wait on anyone, and nothing waitin
        spine.worklistLine({ ...NOTHING, seat: null })],
       ['no seat is named, so this is what waits on anyone: 1 ticket to sign', '']);
 
+const [idle, file] = [spine.noWork(false, true), spine.noWork(false, false)];
+check("a desk keeping no record is told so in the Paper tab's voice, and what a booking there "
+      + 'does; a file opened here that nothing waits for it; a desk that records nothing in the '
+      + "worklist's place; and nobody a flag or a home",
+      'the state shown on a desk that records, which hides what waits on its seat; a file opened '
+      + 'in this browser told a booking writes it; or the operator\'s words back, --book and a '
+      + 'spine home',
+      [spine.noWork(true, true), idle?.title, /^A booking here writes the book file/.test(idle?.hint),
+       file?.title, /booking/.test(file?.hint),
+       [idle, file].some((said) => /--book|spine|DV_|started with/.test(said?.title + said?.hint))],
+      [null, 'This desk keeps no record, so nothing waits on a second seat.', true,
+       'A file opened here has no record, so nothing waits on anyone for it.', false, false]);
+
 // --- the store's two transitions, which are this module's and answer the SAME OBJECT
 const held = { spine: PINNED, rows: HELD, reconcile: AHEAD, reconciledAt: ETAG };
 check('a beat that moved neither the rows nor the pin answers the record it was handed',

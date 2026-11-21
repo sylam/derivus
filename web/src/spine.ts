@@ -8,6 +8,7 @@
 // `spine` comes back null, the verdict is `none`, and the two screens render nothing at all.
 
 import { plural } from './desk';
+import { unrecorded } from './positions';
 import type { Source } from './state';
 import { formatNumber } from './tokens';
 import type {
@@ -254,6 +255,18 @@ export function worklistLine(worklist: Worklist | null): string {
     .map(([list, noun, rest]) => `${plural(worklist.counts[list], noun)} ${rest}`).join(' · ');
   return line && worklist?.seat === null
     ? `no seat is named, so this is what waits on anyone: ${line}` : line;
+}
+
+/** What the Back Office says in the worklist's place where no record is kept, null on a desk that
+ * records: nothing waits on a second seat, and what a booking on the desk's `live` book does. */
+export function noWork(recording: boolean, live: boolean): { title: string; hint: string } | null {
+  if (recording) return null;
+  return {
+    title: unrecorded(live, 'nothing waits on a second seat', 'nothing waits on anyone for it'),
+    hint: `${live ? 'A booking here writes the book file and stands as written: no' : 'No'} ticket `
+      + 'waits to be signed, and no payment, confirmation or collateral call is tracked. A desk '
+      + 'that keeps a record lists them here.',
+  };
 }
 
 /** A close with what it stands over said out loud: a close is superseded by a NEW close rather

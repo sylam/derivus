@@ -278,10 +278,24 @@ export function creditLines(id: string, reads: CreditReads, schema: Schema): Cre
             .map((row) => line(row.agreement, null))];
 }
 
-/** Whether the collateral read's refusal says no close stands to read a call on: no market the
- * record designates for the P&L, none declared under that name, or no marks for the book's day. */
-export const unmarked = (refusal: string | null): boolean =>
-  /^(this record designates no market|no market is declared|no marks stand)/.test(refusal ?? '');
+/** How each refusal of a read on a marked close starts, with what it says is missing and who puts
+ * it right: no market designated for the P&L, none declared under that name, no marks for a day. */
+const UNMARKED = [
+  ['this record designates no market', 'No market is designated for the P&L.',
+    'A close is marked on the market the desk designates for its P&L. A seat holding admin '
+    + 'designates it.'],
+  ['no market is declared', 'No close stands on the market designated for the P&L.',
+    'A close is declared on the Back Office. The book is then marked at it through the chat.'],
+  ['no marks stand', 'The book is not marked for the day asked.',
+    'The book is marked at a close through the chat.'],
+];
+
+/** What a read on a marked close - the P&L's days, a collateral call - says in its place where its
+ * refusal is that no close stands to read: a state of the desk, not an error. Null for any other. */
+export function unmarked(refusal: string | null): { title: string; hint: string } | null {
+  const [, title, hint] = UNMARKED.find(([starts]) => refusal?.startsWith(starts)) ?? [];
+  return title ? { title, hint } : null;
+}
 
 /** What a set's own terms say the bank holds, on a desk keeping no record: its opening balance -
  * at its declared convention where it states none - in its balance currency, else its agreement's,

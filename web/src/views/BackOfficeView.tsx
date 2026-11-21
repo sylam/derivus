@@ -7,6 +7,7 @@ import { EmptyState } from '../components/EmptyState';
 import { stampText } from '../desk';
 import { NO_PAPER } from '../positions';
 import { clientText, quoteAt, spreadText } from '../quote';
+import { noWork } from '../spine';
 import {
   type Act, heldBack, marketOf, opened, useApp, useQuoteList, useQuotes, useRead,
 } from '../state';
@@ -37,14 +38,8 @@ export function BackOfficeView() {
   // the day's close is checked again at every read of what waits, which is every head move
   const read = useRead(worklist ? () => getCloseCheck(worklist.date) : null, [worklist]);
 
-  if (spine === null) {
-    return (
-      <EmptyState
-        title="This desk keeps no record, so nothing waits on a second seat."
-        hint="A booking here writes the book file and stands as written: no ticket waits to be signed, and no payment, confirmation or collateral call is tracked. A desk started with --book and a spine home keeps them, and lists them here."
-      />
-    );
-  }
+  const none = noWork(spine !== null, state.source?.kind === 'book');
+  if (none) return <EmptyState {...none} />;
   const check = read.data;
   const error = worklistError ?? read.error;
   if (!worklist) {
