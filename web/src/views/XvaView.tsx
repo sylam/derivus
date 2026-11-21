@@ -9,8 +9,8 @@ import {
 import { EmptyState } from '../components/EmptyState';
 import { TimeSeriesChart } from '../components/TimeSeriesChart';
 import {
-  SURVIVAL, ageOf, currencyOf, entityText, lagsBook, peaks, plural, replayRows, spreads, stampText,
-  tableReading, valuationDay, xvaTotals, type Peak,
+  PLUS, SURVIVAL, ageOf, currencyOf, entityText, lagsBook, peaks, plural, replayRows, spreads,
+  stampText, tableReading, valuationDay, xvaTotals, type Peak,
 } from '../desk';
 import { clockOf, marketOf, useApp, useRead } from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
@@ -183,8 +183,8 @@ export function XvaView() {
                 <th className="n">After collateral<div className="sub">{currency} · nought if owed</div></th>
                 <th className="n">Peak EE<div className="sub">run currency · its day</div></th>
                 <th className="n">Peak PFE<div className="sub">its percentile · its day</div></th>
-                <th className="n">CVA<div className="sub">+ an expected loss</div></th>
-                <th className="n">FVA<div className="sub">+ a funding cost</div></th>
+                <th className="n">CVA<div className="sub">{PLUS.CVA}</div></th>
+                <th className="n">FVA<div className="sub">{PLUS.FVA}</div></th>
                 <th>Run<div className="sub">its age</div></th>
                 <th />
               </tr>

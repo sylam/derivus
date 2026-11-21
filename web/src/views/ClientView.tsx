@@ -10,8 +10,8 @@ import {
 import { EmptyState } from '../components/EmptyState';
 import { Navigator } from '../components/Navigator';
 import {
-  SURVIVAL, ageOf, creditCounterparties, entityText, lastRunChip, plural, spreads, stampText,
-  valuationDay,
+  PLUS, SURVIVAL, ageOf, creditCounterparties, entityText, lastRunChip, plural, spreads,
+  stampText, valuationDay,
 } from '../desk';
 import {
   positionName, statusText, type Agreement, type Entity, type Position,
@@ -405,8 +405,9 @@ function XvaRows({ id, xva, positions }: {
         <table className="data desk xva">
           <thead>
             <tr>
-              <th>Netting set</th><th>CSA</th><th className="n">CVA<div className="sub">+ is an expected loss</div></th>
-              <th className="n">FVA<div className="sub">+ is a funding cost</div></th>
+              <th>Netting set</th><th>CSA</th>
+              <th className="n">CVA<div className="sub">{PLUS.CVA}</div></th>
+              <th className="n">FVA<div className="sub">{PLUS.FVA}</div></th>
               <th>Run</th><th>Status</th>
             </tr>
           </thead>

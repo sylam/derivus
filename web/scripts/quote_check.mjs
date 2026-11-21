@@ -404,11 +404,12 @@ check('a credit charge reads its CVA and FVA, then each exposure column\'s peak 
       'the sign read the other way, which tells a salesperson a trade adding to the client\'s CVA '
         + 'takes it off; a signed size kept under the word, which reads "takes off -8.30"; the '
         + 'paths or the run\'s terms read as an exposure column; one run\'s day printed under both '
-        + 'peaks; or a PFE read without its percentile',
+        + 'peaks; a PFE read without its percentile; or what a plus is said another way than '
+        + 'the credit tables say it under their CVA and FVA heads',
       quote.chargeLines(INCREMENT),
-      [{ what: 'CVA', plus: 'an expected loss', kind: 'money', with: 1163.61, without: 1060.61,
+      [{ what: 'CVA', plus: '+ is an expected loss', kind: 'money', with: 1163.61, without: 1060.61,
          moves: 'adds', by: 103 },
-       { what: 'FVA', plus: 'a funding cost', kind: 'money', with: 141.77, without: 150.07,
+       { what: 'FVA', plus: '+ is a funding cost', kind: 'money', with: 141.77, without: 150.07,
          moves: 'takes off', by: 8.3 },
        { what: 'Peak expected exposure (EE)', kind: 'whole', with: 172251.57, without: 194513.87,
          days: { with: '2027-02-15', without: '2027-02-16' }, moves: 'takes off', by: 22262.3 },

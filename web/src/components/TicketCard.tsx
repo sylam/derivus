@@ -162,7 +162,7 @@ export function CreditCharge({ ask }: { ask: ChargeAsk }) {
                 {chargeLines(read.answer).map((line) => (
                   <tr key={line.what}>
                     <td>{line.what}
-                      {line.plus && <span className="hint"> · + is {line.plus}</span>}</td>
+                      {line.plus && <span className="hint"> · {line.plus}</span>}</td>
                     {(['with', 'without'] as const).map((run) => (
                       <td key={run} className="n">
                         <Money value={line[run]} currency={read.answer.currency}

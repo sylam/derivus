@@ -678,6 +678,9 @@ export type XvaTotals = {
   sums: XvaSum[];
 };
 
+/** What a positive credit adjustment is, as every screen showing one says it beside the number. */
+export const PLUS = { CVA: '+ is an expected loss', FVA: '+ is a funding cost' } as const;
+
 export function xvaTotals(view: BookXva): XvaTotals {
   const totals: XvaTotals = {
     sets: 0, done: 0, failed: 0, neverRun: 0, running: 0, orphans: 0, sums: [],

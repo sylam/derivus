@@ -7,7 +7,7 @@ import {
   SET, STRIP_FIELDS, fieldsOf, levelOnAxis, pick, quoted, rowsByPath, sizeOf, toRows,
   type BlotterRow, type Quoted, type Size,
 } from './blotter';
-import { entityText, instantMs, peaks } from './desk';
+import { PLUS, entityText, instantMs, peaks } from './desk';
 import type { Agreement, Entity } from './positions';
 import { formatNumber, isBlank, isObject } from './tokens';
 import type {
@@ -264,10 +264,11 @@ export function chargeLines(answer: Increment): ChargeLine[] {
   const moved = (increment: number): Pick<ChargeLine, 'moves' | 'by'> => ({
     moves: increment > 0 ? 'adds' : increment < 0 ? 'takes off' : 'no change',
     by: Math.abs(increment) });
-  const cost = (what: string, plus: string, step: Stepped<number>): ChargeLine => ({
-    what, plus, kind: 'money', with: step.with, without: step.without, ...moved(step.increment) });
+  const cost = (what: keyof typeof PLUS, step: Stepped<number>): ChargeLine => ({
+    what, plus: PLUS[what], kind: 'money', with: step.with, without: step.without,
+    ...moved(step.increment) });
   return [
-    cost('CVA', 'an expected loss', answer.cva), cost('FVA', 'a funding cost', answer.fva),
+    cost('CVA', answer.cva), cost('FVA', answer.fva),
     ...Object.entries(answer).flatMap(([column, held]): ChargeLine[] => {
       const step = held as Stepped<{ peak: number; day: string }>;
       if (!isObject(step) || !isObject(step.with)) return [];
