@@ -3440,7 +3440,7 @@ def test_the_walk_refuses_by_name_what_it_cannot_walk(book, vocabulary):
     for name, answer in answers.items():
         assert answer.status_code == 422, (name, answer.json())
     assert '`deal`' in answers['empty'].json()['detail']
-    assert 'GET /book/dependencies' in answers['null'].json()['detail']
+    assert 'with book_dependencies' in answers['null'].json()['detail']
     assert 'names both' in answers['both'].json()['detail']
     assert answers['nameless'].json()['detail'] == CLIENT.post(
         '/book/deals', content=dump({'deal': malformed}), headers=JSON).json()['refused'][0]

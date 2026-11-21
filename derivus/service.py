@@ -886,10 +886,10 @@ def executed(job, book):
         lane, evidence = lane_of(job), None
         if lane == spine.STANDING:
             if 'plan_id' in job:
-                raise HTTPException(422, 'a standing run is attested from the job document the '
-                                         'plan recompiles from, and a plan_id names a parse rather '
-                                         'than a document - post the job itself, or run it in the '
-                                         'curiosity lane, which mints nothing')
+                raise HTTPException(422, 'a standing run is attested from the job document '
+                                         'itself, and a plan_id names a prepared copy rather than '
+                                         'the document - send the job itself, or run it in the '
+                                         'curiosity lane, which records nothing')
             evidence = evidence_for(job, context)
     except spine.SpineRefused as refused:
         raise HTTPException(422, str(refused))
@@ -2145,7 +2145,7 @@ NOT_A_DAY = ('{!r} is not a day: a close is declared for a calendar date and mon
              'so a date here is exactly YYYY-MM-DD - no time, no partial year')
 
 #: What a strip is asked to read from: a position, and nothing that is not one.
-NOT_AN_LSN = ('{!r} is not a position: ?since= takes the `lsn` the last page answered, or nothing '
+NOT_AN_LSN = ('{!r} is not a position: `since` takes the `lsn` the last page answered, or nothing '
               'at all for the newest page')
 
 #: The market a close is declared on when the caller names none. Officialness is a property of the
@@ -6269,11 +6269,11 @@ def book_dependencies_candidate(request: dict):
     live = live_book()
     document, etag = live.read()
     if request.get('deal') is None:
-        raise HTTPException(422, 'this walk is over a CANDIDATE deal - post it under `deal`, or '
-                                 'read the live book with GET /book/dependencies')
+        raise HTTPException(422, 'this walk is over a CANDIDATE deal - state it under `deal`, or '
+                                 'read the live book with book_dependencies')
     if request.get('deal_path') is not None:
-        raise HTTPException(422, 'a walk names ONE thing - a `deal` here, or a `deal_path` on GET '
-                                 '/book/dependencies. This request names both')
+        raise HTTPException(422, 'a walk names ONE thing - a candidate `deal`, or the `deal_path` '
+                                 'of one the book holds. This request names both')
     try:
         deal_path, resolved, missing = candidate_walk(
             document, request['deal'], request.get('parent_reference'),
