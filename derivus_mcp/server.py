@@ -733,8 +733,8 @@ async def xva_increment(deal: dict | None = None, parent_reference: str | None =
     `parent_reference` the client's netting set or a node inside it - or pass the `quote_id`
     `solve_structure` answered, which prices what accepting that quote would book. ONCE IT IS
     BOOKED, pass its `deal_path` from `read_book` and nothing else names it: the set is priced as
-    it stands and without the trade, so the answer is what that trade adds - the quote's id would
-    price a second one over it. `reference` names the deal you read at the path, so a path the
+    it stands and without the trade, so the answer is what that trade adds - a booked quote's id
+    refuses, naming that path. `reference` names the deal you read at the path, so a path the
     book has moved under refuses. The set is run twice on the SAME simulated paths,
     with the trade and with the trade beside its mirror, a pair worth nothing on every path, so
     the difference is the trade's and not the set's Monte Carlo noise; asked of the projection's

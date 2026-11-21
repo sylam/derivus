@@ -7112,9 +7112,12 @@ def test_a_quotes_increment_is_the_increment_of_what_its_acceptance_books(credit
     acceptance books - the mirror of the pending deal under the quote's set - is one question: one
     result id, one answer. Accepted, the trade is in the set, and the set's recalc reads the
     increment's 'with' CVA and FVA to the bit: the increment priced what the book now holds.
+    Booked, the quote is no candidate: asked by its id again it refuses, naming where its trade
+    sits, and asked of that trade by its path it is the answer it gave before it booked.
 
-    Killing mutation: the quote's candidate taken as quoted, client paper, rather than its mirror -
-    another trade, another id, and a 'with' the recalc does not read.
+    Killing mutations: the quote's candidate taken as quoted, client paper, rather than its
+    mirror - another trade, another id, and a 'with' the recalc does not read; and a booked quote
+    priced again by its id - a second copy over the first, answered 200.
     """
     quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
     pending = CLIENT.get('/book/quote/{}'.format(quote['quote_id'])).json()
@@ -7128,6 +7131,13 @@ def test_a_quotes_increment_is_the_increment_of_what_its_acceptance_books(credit
     recalc([CLIENT_SET])
     row = xva_rows()[CLIENT_SET]
     assert (row['cva'], row['fva']) == (answer['cva']['with'], answer['fva']['with']), row
+
+    path = CLIENT.get('/book/quote/{}'.format(quote['quote_id'])).json()['booked']['deal_path']
+    again = CLIENT.post('/book/price', content=dump(
+        {'quote_id': quote['quote_id'], 'xva_increment': True}), headers=JSON)
+    assert again.status_code == 422, again.text
+    assert 'is booked at {} '.format(path) in again.json()['detail'], again.text
+    assert increment(deal_path=path) == by_quote
 
 
 def test_a_quotes_increment_prices_on_the_spot_model_the_quote_pinned(credit_client):

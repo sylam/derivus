@@ -1657,14 +1657,16 @@ def with_overrides(document, overrides):
 def book_price(request: dict):
     """The what-if verb: `{deal?, parent_reference?, quote_id?, calculation_overrides?,
     xva_increment?, deal_path?, reference?}` prices the book plus an optional candidate on an
-    in-memory copy - the file never moves. Overrides merge into `Calc.Calculation` against the calculation's own declarations
+    in-memory copy - the file never moves. Overrides merge into `Calc.Calculation` against the
+    calculation's own declarations
     - an undeclared field or a value that is not what it declares refuses 422 - so "with Greeks" or
     "as a CMC" needs no second write surface and a misspelt dial is not silently ignored. Answers
     `{result_id, status}` exactly like `/execute`, and the same content addressing applies: the
     same what-if twice is one run.
 
     `quote_id` names the candidate as a quote's pending trade, priced as its acceptance would book
-    it (`quote_edit`).
+    it (`quote_edit`); a quote already booked refuses, naming where its trade sits, since a
+    what-if of it would price a second one beside the first.
 
     `xva_increment: true` asks what the candidate does to the CVA, FVA and peak exposure of the
     netting set it goes into, as the difference of that set's credit Monte Carlo with the candidate
@@ -1684,6 +1686,11 @@ def book_price(request: dict):
     quoted through `/book/structure` and booked through `/book/quote`."""
     document, etag = live_book().read()
     pending = book_quote_pending(request['quote_id']) if request.get('quote_id') else None
+    if pending and pending.get('booked'):
+        raise HTTPException(422, 'quote {} is booked at {} - a what-if of it would price a second '
+                                 'one beside it: ask of the trade the book holds, by its '
+                                 '`deal_path`'.format(request['quote_id'],
+                                                      pending['booked']['deal_path']))
     parent = pending['quote'].get('netting_set') if pending else request.get('parent_reference')
     candidate = pending is not None or request.get('deal') is not None
     baseline = live_book().baseline(document, etag) if candidate else None
