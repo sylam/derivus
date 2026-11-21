@@ -235,7 +235,7 @@ since its knots size the tenor grid while its rate column is content.
 
 ```python
 patch = cx.market_patch()          # {factor_name: {field: content}} - the values half, all of it
-patch['FxRate.ZAR']['Spot'] = 19.0
+patch['FxRate.ZAR']['Spot'] = 1 / 19.0   # base currency per rand: USDZAR at 19.0 on a USD book
 cx.patch_market(patch)             # applied in place; anything structural raises, naming it
 ```
 
@@ -431,11 +431,12 @@ on a home declaring no capabilities document, where an unnamed request runs unde
 under one, a request naming no seat is refused 422:
 
 ```json
-{"Calc": {"...": "..."}, "Patch": {"FxRate.ZAR": {"Spot": 19.0}}}
+{"Calc": {"...": "..."}, "Patch": {"FxRate.ZAR": {"Spot": 0.05263}}}
 ```
 
-`Patch` is a values delta, exactly what `patch_market` accepts, and it is applied *before* the
-hashes are taken — so `values_hash` describes what actually ran.
+`Patch` is a values delta, exactly what `patch_market` accepts (the spot above is USDZAR at 19.0
+on a USD book, 1/19.0), and it is applied *before* the hashes are taken — so `values_hash`
+describes what actually ran.
 
 **Who is asking.** The reads by node — `/book/positions`, `/book/pnl`, `/book/cash`,
 `/book/collateral`, `/book/reconcile`, `/book/diary`, `/book/activity` and `/book/worklist` —
@@ -510,7 +511,7 @@ and under its own name: the desk's own, or an opened copy with every edit made t
 under that name, so `/execute` takes either the whole document or the plan:
 
 ```json
-{"plan_id": "89db21b1…", "Patch": {"FxRate.ZAR": {"Spot": 19.0}}}
+{"plan_id": "89db21b1…", "Patch": {"FxRate.ZAR": {"Spot": 0.05263}}}
 ```
 
 `/validate` and `/describe` take `{"plan_id": …}` the same way. An unknown `plan_id` is a `404`.

@@ -162,9 +162,10 @@ The service installs the quote block, runs the bootstrap, and writes the solved 
 book in one atomic step — refused whole, with the bootstrap's own messages, if anything
 complains. A re-post may move only the quoted values and timestamps: a changed pillar, expiry or
 convention is a re-authoring, refused by name. Spot-level ticks go through
-`desk.update_market(patch={'FxRate.ZAR': {'Spot': 19.25}})` — the engine's `bind='value'`
-declaration decides what may move, and the same fields are directly editable in the UI's Market
-Data tab.
+`desk.update_market(patch={'FxRate.ZAR': {'Spot': 1 / 19.25}})` — a spot is the book's base
+currency per unit of the factor's own, so USDZAR at 19.25 on a USD book is its reciprocal. The
+engine's `bind='value'` declaration decides what may move, and the same fields are directly
+editable in the UI's Market Data tab.
 
 ## Structure against it
 

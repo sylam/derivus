@@ -48,10 +48,11 @@ RunPython("import excel_integration.xlwings_udfs as rf; rf.RF_PROCESS_NEXT_REQUE
 =RF_GET_TABLE("mtm")                            ' the numbers, once status is done
 ```
 
-`patch_json` is a market **values** delta, exactly what `/execute` takes:
+`patch_json` is a market **values** delta, exactly what `/execute` takes. A spot is the book's
+base currency per unit of the factor's own, so USDZAR at 19.0 on a USD book is 1/19.0:
 
 ```json
-{"FxRate.ZAR": {"Spot": 19.0}}
+{"FxRate.ZAR": {"Spot": 0.05263}}
 ```
 
 A finished result publishes the shape of each table, never the cells — `RF_GET_TABLE` fetches one,
@@ -102,7 +103,7 @@ from excel_integration.service_client import ServiceClient
 
 client = ServiceClient()
 plan = client.prepare(open('Trade01.json').read())
-run = client.submit({'plan_id': plan['plan_id']}, {'FxRate.ZAR': {'Spot': 19.0}})
+run = client.submit({'plan_id': plan['plan_id']}, {'FxRate.ZAR': {'Spot': 1 / 19.0}})
 client.poll(run['result_id'])
 client.fetch_table(run['result_id'], 'mtm', offset=0, limit=100)
 ```
