@@ -182,9 +182,11 @@ The model's context is a budget. A run comes back as its replay tuple, stats and
 (`"250 rows x 4 columns"`); a booking answer counts the book's other troubles and points at
 `validate_book`; `fetch_table` pages at most `MAX_PAGE_ROWS` (200) and refuses a table wider than
 `MAX_TABLE_COLUMNS` (60) unfetched; `deal_values` reads the shape first and refuses a cube or more
-than 500 rows. **Held by** `test_a_run_comes_back_as_shapes_never_cells`,
+than 500 rows; `solve_structure` answers the `spread` rows of a leg that a vega reaches, the quote
+resource keeping every quoted pillar. **Held by** `test_a_run_comes_back_as_shapes_never_cells`,
 `test_fetch_table_is_capped_and_a_cube_is_refused`, `test_deal_values_refuses_a_cube_without_fetching`,
-`test_a_booking_answer_is_the_booking_not_the_book`.
+`test_a_booking_answer_is_the_booking_not_the_book`,
+`test_a_quote_answers_the_pillars_a_vega_reaches_and_its_resource_every_one`.
 
 Risk is whole-book and counterparty-blind, one base valuation cached on the book's content; XVA is
 a projection per netting set in `DV_HOME/xva.json`, each row with its `as_of`, moved only by

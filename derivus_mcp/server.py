@@ -1285,8 +1285,9 @@ async def solve_structure(structure: str, params: dict, netting_set: str | None 
     market charges for the spread is levied where the margin is - on the coordinate the recipe
     solves, or on the PREMIUM where it solves nothing, `charged_on` naming which. Each leg's vega is
     read per quoted pillar and charged that pillar's own half, so `spread_charge` is what that leg
-    cost the client, `spread` is the pillar rows behind it and `spread_source` says whether the
-    vega came off the surface or off a lognormal reading of a leg priced under a fitted model.
+    cost the client, `spread` is the pillar rows behind it - those a vega reaches; the quote
+    resource keeps every quoted pillar - and `spread_source` says whether the vega came off the
+    surface or off a lognormal reading of a leg priced under a fitted model.
     `net_mid` is the legs at mid - what the trade will be worth on the book once booked - and the
     desk's `edge` is the charge, never negative. A pillar's `half` is always the MARKET's own
     half-spread; where a `Quote Policy` tightens, the scale is said once under `risk.scale` and the
@@ -1326,7 +1327,11 @@ The BOOK IS NOT TOUCHED. What is written is the pending trade:
     outcome = await _await_result(submitted['result_id'], wait_seconds, ctx)
     quote = outcome.get('stats', {}).get('Quote')
     if quote is not None:
-        return dict(quote, resources={
+        # a leg's spread is one row per quoted pillar, most of them at no vega: the answer keeps the
+        # rows a vega reaches and the quote resource every one
+        legs = [dict(leg, spread=leg['spread'] and [row for row in leg['spread'] if row['vega']])
+                for leg in quote['legs']]
+        return dict(quote, legs=legs, resources={
             'quote': 'derivus://quote/{}'.format(quote['quote_id']),
             'sheet': 'derivus://quote/{}/sheet'.format(quote['quote_id'])})
     # No quote: the run summary is the answer, and its poll pointer follows up on the stats rather

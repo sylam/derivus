@@ -957,6 +957,42 @@ def test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar(tmp_path,
         service.BOOK = None
 
 
+def test_a_quote_answers_the_pillars_a_vega_reaches_and_its_resource_every_one(
+        tmp_path, monkeypatch):
+    """A leg's `spread` is one row per quoted pillar, and on a book quoting a two-way a one-year
+    collar's vega reaches some of them: `solve_structure` answers those rows alone, their costs
+    still the leg's `spread_charge`, and the quote resource keeps every quoted pillar a leg.
+
+    Killing mutation: the tool answering the legs as the quote filed them, which hands a model
+    every pillar the surface quotes at a vega of zero.
+    """
+    from test_service import COLLAR, QUOTE_SPREAD, fx_vol_quotes
+    monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
+    quotes = json.loads(dump(fx_vol_quotes()))
+    points = quotes['FXVolPrices.USD.ZAR']['instrument']['Points']
+    for point in points:
+        point['Quoted_Bid'] = point['Quoted_Market_Value'] - 0.5 * QUOTE_SPREAD
+        point['Quoted_Ask'] = point['Quoted_Market_Value'] + 0.5 * QUOTE_SPREAD
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(json.loads(dump(job(
+        sections={'Bootstrapper Configuration': {'FXVol': {}}}))), indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    try:
+        assert mcp_server.update_market_quotes(quotes)['written'] is True
+        quote = asyncio.run(mcp_server.solve_structure('ZeroCostCollar', COLLAR))
+        filed = json.loads(read_resource(quote['resources']['quote']))['quote']
+    finally:
+        service.BOOK = None
+
+    for answered, whole in zip(quote['legs'], filed['legs'], strict=True):
+        assert len(whole['spread']) == len(points) > len(answered['spread']) > 0
+        assert answered['spread'] == [row for row in whole['spread'] if row['vega']]
+        assert sum(row['cost'] for row in answered['spread']) == pytest.approx(
+            answered['spread_charge'], rel=1e-12)
+        assert {key: value for key, value in answered.items() if key != 'spread'} == {
+            key: value for key, value in whole.items() if key != 'spread'}
+
+
 def test_a_recorded_desk_books_and_accepts_through_the_binding(recorded, tmp_path, monkeypatch):
     """THE WARNING CLOSES: a desk that keeps a record books through these tools. `book_deal` carries
     the signed quantity, the execution reference and the seat the service demands under a home, and
