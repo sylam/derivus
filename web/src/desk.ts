@@ -570,6 +570,15 @@ export function unpriced(refusal: string, opened?: string): string | undefined {
       + 'screen asks again as soon as the book moves.'}`;
 }
 
+/** What leaving the served book asks first, where it is a document `opened` here whose copy may
+ * hold edits made on this desk: that they go with it unless it is downloaded. Null on the desk's
+ * own book, and on a copy standing at the etag its open answered this client (`seen`). */
+export function leavingAsks(served: { etag: string; path: string; opened?: string },
+                            seen: { etag: string; path: string } | null): string | null {
+  if (!served.opened || (seen?.path === served.path && seen.etag === served.etag)) return null;
+  return `Edits made to ${served.opened} on this desk are lost unless it is downloaded first.`;
+}
+
 /** The one clock an answer read off the live book is held against: the book's etag, and on a
  * desk that records how far the record stands (`pinnedAt`) - a booking moves the first, and an
  * approval, a declaration or a fill the record alone holds the second. */

@@ -213,6 +213,23 @@ check('a book that will not price says who puts it right: the desk on its own bo
        who(desk.unpriced('sales-9 holds no validate over HARBOURLINE', 'from-fo.json')) ?? null],
       [[true, false, false], [false, true, true], null]);
 
+// --- leaving a document opened here
+const COPY = { etag: 'e1', path: 'inbox/from-fo.json', opened: 'from-fo.json' };
+const asks = (served, seen) => {
+  const said = desk.leavingAsks(served, seen);
+  return said && [said.includes('from-fo.json'), /lost unless it is downloaded/.test(said)];
+};
+check('leaving an opened document asks first where its copy may hold edits made here, by its name: '
+      + "an amended copy, and one this client did not see opened; not the desk's own book, nor a "
+      + 'copy standing as its open answered',
+      'the etag left unread, which replaces an amended copy without a word; the open this client '
+      + 'saw left unread, which asks over a copy nothing touched; a copy opened elsewhere taken '
+      + "for untouched, by an etag another file's open answered; or the desk's own book asked over",
+      [asks({ ...COPY, etag: 'e2' }, COPY), asks(COPY, { ...COPY }), asks(COPY, null),
+       asks(COPY, { etag: 'e1', path: 'inbox/other.json' }),
+       asks({ etag: 'e2', path: 'book.json' }, COPY)],
+      [[true, true], null, [true, true], [true, true], null]);
+
 // --- pending approval inside the marks, off `GET /book/positions`
 const position = (reference, paths, pending) => ({ reference, deal_paths: paths, pending,
   instrument: reference, status: pending ? 'pending' : 'approved' });

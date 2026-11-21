@@ -1,14 +1,25 @@
+import { useRef, useState } from 'react';
 import { BOOK_DOCUMENT, failure, getBook, openBook } from '../api';
-import { fileName } from '../desk';
+import { fileName, leavingAsks } from '../desk';
 import { bookLoaded, useApp } from '../state';
 import type { JobDoc } from '../types';
 
 /** Where the document comes from: the book the service serves, kept fresh by the etag poll in App
  * - its own, or a job file opened here, which the service files and serves in its place until the
  * user steps back - or, where the service will not serve that file, a read-only view of it, which
- * stops the poll until the user steps back to the book. */
+ * stops the poll until the user steps back to the book. Leaving an opened document that may hold
+ * edits made here asks first (`leavingAsks`). */
 export function DocumentLoader() {
   const { state, dispatch } = useApp();
+  // what the last open here answered: the copy it filed and the etag that copy stood at
+  const seen = useRef<{ path: string; etag: string } | null>(null);
+  const [asking, setAsking] = useState<{ said: string; go: () => void } | null>(null);
+
+  function leave(go: () => void) {
+    const said = state.source?.kind === 'book' ? leavingAsks(state.source, seen.current) : null;
+    if (said) setAsking({ said, go });
+    else go();
+  }
 
   async function openFile(file: File) {
     let doc: JobDoc;
@@ -19,7 +30,7 @@ export function DocumentLoader() {
       return;
     }
     try {
-      await openBook(file.name, doc);
+      seen.current = await openBook(file.name, doc);
     } catch (error) {
       // the service will not serve it: the file as a read-only view, under the service's reason
       dispatch({ type: 'DOC_LOADED', doc, source: { kind: 'local', name: file.name } });
@@ -57,8 +68,8 @@ export function DocumentLoader() {
               : `live book · ${fileName(state.source.path)}`}
           </span>
           {state.source.opened && (
-            <button className="ghost" onClick={closeOpened}
-                    title={`serve the desk's own book again - ${state.source.opened} stays filed in this desk's inbox with every edit made to it`}>
+            <button className="ghost" onClick={() => leave(closeOpened)}
+                    title={`serve the desk's own book again - an edit made to ${state.source.opened} here is kept only in a download of it`}>
               back to book
             </button>
           )}
@@ -81,9 +92,21 @@ export function DocumentLoader() {
         <input
           type="file"
           accept=".json,application/json"
-          onChange={(e) => e.target.files?.[0] && openFile(e.target.files[0])}
+          onChange={(e) => {
+            // emptied once read, so the file just chosen can be chosen again
+            const file = e.target.files?.[0];
+            e.target.value = '';
+            if (file) leave(() => openFile(file));
+          }}
         />
       </label>
+      {asking && (
+        <span className="banner">
+          {asking.said}
+          <button className="ghost" onClick={() => { setAsking(null); asking.go(); }}>go on</button>
+          <button className="ghost" onClick={() => setAsking(null)}>stay</button>
+        </span>
+      )}
     </>
   );
 }
