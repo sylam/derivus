@@ -569,6 +569,14 @@ class Book:
         # what a poll was last answered, by the read and its `poll_key`
         self.polls = utils.LRUCache(8)
 
+    @staticmethod
+    def text(path):
+        """The text of the file at `path`, which its etag is the hash of. utf-8 is named on both
+        sides, Windows' locale default misreading a non-ascii book, and newlines are translated
+        so the etag is convention-independent."""
+        with open(path, encoding='utf-8') as handle:
+            return handle.read()
+
     def _current(self, strict=False):
         """The etag of the file as it stands. Its text is read where the stamp or the size moved,
         and again until a read lands a clock tick after the stamp - a second write inside one tick
@@ -582,10 +590,7 @@ class Book:
             return self._cache[2]
         for attempt in range(READS):
             try:
-                # utf-8 named on both sides: Windows' locale default is cp1252, which misreads any
-                # non-ascii book; newline translation on read makes the etag convention-independent
-                with open(self.path, encoding='utf-8') as handle:
-                    text = handle.read()
+                text = self.text(self.path)
                 if text != self._cache[3]:
                     self._named = self.facts(json.loads(text))
                     self._cache = (None, 0, content_hash(text), text)
@@ -1039,7 +1044,8 @@ def book_open(request: dict):
     serves that copy as the book, so every book verb works on it and an edit lands on the copy;
     `{name}` serves the copy already filed under that name, and `{}` the desk's own book again.
     Each open is a new `Book`. Answers the served file and its etag, and `replaced`, the etag of
-    the copy a document was filed over, where it filed over another text.
+    the copy a document was filed over, where it filed over another text - broken or not, and
+    null where that copy would not read as text, which no etag was ever served for.
 
     A desk that records refuses before anything is written or served: its book is the record's
     fold, and an amendment to a document from another system would append facts about it."""
@@ -1048,7 +1054,7 @@ def book_open(request: dict):
         raise HTTPException(422, "this desk records, and its book is the record's fold - an "
                                  'amendment to a document from another system would append facts '
                                  'about it, so it is opened on a desk that records nothing')
-    over = None
+    over = ()
     if 'name' not in request:
         if DESK is None:
             raise HTTPException(404, 'this service serves no book of its own - it was started '
@@ -1059,8 +1065,12 @@ def book_open(request: dict):
         path = os.path.join(dv_home(), name)
         if 'document' in request:
             if os.path.isfile(path):
-                # the copy this files over, by the etag a client held it under
-                over = Book(path).named()[0]
+                # the copy this files over by the hash of its text, unparsed: a broken copy is
+                # replaced all the same, and one that is no text had no etag to name
+                try:
+                    over = (content_hash(Book.text(path)),)
+                except ValueError:
+                    over = (None,)
             write_desk_file(name, request['document'])
         if not os.path.isfile(path):
             raise HTTPException(404, 'nothing is filed under {} in {}'.format(
@@ -1068,8 +1078,8 @@ def book_open(request: dict):
     # read before it is served, so a document that is no job leaves the book served standing
     served = Book(path)
     answer = {'path': path, 'etag': served.read()[1]}
-    if over not in (None, answer['etag']):
-        answer['replaced'] = over
+    if over and over[0] != answer['etag']:
+        answer['replaced'] = over[0]
     BOOK = served
     return answer
 

@@ -8408,7 +8408,8 @@ def test_a_document_opened_is_served_as_the_book_and_the_desks_own_stands(book, 
     unopened and at its etag; the name alone serves the amended copy again; and the document posted
     again under its name replaces the copy with what was posted, answering `replaced` with the
     amended copy's etag; posted a third time it files over an identical copy and answers none, as
-    the first filing did. A name nothing is filed under
+    the first filing did; and a copy somebody broke is replaced all the same, one that is no JSON
+    under the hash of its text and one that is no text under null. A name nothing is filed under
     answers 404, and a document that is no job fails with the book served standing. `GET
     /book/document` answers the served file byte for byte under its own name, the amended copy
     and then the desk's own.
@@ -8419,7 +8420,8 @@ def test_a_document_opened_is_served_as_the_book_and_the_desks_own_stands(book, 
     amendment; the document served before it is read, which leaves the service serving no job;
     the download written from the parsed document, which is another text under another etag,
     or read off the desk's own path while a copy is served; `replaced` answered wherever a copy
-    stood, which reports an identical one as lost work.
+    stood, which reports an identical one as lost work; the overwritten copy's etag read through
+    a parse, which has none for a copy that is no JSON.
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path))
     service.DESK, copy = str(book), tmp_path / 'inbox' / 'NS_FOREIGN.json'
@@ -8461,6 +8463,10 @@ def test_a_document_opened_is_served_as_the_book_and_the_desks_own_stands(book, 
         for replaced in ({'replaced': live['etag']}, {}):
             assert CLIENT.post('/book/open', json={
                 'name': copy.name, 'document': foreign}).json() == dict(opened, **replaced)
+        for broken, etag in ((b'{no job', derivus.content_hash('{no job')), (b'\xff', None)):
+            copy.write_bytes(broken)
+            assert CLIENT.post('/book/open', json={
+                'name': copy.name, 'document': foreign}).json() == dict(opened, replaced=etag)
         assert json.loads(copy.read_text()) == CLIENT.get('/book').json()['document'] == foreign
     finally:
         service.DESK = None
