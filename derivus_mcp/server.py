@@ -1974,7 +1974,8 @@ def declare_legal_entity(entity: str, name: str, parent: str | None = None,
     `document` seat, which files an `entity_declared`.
 
     `entity` is its id as the legal system knows it, `name` what a reader is shown, `parent` the
-    entity it is grouped under, if any. A second declaration under one id restates it. Answers
+    entity it is grouped under, if any. A second declaration under one id restates it, and a name
+    identifies one entity: one standing under another id is refused, naming that id. Answers
     `{recorded: {lsn}, entity}`.
     """
     return service().call('POST', '/book/entities', json=dict(

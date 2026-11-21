@@ -400,18 +400,29 @@ def declare_file(log, actor, name, kind, data):
 def declare_entity(log, actor, entity, name, parent=None, effective_time=None):
     """Declare a legal entity the book may trade with, and return the envelope.
 
-    `entity` is its id as the deployment's legal system knows it and `name` what a reader is shown;
+    `entity` is its id as the deployment's legal system knows it and `name` what a reader is shown,
+    which identifies one entity: a name standing under another id raises `MalformedEvent`.
     `parent` groups it under another entity and says nothing else. A second declaration under one
     id restates it as `declare_file` restates a file: a return to earlier content is a new fact
     naming the one it replaced, and a repeat of the content in force coalesces. Firm-level, so it
     carries no book.
     """
+    from .projections import PROJECTORS, fold
+
     body = {'entity': _name(entity, 'entity', 'declare_entity'),
             'name': _name(name, 'name', 'declare_entity')}
     if parent is not None:
         body['parent'] = _name(parent, 'parent', 'declare_entity')
+    standing = fold(log, PROJECTORS['entities'])
+    holder = next((held for held, row in standing.items()
+                   if held != entity and row['name'] == name), None)
+    if holder is not None:
+        raise MalformedEvent(
+            'declare_entity: the name {!r} stands under entity {!r}, and a name identifies one '
+            'legal entity - restate {!r} if this is that entity, or give {!r} a name of its '
+            'own'.format(name, holder, holder, entity))
     return log.append('entity_declared', restated(
-        log, standing_under(log, 'entities', entity), body), actor=actor,
+        log, standing.get(entity, {}).get('lsn'), body), actor=actor,
         effective_time=effective_time)
 
 

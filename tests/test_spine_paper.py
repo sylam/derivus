@@ -31,7 +31,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from derivus_spine import SpineLog, SpineRefusal, canonical_bytes, verify_home
+from derivus_spine import MalformedEvent, SpineLog, SpineRefusal, canonical_bytes, verify_home
 from derivus_spine import cli, oracle
 from derivus_spine.projections import (
     PROJECTORS, SEEDS, UNSEEDED, close_on, fold, fold_from, latest_seed, read_seed, seed_at)
@@ -175,8 +175,8 @@ def test_a_return_to_earlier_paper_is_a_new_fact_and_a_repeat_of_the_standing_pa
         return log.open_body(log.frame_at(envelope['lsn']))
 
     for declare, projector, field, a, b in (
-            (lambda key, name: declare_entity(log, ACTOR, key, name), PROJECTORS['entities'],
-             'name', 'A counterparty', 'A counterparty, renamed'),
+            (lambda key, name: declare_entity(log, ACTOR, key, name + ' ' + key),
+             PROJECTORS['entities'], 'name', 'A counterparty', 'A counterparty, renamed'),
             (lambda key, terms: declare_agreement(log, ACTOR, key, 'LEI-X', 'ISDA 2002', terms),
              PROJECTORS['agreements'], 'terms', PAPER, RESTRUCK)):
         once, again = (declare('AA', content) for content in (a, a))
@@ -203,6 +203,44 @@ def test_a_return_to_earlier_paper_is_a_new_fact_and_a_repeat_of_the_standing_pa
     assert verify_home(home)['events'] == head
     answers = oracle.report(home)
     assert oracle.failed(answers) == [] and answers['duplicates_coalesce']['held'], answers
+
+
+def test_a_name_identifies_one_legal_entity(tmp_path):
+    """A name stands under one id. A declaration whose name stands under ANOTHER id - a first
+    declaration or a rename onto it - is refused in the record's words, naming the name, the id it
+    stands under and the remedy, and appends nothing. Under the id that holds the name nothing
+    moves: a repeat coalesces and a new parent is a new fact. The name is compared as written, so
+    another case is another name, and a name its entity was renamed away from is free. Two ids a
+    log already holds under one name fold as they did, the refusal being the verb's alone.
+
+    Killing mutations: the check dropped, which files `LEI-C` under `LEI-A`'s name; the check
+    refusing the id that holds the name too, which refuses `LEI-A`'s own repeat.
+    """
+    log = SpineLog(seeded(tmp_path, clips=()))
+    first = declare_entity(log, ACTOR, 'LEI-A', 'Client A')
+    head = declare_entity(log, ACTOR, 'LEI-B', 'Client B')['lsn']
+    for entity in ('LEI-C', 'LEI-B'):
+        with pytest.raises(MalformedEvent) as refused:
+            declare_entity(log, ACTOR, entity, 'Client A')
+        assert str(refused.value) == (
+            "declare_entity: the name 'Client A' stands under entity 'LEI-A', and a name "
+            "identifies one legal entity - restate 'LEI-A' if this is that entity, or give "
+            '{!r} a name of its own'.format(entity))
+    assert log.head()[0] == head, 'a refused declaration appended'
+
+    assert declare_entity(log, ACTOR, 'LEI-A', 'Client A')['lsn'] == first['lsn']
+    filed = [declare_entity(log, ACTOR, entity, name, parent=parent)['lsn']
+             for entity, name, parent in (('LEI-A', 'Client A', 'LEI-GROUP'),
+                                          ('LEI-C', 'client a', None),
+                                          ('LEI-A', 'Client A plc', 'LEI-GROUP'),
+                                          ('LEI-B', 'Client A', None))]
+    assert filed == [head + 1, head + 2, head + 3, head + 4]
+    log.append('entity_declared', {'entity': 'LEI-D', 'name': 'Client A'}, actor=ACTOR)
+    rows = PROJECTORS['entities'].rows(fold(log, PROJECTORS['entities']))
+    assert [(row['entity'], row['name']) for row in rows] == [
+        ('LEI-A', 'Client A plc'), ('LEI-B', 'Client A'), ('LEI-C', 'client a'),
+        ('LEI-D', 'Client A')]
+    log.close()
 
 
 def test_a_reader_starts_at_the_newest_seed_a_named_folder_holds(tmp_path):

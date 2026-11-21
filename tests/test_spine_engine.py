@@ -1320,6 +1320,29 @@ def test_paper_restated_and_then_restored_stands_restored(recorded):
     assert verify_home(recorded)['events'] == head(recorded) == back
 
 
+def test_a_name_another_entity_holds_is_refused_in_the_record_s_words(recorded):
+    """Through the service: an entity declared under a name standing under another id answers 422
+    with the record's own sentence - the name, the id that holds it, the remedy - and records
+    nothing, while the id that holds the name declares it again as the fact already standing.
+
+    Killing mutation: the check dropped from `declare_entity`, which answers 200 and files a
+    second id under the name.
+    """
+    def declared(entity):
+        return CLIENT.post('/book/entities', content=dump({'entity': entity, 'name': 'Client A'}),
+                           headers=JSON)
+
+    assert declared('LEI-A').status_code == 200
+    before = head(recorded)
+    refused = declared('LEI-B')
+    assert (refused.status_code, refused.json()['detail']) == (
+        422, "declare_entity: the name 'Client A' stands under entity 'LEI-A', and a name "
+             "identifies one legal entity - restate 'LEI-A' if this is that entity, or give "
+             "'LEI-B' a name of its own")
+    assert declared('LEI-A').json()['recorded']['lsn'] == head(recorded) == before
+    assert [row['entity'] for row in CLIENT.get('/book/entities').json()['entities']] == ['LEI-A']
+
+
 def test_a_declared_tree_is_where_a_book_books_and_a_restrike_is_judged(recorded, desk):
     """THE TREE IS DECLARED, BOOK BY BOOK. A book declaring no node books wherever its paths say,
     whatever another book declared; once any node of it stands, a fill books into the book itself

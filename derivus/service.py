@@ -3630,8 +3630,9 @@ def book_entity_declared(request: dict):
     system knows it, the name a reader is shown, and the parent it is grouped under, if any.
 
     The act is `document`, which the record enforces at the append in its own words; which seat
-    holds it is the deployment's grant. A second declaration under one id restates the entity. 404
-    where no home is configured.
+    holds it is the deployment's grant. A second declaration under one id restates the entity, and
+    a name standing under another id is refused in the record's words, a 422: a name identifies
+    one entity. 404 where no home is configured.
     """
     recorded()
     filed = spine.declare_entity(request.get('entity'), request.get('name'),
