@@ -1,13 +1,14 @@
 import { useRef, useState } from 'react';
 import { BOOK_DOCUMENT, failure, getBook, openBook } from '../api';
-import { NO_BOOK, fileName, leavingAsks } from '../desk';
+import { NO_BOOK, copyOnly, fileName, leavingAsks } from '../desk';
 import { bookLoaded, useApp } from '../state';
 import type { JobDoc } from '../types';
 
 /** Where the document comes from: the book the service serves, kept fresh by the etag poll in App
  * - its own, or a job file opened here, which the service files and serves in its place until the
- * user steps back - or, where the service will not serve that file, a read-only view of it, which
- * stops the poll until the user steps back to the book. Leaving an opened document that may hold
+ * user steps back - or, where the service will not serve that file or the desk records and is not
+ * asked (`copyOnly`), a read-only view of it, which stops the poll until the user steps back to
+ * the book. Leaving an opened document that may hold
  * edits made here asks first (`leavingAsks`). */
 export function DocumentLoader() {
   const { state, dispatch } = useApp();
@@ -29,11 +30,18 @@ export function DocumentLoader() {
       dispatch({ type: 'DOC_FAILED', error: `${file.name} is not valid JSON: ${error}` });
       return;
     }
+    const copy = () => dispatch(
+      { type: 'DOC_LOADED', doc, source: { kind: 'local', name: file.name } });
+    // a desk that records serves no file: nothing is asked, and the page says why it is a copy
+    if (copyOnly(state.record.spine !== null, file.name)) {
+      copy();
+      return;
+    }
     try {
       seen.current = await openBook(file.name, doc);
     } catch (error) {
       // the service will not serve it: the file as a read-only view, under the service's reason
-      dispatch({ type: 'DOC_LOADED', doc, source: { kind: 'local', name: file.name } });
+      copy();
       dispatch({ type: 'DOC_FAILED', error: failure(error).error });
       return;
     }

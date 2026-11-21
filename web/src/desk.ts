@@ -587,6 +587,13 @@ export const offBook = (shown: string): { title: string; hint: string } => ({
     + `to leave it: this screen then shows ${shown}.`,
 });
 
+/** What a file opened on a desk that records is, null on one that keeps no record, where it is
+ * served as the book: a read-only copy the service is not asked to open, said as the state it is -
+ * the desk's book is what its record holds - with the control that leaves the copy. */
+export const copyOnly = (recording: boolean, name: string): string | null => (recording
+  ? `This desk's book is what its record holds, so ${name} is shown as a read-only copy and not `
+    + 'opened on the desk. Press "back to book" at the top to leave it.' : null);
+
 /** What a screen says where the desk serves no book: what the reader can do, then who gives the
  * desk a book of its own. */
 export const NO_BOOK = {

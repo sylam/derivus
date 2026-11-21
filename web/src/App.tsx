@@ -8,7 +8,7 @@ import { DocumentLoader } from './components/DocumentLoader';
 import { EmptyState } from './components/EmptyState';
 import { JobHeader } from './components/JobHeader';
 import { ActivityStrip, ReconcileBanner, SeatControl, WorklistBanner } from './components/Record';
-import { NO_BOOK } from './desk';
+import { NO_BOOK, copyOnly } from './desk';
 import { WORKSPACES } from './registry';
 import { bookOwed, polled, ringsAhead, single, worklistAt } from './spine';
 import {
@@ -231,6 +231,9 @@ export function App() {
   }, []);
 
   const Active = WORKSPACES.find((w) => w.id === state.tab)?.view ?? WORKSPACES[0].view;
+  // a file a desk that records shows as a copy: a state of the desk, said in the page's words
+  const copy = state.source?.kind === 'local'
+    && copyOnly(state.record.spine !== null, state.source.name);
 
   return (
     <AppContext.Provider value={{ state, dispatch, labels: LABELS }}>
@@ -260,6 +263,7 @@ export function App() {
           <div className="error-box">The service is not answering: {state.schemaError}</div>
         )}
         {state.docError && <div className="error-box">{state.docError}</div>}
+        {copy && <div className="note">{copy}</div>}
         {state.market.error && <div className="error-box">{state.market.error}</div>}
         {!state.doc ? (
           <EmptyState title="No document loaded." hint={NO_BOOK.hint} />

@@ -247,6 +247,14 @@ check('over a read-only copy of a file a screen names the control that leaves it
        desk.offBook("the desk's own risk").hint.endsWith("this screen then shows the desk's own risk."),
        pressed(desk.NO_BOOK)],
       [['back to book', true], true, ['open a job file', true]]);
+check('a file opened on a desk that records is a read-only copy the service is not asked for, '
+      + 'said as the state it is with the control that leaves it; a desk keeping no record '
+      + 'serves the file, and says nothing',
+      'the open asked of a desk that records, whose refusal lands in a red box over the copy; '
+      + 'or a desk keeping no record told its file is a copy, which opens none there',
+      [desk.copyOnly(true, 'trades.json'), desk.copyOnly(false, 'trades.json')],
+      ["This desk's book is what its record holds, so trades.json is shown as a read-only copy "
+        + 'and not opened on the desk. Press "back to book" at the top to leave it.', null]);
 
 // --- pending approval inside the marks, off `GET /book/positions`
 const position = (reference, paths, pending) => ({ reference, deal_paths: paths, pending,
