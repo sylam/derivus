@@ -289,12 +289,22 @@ the book where the record holds none; `POST /paths` and each beat of the schedul
 declaration demands under the map in force, `mark` unless a document moves the act. The close and the
 settlement file read the diary as the hub compiles it (`hub_diary`), so neither seat needs
 `validate`. A tick the hub's seat may not mark submits nothing: the cadence warns once a beat,
-naming the grant to declare, and beats on. **Held by**
+naming the seat that can grant it, and beats on. **Held by**
 `test_spine_engine.py::test_a_delete_asks_book_at_the_node_holding_the_position`,
 `::test_a_path_save_asks_mark_over_the_book`,
 `::test_a_close_asks_mark_over_the_firm_before_its_verdict_and_never_validate`,
 `::test_a_settlement_file_asks_settle_over_the_book_and_never_validate`,
 `::test_a_tick_the_hub_may_not_mark_is_refused_and_the_cadence_lives`.
+
+**What a refused seat is told.** A refusal speaks to someone at a desk. A seat without the grant
+an act asks reads one sentence, whoever turns it away (`log.DENIED`): the seat, the verb, the
+node, what did not happen, who puts it right (`log.UNGRANTED`, a seat holding `admin` over the
+node) and the LSN its denial stands at. No refusal a desk reads names a route, a command line or
+a variable as its remedy: it names the act, by the tool that performs it where there is one, and
+an operator's remedy follows second and only where the fault is the deployment's. **Held by**
+`test_spine_engine.py::test_under_a_document_the_queue_asks_before_the_executor_does`,
+`test_service.py::test_the_market_is_the_marking_seats_on_a_recorded_desk`,
+`::test_a_desk_that_records_refuses_to_open_a_document`.
 
 `verbs` is the map in force, the verb each act demands. A declaration is stored with the
 vocabulary's verb for every act it does not move, governance staying `admin`, so the map in force
