@@ -11,8 +11,8 @@ import { entityText, instantMs, peaks } from './desk';
 import type { Agreement, Entity } from './positions';
 import { formatNumber, isBlank, isObject } from './tokens';
 import type {
-  Acceptance, DealNode, Descriptor, Increment, JobDoc, PendingQuote, Quote, QuoteGiven, QuotedLeg,
-  ResultSummary, Schema, Section, Stepped, StructureType,
+  Acceptance, ChargeAsk, DealNode, Descriptor, Increment, JobDoc, PendingQuote, Quote, QuoteGiven,
+  QuotedLeg, ResultSummary, Schema, Section, Stepped, StructureType,
 } from './types';
 
 // ---- the ticket asked for -----------------------------------------------------------------------
@@ -227,9 +227,16 @@ export function ranAs<T>(summary: ResultSummary, stat: string):
     ? { refused: summary.error ?? `the run failed and answered no ${stat}` } : null;
 }
 
-/** Whether a quote's credit charge is asked: until it books. The what-if prices the quote's trade
- * into the book as it stands, so of a booked quote it would answer for a second one beside it. */
-export const chargeable = (pending: Pick<PendingQuote, 'booked'>): boolean => !pending.booked;
+/** The ask a quote's ticket makes for its credit charge: of the quote until it books, the what-if
+ * pricing its trade into the book; from then of the trade the book holds, where the file holds
+ * it now under the reference it booked as - and none where the file holds it no more. */
+export function chargeAsk(pending: Pick<PendingQuote, 'quote' | 'deal' | 'booked'>,
+                          nodes: DealNode[]): ChargeAsk | undefined {
+  if (!pending.booked) return { quote_id: pending.quote.quote_id };
+  const reference = String(pending.deal.Reference);
+  const path = landedAt(nodes, { ...pending.booked, reference });
+  return path === undefined ? undefined : { deal_path: path, reference };
+}
 
 /** One line of a credit charge: a number of the client's netting set with the trade and without
  * it - a peak with the day each falls on - and what the trade does to it, as a word and a size. */

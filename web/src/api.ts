@@ -7,7 +7,7 @@ import type { Agreement, Entity, Position } from './positions';
 import type {
   Acceptance, ActivityPage, BookCollateral, BookMarket, BookMarkets, BookResponse, BookRisk,
   BookStatus, BookXva,
-  CalculationOutcome, PendingQuote, QuoteGiven,
+  CalculationOutcome, ChargeAsk, PendingQuote, QuoteGiven,
   CalculationsAnswer, CloseVerdict, CurveOutcome, CurvesAnswer, Decided, DescribeResult, JobDoc,
   PathMaps,
   PathsAnswer, Reconcile, Recorded, ResultSummary, Schema, SeatGrants, SecuritiesAnswer,
@@ -223,12 +223,12 @@ export const QUOTE_SHEET = (id: string) => `/book/quote/${encodeURIComponent(id)
 export const getQuoteSheet = async (id: string) => (await send('GET', QUOTE_SHEET(id))).blob();
 export const acceptQuote = (id: string) =>
   call<Acceptance>('POST', '/book/quote', signed({ quote_id: id }));
-// what booking a quote does to its client's credit numbers: its netting set priced with the trade
-// and without it on the same paths, queued and polled like an execute, the answer under the run's
-// `stats.Increment` - a what-if, which writes nothing
-export const chargeQuote = (id: string) =>
+// what a trade does to its client's credit numbers, asked of a quote or of a trade the book holds:
+// its netting set priced with the trade and without it on the same paths, queued and polled like
+// an execute, the answer under the run's `stats.Increment` - a what-if, which writes nothing
+export const askCharge = (of: ChargeAsk) =>
   call<{ result_id: string; status: string }>('POST', '/book/price',
-                                              signed({ quote_id: id, xva_increment: true }));
+                                              signed({ ...of, xva_increment: true }));
 // ---- the desk's quotes ----
 // every quote the desk has given, newest first, with where each stands
 export const getQuotes = () => call<{ quotes: QuoteGiven[] }>('GET', '/book/quotes');

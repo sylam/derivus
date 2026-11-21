@@ -1,17 +1,17 @@
 // Quote ticket card and its expandable leg table.
 
 import { useEffect, useRef, useState } from 'react';
-import { chargeQuote } from '../api';
+import { askCharge } from '../api';
 import { cellText, dateOf } from '../blotter';
 import { instantMs, lagsBook, stampText } from '../desk';
 import { NO_PAPER } from '../positions';
 import {
-  STANDS, chargeLines, chargeable, clientText, firmSeconds, firmText, onMarketAxis, salesName,
+  STANDS, chargeAsk, chargeLines, clientText, firmSeconds, firmText, onMarketAxis, salesName,
   solvedNumbers, spreadText, standsAt, ticketLegs, type TicketLeg,
 } from '../quote';
 import { clockOf, heldBack, useApp, useQueued } from '../state';
 import { formatNumber } from '../tokens';
-import type { Increment, PendingQuote, Schema } from '../types';
+import type { ChargeAsk, Increment, PendingQuote, Schema } from '../types';
 import { Money, Waiting } from './Desk';
 import { DealPanels, FieldView } from './FieldView';
 
@@ -37,6 +37,7 @@ export function TicketCard({ pending }: { pending: PendingQuote }) {
     return () => clearTimeout(timer);
   }, [word, until]);
   const delivery = dateOf(first.Delivery_Date);
+  const charge = chargeAsk(pending, state.doc?.Calc.Deals?.Deals?.Children ?? []);
   const level = (on: { pair: string; level: number } | undefined, raw: number) =>
     (on ? `${on.pair} ${formatNumber(on.level)}` : formatNumber(raw));
 
@@ -105,37 +106,41 @@ export function TicketCard({ pending }: { pending: PendingQuote }) {
             {stampText(pending.quoted_at)}</span>
           <span className="hint">{firmText(window, state.record.spine !== null)}</span>
         </div>
-        {chargeable(pending) && <CreditCharge id={quote.quote_id} />}
+        {charge && <CreditCharge key={JSON.stringify(charge)} ask={charge} />}
       </div>
     </section>
   );
 }
 
-/** What booking the quote does to its client's credit numbers, asked on demand and never on a
- * poll: its netting set's CVA, FVA and peak exposures with the trade and without it, both runs on
- * the same paths - or the service's own sentence. A what-if, held from a seat that may run none. */
-function CreditCharge({ id }: { id: string }) {
+/** What a trade does to its client's credit numbers, asked on demand and never on a poll - of a
+ * quote's trade before it books, of a trade the book holds from then: its netting set's CVA, FVA
+ * and peak exposures with the trade and without it, both runs on the same paths, or the service's
+ * own sentence. A what-if, held from a seat that may run none. */
+export function CreditCharge({ ask }: { ask: ChargeAsk }) {
   const { state } = useApp();
   const [read, setRead] = useState<{ answer: Increment; clock: string | null } | null>(null);
   const asked = useRef<string | null>(null);
-  const asking = useQueued(chargeQuote, 'Increment',
+  const asking = useQueued(askCharge, 'Increment',
                            (answer: Increment) => setRead({ answer, clock: asked.current }));
   const hold = heldBack(state, 'validate');
-  const ask = () => {
+  const start = () => {
     asked.current = clockOf(state);
     setRead(null);
-    asking.start(id);
+    asking.start(ask);
   };
   return (
     <>
       <div className="statusrow">
         {hold ? <><span className="hint">credit charge</span><span>{hold}</span></> : (
           <>
-            <button className="ghost" disabled={!!asking.run} onClick={ask}>credit charge</button>
+            <button className="ghost" disabled={!!asking.run} onClick={start}>
+              credit charge
+            </button>
             <Waiting {...asking} />
             {!asking.run && !asking.error && (
-              <span className="hint">what booking it does to the client's CVA, FVA and peak
-                exposure: a what-if, which writes nothing</span>
+              <span className="hint">what {'quote_id' in ask ? 'booking it does' : 'the trade adds'}
+                {' '}to the client's CVA, FVA and peak exposure: a what-if, which writes
+                nothing</span>
             )}
           </>
         )}

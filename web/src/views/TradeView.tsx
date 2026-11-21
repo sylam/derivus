@@ -21,7 +21,7 @@ import {
 } from '../trade';
 import type { ActivityRow, QuoteGiven } from '../types';
 import { Back, DealEditor, Money, OnStrip, Side, Value } from '../components/Desk';
-import { TicketCard } from '../components/TicketCard';
+import { CreditCharge, TicketCard } from '../components/TicketCard';
 
 /** One trade's rows on the record, newest first, asked for by its path where the desk keeps one
  * and again whenever the record moves - the service's own sentence where the read is refused -
@@ -74,7 +74,8 @@ export function TradeView() {
         <Terms row={row} set={trade.set} units={recording ? units ?? null : undefined}
                quote={quote ?? undefined} />
         <Origin recording={recording} held={held} history={history} quote={quote} />
-        <Worth path={trade.path} legs={row.children.length} shut={closed(units)} />
+        <Worth path={trade.path} reference={row.reference} legs={row.children.length}
+               shut={closed(units)} />
         <History recording={recording} history={history} deal={row.deal} />
         <Actions key={`act ${trade.path}`} row={row} held={held} recording={recording} />
       </div>
@@ -256,8 +257,11 @@ function Origin({ recording, held, history, quote }: {
 }
 
 /** What the trade is worth to the desk, and what the number is on: its own mark where the risk
- * answer holds one, else the top-level node it sits inside, said as that. */
-function Worth({ path, legs, shut }: { path: string; legs: number; shut: boolean }) {
+ * answer holds one, else the top-level node it sits inside, said as that - and, asked for, what
+ * it adds to its client's credit numbers. */
+function Worth({ path, reference, legs, shut }: {
+  path: string; reference: string; legs: number; shut: boolean;
+}) {
   const { state } = useApp();
   const { risk } = state;
   const body = () => {
@@ -305,7 +309,12 @@ function Worth({ path, legs, shut }: { path: string; legs: number; shut: boolean
   return (
     <section className="card">
       <h3>What it is worth</h3>
-      <div className="nested">{body()}</div>
+      <div className="nested">
+        {body()}
+        {state.source?.kind === 'book' && (
+          <CreditCharge key={path} ask={{ deal_path: path, reference: reference || undefined }} />
+        )}
+      </div>
     </section>
   );
 }

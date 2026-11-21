@@ -722,15 +722,20 @@ async def price_candidate(deal: dict | None = None, parent_reference: str | None
 
 @MCP.tool()
 async def xva_increment(deal: dict | None = None, parent_reference: str | None = None,
-                        quote_id: str | None = None, calculation_overrides: dict | None = None,
+                        quote_id: str | None = None, deal_path: str | None = None,
+                        reference: str | None = None, calculation_overrides: dict | None = None,
                         actor: str | None = None, wait_seconds: float = 600.0,
                         ctx: Context = None) -> dict:
-    """What a trade would do to the client's credit charge before anyone books it: how it moves
-    the CVA, the FVA and the peak exposure of the netting set it would go into.
+    """What a trade does to its client's credit charge: how it moves the CVA, the FVA and the peak
+    exposure of its netting set - asked before anyone books it, or of a trade the book holds.
 
-    Name the trade as `price_candidate` takes one - `deal`, with `parent_reference` the client's
-    netting set or a node inside it - or pass the `quote_id` `solve_structure` answered, which
-    prices what accepting that quote would book. The set is run twice on the SAME simulated paths,
+    BEFORE IT BOOKS, name the trade as `price_candidate` takes one - `deal`, with
+    `parent_reference` the client's netting set or a node inside it - or pass the `quote_id`
+    `solve_structure` answered, which prices what accepting that quote would book. ONCE IT IS
+    BOOKED, pass its `deal_path` from `read_book` and nothing else names it: the set is priced as
+    it stands and without the trade, so the answer is what that trade adds - the quote's id would
+    price a second one over it. `reference` names the deal you read at the path, so a path the
+    book has moved under refuses. The set is run twice on the SAME simulated paths,
     with the trade and with the trade beside its mirror, a pair worth nothing on every path, so
     the difference is the trade's and not the set's Monte Carlo noise; asked of the projection's
     last row instead, that noise can be as large as the trade. The paths remove the set's noise;
@@ -742,6 +747,7 @@ async def xva_increment(deal: dict | None = None, parent_reference: str | None =
     Monte Carlo (`{"Object": "CreditMonteCarlo", "Random_Seed": 7}`). Waits up to `wait_seconds`.
     """
     request = _stated(deal=deal, parent_reference=parent_reference, quote_id=quote_id,
+                      deal_path=deal_path, reference=reference,
                       calculation_overrides=calculation_overrides or None, actor=actor)
     submitted = await asyncio.to_thread(service().call, 'POST', '/book/price',
                                         json=dict(request, xva_increment=True))

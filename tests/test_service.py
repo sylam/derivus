@@ -7219,7 +7219,7 @@ def test_each_type_a_desk_quotes_is_its_mirrors_exact_opposite_on_every_path(cre
 def test_an_increment_refuses_as_the_recalc_and_the_booking_refuse_and_writes_nothing(
         recorded, tmp_path):
     """Asked of no candidate, the increment says one is stated; of a candidate at the book's root,
-    that a candidate is priced into the set it goes under, naming the sets the book carries; of a
+    that a trade is priced into the set it goes under, naming the sets the book carries; of a
     candidate naming market data the book lacks, it refuses in the booking's words; and of a set
     whose counterparty has no survival curve, its run fails naming the counterparty, as that set's
     recalc row does. An increment that answers and every one that does not leave the book's
@@ -7245,11 +7245,8 @@ def test_an_increment_refuses_as_the_recalc_and_the_booking_refuse_and_writes_no
 
         assert nothing.status_code == 422 and nothing.json()['detail'] == (
             'an XVA increment is asked of a candidate - state the `deal`, or the `quote_id` whose '
-            'pending trade it prices')
-        assert root.status_code == 422 and root.json()['detail'] == (
-            'a candidate is priced into the netting set it goes under, and this one goes under '
-            "none - name its client's set as the `parent_reference`: the book carries NS_A, "
-            'NS_GHOST')
+            'pending trade it prices - or of a trade the book holds, by its `deal_path`')
+        assert root.status_code == 422 and root.json()['detail'] == ROOTED.format('NS_A, NS_GHOST')
         assert absent.status_code == 422
         assert absent.json()['detail'] == 'no market data for InterestRate.USD-SWAP'
         assert ghost['status'] == 'error' and 'GHOST' in ghost['error'], ghost
@@ -7258,6 +7255,58 @@ def test_an_increment_refuses_as_the_recalc_and_the_booking_refuse_and_writes_no
         assert not (tmp_path / 'xva.json').exists(), 'an increment filed a projection row'
     finally:
         service.BOOK = None
+
+
+#: What an increment answers for a trade under no netting set, naming the sets the book carries.
+ROOTED = ('a trade is priced into the netting set it goes under, and this one goes under none - a '
+          "candidate names its client's set as the `parent_reference`: the book carries {}")
+
+
+def test_a_held_trades_increment_is_the_one_it_answered_as_a_candidate(desk_xva):
+    """A call asked as a candidate under NS_A answers its increment. Booked there, the book holds
+    it, and the increment asked of it by its path is the same question: one result id, one answer,
+    the run with the trade being the set as it prices and the run without it that set with the
+    trade's mirror beside it. The ask moves no byte of the book.
+
+    Killing mutation: the trade at the path spliced in again beside itself, as a candidate is,
+    which answers what a second call adds over a set already holding the first.
+    """
+    before = increment(deal=SHORT_CALL, parent_reference='NS_A')
+    booked = CLIENT.post('/book/deals', content=dump(
+        {'action': 'add', 'deal': SHORT_CALL, 'parent_reference': 'NS_A'}), headers=JSON).json()
+    assert booked['written'] is True, booked
+    held = desk_xva.read_bytes()
+    after = increment(deal_path=booked['deal_path'], reference='OPT_C')
+
+    assert before[1]['status'] == 'done', before[1].get('error')
+    assert after == before and before[1]['stats']['Increment']['cva']['increment'] > 0.0
+    assert desk_xva.read_bytes() == held
+
+
+def test_an_increment_of_a_held_trade_refuses_by_name(desk_xva):
+    """A `deal_path` names a trade the book holds, for its increment alone: beside a candidate, or
+    on a what-if asking no increment, it is refused as one ask that means nothing. A path whose
+    deal is not the one the client read there refuses as an amendment's does, a path holding
+    nothing by its path, and a netting set's own path as no trade under a set.
+
+    Killing mutation: the path let through beside a candidate, which prices the candidate and
+    answers it under the name of the trade at the path.
+    """
+    def asked(**body):
+        answer = CLIENT.post('/book/price', content=dump(body), headers=JSON)
+        return answer.status_code, answer.json()['detail']
+
+    stated = ('a `deal_path` names a trade the book already holds, for the XVA increment of it: '
+              'state it with `xva_increment` and with no `deal` or `quote_id`, which name a '
+              'candidate')
+    assert asked(deal=SHORT_CALL, parent_reference='NS_A', deal_path='0/0',
+                 xva_increment=True) == (422, stated)
+    assert asked(deal_path='0/0') == (422, stated)
+    assert asked(deal_path='0/0', reference='OPT_B', xva_increment=True) == (
+        422, "deal_path '0/0' holds 'OPT_A', not 'OPT_B' - the book moved under the path, and "
+             'read_book says where it stands now')
+    assert asked(deal_path='0/7', xva_increment=True) == (422, "no deal at path '0/7'")
+    assert asked(deal_path='0', xva_increment=True) == (422, ROOTED.format('NS_A, NS_B'))
 
 
 def declared(entity, agreement, terms):

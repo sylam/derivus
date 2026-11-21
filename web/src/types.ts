@@ -133,6 +133,10 @@ export type Increment = {
   [column: string]: unknown;
 };
 
+/** Whose XVA increment is asked: a quote's pending trade, priced into the book as its acceptance
+ * would book it, or a trade the book already holds, by its path and the reference read there. */
+export type ChargeAsk = { quote_id: string } | { deal_path: string; reference?: string };
+
 /** One row of `GET /book/quotes`, newest first: what was quoted, for whom, its net, who quoted it
  * and when, and - once the acceptance wrote them - `accepted` and where it was `booked`, beside the
  * `reference` of the trade it booked. */

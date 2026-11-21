@@ -861,6 +861,32 @@ def test_the_xva_view_answers_one_set_s_row_with_its_profile_and_no_place_on_the
     assert '/book/' not in inspect.getdoc(mcp_server.xva_view)
 
 
+def test_the_increment_tool_asks_of_a_trade_the_book_holds_by_its_path(tmp_path, monkeypatch):
+    """`xva_increment` given a `deal_path` asks the increment of the trade the book holds there:
+    the call under NS_A answers what it adds to its set, the same answer the service gives the same
+    path, and a `reference` the path does not hold refuses in the service's words.
+
+    Killing mutation: the tool dropping `deal_path`, which asks of nothing and is refused; or
+    dropping `reference`, which answers for whatever the path holds now.
+    """
+    from test_service import netting_set, xva_book
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    xva_book(tmp_path, [netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')],
+                                    funding_rate='FUND')])
+    try:
+        answer = asyncio.run(mcp_server.xva_increment(deal_path='0/0', reference='OPT_A'))
+        submitted = CLIENT.post('/book/price', content=dump(
+            {'deal_path': '0/0', 'xva_increment': True}), headers=JSON).json()
+        service.EXECUTOR.queue.join()
+        assert answer == CLIENT.get('/results/{}'.format(
+            submitted['result_id'])).json()['stats']['Increment']
+        assert answer['cva']['with'] == answer['cva']['increment'] > 0.0 == answer['cva']['without']
+        with pytest.raises(Exception, match="holds 'OPT_A', not 'OPT_Z'"):
+            asyncio.run(mcp_server.xva_increment(deal_path='0/0', reference='OPT_Z'))
+    finally:
+        service.BOOK = None
+
+
 def test_the_risk_summary_ranks_by_the_move_each_row_is_read_per(book):
     """`book_risk_summary` leads with what the book moves most per the move a desk reads each
     factor by. On the one-cash-flow book the rand spot's 1% outranks the ZAR curve's basis point,

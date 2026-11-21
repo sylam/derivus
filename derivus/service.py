@@ -1656,8 +1656,8 @@ def with_overrides(document, overrides):
 @app.post('/book/price', summary='Price the book, with an optional candidate deal - writes nothing')
 def book_price(request: dict):
     """The what-if verb: `{deal?, parent_reference?, quote_id?, calculation_overrides?,
-    xva_increment?}` prices the book plus an optional candidate on an in-memory copy - the file
-    never moves. Overrides merge into `Calc.Calculation` against the calculation's own declarations
+    xva_increment?, deal_path?, reference?}` prices the book plus an optional candidate on an
+    in-memory copy - the file never moves. Overrides merge into `Calc.Calculation` against the calculation's own declarations
     - an undeclared field or a value that is not what it declares refuses 422 - so "with Greeks" or
     "as a CMC" needs no second write surface and a misspelt dial is not silently ignored. Answers
     `{result_id, status}` exactly like `/execute`, and the same content addressing applies: the
@@ -1669,6 +1669,10 @@ def book_price(request: dict):
     `xva_increment: true` asks what the candidate does to the CVA, FVA and peak exposure of the
     netting set it goes into, as the difference of that set's credit Monte Carlo with the candidate
     and with its mirror beside it (`xva_pair`, `IncrementJob`), the answer under `stats.Increment`.
+    In place of a candidate it takes a trade the book already holds, `{deal_path, reference?}`:
+    the run with the trade is then the set as it prices and nothing is spliced, `reference` naming
+    the deal the client read at the path as an amendment's does (`expected_reference`). A
+    `deal_path` beside a candidate, or without `xva_increment`, refuses 422.
 
     THE CANDIDATE IS VALIDATED BEFORE IT QUEUES, through the seam a booking is refused at: a
     candidate naming market data the book does not carry would load, be DROPPED by discovery and
@@ -1685,8 +1689,15 @@ def book_price(request: dict):
     baseline = live_book().baseline(document, etag) if candidate else None
     overrides, increment = request.get('calculation_overrides') or {}, request.get('xva_increment')
     document = priced(document, 'CreditMonteCarlo' if increment else overrides.get('Object'))
-    deal_path = None
+    deal_path = request.get('deal_path')
     try:
+        if deal_path is not None:
+            if candidate or not increment:
+                raise ValueError(
+                    'a `deal_path` names a trade the book already holds, for the XVA increment of '
+                    'it: state it with `xva_increment` and with no `deal` or `quote_id`, which '
+                    'name a candidate')
+            expected_reference(document, request)
         if candidate:
             materialised(document, parent)
             written, outcome = quote_edit(document, pending, baseline) if pending else deal_edit(
@@ -4400,13 +4411,15 @@ def xva_pair(document, deal_path):
     """
     if deal_path is None:
         raise ValueError('an XVA increment is asked of a candidate - state the `deal`, or the '
-                         '`quote_id` whose pending trade it prices')
+                         '`quote_id` whose pending trade it prices - or of a trade the book '
+                         'holds, by its `deal_path`')
     found = [(path, node) for path, node in netting_sets(document)
              if deal_path.startswith(path + '/')]
     if not found:
         raise ValueError(
-            'a candidate is priced into the netting set it goes under, and this one goes under '
-            'none - name its client\'s set as the `parent_reference`: the book carries {}'.format(
+            'a trade is priced into the netting set it goes under, and this one goes under none '
+            '- a candidate names its client\'s set as the `parent_reference`: the book carries '
+            '{}'.format(
                 ', '.join(structures.netting_set_references(document)) or 'none'))
     path, node = found[-1]
     # only the deal tree differs: the market is shared, `xva_document` copying before it writes

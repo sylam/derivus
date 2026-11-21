@@ -410,13 +410,20 @@ check('a polled run reads as the answer it filed under its stat once done, the s
       [{ answer: { quote_id: 'q1' } }, { refused: 'Cannot find SurvivalProb.MARRICK' },
        { refused: 'the run failed and answered no Increment' }, null, null]);
 
-check('a credit charge is asked of a quote until it books, an acceptance no tier booked included',
-      'the charge asked of a booked quote, which prices a second trade beside the one the book '
-        + 'holds and reads as the first one\'s; or an acceptance read as a booking, which hides '
-        + 'the charge of a trade the book does not hold',
-      [quote.chargeable({ booked: null }), quote.chargeable({}),
-       quote.chargeable({ booked: { lsn: 38, deal_path: '0/2' } }),
-       quote.chargeable({ booked: null, accepted: { lsn: 37, ticket: 't' } })],
-      [true, true, false, true]);
+const ticketed = (reference, extra) => (
+  { quote: { quote_id: 'q1' }, deal: { Reference: reference }, ...extra });
+check('a ticket asks its credit charge of the quote until it books - an acceptance no tier booked '
+        + 'included - and from then of the trade the book holds, where the file holds it now '
+        + 'under the reference it booked as; of nothing where the file holds it no more',
+      'the charge asked by the quote once it has booked, which prices a second trade beside the '
+        + 'one the book holds; the booked path trusted over the reference, which asks of the '
+        + 'trade a deletion moved there; or an acceptance read as a booking',
+      [quote.chargeAsk(ticketed('COLLAR-B', { booked: null }), QUOTED_BOOK),
+       quote.chargeAsk(ticketed('COLLAR-B', { booked: null, accepted: { lsn: 37, ticket: 't' } }),
+                       QUOTED_BOOK),
+       quote.chargeAsk(ticketed('COLLAR-B', { booked: { lsn: 42, deal_path: '3' } }), QUOTED_BOOK),
+       quote.chargeAsk(ticketed('COLLAR-A', { booked: { lsn: 41, deal_path: '1' } }), QUOTED_BOOK)],
+      [{ quote_id: 'q1' }, { quote_id: 'q1' }, { deal_path: '1', reference: 'COLLAR-B' },
+       undefined]);
 
 done();

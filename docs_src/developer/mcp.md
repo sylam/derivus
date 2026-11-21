@@ -71,7 +71,7 @@ structure takes it as `name`. **Held by**
 | `validate_book`, `describe_book` | `POST /validate`, `/describe` over the live book |
 | `describe_portfolios`, `declare_portfolio` | `GET`/`POST /book/portfolios`: the declared tree |
 | `price_candidate`, `execute_book` | `POST /book/price`: the book with a candidate or a quote, or alone; nothing written |
-| `xva_increment` | `POST /book/price` with `xva_increment`: what a candidate or a quote adds to its netting set's CVA, FVA and peak exposure, both runs on the same paths; nothing written |
+| `xva_increment` | `POST /book/price` with `xva_increment`: what a candidate, a quote or a trade the book holds (`deal_path`, with the `reference` read there) adds to its netting set's CVA, FVA and peak exposure, both runs on the same paths; nothing written |
 | `describe_calculations`, `configure_calculation`, `run_calculation` | `GET`/`POST /calculations`, `POST /calculations/run`: the desk's named calculations |
 | `solve_deal` | `POST /book/solve`: one field solved to a target, the deal ready to book |
 | `solve_structure`, `book_quote` | `POST /book/structure`, `/book/quote`: a quote filed pending; its acceptance |
@@ -206,9 +206,14 @@ each row with its peaks and, asked for one set by `reference`, answers that row 
 profile; the list never says where the projection sits on the server. What one trade adds
 to its client's XVA is `xva_increment`, never a difference against a row: the row's run draws on
 another grid. Its two runs are one market under two deal trees, so the second is loaded over the
-market the first read (`service.beside`). **Held by**
+market the first read (`service.beside`). Asked of a trade the book holds, by its `deal_path`, the
+run with the trade is the set as it prices and nothing is spliced, so the answer is the one the
+trade gave as a candidate. **Held by**
 `test_the_increment_tool_answers_the_services_own_increment`,
 `test_the_xva_view_answers_one_set_s_row_with_its_profile_and_no_place_on_the_server`,
+`test_the_increment_tool_asks_of_a_trade_the_book_holds_by_its_path`,
+`test_service.py::test_a_held_trades_increment_is_the_one_it_answered_as_a_candidate`,
+`::test_an_increment_of_a_held_trade_refuses_by_name`,
 `test_service.py::test_the_second_job_of_an_increment_is_loaded_over_the_market_the_first_read`.
 
 ### Solves run in the service
