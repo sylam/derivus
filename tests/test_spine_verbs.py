@@ -799,7 +799,9 @@ KEYED = dict({
         (policy.TIERS_POLICY, {'tiers': [{'name': 'desk'}]},
          {'tiers': [{'name': 'desk', 'four_eyes': True}]}),
         (policy.CALCULATION_POLICY, {'calculations': {'CreditMonteCarlo': {'Batch_Size': 1024}}},
-         {'calculations': {'CreditMonteCarlo': {'Batch_Size': 2048}}}))})
+         {'calculations': {'CreditMonteCarlo': {'Batch_Size': 2048}}}),
+        (policy.LIMITS_POLICY, {'limits': {'LEI-A': {'amount': 5e6, 'currency': 'USD'}}},
+         {'limits': {'LEI-A': {'amount': 6e6, 'currency': 'USD'}}}))})
 
 
 #: The keyed declarations that name what they replaced on every restatement; the rest name it only
@@ -1204,7 +1206,7 @@ def test_a_policy_document_is_closed_at_the_field_level_and_refuses_where_it_is_
 
     with pytest.raises(MalformedEvent) as refusal:
         policy.declare(log, MINT, 'liquidity', {'anything': 1})
-    assert 'calculation, firmness, fixings, tiers, tolerance' in str(refusal.value)
+    assert 'calculation, firmness, fixings, limits, tiers, tolerance' in str(refusal.value)
 
     assert log.head()[0] == 4, 'a refused declaration wrote something'
     # an empty tolerance document is a policy that tolerates nothing, and it is legal - silence is
@@ -1308,6 +1310,66 @@ def test_a_calculation_policy_is_a_block_per_official_run_and_the_record_checks_
     assert denials(log)[-1] == (head + 1, {'subject': STRANGER, 'verb': 'admin', 'book': '*',
                                            'attempted_type': 'policy_declared'})
     assert policy.calculations_in_force(log) == policy.calculations_in_force(log, second['lsn'])
+    log.close()
+    assert verify_home(home)['events'] == log.head()[0]
+
+
+def test_a_limits_policy_is_a_credit_limit_per_legal_entity_and_the_record_checks_its_shape_alone(
+        tmp_path):
+    """The `limits` policy is one section, a legal entity's id and its credit limit, an amount
+    above zero and the currency it is an amount of. The record checks the shape and never whether
+    it holds the entity: a second section, a limit of zero, one below it, one naming no currency,
+    one carrying a third key and a section that is no object are each refused by name with nothing
+    written, while a limit on an id the record has never heard of lands, one blob however it was
+    spelled. The reader answers what stood at a position: nothing before the first declaration,
+    the first document just before its restatement, the restatement at the head. Under a
+    capabilities document granting the genesis seat `admin`, a seat holding none is refused by the
+    record, the denial landed.
+
+    Killing mutations: a limit of zero let through (`<= 0` read as `< 0`), which declares a limit
+    every exposure breaches; the reader answering the head whatever position it is asked at.
+    """
+    home, log = minted(tmp_path)
+    limit = {'amount': 5_000_000, 'currency': 'USD'}
+    broken = (('note', {'limits': {}, 'note': 'why'}),
+              ("the limit on 'LEI-A' is the amount 0", {'limits': {'LEI-A': dict(limit, amount=0)}}),
+              ("the limit on 'LEI-A' is the amount -1.0",
+               {'limits': {'LEI-A': dict(limit, amount=-1.0)}}),
+              ('one that does not name its currency', {'limits': {'LEI-A': {'amount': 5e6}}}),
+              ('is closed at those two', {'limits': {'LEI-A': dict(limit, measure='PFE_95')}}),
+              ("the limit on 'LEI-A' is in the currency None",
+               {'limits': {'LEI-A': dict(limit, currency=None)}}),
+              ('limits is NoneType', {}),
+              ('a limits policy is list', ['limits']))
+    for named, document_ in broken:
+        with pytest.raises(MalformedEvent) as refusal:
+            policy.declare(log, MINT, policy.LIMITS_POLICY, document_)
+        assert named in str(refusal.value), (named, str(refusal.value))
+    assert log.head()[0] == 4, 'a refused declaration wrote something'
+    assert policy.limits_in_force(log) == {}
+
+    first = policy.declare(log, MINT, policy.LIMITS_POLICY, {'limits': {'LEI-A': limit}})
+    respelled = policy.declare(log, MINT, policy.LIMITS_POLICY, {'limits': {
+        'LEI-A': dict(reversed(list(limit.items())))}})
+    assert respelled['coalesced'] is True and respelled['blob'] == first['blob']
+    assert policy.in_force(log, policy.LIMITS_POLICY) == (
+        first['blob'], {'limits': {'LEI-A': limit}}, first['lsn'])
+    second = policy.declare(log, MINT, policy.LIMITS_POLICY, {'limits': {
+        'LEI-A': dict(limit, amount=7_500_000), 'LEI-B': dict(limit, currency='EUR')}})
+    assert policy.limits_in_force(log, first['lsn'] - 1) == {}
+    assert policy.limits_in_force(log, second['lsn'] - 1) == {'LEI-A': limit}
+    assert policy.limits_in_force(log) == {
+        'LEI-A': {'amount': 7_500_000, 'currency': 'USD'},
+        'LEI-B': {'amount': 5_000_000, 'currency': 'EUR'}}
+
+    declare(log, MINT, document(grants=((MINT, 'admin', '*'),)))
+    head = log.head()[0]
+    with pytest.raises(CapabilityDenied) as refusal:
+        policy.declare(log, STRANGER, policy.LIMITS_POLICY, {'limits': {}})
+    assert STRANGER in str(refusal.value) and 'admin' in str(refusal.value)
+    assert denials(log)[-1] == (head + 1, {'subject': STRANGER, 'verb': 'admin', 'book': '*',
+                                           'attempted_type': 'policy_declared'})
+    assert policy.limits_in_force(log) == policy.limits_in_force(log, second['lsn'])
     log.close()
     assert verify_home(home)['events'] == log.head()[0]
 

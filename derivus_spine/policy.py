@@ -11,8 +11,8 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""The tolerance, firmness, fixings, tiers and calculation policy documents, and the fold that finds
-one in force.
+"""The tolerance, firmness, fixings, tiers, calculation and limits policy documents, and the fold
+that finds one in force.
 
 Policy is data: hashed into the blob store and declared through the ordinary writer, as the
 capabilities document is. Nothing here is a constant edited in a release - a deployment that wants a
@@ -34,7 +34,9 @@ about nothing, so every index it is asked for refuses by name. A tiers policy is
 ticket falls through, and it has no default either: a home declaring none has declared no tiers, so
 what an undeclared workflow means is the caller's decision rather than this module's. A calculation
 policy is what an official run runs at, a block of the engine's own fields per calculation type,
-and it has no default: a home declaring none has said nothing, so a run reads its own document.
+and it has no default: a home declaring none has said nothing, so a run reads its own document. A
+limits policy is the credit limit a legal entity's exposure is held against, and it has no default:
+a home declaring none holds nobody's exposure against anything.
 """
 import hashlib
 import json
@@ -50,6 +52,7 @@ FIRMNESS_POLICY = 'firmness'
 FIXINGS_POLICY = 'fixings'
 TIERS_POLICY = 'tiers'
 CALCULATION_POLICY = 'calculation'
+LIMITS_POLICY = 'limits'
 
 #: The tolerance document's one section: result class -> the absolute epsilon a replay of that
 #: class may differ by. Closed at the field level, like an event body.
@@ -96,6 +99,10 @@ CALCULATION_SECTION = 'calculations'
 #: The calculation types an official run reads a block for, and the whole of them: a block declared
 #: for a run that reads none is a rule nobody enforces.
 OFFICIAL_RUNS = ('CreditMonteCarlo',)
+
+#: The limits document's one section: legal entity -> the credit limit its exposure is held
+#: against, an amount and the currency it is an amount OF.
+LIMITS_SECTION = 'limits'
 
 
 def parse_tolerance(document, where):
@@ -405,11 +412,49 @@ def parse_calculation(document, where):
     return {CALCULATION_SECTION: dict(entries)}
 
 
+def parse_limits(document, where):
+    """Check `document` as a limits policy and return it parsed. `where` names it in refusals.
+
+    One section, a legal entity's id and the credit limit its exposure is held against, an amount
+    above zero and the currency it is an amount of: `{"limits": {"LEI-A": {"amount": 5000000,
+    "currency": "USD"}}}`. The SHAPE alone is checked - whether the record holds the entity is the
+    declaring verb's to judge, a parser being handed no log.
+    """
+    def refuse(sentence):
+        raise MalformedEvent('{}: {}'.format(where, sentence))
+
+    if not isinstance(document, dict):
+        refuse('a limits policy is {}, not a JSON object - it is {{"{}": {{entity: limit}}}}'
+               .format(type(document).__name__, LIMITS_SECTION))
+    surplus = sorted(set(document) - {LIMITS_SECTION})
+    if surplus:
+        refuse('a limits policy carries {} beyond {} - the document is closed at the field level; '
+               'drop the key or version the document shape'.format(
+                   ', '.join(surplus), LIMITS_SECTION))
+    entries = document.get(LIMITS_SECTION)
+    if not isinstance(entries, dict):
+        refuse('{} is {}, not an object of legal entity -> limit - a policy limiting nobody says '
+               'so with an empty object, so that silence is never mistaken for absence'.format(
+                   LIMITS_SECTION, type(entries).__name__))
+    for entity, limit in sorted(entries.items()):
+        if not isinstance(limit, dict) or sorted(limit) != ['amount', 'currency']:
+            refuse('the limit on {!r} is {!r}: a limit is {{"amount": number, "currency": name}} '
+                   'and is closed at those two - one that does not name its currency is a number '
+                   'no exposure can be held against'.format(entity, limit))
+        if not is_number(limit['amount']) or limit['amount'] <= 0:
+            refuse('the limit on {!r} is the amount {!r} - a limit is a finite number of its own '
+                   'currency and is above zero'.format(entity, limit['amount']))
+        if not is_text(limit['currency']):
+            refuse('the limit on {!r} is in the currency {!r}, and a currency that names nothing '
+                   'is not one an exposure is reported in'.format(entity, limit['currency']))
+    return {LIMITS_SECTION: {entity: dict(limit) for entity, limit in entries.items()}}
+
+
 #: policy name -> the parser that reads it. `declare` refuses a name absent from this map rather
 #: than store a document nobody could read back.
 PARSERS = {TOLERANCE_POLICY: parse_tolerance, FIRMNESS_POLICY: parse_firmness,
            FIXINGS_POLICY: parse_fixings, TIERS_POLICY: parse_tiers,
-           CALCULATION_POLICY: parse_calculation}
+           CALCULATION_POLICY: parse_calculation, LIMITS_POLICY: parse_limits}
 
 
 def canonical_policy(policy, document, where=None):
@@ -621,3 +666,13 @@ def calculations_in_force(log, lsn=None):
     said what an official run runs at, so each runs at what its own document states.
     """
     return (in_force(log, CALCULATION_POLICY, lsn)[1] or {}).get(CALCULATION_SECTION, {})
+
+
+def limits_in_force(log, lsn=None):
+    """`{legal entity: {amount, currency}}` the limits policy standing at `lsn` declares, empty
+    where this home declared none.
+
+    Absence is neither a refusal nor a default: a home declaring no limits policy holds nobody's
+    exposure against anything, so no reader claims a limit, a usage or a headroom.
+    """
+    return (in_force(log, LIMITS_POLICY, lsn)[1] or {}).get(LIMITS_SECTION, {})
