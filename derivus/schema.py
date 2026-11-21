@@ -485,7 +485,8 @@ class DealFields(dict):
     """A deal's authored block, completed on a READ BY NAME from its own class's declarations.
 
     `field[key]` falls through to `deal_defaults` for a CONVENTION the author omitted or stated
-    null, as a file states a field it does not set, and a stated container's to its children's. A
+    null, as a file states a field it does not set, or stated as a credit support list of no rows,
+    which specifies no amount, and a stated container's to its children's. A
     placeholder still raises, because completing one silently
     prices a schema-invalid block - which is what `validate_instrument` refuses by name at booking
     instead. Everything else is exactly what the author wrote - `get`, `in`, iteration, `len`, the
@@ -503,7 +504,8 @@ class DealFields(dict):
 
     def __getitem__(self, key):
         value = super(DealFields, self).__getitem__(key)
-        return self.__missing__(key) if value is None and key in self.declared else value
+        blank = value is None or isinstance(value, utils.CreditSupportList) and not value
+        return self.__missing__(key) if blank and key in self.declared else value
 
     def __missing__(self, key):
         if key not in self.declared:

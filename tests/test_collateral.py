@@ -498,25 +498,32 @@ def test_a_scenario_valuation_values_a_collateralised_set_as_a_base_valuation_do
                 column, reference)
 
 
-def test_an_independent_amount_stated_as_an_empty_list_is_one_of_zero():
-    """A blank table reads as the key left out: an `Independent_Amount` written as an empty
-    `CreditSupportList` is an independent amount of zero, as the spine's CSA reads it, and the
-    collateralised run marks and holds bit for bit as under one rating at zero - where the empty
-    container, read as a value, raised out of the compile and failed the run on a shape.
+def test_a_support_amount_stated_as_an_empty_list_is_one_left_out():
+    """NO AMOUNT SPECIFIED IS ZERO, as Paragraph 12 of the 1994 ISDA Credit Support Annex defines
+    the Threshold, the Minimum Transfer Amount and the Independent Amount: each table of
+    `Credit_Support_Amounts` written as a `CreditSupportList` of no rows is the amount zero, as the
+    spine's CSA reads it, and the collateralised run marks and holds bit for bit as the set leaving
+    that table out - and not as the set stating it, so the table is one the run reads.
 
-    KILLING MUTATION: `__len__` removed from the utils containers, so an empty one is truthy.
+    KILLING MUTATIONS: `DealFields.__getitem__` back to completing a null alone, the empty
+    container read as a value failing the run on a `StopIteration` that says nothing; `__len__`
+    removed from the utils containers, so an empty one is truthy.
     """
-    runs = []
-    for amount in (listed(), listed((1, 0.0))):
-        terms = dict(TERMS, Credit_Support_Amounts=dict(
-            TERMS['Credit_Support_Amounts'], Independent_Amount=amount))
-        assert CSA.of(terms)['Independent_Amount'] == 0.0
+    def held(support):
         context = derivus.Context()
-        context.load_json((json.dumps(engine_job(terms)), 'independent amount'))
+        context.load_json((json.dumps(engine_job(dict(
+            TERMS, Credit_Support_Amounts=support))), 'support amounts'))
         _, out = derivus.run_cmc(context.current_cfg, prec=torch.float64)
         result = out['Netting'].sub_structures[0].obj.Calc_res
-        runs.append([np.asarray(result[key][0]) for key in ('Value', 'Collateral')])
-    assert all(np.array_equal(empty, zero) for empty, zero in zip(*runs))
+        return [np.asarray(result[key][0]) for key in ('Value', 'Collateral')]
+
+    stated = held(TERMS['Credit_Support_Amounts'])
+    for dial in CSA.DIALS:
+        empty = dict(TERMS['Credit_Support_Amounts'], **{dial: listed()})
+        assert CSA.of(dict(TERMS, Credit_Support_Amounts=empty))[dial] == 0.0
+        runs = held(empty), held({key: value for key, value in empty.items() if key != dial})
+        assert all(np.array_equal(blank, omitted) for blank, omitted in zip(*runs)), dial
+        assert not all(np.array_equal(blank, said) for blank, said in zip(runs[0], stated)), dial
 
 
 def test_a_set_omitting_its_support_amounts_and_assets_holds_a_zero_csa():

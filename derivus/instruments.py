@@ -1331,6 +1331,10 @@ class NettingCollateralSet(Deal):
         '- $t_i, i>0$ are collateral call dates. Note that $t_0=0$ and that in general, $t_0$ need not be'
         ' a collateral call date.',
         '',
+        'An amount the agreement specifies none of, its table left out, null or of no rows, is zero,',
+        'as Paragraph 12 of the 1994 ISDA Credit Support Annex defines the Threshold, the Minimum',
+        'Transfer Amount and the Independent Amount where Paragraph 13 specifies no amount.',
+        '',
         'We then have the following relationships:',
         '',
         '$$A(t_i)=X(t_i)I+\\begin{cases} V(t_i)-X(t_i)H(t_i), '
@@ -1676,10 +1680,7 @@ class NettingCollateralSet(Deal):
                                      Funding_Rate=None, Collateral_Rate=None,
                                      Collateral=1.0)]
 
-            if self.field['Credit_Support_Amounts'].get('Independent_Amount'):
-                field_index['Independent_Amount'] = self.field['Credit_Support_Amounts']['Independent_Amount'].value()
-            else:
-                field_index['Independent_Amount'] = 0.0
+            field_index['Independent_Amount'] = self.field['Credit_Support_Amounts']['Independent_Amount'].value()
 
             t = time_grid.time_grid[:, utils.TIME_GRID_MTM]
             # collateral call dates (interpolated - assuming daily)
