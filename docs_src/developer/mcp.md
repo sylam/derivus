@@ -145,7 +145,7 @@ the same check before they queue. **Held by**
 `::test_a_deal_missing_a_term_is_refused_by_name_and_a_convention_is_not`,
 `::test_a_candidate_naming_market_data_the_book_lacks_is_refused`,
 `::test_a_solve_on_a_candidate_naming_market_data_the_book_lacks_is_refused`,
-`::test_an_unknown_quote_id_names_the_tmp_it_looked_in`.
+`::test_an_unknown_quote_id_is_refused_by_its_id_and_names_no_path`.
 
 ### A refusal names the thing and the remedy
 

@@ -5588,16 +5588,19 @@ def test_a_quote_with_no_map_prices_on_the_book_and_names_the_spot_it_used(quoti
     assert quoting.read_bytes() == before
 
 
-def test_an_unknown_quote_id_names_the_tmp_it_looked_in(quoting):
-    """A quote id nobody gave is a 404 naming the directory it was looked for in, so a desk whose
-    `DV_HOME` is not the one it was filed under can read that off the refusal. Nothing is
-    written."""
+def test_an_unknown_quote_id_is_refused_by_its_id_and_names_no_path(quoting):
+    """A quote id nobody gave is a 404 naming the id and what is true for the seat asking - the
+    desk holds no quote under it, or none it is shown - and no folder on the service's own disk,
+    which nobody at a desk can act on. Nothing is written.
+
+    Killing mutation: the folder the pending files are kept in printed by the refusal."""
     before = quoting.read_bytes()
     answer = CLIENT.post('/book/quote', json={'quote_id': 'nosuchquoteid'})
 
     assert answer.status_code == 404
     assert 'nosuchquoteid' in answer.json()['detail']
-    assert str(quoting.parent / 'tmp') in answer.json()['detail']
+    assert 'holds no quote under that id' in answer.json()['detail']
+    assert str(quoting.parent) not in answer.json()['detail']
     assert quoting.read_bytes() == before
 
 
@@ -5668,7 +5671,7 @@ def test_a_pending_quote_and_its_sheet_are_read_back_by_id(quoting, tmp_path):
 
     unknown = CLIENT.get('/book/quote/nosuchquoteid')
     assert unknown.status_code == 404 and 'holds no quote under that id' in unknown.json()['detail']
-    assert str(tmp_path) not in unknown.text, 'the refusal names a path on the service\'s own disk'
+    assert str(tmp_path) not in unknown.json()['detail'], 'the refusal names a path on the disk'
     escaping = CLIENT.get('/book/quote/..%5C..%5Cbook')
     assert escaping.status_code == 422 and 'is not a quote id' in escaping.json()['detail']
 

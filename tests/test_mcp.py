@@ -1069,7 +1069,7 @@ def test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar(tmp_path,
             node['deal']['Reference']] == pytest.approx(quote['net'], abs=1.0)
         assert os.path.isfile(pending), 'the pending trade is an audit trail, not a scratch file'
 
-        with pytest.raises(ToolError, match='tmp'):
+        with pytest.raises(ToolError, match='holds no quote under that id'):
             mcp_server.book_quote('nothing-was-ever-quoted-under-this')
     finally:
         service.BOOK = None
