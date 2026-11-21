@@ -500,7 +500,8 @@ re-reads the market only where the stamp moved.
 another system wrote in `DV_HOME/inbox/` under the base name of `name` and serves that copy as the
 live book: every book verb works on it, an edit lands on the copy, and `GET /book` names it under
 `opened`. `{name}` serves the copy already filed, `{}` the desk's own book again; each answers
-`{path, etag}`. Under a spine home it is refused 422 before anything is filed, the desk's book being
+`{path, etag}`, and a document filed over a copy of another text answers `replaced` too, the etag
+of the copy it overwrote. Under a spine home it is refused 422 before anything is filed, the desk's book being
 the record's fold. `GET /book/document` answers the served book as the file it is, byte for byte
 and under its own name: the desk's own, or an opened copy with every edit made to it.
 

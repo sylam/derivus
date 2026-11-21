@@ -8345,7 +8345,9 @@ def test_a_document_opened_is_served_as_the_book_and_the_desks_own_stands(book, 
     /book` answers it, `opened` its name, from a path in `DV_HOME/inbox`; an amendment lands on the
     copy and the desk's own file stands byte for byte; `{}` serves the desk's own book again,
     unopened and at its etag; the name alone serves the amended copy again; and the document posted
-    again under its name replaces the copy with what was posted. A name nothing is filed under
+    again under its name replaces the copy with what was posted, answering `replaced` with the
+    amended copy's etag; posted a third time it files over an identical copy and answers none, as
+    the first filing did. A name nothing is filed under
     answers 404, and a document that is no job fails with the book served standing. `GET
     /book/document` answers the served file byte for byte under its own name, the amended copy
     and then the desk's own.
@@ -8355,7 +8357,8 @@ def test_a_document_opened_is_served_as_the_book_and_the_desks_own_stands(book, 
     desk's own carries; a document posted under a filed name leaving the copy, which serves the
     amendment; the document served before it is read, which leaves the service serving no job;
     the download written from the parsed document, which is another text under another etag,
-    or read off the desk's own path while a copy is served.
+    or read off the desk's own path while a copy is served; `replaced` answered wherever a copy
+    stood, which reports an identical one as lost work.
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path))
     service.DESK, copy = str(book), tmp_path / 'inbox' / 'NS_FOREIGN.json'
@@ -8372,8 +8375,8 @@ def test_a_document_opened_is_served_as_the_book_and_the_desks_own_stands(book, 
         assert CLIENT.get('/book').json()['etag'] == desk['etag']
         opened = CLIENT.post('/book/open', json={'name': copy.name, 'document': foreign}).json()
         live = CLIENT.get('/book').json()
-        assert (live['document'], live['opened'], live['path'], live['etag']) == (
-            foreign, copy.name, str(copy), opened['etag'])
+        assert opened == {'path': str(copy), 'etag': live['etag']}
+        assert (live['document'], live['opened'], live['path']) == (foreign, copy.name, str(copy))
         before = book.read_bytes()
         assert CLIENT.post('/book/deals', json={'action': 'amend', 'deal_path': '0',
                                                 'fields': {'Amount': 2e6}}).json()['written'] is True
@@ -8394,7 +8397,9 @@ def test_a_document_opened_is_served_as_the_book_and_the_desks_own_stands(book, 
         live = CLIENT.get('/book').json()
         assert (live['opened'], amount(live['document'])) == (copy.name, 2e6)
 
-        assert CLIENT.post('/book/open', json={'name': copy.name, 'document': foreign}).status_code == 200
+        for replaced in ({'replaced': live['etag']}, {}):
+            assert CLIENT.post('/book/open', json={
+                'name': copy.name, 'document': foreign}).json() == dict(opened, **replaced)
         assert json.loads(copy.read_text()) == CLIENT.get('/book').json()['document'] == foreign
     finally:
         service.DESK = None

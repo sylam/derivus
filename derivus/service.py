@@ -1038,7 +1038,8 @@ def book_open(request: dict):
     """`{name, document}` files `document` in the home's inbox under the base name of `name` and
     serves that copy as the book, so every book verb works on it and an edit lands on the copy;
     `{name}` serves the copy already filed under that name, and `{}` the desk's own book again.
-    Each open is a new `Book`. Answers the served file and its etag.
+    Each open is a new `Book`. Answers the served file and its etag, and `replaced`, the etag of
+    the copy a document was filed over, where it filed over another text.
 
     A desk that records refuses before anything is written or served: its book is the record's
     fold, and an amendment to a document from another system would append facts about it."""
@@ -1047,6 +1048,7 @@ def book_open(request: dict):
         raise HTTPException(422, "this desk records, and its book is the record's fold - an "
                                  'amendment to a document from another system would append facts '
                                  'about it, so it is opened on a desk that records nothing')
+    over = None
     if 'name' not in request:
         if DESK is None:
             raise HTTPException(404, 'this service serves no book of its own - it was started '
@@ -1054,14 +1056,20 @@ def book_open(request: dict):
         path = DESK
     else:
         name = os.path.join(INBOX, os.path.basename(request['name']))
-        path = (write_desk_file(name, request['document']) if 'document' in request
-                else os.path.join(dv_home(), name))
+        path = os.path.join(dv_home(), name)
+        if 'document' in request:
+            if os.path.isfile(path):
+                # the copy this files over, by the etag a client held it under
+                over = Book(path).named()[0]
+            write_desk_file(name, request['document'])
         if not os.path.isfile(path):
             raise HTTPException(404, 'nothing is filed under {} in {}'.format(
                 os.path.basename(path), os.path.dirname(path)))
     # read before it is served, so a document that is no job leaves the book served standing
     served = Book(path)
     answer = {'path': path, 'etag': served.read()[1]}
+    if over not in (None, answer['etag']):
+        answer['replaced'] = over
     BOOK = served
     return answer
 
