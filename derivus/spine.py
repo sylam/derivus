@@ -111,24 +111,23 @@ POSITIVE = tuple(name for name, declared in vars(riskfactors).items()
                  if isinstance(declared, type) and getattr(declared, 'positive', False))
 
 #: What a tree without the extra is told, with the line that fixes it.
-NO_PACKAGE = ('the book of record is not installed on this box ({}) - {} names a spine home, so '
-              'this verb records to it; `pip install derivus[enterprise]`, or unset {} to run the '
-              'edge exactly as it ran before')
+NO_PACKAGE = ('this desk is set to keep a record and the record is not installed ({}), so nothing '
+              'is read or filed; the operator installs derivus[enterprise], or unsets {} to run '
+              'the desk without one')
 #: What a configured home with no actor is told. An unconfigured home says nothing at all: that is
 #: the default posture rather than an error.
-NO_ACTOR = ('no actor for this append: every event carries the pseudonymous subject reference that '
-            'submitted it, so name one on the request or set {} - a record that invented an actor '
-            'would be a record naming somebody who never spoke')
+NO_ACTOR = ('no actor for this act, and the record files every act under the seat that made it, so '
+            'nothing is filed: name the seat acting, or the operator sets {} to the desk\'s own '
+            'seat')
 #: What an act naming no seat is told once a capabilities document is in force.
-UNNAMED = ('no actor for this act, and a capabilities document is in force here: every act is '
-           'admitted and filed under the seat the request names, so name one - the deployment\'s '
-           'own seat, {}, is the one the poll paths no request signs run under')
+UNNAMED = ('no actor for this act, and this desk grants each seat what it may do, so an act '
+           'nobody signs is refused: name the seat acting')
 #: What an act naming the writer's reserved actor is told.
-RESERVED = ('{!r} is the record\'s own voice and never a seat: the writer alone files under it - '
+RESERVED = ('{!r} is the record\'s own voice and never a seat, so nothing is filed under it: '
             'name the seat that is acting')
 #: What an act naming another seat than its bearer token is told.
-NOT_THE_BEARER = ('this request names the seat {!r} and its bearer token is {!r}\'s: a request '
-                  'acts as the seat its token proves - drop the name, or sign in as that seat')
+NOT_THE_BEARER = ('this request names the seat {!r} and is signed in as {!r}: a request acts as '
+                  'the seat it is signed in as - drop the name, or sign in as that seat')
 #: What a request carrying no bearer token is told where the deployment checks them.
 NO_BEARER = ('this service checks who is asking and the request carries no `Authorization: '
              'Bearer` token - send the ID token the deployment\'s identity provider issued')
@@ -187,7 +186,7 @@ def package():
         import derivus_spine.verbs
         import derivus_spine.vocabulary
     except ImportError as absent:
-        raise SpineRefused(NO_PACKAGE.format(absent, SPINE_HOME, SPINE_HOME))
+        raise SpineRefused(NO_PACKAGE.format(absent, SPINE_HOME))
     return derivus_spine
 
 
@@ -203,7 +202,7 @@ def actor(named=None, log=None):
     named = named or signed
     if not named and (folded(spine.capability.state_at) if log is None
                       else log.capabilities())[0] is not None:
-        raise SpineRefused(UNNAMED.format(SPINE_ACTOR))
+        raise SpineRefused(UNNAMED)
     subject = named or hub()
     if subject is None:
         raise SpineRefused(NO_ACTOR.format(SPINE_ACTOR))
@@ -269,9 +268,8 @@ def where():
     name = home()
     if name is None:
         raise SpineRefused(
-            'no spine home is configured, so there is nothing to record to: set {} to the home '
-            '`DV_Spine init` minted, or leave it unset and the edge runs exactly as it always '
-            'has'.format(SPINE_HOME))
+            'this desk keeps no record, so there is nothing to read or file on; to keep one, the '
+            'operator sets {} to the home `DV_Spine init` minted'.format(SPINE_HOME))
     return name
 
 
@@ -1859,10 +1857,9 @@ def designated_market(process):
     named = designation(process)
     if not named:
         raise SpineRefused(
-            'this record designates no market for {0!r}, so there is nothing to strike it on: '
-            'which board a designated process prices on is declared once and read by name, never '
-            'chosen per call. Declare it on the {1} policy ({{"{2}": {{"{0}": "official"}}}}) '
-            'through `DV_Spine declare {1} <file.json>`'.format(
+            'this record designates no market for {0!r}, so there is no market to price it on: a '
+            'seat holding admin designates one on the {1} policy '
+            '({{"{2}": {{"{0}": "official"}}}})'.format(
                 process, spine.policy.TIERS_POLICY, spine.policy.DESIGNATIONS_SECTION))
     return resolve_market(named, process=process)
 

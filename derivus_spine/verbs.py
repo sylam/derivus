@@ -152,7 +152,7 @@ def fill(log, instrument, quantity, counterparty, netting_set, execution_referen
     if not is_number(quantity):
         raise MalformedEvent(
             'book: quantity is {!r} - a fill carries a SIGNED quantity of the instrument, as a '
-            'finite number; position is a fold over these and is never written'.format(quantity))
+            'finite number; a position is the sum of its fills, never stated'.format(quantity))
     body = {'instrument': address, 'quantity': quantity,
             'counterparty': _name(counterparty, 'counterparty', 'book'),
             'netting_set': _name(netting_set, 'netting_set', 'book'),

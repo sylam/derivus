@@ -753,10 +753,9 @@ class SpineLog:
         except (IOError, OSError):
             os.close(handle)
             raise WriterBusy(
-                '{} is held by another writer: one deployment, one log, one writer - a second one '
-                'assigns an LSN that is already taken, and nothing in this package may edit or '
-                'remove the line that results; close the other SpineLog (`log.close()`) or stop '
-                'the other process, then append again'.format(path))
+                'another program is writing to this record just now, so nothing is filed: a record '
+                'has one writer at a time - try again in a moment; the operator stops whatever '
+                'else holds {}'.format(path))
         self._lock = handle
         kept, head = self._capability, self.head()
         self._scan()

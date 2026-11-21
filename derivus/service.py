@@ -1292,8 +1292,8 @@ def spine_fill(document, deal_path, quantity, execution_reference, actor=None, a
     if quantity is None:
         raise spine.SpineRefused(
             'this booking declares no quantity, and a fill is a SIGNED quantity of the instrument: '
-            'post `quantity` with the sign the desk takes - position is a fold over these and is '
-            'never written')
+            'state `quantity` with the sign the desk takes - a position is the sum of its fills, '
+            'never stated')
     if not execution_reference:
         raise spine.SpineRefused(
             'this booking declares no execution_reference, and a fill body must carry one: it is '

@@ -62,20 +62,19 @@ FAILED = {
         'ticket in that node or under it',
     'over_notional':
         'the {tier} tier caps {check} at {bound[amount]} {bound[currency]} and this ticket is '
-        '{value} of it - book it under a tier that admits the size, or split the clip',
+        '{value} of it - split the clip, or a seat holding admin raises the cap',
     'unstated_notional':
         'the ticket\'s notional is not stated in {bound[currency]}, the currency the {tier} tier '
-        'caps {check} in - the trade carries no size there, and a check that crossed one '
-        'currency into another would be a policy check reading a market',
+        'caps {check} in - the trade carries no size there, so the cap cannot be read against it',
     'over_tenor':
-        'the {tier} tier caps {check} at {bound} years and this ticket runs {value} - book it '
-        'under a tier that admits the tenor',
+        'the {tier} tier caps {check} at {bound} years and this ticket runs {value} - shorten '
+        'the trade, or a seat holding admin raises the cap',
     'unknown_tenor':
         'the ticket carries no {check} this check could read ({value!r}), and an unknown tenor is '
         'not a tenor inside the {tier} tier\'s {bound} years',
     'undeclared_market':
         'the {tier} tier prices on the market {bound}, which nothing in this record has declared - '
-        'declare the name against a values vector, or price under a tier that names no market',
+        'declare the market under that name, then book again',
     'other_market':
         'the {tier} tier prices on the market {bound}, standing on values {standing}, and this '
         'ticket pinned {value} - re-quote on the market the tier names',

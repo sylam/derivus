@@ -3843,7 +3843,7 @@ def test_a_booker_reads_why_its_ticket_waits_on_the_position(recorded, desk):
 
     def capped(dollars):
         return ["the 'auto' tier caps max_notional at 5000000 USD and this ticket is {} of it - "
-                "book it under a tier that admits the size, or split the clip".format(dollars)]
+                "split the clip, or a seat holding admin raises the cap".format(dollars)]
 
     waits = ("no verdict is filed against this ticket, and the 'desk' tier wants a seat other "
              "than the booker to sign it")
@@ -3894,7 +3894,7 @@ def test_a_booking_s_own_answer_says_what_its_ticket_fell_past(recorded, quoting
 
     def capped(dollars):
         return ["the 'auto' tier caps max_notional at 100000 USD and this ticket is {} of it - "
-                "book it under a tier that admits the size, or split the clip".format(dollars)]
+                "split the clip, or a seat holding admin raises the cap".format(dollars)]
 
     def tickets():
         return {entry['ticket']: entry['fell_past']
@@ -5103,7 +5103,8 @@ def test_under_a_document_the_queue_asks_before_the_executor_does(recorded, desk
     unnamed, ran = priced('unnamed', actor=None)
     assert unnamed.status_code == 422 and not ran
     assert 'no actor for this act' in unnamed.json()['detail']
-    assert spine.SPINE_ACTOR in unnamed.json()['detail']
+    assert 'name the seat acting' in unnamed.json()['detail']
+    assert spine.SPINE_ACTOR not in unnamed.json()['detail']
     assert verify_home(recorded)['events'] == head(recorded)
 
 
@@ -5678,7 +5679,8 @@ def test_a_bearer_token_names_the_seat_and_nothing_else_does(recorded, desk, tmp
         'action': 'add', 'deal': dict(CASHFLOW, Reference='EXEC-NOT', Amount=250_000.0),
         'parent_reference': CLIENT_SET, 'quantity': 1.0, 'execution_reference': 'EXEC-NOT',
         'actor': ACTOR}))
-    assert impostor.status_code == 422 and 'bearer token' in impostor.json()['detail']
+    assert impostor.status_code == 422 and 'is signed in as {!r}'.format(
+        test_spine_identity.SUBJECT) in impostor.json()['detail']
     asyncio.run(service.bearer(asked(service.DOORBELL)))
     with pytest.raises(service.HTTPException):
         asyncio.run(service.bearer(asked('/book')))
