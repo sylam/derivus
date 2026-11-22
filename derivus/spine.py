@@ -1419,8 +1419,7 @@ def agreements(lsn=None):
         projections = package().projections
         named = projections.PROJECTORS['agreements']
         rows = named.rows(_state(log, named, lsn))
-        return [dict(row, terms=json.loads(log.store.get(row['terms']).decode('utf-8')),
-                     terms_hash=row['terms']) for row in rows]
+        return [dict(row, terms=stored(row['terms'], log), terms_hash=row['terms']) for row in rows]
 
     return folded(fold)
 
@@ -1654,10 +1653,11 @@ def bodies(lsns):
         else {}
 
 
-def stored(digest):
-    """The bytes the store holds at `digest` - a job, a result or a values vector a reading cites,
-    read on this box's own record."""
-    return folded(lambda log: log.store.get(digest))
+def stored(digest, log=None):
+    """The JSON the store holds at `digest` - a job, a result, a values vector or the terms a
+    reading cites - read on this box's own record, off `log` where a fold holds it open."""
+    held = log.store.get(digest) if log is not None else folded(lambda log: log.store.get(digest))
+    return json.loads(held.decode('utf-8'))
 
 
 def approve(plan_hash, actor_name=None, book_name=None, effective_time=None, portfolio=None):
@@ -2127,8 +2127,8 @@ def premiums(book, currency):
     its deal named by the record's own terms. A fill stating no value date is due on no day, the
     row saying why (`UNDATED`)."""
     priced = [fill for fill in fills() if fill['book'] == book and fill.get('price')]
-    terms = folded(lambda log: {fill['instrument']: json.loads(log.store.get(
-        fill['instrument']).decode('utf-8')) for fill in priced})
+    terms = folded(lambda log: {fill['instrument']: stored(fill['instrument'], log)
+                                for fill in priced})
     return [dict(Diary._row(
         PREMIUM, terms[fill['instrument']].get('Reference'), fill['execution_reference'], 0,
         fill.get('value_date'), currency=fill.get('currency') or currency, determined=True,
@@ -2224,7 +2224,7 @@ class PnL:
         return node
 
     @staticmethod
-    def held_terms(document, wanted, stored):
+    def held_terms(document, wanted):
         """`{address: terms}` for every instrument in `wanted` - read off the first node of the book
         file carrying it, a structure being ONE instrument with its legs inside its terms, and off
         the record's own copy of the terms where the file no longer holds one."""
@@ -2239,7 +2239,7 @@ class PnL:
             if address in wanted:
                 found.setdefault(address, instrument_of(node))
         for address in sorted(set(wanted) - set(found)):
-            found[address] = json.loads(stored(address).decode('utf-8'))
+            found[address] = stored(address)
         return found
 
     @classmethod
@@ -2308,7 +2308,7 @@ class PnL:
                 for row in table['data'][1:] if row[column['Parent']] == root}
 
     @classmethod
-    def marked(cls, book, closes, attestations, stored, days):
+    def marked(cls, book, closes, attestations, days):
         """`{day: marks}` - the LATEST standing marks run of `book` on each of `closes`, keyed by
         the day it valued the book as of: the position of the record it read the book at, which
         closes that business day, the values it stood on, the addresses of the job it attested
@@ -2320,7 +2320,7 @@ class PnL:
             if row['values_hash'] not in values:
                 continue
             if (row['job'], book) not in days:
-                job = json.loads(stored(row['job']).decode('utf-8'))
+                job = stored(row['job'])
                 named = package().verbs.marks_of(job['Calc']['Deals'].get('Reference'))
                 days[(row['job'], book)] = None if named is None or named[0] != book else (
                     base_day(job), named[1])
@@ -2336,13 +2336,11 @@ class PnL:
         return found
 
     @classmethod
-    def loaded(cls, marks, stored):
+    def loaded(cls, marks):
         """`marks` with what a P&L reads off them: the `document` of the job it attested and the
         unit marks of its result."""
-        def read(digest):
-            return json.loads(stored(digest).decode('utf-8'))
-
-        return dict(marks, document=read(marks['job']), units=cls.unit_marks(read(marks['result'])))
+        return dict(marks, document=stored(marks['job']),
+                    units=cls.unit_marks(stored(marks['result'])))
 
     @staticmethod
     def within(row, portfolio=None, agreement=None, clients=None, sight=None):
@@ -2367,7 +2365,7 @@ class PnL:
             currency: spot / spots[reporting] for currency, spot in spots.items() if spot}
 
     @classmethod
-    def rates_on(cls, closes, stored, reporting, base):
+    def rates_on(cls, closes, reporting, base):
         """`(day, lsn) -> rates` - what one unit of each currency is worth in the reporting one at
         the official close STANDING on a day, as the record stood at `lsn`: the last declared for
         that day or before it among those filed by then, a restatement standing over the close it
@@ -2386,8 +2384,8 @@ class PnL:
             if found is None:
                 return None
             if found['values_hash'] not in answered:
-                answered[found['values_hash']] = cls.rates(
-                    json.loads(stored(found['values_hash']).decode('utf-8')), reporting, base)
+                answered[found['values_hash']] = cls.rates(stored(found['values_hash']),
+                                                           reporting, base)
             return answered[found['values_hash']]
 
         return on
