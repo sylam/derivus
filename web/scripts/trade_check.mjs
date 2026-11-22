@@ -76,19 +76,27 @@ check('a trade has its own mark, at the top or inside a set, beside the set\'s n
         + 'the set\'s net dropped where the trade has its own, which loses what the mark sits in',
       [trade.markOf(MARKS, '1'), trade.markOf(MARKS, '0/1'), trade.markOf(MARKS, '0/1/0')],
       [{ own: MARKS[1] }, { own: MARKS[2], inside: MARKS[0] }, { inside: MARKS[0] }]);
-const [DESK, FX, ALONE, LONG, SHORT] = [1, 0.5, 3, 2, -2].map((quantity) => ({ quantity }));
-const ON = new Map([['0/1', [DESK, FX]], ['1', [ALONE]], ['0', [LONG, SHORT]]]);
-const shown = (path, position) => trade.markShown(MARKS, path, ON, position) ?? 'none';
-check('two positions on one deal each show its mark at their own units, the two adding to it; a '
-        + 'position alone shows the deal\'s mark as it was read, as a row that is no position '
-        + 'does; and positions netting to nothing show none',
-      'the deal\'s mark shown whole on each position, 1.5 units\' worth read on a line holding '
-        + '0.5; the share turned, the net over the position\'s units; a lone position\'s mark '
-        + 'scaled by its units, a mark of 3 units read three times over; or a deal netted to '
-        + 'nothing divided by, a mark of infinity',
-      [shown('0/1', DESK), shown('0/1', FX), shown('0/1', DESK) + shown('0/1', FX),
-       shown('1', ALONE), shown('0/1'), shown('0', LONG), shown('0/7', DESK)],
-      [1, 0.5, 1.5, -2.25, 1.5, 'none', 'none']);
+const [DESK, FX, ALONE] = [['HARBOURLINE/desk', 'ISDA-A'], ['HARBOURLINE/fx', 'ISDA-A'],
+  ['HARBOURLINE', 'ISDA-B']].map(([portfolio, agreement]) => ({ portfolio, agreement }));
+// the risk answer's own share of each deal per position the record holds on it
+const PER = [{ deal_path: '0/1', ...DESK, quantity: 1, value: 1 },
+             { deal_path: '0/1', ...FX, quantity: 0.5, value: 0.5 },
+             { deal_path: '1', ...ALONE, quantity: 3, value: -2.25 },
+             { deal_path: '0', ...ALONE, quantity: 2, value: null }];
+const shown = (path, position, data = { per_position: PER }) => {
+  const mark = trade.markShown({ marks: MARKS, data }, path, position);
+  return mark === undefined ? 'none' : mark;
+};
+check("a position shows its own row of the risk answer's per-position marks, the record's share of "
+        + "the deal, and a row that is no position the deal's own mark; a position the answer "
+        + 'gives no value or no row, or no answer, shows none',
+      "the deal's mark shown whole on each position, 1.5 units' worth read on a line holding "
+        + "0.5; a position's row found by its deal alone, which reads another position's share; "
+        + 'a deal netted to nothing read as a mark of nothing; or a row that is no position read '
+        + 'off the positions',
+      [shown('0/1', DESK), shown('0/1', FX), shown('1', ALONE), shown('0/1'), shown('0', ALONE),
+       shown('0/7', DESK), shown('0/1', DESK, null)],
+      [1, 0.5, -2.25, 1.5, 'none', 'none', 'none']);
 
 // --- the record, read whole
 const RECORD = Array.from({ length: 450 }, (_, at) => ({ lsn: at + 1 }));
@@ -203,22 +211,22 @@ check("a mark is said as the desk's side, on a client's page, a trade's and an u
        'flat', "in the client's favour"]);
 const priced = (amount, currency = 'USD') => ({ amount, currency });
 check('an unwind\'s price is set against the desk\'s mark of the units unwound, in the mark\'s '
-        + 'currency and favour: part of a position held beside another reads its share of the '
-        + 'deal\'s mark, a price over it is made and one under it given up, a short\'s cash is '
+        + 'currency and favour: part of a position reads that part of the position\'s own mark, '
+        + 'a price over it is made and one under it given up, a short\'s cash is '
         + 'paid against a mark in the client\'s favour, a price in another currency is set '
         + 'against nothing, and no units read no mark',
-      'the whole deal\'s mark shown for a part unwind, 90,000 read against the price of a '
+      'the position\'s whole mark shown for a part unwind, 60,000 read against the price of a '
         + 'quarter unit; the sign turned, a price over the mark said as given up; the units '
         + 'unwound taken as long whatever is held, a short\'s liability read as worth to the '
         + 'desk; a difference struck across two currencies; or the favour dropped',
-      [trade.unwindAgainst(1, 0.25, 90000, 1.5, 'USD'),
-       trade.unwindAgainst(1, 0.25, 90000, 1.5, 'USD', priced(70000)),
-       trade.unwindAgainst(1, 0.25, 90000, 1.5, 'USD', priced(50000)),
-       trade.unwindAgainst(1, 0.25, 90000, 1.5, 'USD', priced(60000)),
-       trade.unwindAgainst(-2, 1, -600, -2, 'USD', priced(250)),
-       trade.unwindAgainst(-2, 1, -600, -2, 'USD', priced(350)),
-       trade.unwindAgainst(1, 0.25, 90000, 1.5, 'USD', priced(1300000, 'ZAR')),
-       trade.unwindAgainst(1, 0, 90000, 1.5, 'USD', priced(70000)) ?? 'none'],
+      [trade.unwindAgainst(1, 0.25, 60000, 'USD'),
+       trade.unwindAgainst(1, 0.25, 60000, 'USD', priced(70000)),
+       trade.unwindAgainst(1, 0.25, 60000, 'USD', priced(50000)),
+       trade.unwindAgainst(1, 0.25, 60000, 'USD', priced(60000)),
+       trade.unwindAgainst(-2, 1, -600, 'USD', priced(250)),
+       trade.unwindAgainst(-2, 1, -600, 'USD', priced(350)),
+       trade.unwindAgainst(1, 0.25, 60000, 'USD', priced(1300000, 'ZAR')),
+       trade.unwindAgainst(1, 0, 60000, 'USD', priced(70000)) ?? 'none'],
       ['The desk marks the 0.25 unwound at 15,000 USD, in the desk\'s favour.',
        'The desk marks the 0.25 unwound at 15,000 USD, in the desk\'s favour, so at this price '
         + 'it makes 2,500 USD against its mark.',

@@ -14,7 +14,7 @@ import {
   spreads, stampText, valuationDay,
 } from '../desk';
 import {
-  byPath, positionName, statusText, type Agreement, type Entity, type Position,
+  positionName, statusText, type Agreement, type Entity, type Position,
 } from '../positions';
 import { pinnedAt } from '../spine';
 import {
@@ -283,7 +283,7 @@ function OnBook({ own, reads, rows, market, schema }: {
   const { state } = useApp();
   const risk = reads.risk.data;
   // a position's share is of the units held when its mark was read: none while the book has moved
-  const { marks } = riskNow(state);
+  const now = riskNow(state);
   return (
     <section className="card">
       <h3>What the desk has on with it</h3>
@@ -293,7 +293,6 @@ function OnBook({ own, reads, rows, market, schema }: {
         const held = reads.positions && reads.positions.filter(
           (position) => position.agreement === agreement.agreement);
         const trades = heldUnder(path, rows, held);
-        const heldAt = byPath(held ?? []);
         const closed = trades.filter((trade) => trade.closed).length;
         const mark = path !== null ? markOf(reads.risk.marks, path).own : undefined;
         return (
@@ -327,7 +326,7 @@ function OnBook({ own, reads, rows, market, schema }: {
                       <TradeRow key={at} trade={trade} market={market} schema={schema}
                                 recording={!!reads.positions}
                                 mark={trade.row
-                                  && markShown(marks, trade.row.path, heldAt, trade.position)} />
+                                  && markShown(now, trade.row.path, trade.position)} />
                     ))}
                   </tbody>
                 </table>

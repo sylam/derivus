@@ -17,8 +17,8 @@ import {
 } from '../state';
 import { formatNumber, ungrouped } from '../tokens';
 import {
-  bookedBy, datesOf, favour, historyOf, judgedAt, legsOf, markOf, movedTerms, noMark, tradeAt,
-  tradeName, tradeSize, unwindAgainst, unwindFill, unwindWords, wholeRecord, type Price,
+  bookedBy, datesOf, favour, historyOf, judgedAt, legsOf, markOf, markShown, movedTerms, noMark,
+  tradeAt, tradeName, tradeSize, unwindAgainst, unwindFill, unwindWords, wholeRecord, type Price,
 } from '../trade';
 import type { QuoteGiven } from '../types';
 import { Back, DealEditor, Gated, OnStrip, Side, Stat, Value } from '../components/Desk';
@@ -404,7 +404,7 @@ function Actions({ row, held, recording }: {
           const key = `${position.agreement}/${position.portfolio}`;
           const kept = heldBack(state, 'fill', judgedAt([position]));
           return <Gated key={key} hold={kept}><Unwind row={row} position={position}
-            net={netOf(held)} onVerdict={setVerdict} /></Gated>;
+            onVerdict={setVerdict} /></Gated>;
         }) : (
           <Gated hold={hold}><div className="note">{unread(state.paper) ?? `${held.length
             ? 'Closed: the record holds none of it' : noneShown(state)}, so there is nothing to unwind.`}
@@ -430,8 +430,8 @@ function Actions({ row, held, recording }: {
  * currency and, where the price moves cash, settling on which day, asked once more in words saying
  * who pays whom what and when and what is left, then filed as a fill toward nothing under an
  * execution reference minted for that confirm. */
-function Unwind({ row, position, net, onVerdict }: {
-  row: BlotterRow; position: Position; net?: number; onVerdict: (said: Verdict | null) => void;
+function Unwind({ row, position, onVerdict }: {
+  row: BlotterRow; position: Position; onVerdict: (said: Verdict | null) => void;
 }) {
   const { state, dispatch } = useApp();
   const held = position.quantity;
@@ -451,10 +451,10 @@ function Unwind({ row, position, net, onVerdict }: {
     || 'the client';
   // the reference the price is typed beside: the desk's mark of these units, or why none is read
   const risk = riskNow(state);
-  const own = markOf(risk.marks, row.path).own;
-  const against = own ? unwindAgainst(held, count, own.value, net, risk.data!.currency ?? '',
-                                      price.trim() !== '' && isFinite(at) ? cost : undefined)
-    : `the desk's mark of these units: ${noMark(risk)}`;
+  const own = markShown(risk, row.path, position);
+  const against = own === undefined ? `the desk's mark of these units: ${noMark(risk)}`
+    : unwindAgainst(held, count, own, risk.data!.currency ?? '',
+                    price.trim() !== '' && isFinite(at) ? cost : undefined);
 
   async function file(execution: string) {
     setFiling(true);

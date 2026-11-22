@@ -7,13 +7,14 @@ import {
   type Size,
 } from './blotter';
 import { instantMs, plural } from './desk';
-import { closed, netOf, type Agreement, type Position } from './positions';
+import { closed, type Agreement, type Position } from './positions';
 import { salesNames } from './quote';
 import {
   COLLATERAL, currencyOf, fieldLabel, formatNumber, setCurrency, uncollateralised,
 } from './tokens';
 import type {
-  ActivityPage, ActivityRow, DealMark, DealNode, Descriptor, Market, Moved, QuoteGiven, Schema,
+  ActivityPage, ActivityRow, BookRisk, DealMark, DealNode, Descriptor, Market, Moved, QuoteGiven,
+  Schema,
   WorkRow,
 } from './types';
 
@@ -56,13 +57,6 @@ export function markOf(marks: DealMark[], path: string): { own?: DealMark; insid
            inside: top === path ? undefined : marks.find((row) => row.deal_path === top) };
 }
 
-/** What `units` of a deal are marked at, off the deal's `mark` and the `net` units the book prices
- * it at - every position on it, netted: the unit mark times the units, from the desk's side, so
- * the positions on one deal add to its mark. None where there are no units, or the deal nets to
- * nothing and has no unit mark to read. */
-export const markFor = (mark: number, units: number, net: number | undefined): number | undefined =>
-  (units && net ? mark * (units / net) : undefined);
-
 /** In whose favour a mark of `value` to the desk stands. */
 export const favour = (value: number): string =>
   (value > 0 ? "in the desk's favour" : value < 0 ? "in the client's favour" : 'flat');
@@ -71,14 +65,14 @@ export const favour = (value: number): string =>
 export const markText = (value: number, currency: string | null): string =>
   `${formatNumber(value, 'money')}${currency ? ` ${currency}` : ''}, ${favour(value)}`;
 
-/** The mark a row shows among the risk answer's rows: the deal's own at `path` (`markOf`), and for
- * one `position` of those the record holds there (`byPath`), what its own units are marked at. */
-export function markShown(marks: DealMark[], path: string, held: Map<string, Position[]>,
-                          position?: Position): number | undefined {
-  const mark = markOf(marks, path).own?.value;
-  return mark === undefined || !position ? mark
-    : markFor(mark, position.quantity, netOf(held.get(path) ?? []));
-}
+/** The mark a row shows off the risk as its screen shows it (`bookRisk`): the deal's own at `path`
+ * (`markOf`), and for one `position` held there its own row of the answer's `per_position`. */
+export const markShown = (risk: { marks: DealMark[]; data: BookRisk | null }, path: string,
+                          position?: Position): number | undefined => (position
+  ? risk.data?.per_position.find((row) => row.deal_path === path
+    && row.portfolio === position.portfolio && row.agreement === position.agreement)?.value
+    ?? undefined
+  : markOf(risk.marks, path).own?.value);
 
 /** Why a trade's page reads no mark of the trade's `own` off the risk as its screen shows it
  * (`bookRisk`), null where it reads one: the line holding the seat from the read or the service's
@@ -173,15 +167,15 @@ export function unwindOf(held: number, units: number, price: number):
   return { quantity, left: held + quantity, receives: -quantity * price };
 }
 
-/** What an unwind's price is set against, in a line: the desk's mark of the `units` unwound - the
- * deal's `mark` at them (`markFor`), in its `currency` and in whose favour it stands (`markText`) -
- * and, once a
- * `price` is typed in that currency, what the desk makes at it over that mark - the cash it
- * receives less the worth it parts with - or gives up against it. Undefined where no units are. */
-export function unwindAgainst(held: number, units: number, mark: number, net: number | undefined,
-                              currency: string, price?: Price): string | undefined {
-  const worth = markFor(mark, Math.sign(held) * units, net);
-  if (worth === undefined) return undefined;
+/** What an unwind's price is set against, in a line: the desk's mark of the `units` unwound - that
+ * part of the position's own `mark` of the `held` units (`markShown`), in its `currency` and in
+ * whose favour it stands (`markText`) - and, once a `price` is typed in that currency, what the
+ * desk makes at it over that mark - the cash it receives less the worth it parts with - or gives
+ * up against it. Undefined where no units are. */
+export function unwindAgainst(held: number, units: number, mark: number, currency: string,
+                              price?: Price): string | undefined {
+  if (!units) return undefined;
+  const worth = mark * (units / Math.abs(held));
   const money = (value: number) => `${formatNumber(Math.abs(value), 'money')} ${currency}`.trim();
   const makes = price && unwindOf(held, units, price.amount).receives - worth;
   return `The desk marks the ${formatNumber(units)} unwound at ${markText(worth, currency)}${

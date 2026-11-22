@@ -307,6 +307,12 @@ export type DealMark = {
   value: number;
 };
 
+/** One position the record holds on a priced deal, at its own share of the deal's mark by the
+ * record's share rule - the positions on a deal adding to its mark - none where it nets to nothing. */
+export type PositionMark = {
+  deal_path: string; portfolio: string; agreement: string; quantity: number; value: number | null;
+};
+
 export type BookRisk = {
   /** When the RUN happened - a warm hit returns the cached stamp unchanged. */
   as_of: string;
@@ -317,6 +323,8 @@ export type BookRisk = {
   per_deal: DealMark[];
   /** Each trade a top-level netting set holds, inside its set's value and never summed. */
   in_sets: DealMark[];
+  /** Each position the seat is shown on a priced deal. */
+  per_position: PositionMark[];
   greeks: GreekRow[];
   /** The risk in QUOTE space, every quote of every block the book's factors are built from. */
   quotes: QuoteRow[];

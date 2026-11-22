@@ -1019,9 +1019,10 @@ no row of its history that the record holds none only where the seat holds a gra
 above it, and else that the
 seat is shown none, with the nodes it sees; the record's strip says the same to a seat shown no
 row (`noneShown` in `web/src/state.ts`). The book marks a node two positions hold at their net, and
-a screen showing one of them shows that mark at the position's own units, the positions adding to
-it (`markShown` in `web/src/trade.ts`), off a risk read of the book as it stands (`riskNow` in
-`web/src/state.ts`). An unwind's price is typed beside that mark of the units unwound, with what
+a screen showing one of them shows the risk answer's own share of that mark for the position
+(`per_position`, read by `markShown` in `web/src/trade.ts`), off a risk read of the book as it
+stands (`riskNow` in `web/src/state.ts`). An unwind's price is typed beside that mark's part for
+the units unwound, with what
 the desk makes or gives up against it at the price (`unwindAgainst`), or why no mark is read
 (`noMark`).
 **Held by** `test_spine_engine.py::test_a_declared_tree_is_where_a_book_books_and_a_restrike_is_judged`,
