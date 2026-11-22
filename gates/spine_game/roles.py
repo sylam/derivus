@@ -408,8 +408,8 @@ def approve_what_waits(desk, rejecting=()):
         approver = seat(desk, 'approver')
         for row in table.work(approver, 'pending'):
             rejected = (row['reference'] or '').startswith(rejecting) if rejecting else False
-            ruled = (binding.reject_ticket(row['key'], 'over the desk\'s appetite', approver)
-                     if rejected else binding.approve_ticket(row['key'], approver))
+            ruled = (binding.reject_ticket('over the desk\'s appetite', approver, ticket=row['key'])
+                     if rejected else binding.approve_ticket(approver, ticket=row['key']))
             table.did(approver, 'reject_ticket' if rejected else 'approve_ticket',
                       what=row['what'], recorded=ruled['recorded']['lsn'], ticket=row['key'],
                       status=ruled['status'])

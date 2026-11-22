@@ -70,13 +70,13 @@ structure takes it as `name`. **Held by**
 | `book_deal`, `amend_deal`, `delete_deal` | `POST /book/deals`: add, or take on a deal the file holds; merge fields at a path; remove |
 | `validate_book`, `describe_book` | `POST /validate`, `/describe` over the live book |
 | `describe_portfolios`, `declare_portfolio` | `GET`/`POST /book/portfolios`: the declared tree |
-| `price_candidate`, `execute_book` | `POST /book/price`: the book with a candidate or a quote, or alone; nothing written |
+| `price_candidate` | `POST /book/price`: the book with a candidate or a quote, or alone; nothing written |
 | `xva_increment` | `POST /book/price` with `xva_increment`: what a candidate, a quote or a trade the book holds (`deal_path`, with the `reference` read there) adds to its netting set's CVA, FVA and peak exposure, both runs on the same paths; nothing written |
 | `describe_calculations`, `configure_calculation`, `run_calculation` | `GET`/`POST /calculations`, `POST /calculations/run`: the desk's named calculations |
 | `solve_deal` | `POST /book/solve`: one field solved to a target, the deal ready to book |
 | `solve_structure`, `book_quote` | `POST /book/structure`, `/book/quote`: a quote filed pending; its acceptance |
 | `list_quotes` | `GET /book/quotes`: every quote given that the seat `actor` is shown, newest first, with where each stands |
-| `approve_ticket`, `reject_ticket`, `approve_quote`, `reject_quote` | `POST /book/approve`, `/book/reject`: a second seat's verdict |
+| `approve_ticket`, `reject_ticket` | `POST /book/approve`, `/book/reject`: a second seat's verdict on a ticket, named by it or by an accepted quote's id |
 | `worklist` | `GET /book/worklist`: what waits on the seat asking |
 | `describe_seat` | `GET /book/seat`: the nodes the seat asking holds each verb at, and the verb each act demands under the map in force |
 | `poll_result`, `fetch_table`, `deal_values` | `GET /results/{id}[/{table}]`: status and shapes, or the outcome a `stat` names; one capped page; `{reference: value}` |
@@ -174,7 +174,7 @@ every write files under the seat in `actor`. They are optional in the schema bec
 serves a desk with a record and one without; the service's refusal names a missing one. A delete
 records nothing, so it takes no seat. Under a capabilities document the queue admits only a named
 seat, so every tool whose endpoint asks one takes `actor` as `run_calculation` does
-(`price_candidate`, `xva_increment`, `execute_book`, `solve_deal`, `book_risk_summary`,
+(`price_candidate`, `xva_increment`, `solve_deal`, `book_risk_summary`,
 `recalc_xva`, `calibrate_spot_model`, `setup_market`, `tick_market_from_bloomberg`,
 `verify_securities`), and one naming none is refused in the service's words; a terminal's tools are
 gated on the two refusals alone, never on an admitted trip.
@@ -261,8 +261,8 @@ takes. It prices on the live spot where this terminal answers, else the book's, 
 paper, the book the bank's side) under the quote's netting set through `book_deal`'s seam and keeps
 the pending file as the audit trail. Past a declared `Quote Policy.firm_seconds` it refuses. Under a
 record a moved market is reported, never refused, as a moved book is inside that window, and a
-tier wanting a second seat books the trade pending until `approve_quote`. **Held by**
-`test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar`,
+tier wanting a second seat books the trade pending until `approve_ticket` names the quote.
+**Held by** `test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar`,
 `test_a_recorded_desk_books_and_accepts_through_the_binding`,
 `test_structures.py::test_a_quote_is_an_act_not_a_lookup`,
 `test_service.py::test_a_quote_is_firm_only_for_the_window_the_book_declares`.
@@ -271,7 +271,7 @@ tier wanting a second seat books the trade pending until `approve_quote`. **Held
 
 A desktop host cuts a call that stays quiet for about a minute and resets that clock on every
 progress notification, and several runs take minutes. So each tool that sits on a run
-(`price_candidate`, `xva_increment`, `execute_book`, `run_calculation`, `solve_deal`,
+(`price_candidate`, `xva_increment`, `run_calculation`, `solve_deal`,
 `solve_structure`, `recalc_xva`, `calibrate_spot_model`, `tick_market_from_bloomberg`,
 `verify_securities`, `setup_market`, `mark_book`) is `async`, threads its blocking calls, and
 waits in `_await_result`, which reports the seconds waited, the `wait_seconds` and the run's own

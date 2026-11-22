@@ -87,7 +87,7 @@ def an_approver_signs_beside_its_node(table, out):
     ticket = next(act['ticket'] for act in table.acts if act['act'] == 'book_deal SWAP-1')
     return _denied(table, 'an approver signs outside its node', seat('FX', 'approver'), APPROVE,
                    SWAPS, 'approval',
-                   lambda: binding.approve_ticket(ticket, seat('FX', 'approver')))
+                   lambda: binding.approve_ticket(seat('FX', 'approver'), ticket=ticket))
 
 
 def the_fx_seat_books_into_the_rates_path(table, out):
@@ -145,9 +145,9 @@ def a_trader_approves_its_own_ticket(table, out):
     """The FX trader signs the ticket it just booked. It holds `approve` at its node, so the
     approval APPENDS - a seat signing a plan is a fact - and the trade still reads pending,
     because four eyes asks WHO signed rather than whether anybody did."""
-    signed = binding.approve_quote(table.standing['red_quote'], FX)
+    signed = binding.approve_ticket(FX, quote_id=table.standing['red_quote'])
     table.standing['red_ticket'] = signed['ticket']
-    table.did(FX, 'approve_quote (own ticket)', recorded=signed['recorded']['lsn'],
+    table.did(FX, 'approve_ticket by quote id (own ticket)', recorded=signed['recorded']['lsn'],
               status=signed['status'])
     return _row('a trader approves its own ticket',
                 'the booker and the approver are one seat, so the trade stays pending',
@@ -161,11 +161,11 @@ def collude_under_two_names(table, out):
     signature is the first fact again and four eyes still counts one signer."""
     for mask in MASKS:
         roles.spine('name', '--home', table.home, FX, '--display', mask)
-    signed = binding.approve_quote(table.standing['red_quote'], FX)
+    signed = binding.approve_ticket(FX, quote_id=table.standing['red_quote'])
     signers = table.read(lambda log: sorted(set(
         frame['actor'] for frame in log.frames() if frame['event_type'] == 'approval'
         and log.open_body(frame)['plan_hash'] == signed['ticket'])))
-    table.did(FX, 'approve_quote under a second display name',
+    table.did(FX, 'approve_ticket by quote id under a second display name',
               recorded=signed['recorded']['lsn'], status=signed['status'])
     return _row('collude under two display names',
                 'the verdicts name the subject and neither mask, so the trade stays pending',
@@ -180,7 +180,7 @@ def replay_an_old_approval(table, out):
     approver = seat('FX', 'approver')
     old = next(act for act in table.acts
                if act['seat'] == approver and act['act'] == 'approve_ticket')
-    again = binding.approve_ticket(old['ticket'], approver)
+    again = binding.approve_ticket(approver, ticket=old['ticket'])
     waiting = [row['key'] for row in table.work(approver, 'pending')]
     table.did(approver, 'approve_ticket (the collar\'s approval, again)',
               recorded=again['recorded']['lsn'], stood=old['recorded'], ticket=old['ticket'],

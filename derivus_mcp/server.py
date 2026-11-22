@@ -72,8 +72,9 @@ refused by name rather than priced at a placeholder.
 A WORKING DAY: read_book to see what is held; describe_instrument_type before booking a type
 you have not booked; book_deal for a plain instrument; for FX options solve_structure and then
 book_quote, which take market terms and handle the axis; book_risk_summary for the mark and
-its gradient; execute_book or price_candidate for a what-if; solve_deal for a par amount or a
-strike to a target; book_diary for every payment, fixing and expiry the book owes or is owed;
+its gradient; price_candidate for a what-if, or the book as it stands; solve_deal for a par
+amount or a strike to a target; book_diary for every payment, fixing and expiry the book owes or
+is owed;
 xva_increment for what one trade would add to its client's CVA, FVA and peak exposure;
 recalc_xva ONLY on request, it is minutes, and xva_view for what stands.
 The desk keeps its own NAMED CALCULATIONS - a credit Monte Carlo at another path count, a PFE
@@ -118,10 +119,10 @@ AN ACCEPTANCE IS RECORDED: book_quote files the quote it books, and between the 
 acceptance the market moves, which is reported and never refused. EVERY BOOKING IS A TICKET:
 where the desk's policy wants a second seat the trade books all the same and reads PENDING -
 the answer carries a tier and waits_on - and that seat signs it with
-approve_quote(quote_id, actor), or approve_ticket(ticket, actor) for a direct booking;
-reject_quote and reject_ticket file the other verdict, the trade standing rejected until
-somebody closes it. Never book it a second time. worklist names what waits on somebody: tickets
-to sign, payments due, fills to confirm, collateral calls, closes to mark, rejected trades.
+approve_ticket(actor, ticket), or quote_id in place of the ticket for an accepted quote;
+reject_ticket files the other verdict, the trade standing rejected until somebody closes it.
+Never book it a second time. worklist names what waits on somebody: tickets to sign, payments
+due, fills to confirm, collateral calls, closes to mark, rejected trades.
 {written: false, refused: [...]} WITH `accepted` beside the two keys is a different answer: the
 client's price is already on the record and the desk's own policy will not book it, so say
 which bound it broke and do not re-quote. A legacy book - trades the book file holds and nobody
@@ -231,7 +232,8 @@ MAX_PAGE_ROWS = 200
 MAX_TABLE_COLUMNS = 60
 
 #: How many gradient rows a risk summary carries - the biggest by absolute size. The whole vector
-#: is reached through `execute_book({"Greeks": "First"})` and `fetch_table`.
+#: is reached through `price_candidate(calculation_overrides={"Greeks": "First"})` and
+#: `fetch_table`.
 MAX_GREEK_ROWS = 15
 
 
@@ -255,10 +257,11 @@ def _raw_result(result_id):
 
 
 def _summary(raw, result_id, stat=None):
-    """A run trimmed to what the model should hold. Where `stat` names the job's own outcome and the
-    run filed it under its stats, that outcome with the run's `result_id` and `status` beside it;
-    else identity - the replay tuple, the engine version in it - stats, and each table's shape as
-    one line. Never a column list and never a cell - those stay behind `fetch_table`."""
+    """A run trimmed to what the model should hold. Where `stat` names the job's own outcome and
+    the run filed it under its stats, that outcome with the run's `result_id` and `status`
+    beside it; else identity - the replay tuple, the engine version in it - stats, and each
+    table's shape as one line. Never a column list and never a cell - those stay behind
+    `fetch_table`."""
     outcome = (raw.get('stats') or {}).get(stat) if stat else None
     if outcome is not None:
         return dict(outcome, result_id=result_id, status=raw.get('status'))
@@ -460,8 +463,7 @@ def describe_structure(name: str = None) -> dict:
 @MCP.tool(annotations=READ_ONLY)
 def describe_calculation_type(name: str) -> dict:
     """Every field one calculation type takes, any type the schema declares and a name it does not
-    refused with the list - what `calculation_overrides` in `execute_book` / `price_candidate` may
-    override."""
+    refused with the list - what `calculation_overrides` in `price_candidate` may override."""
     types = service().call('GET', '/schema')['Calculation']['types']
     if name not in types:
         raise ToolError('{!r} is not a calculation type - one of: {}'.format(
@@ -716,8 +718,9 @@ async def price_candidate(deal: dict | None = None, parent_reference: str | None
     relation for the amount that lands the value on your target, then `book_deal` the answer.
 
     The candidate is `deal` under `parent_reference`, or the `quote_id` `solve_structure` answered,
-    priced as accepting that quote would book it. It joins an in-memory copy only; the book file
-    never moves. `calculation_overrides` merges into the calculation block: `{"Greeks": "First"}`
+    priced as accepting that quote would book it; with neither, the book's own calculation runs
+    as the book stands. It joins an in-memory copy only; the book file never moves.
+    `calculation_overrides` merges into the calculation block: `{"Greeks": "First"}`
     for the AAD delta vector, `{"Greeks": "All"}` for the full second-order block - `Greeks_Second` is the cross-gamma
     matrix a trading read of an options book needs (spot gamma on the diagonal, vanna against the
     surface's own nodes beside it), one backward pass however many factors. Waits up to
@@ -805,8 +808,8 @@ async def run_calculation(name: str, deal_path: str | None = None, actor: str | 
     `deal_path` (a netting set, a structure, one trade). The block is merged over the book's own
     calculation exactly as `price_candidate` merges `calculation_overrides`, so asking for the same
     dials either way is ONE run. Nothing is booked and nothing is recorded. Waits up to
-    `wait_seconds`; the answer carries `tables` and `stats` as `execute_book` does, and a credit
-    Monte Carlo is minutes - past the wait the answer is the result id to poll."""
+    `wait_seconds`; the answer carries `tables` and `stats` as `price_candidate`'s does, and a
+    credit Monte Carlo is minutes - past the wait the answer is the result id to poll."""
     request = {'name': name}
     if deal_path is not None:
         request['deal_path'] = deal_path
@@ -1393,9 +1396,9 @@ def book_quote(quote_id: str, actor: str | None = None) -> dict:
     declares no `Quote Policy`. And where a `tiers` policy is in force the ticket is routed:
     the answer carries `accepted` - the acceptance is filed either way - and `tier`, and under a
     tier wanting a second seat the trade books PENDING with `waits_on` saying why: have that seat
-    call `approve_quote(quote_id, actor)` - never accept again. `refused` beside `accepted` is a
-    ticket no tier admits. `actor` is the seat the acceptance and the fill are filed under; the
-    trade books into the `portfolio` the quote stated.
+    call `approve_ticket(actor, quote_id=quote_id)` - never accept again. `refused` beside
+    `accepted` is a ticket no tier admits. `actor` is the seat the acceptance and the fill are
+    filed under; the trade books into the `portfolio` the quote stated.
 
     TWO REFUSALS WEAR ONE SHAPE and `accepted` is the tell. `{written: false, refused: [...]}` with
     no `accepted` is the book declining the deal - read the messages, fix, book again. The same two
@@ -1432,8 +1435,10 @@ def list_quotes(actor: str | None = None) -> dict:
 
 
 @MCP.tool()
-def approve_ticket(ticket: str, actor: str) -> dict:
-    """Sign the ticket a booking carries - the second pair of eyes a tier under four eyes wants.
+def approve_ticket(actor: str, ticket: str | None = None, quote_id: str | None = None) -> dict:
+    """Sign the ticket a booking carries - the second pair of eyes a tier under four eyes wants -
+    named by its `ticket`, or for an accepted quote by its `quote_id`, the signature being over the
+    ticket that acceptance minted and so reaching that quote and no other.
 
     Call it when a booking came back PENDING, `tier` under four eyes with `waits_on`: the trade is
     already booked, and this is what clears it. `actor` is the seat that signs and is REQUIRED: the
@@ -1442,45 +1447,23 @@ def approve_ticket(ticket: str, actor: str) -> dict:
     the booking sits, read off the record. Answers `{recorded: {lsn}, ticket, portfolio, status}`,
     `status` what the trade reads now; signing twice is one fact.
     """
-    return service().call('POST', '/book/approve', json={'ticket': ticket, 'actor': actor})
+    return service().call('POST', '/book/approve', json=dict(
+        _stated(ticket=ticket, quote_id=quote_id), actor=actor))
 
 
 @MCP.tool()
-def reject_ticket(ticket: str, reason: str, actor: str) -> dict:
-    """Refuse the ticket a booking carries, with the reason on the row.
+def reject_ticket(reason: str, actor: str, ticket: str | None = None,
+                  quote_id: str | None = None) -> dict:
+    """Refuse the ticket a booking carries, named as `approve_ticket` names it, with the reason on
+    the row.
 
     A verdict is never withdrawn, so what stands is what was filed LAST: a rejection after an
     approval is what the record says, and a later approval moves it back. The trade happened, so a
     rejected one STANDS until somebody closes it, and `worklist` names it. `reason` is required.
     Answers `{recorded: {lsn}, ticket, portfolio, status}`.
     """
-    return service().call('POST', '/book/reject',
-                          json={'ticket': ticket, 'reason': reason, 'actor': actor})
-
-
-@MCP.tool()
-def approve_quote(quote_id: str, actor: str) -> dict:
-    """`approve_ticket` for an accepted quote, named by its id rather than its ticket - the
-    signature is over the ticket the acceptance minted, so it reaches this quote and no other."""
-    return service().call('POST', '/book/approve', json={'quote_id': quote_id, 'actor': actor})
-
-
-@MCP.tool()
-def reject_quote(quote_id: str, reason: str, actor: str) -> dict:
-    """`reject_ticket` for an accepted quote, named by its id - the reason on the row, and the
-    trade standing rejected until somebody closes it."""
-    return service().call('POST', '/book/reject',
-                          json={'quote_id': quote_id, 'reason': reason, 'actor': actor})
-
-
-@MCP.tool()
-async def execute_book(calculation_overrides: dict | None = None, actor: str | None = None,
-                       wait_seconds: float = 120.0, ctx: Context = None) -> dict:
-    """Run the book's own calculation as it stands - `price_candidate` with no candidate. Waits
-    up to `wait_seconds`; on timeout the answer's `hint` says how to pick the run up later.
-    `actor` is the seat reading."""
-    return await price_candidate(calculation_overrides=calculation_overrides, actor=actor,
-                                 wait_seconds=wait_seconds, ctx=ctx)
+    return service().call('POST', '/book/reject', json=dict(
+        _stated(ticket=ticket, quote_id=quote_id), reason=reason, actor=actor))
 
 
 @MCP.tool(annotations=READ_ONLY)
@@ -1520,7 +1503,7 @@ def book_risk_summary(actor: str | None = None) -> dict:
     unit of that factor - where a spot, and anything no quote builds, is read. Every row also
     carries `level`, the factor or quote it is taken at, and `risk`, the same derivative per the
     move `per` names - a spot per 1% of itself, a rate per bp, a vol per vol point. Never the whole
-    per-deal table: `deal_values` on an `execute_book` run serves that, and the web blotter
+    per-deal table: `deal_values` on a `price_candidate` run serves that, and the web blotter
     renders the lot.
 
     Cheap and cached on the book's own content, so asking again after nothing moved costs nothing;
@@ -1538,7 +1521,8 @@ def book_risk_summary(actor: str | None = None) -> dict:
             'quotes': quotes[:MAX_GREEK_ROWS], 'quote_rows': len(quotes),
             'quoted': risk['quoted'], 'quote_note': risk['quote_note'],
             'greeks': greeks[:MAX_GREEK_ROWS], 'greek_rows': len(greeks),
-            'hint': 'the per-deal values are behind execute_book + deal_values; XVA is xva_view'}
+            'hint': 'the per-deal values are behind price_candidate + deal_values; XVA is '
+                    'xva_view'}
 
 
 @MCP.tool(annotations=READ_ONLY)
@@ -2193,7 +2177,7 @@ def quote_a_structure(structure: str, pair: str, notional: str, notional_currenc
         'records the quote and books the trade. Nothing is recorded before it. A quote is firm '
         'for a window; past it, re-quote.\n'
         '5. If the answer carries a tier with waits_on, the trade is booked PENDING and the '
-        'desk\'s policy wants another seat: have it call approve_quote(quote_id, actor) - never '
+        'desk\'s policy wants another seat: have it call approve_ticket(actor, quote_id) - never '
         'accept again. With `refused` BESIDE `accepted` no tier admits the ticket - say which '
         'bound it broke, and do not re-quote. A moved market is reported under `market` and is '
         'never a refusal.'.format(
@@ -2214,8 +2198,8 @@ def import_a_legacy_book(counterparty: str) -> str:
         'record takes the fill and the file only its pin, so no number moves; a tier with '
         'waits_on books it PENDING for another seat.\n'
         '3. book_reconcile again: none of them is left under in_file_not_in_record.\n'
-        '4. execute_book, then book_risk_summary for the mark and the gradient. Closing one later '
-        'is a booking of -1: book_deal(its terms, parent_reference="{0}", quantity=-1, a new '
+        '4. price_candidate, then book_risk_summary for the mark and the gradient. Closing one '
+        'later is a booking of -1: book_deal(its terms, parent_reference="{0}", quantity=-1, a new '
         'execution_reference).\n'
         '5. recalc_xva(["{0}"]) only if the user asks for it - it is minutes.'.format(
             counterparty))

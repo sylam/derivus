@@ -83,14 +83,14 @@ def test_every_tool_is_registered_and_carries_its_contract():
     expected = {'list_instrument_types', 'describe_instrument_type', 'describe_calculation_type',
                 'describe_factor_type', 'describe_configuration', 'job_skeleton', 'desk_status',
                 'read_book', 'read_deal', 'book_deal', 'amend_deal', 'delete_deal',
-                'price_candidate', 'xva_increment', 'solve_deal', 'execute_book', 'validate_book',
+                'price_candidate', 'xva_increment', 'solve_deal', 'validate_book',
                 'describe_book', 'poll_result', 'fetch_table', 'deal_values', 'configure_book',
                 'describe_curve', 'configure_curve', 'set_base_date', 'update_market_quotes',
                 'patch_market_values', 'retire_market_overrides', 'describe_securities',
                 'configure_securities',
                 'verify_securities', 'book_dependencies', 'setup_market',
                 'tick_market_from_bloomberg', 'describe_structure', 'solve_structure',
-                'book_quote', 'list_quotes', 'approve_quote', 'reject_quote', 'approve_ticket',
+                'book_quote', 'list_quotes', 'approve_ticket',
                 'reject_ticket', 'worklist', 'declare_portfolio', 'describe_portfolios',
                 'describe_seat',
                 'calibrate_spot_model',
@@ -111,9 +111,9 @@ def test_every_tool_is_registered_and_carries_its_contract():
     writers ={name for name, tool in tools.items()
                if not (tool.annotations and tool.annotations.read_only_hint)}
     assert writers == {'book_deal', 'amend_deal', 'delete_deal', 'price_candidate', 'xva_increment',
-                       'solve_deal', 'execute_book', 'update_market_quotes', 'patch_market_values',
+                       'solve_deal', 'update_market_quotes', 'patch_market_values',
                        'retire_market_overrides', 'tick_market_from_bloomberg', 'solve_structure',
-                       'book_quote', 'approve_quote', 'reject_quote', 'approve_ticket',
+                       'book_quote', 'approve_ticket',
                        'reject_ticket',
                        'declare_portfolio', 'declare_market', 'declare_close', 'declare_file',
                        'export_settlements', 'file_status', 'file_lifecycle',
@@ -146,7 +146,7 @@ def test_the_instructions_a_host_shows_are_the_desks_orientation():
     for said in ('START WITH desk_status', 'solve_structure', '{".Timestamp": "YYYY-MM-DD"}',
                  '{".Percent": 2.5}', 'Strike_Price is on the ENGINE axis', '1/17.50',
                  '{written: false, refused: [...]}', 'book_diary', 'close_check',
-                 'QUOTING IS NOT BOOKING', 'book_quote is the ACCEPTANCE', 'approve_quote',
+                 'QUOTING IS NOT BOOKING', 'book_quote is the ACCEPTANCE', 'approve_ticket',
                  'declare_close', 'export_settlements', 'file_status'):
         assert said in instructions, said
 
@@ -292,7 +292,7 @@ RECORD_TOOLS = ('book_reconcile', 'close_check', 'book_activity', 'book_markets'
                 'collateral_calls', 'mark_book', 'book_pnl', 'declare_legal_entity',
                 'declare_agreement', 'describe_agreements', 'declare_portfolio',
                 'describe_portfolios', 'worklist', 'approve_ticket', 'reject_ticket',
-                'approve_quote', 'reject_quote', 'describe_official_calculation',
+                'describe_official_calculation',
                 'declare_official_calculation', 'describe_credit_limits', 'declare_credit_limits')
 
 
@@ -575,7 +575,7 @@ def test_the_fx_strike_axis_is_published_on_the_field_a_model_fills_in():
 
 
 #: The tools that sit on a run and therefore have to speak while they sit.
-WAITING = ('price_candidate', 'xva_increment', 'execute_book', 'solve_deal', 'solve_structure',
+WAITING = ('price_candidate', 'xva_increment', 'solve_deal', 'solve_structure',
            'calibrate_spot_model', 'recalc_xva', 'tick_market_from_bloomberg',
            'verify_securities', 'setup_market', 'mark_book')
 
@@ -804,7 +804,7 @@ def test_booking_a_deal_prices_it(book):
     assert outcome['written'] is True and outcome['deal_path'] == '1'
     assert mcp_server.read_deal('1')['deal']['Reference'] == 'CF2'
 
-    run = asyncio.run(mcp_server.execute_book())
+    run = asyncio.run(mcp_server.price_candidate())
     assert run['status'] == 'done'
     values = mcp_server.deal_values(run['result_id'])
     assert values['CF2'] == pytest.approx(BOOKED['Amount'] * SPOT * np.exp(-RATE * 2.0), rel=1e-3)
@@ -940,7 +940,7 @@ def test_a_margin_target_is_money_and_the_deal_records_what_was_charged(book):
     assert solved['deal']['Sales_Margin_Currency'] == 'ZAR'
 
     assert mcp_server.book_deal(solved['deal'])['written'] is True
-    run = asyncio.run(mcp_server.execute_book())
+    run = asyncio.run(mcp_server.price_candidate())
     assert mcp_server.deal_values(run['result_id'])['SLV2'] == pytest.approx(
         50_000.0 * SPOT, abs=0.01)
 
@@ -968,14 +968,14 @@ def test_the_practical_loop_quotes_to_a_booked_structure(tmp_path):
         assert outcome['status'] == 'done' and abs(outcome['residual']) <= 0.01
 
         booked = mcp_server.book_deal(outcome['deal'])
-        run = asyncio.run(mcp_server.execute_book())
+        run = asyncio.run(mcp_server.price_candidate())
         assert booked['written'] is True
         assert mcp_server.deal_values(run['result_id'])['OPT1'] == pytest.approx(
             500_000.0, abs=0.01)
 
         # and a values tick moves the mark - the market is live, not a snapshot baked at load
         patched = mcp_server.patch_market_values({'FxRate.ZAR': {'Spot': SPOT * 1.02}})
-        moved = asyncio.run(mcp_server.execute_book())
+        moved = asyncio.run(mcp_server.price_candidate())
         assert patched['written'] is True
         assert mcp_server.deal_values(moved['result_id'])['OPT1'] > 550_000.0
     finally:
@@ -1068,7 +1068,7 @@ def test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar(tmp_path,
         node = mcp_server.read_deal(booked['deal_path'])
         assert len(node['children']) == 2, 'the structure booked without its legs'
 
-        run = asyncio.run(mcp_server.execute_book())
+        run = asyncio.run(mcp_server.price_candidate())
         assert mcp_server.deal_values(run['result_id'])[
             node['deal']['Reference']] == pytest.approx(quote['net'], abs=1.0)
         assert os.path.isfile(pending), 'the pending trade is an audit trail, not a scratch file'
@@ -1121,7 +1121,7 @@ def test_a_recorded_desk_books_and_accepts_through_the_binding(recorded, tmp_pat
     without them it refuses in the SERVICE's own words rather than in a paraphrase here.
 
     And the desk tier under four eyes runs through the binding exactly as it does through the
-    service: the acceptance books the trade PENDING into the node the quote named, `approve_quote`
+    service: the acceptance books the trade PENDING into the node the quote named, `approve_ticket`
     under another seat clears it, and a second acceptance is told it is already booked; the tree
     and the worklist read back what waits. Nothing is monkeypatched - a real home under tmp, a real
     policy declared through the record's own verb, the fault injected as DATA. Under a capabilities
@@ -1188,7 +1188,7 @@ def test_a_recorded_desk_books_and_accepts_through_the_binding(recorded, tmp_pat
                 if row['portfolio'] == 'service/FX']
         assert [(row['status'], row['pending']) for row in held] == [('pending', 1.0)]
 
-        signed = mcp_server.approve_quote(quote['quote_id'], 'subject-desk-two')
+        signed = mcp_server.approve_ticket('subject-desk-two', quote_id=quote['quote_id'])
         assert signed['ticket'] == pending['accepted']['ticket'] == pending['ticket']
         assert (signed['portfolio'], signed['status']) == ('service/FX', 'approved')
         again = mcp_server.book_quote(quote['quote_id'], actor='subject-desk-one')
@@ -1260,7 +1260,7 @@ def test_the_credit_limits_reach_a_model_as_the_record_declares_them(book, recor
 
 #: The tools that put work on the hub's compute, or value the book where the queue would, each with
 #: the arguments that carry it past its own checks to the queue's question.
-QUEUED = (('price_candidate', {}), ('execute_book', {}),
+QUEUED = (('price_candidate', {}),
           ('solve_deal', {'deal': json.loads(dump(BOOKED)), 'field': 'Amount'}),
           ('book_risk_summary', {}), ('recalc_xva', {'netting_sets': ['CLIENT_A']}),
           ('xva_increment', {'deal': json.loads(dump(BOOKED)), 'parent_reference': 'CLIENT_A'}),
@@ -1603,7 +1603,7 @@ def test_an_amendment_changes_the_value_it_names(book):
     assert outcome['written'] is True
     assert mcp_server.read_deal('0')['deal']['Amount'] == 500_000.0
 
-    run = asyncio.run(mcp_server.execute_book())
+    run = asyncio.run(mcp_server.price_candidate())
     assert mcp_server.deal_values(run['result_id'])['CF1'] == pytest.approx(
         500_000.0 * SPOT * np.exp(-RATE * 2.0), rel=1e-3)
 
@@ -1658,7 +1658,7 @@ def test_execute_hands_back_the_id_when_it_will_not_wait(book):
 
     Killing mutation: the engine version trimmed from the summary.
     """
-    run = asyncio.run(mcp_server.execute_book(wait_seconds=0.0))
+    run = asyncio.run(mcp_server.price_candidate(wait_seconds=0.0))
     if run['status'] != 'done':  # the worker may still win the race on a tiny book
         assert 'poll_result' in run['hint']
     service.EXECUTOR.queue.join()
@@ -1692,7 +1692,7 @@ def test_a_run_comes_back_as_shapes_never_cells(book):
 
     Killing mutation: the summary handing back each table's column list.
     """
-    run = asyncio.run(mcp_server.execute_book())
+    run = asyncio.run(mcp_server.price_candidate())
     assert set(run) <= {'result_id', 'status', 'plan_hash', 'values_hash', 'engine_version',
                         'seed', 'quasi_seed', 'stats', 'tables', 'waited', 'error'}
     for name, shape in run['tables'].items():
@@ -1824,7 +1824,7 @@ def test_a_bloomberg_tick_returns_the_finished_payload():
 
 
 def test_a_bloomberg_tick_that_will_not_wait_hands_back_the_id():
-    """The same escape hatch `execute_book` has: past the wait, the id and the way forward travel
+    """The same escape hatch `price_candidate` has: past the wait, the id and the way forward travel
     in `hint` - the provisioning is on the service, not in this call.
 
     Killing mutation: the hint not naming `poll_result`, which leaves a model an id and no verb to
