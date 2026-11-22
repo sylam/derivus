@@ -146,18 +146,18 @@ check('verifyRequest carries named tickers, and an empty list is no scope',
        securities.verifyRequest({ securities: [] })],
       [{ securities: ['SASW1 BGN Curncy'] }, {}]);
 
-// --- verdictOf
-check('verdictOf answers the word the service answered',
+// --- evidenceRead
+check('evidenceRead answers the word the service answered',
       'the verdict spelled here instead - a rule of the client\'s about what is live, which is '
       + 'the one thing a screen over evidence must never have',
-      [securities.verdictOf(USED[0].evidence), securities.verdictOf(USED[1].evidence),
-       securities.verdictOf(USED[2].evidence)],
+      [securities.evidenceRead(USED[0].evidence), securities.evidenceRead(USED[1].evidence),
+       securities.evidenceRead(USED[2].evidence)],
       [{ text: 'verified', tone: 'done' }, { text: 'dead', tone: 'error' },
        { text: 'unmapped', tone: '' }]);
-check('verdictOf tones an unmapped quote as itself',
+check('evidenceRead tones an unmapped quote as itself',
       '`unmapped` toned as an error, which paints every knot a desk quotes by hand red and trains '
       + 'a reader to ignore the colour',
-      securities.verdictOf({ verdict: 'unmapped' }).tone, '');
+      securities.evidenceRead({ verdict: 'unmapped' }).tone, '');
 
 // --- usedRows
 check('usedRows flattens one knot into the columns a reader compares',
@@ -183,21 +183,21 @@ check('usedRows leaves a rejection\'s columns empty rather than borrowing the le
         print: '2024-06-28', verdict: 'dead', tone: 'error',
         name: 'ZAR SWAP QTR (VS 3M) 5Y', verified: '' });
 
-// --- mapRows
-check('mapRows walks to the leaf however deep the family files one',
+// --- securityRows
+check('securityRows walks to the leaf however deep the family files one',
       'the walk stopped at a fixed depth, which answers nothing at all for a rates strip - the '
       + 'one block whose entries sit four names down',
-      securities.mapRows(BLOCKS.rates, ['rates']).map(({ path, entry }) => [path, entry.security]),
+      securities.securityRows(BLOCKS.rates, ['rates']).map(({ path, entry }) => [path, entry.security]),
       [['rates/ZAR/fixings/3M', 'JIBA3M Index'], ['rates/ZAR/strip/1Y', 'SASW1 BGN Curncy']]);
-check('mapRows walks past the metadata a block files beside its entries',
+check('securityRows walks past the metadata a block files beside its entries',
       'the leaf test dropped (every dict a leaf), which lists the `quotes` container and the '
       + '`expiries` table as entries carrying no security at all',
-      securities.mapRows(BLOCKS.fx_vol, ['fx_vol']).map(({ path }) => path),
+      securities.securityRows(BLOCKS.fx_vol, ['fx_vol']).map(({ path }) => path),
       ['fx_vol/USDZAR/quotes/1M/ATM']);
-check('mapRows on an empty map is an empty list',
+check('securityRows on an empty map is an empty list',
       'a throw on the home that has never been verified, which is the one home the read verb '
       + 'answers an empty map for',
-      [securities.mapRows({}), securities.mapRows(undefined)], [[], []]);
+      [securities.securityRows({}), securities.securityRows(undefined)], [[], []]);
 
 // --- mapPages
 const SPOTS = { EURUSD: evidence('EURUSD BGN Curncy', 'EUR-USD X-RATE'),

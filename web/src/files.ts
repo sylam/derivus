@@ -7,7 +7,7 @@ import type { PathMaps, PathsAnswer } from './types';
 export type MapName = keyof PathMaps;
 
 /** One row of a map: the key as a job writes it, and what this box reads in its place. */
-export type MapRow = { written: string; here: string };
+type MapRow = { written: string; here: string };
 
 /** The key of a named file each map is looked up by. */
 const KEY = { path_transform: 'folder', file_transform: 'file' } as const;

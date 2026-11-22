@@ -4,7 +4,7 @@
 // own rule; what its trade does to the client's credit numbers; and what an acceptance says.
 
 import {
-  SET, STRIP_FIELDS, fieldsOf, levelOnAxis, pick, quoted, rowsByPath, sizeOf, toRows,
+  SET, STRIP_FIELDS, fieldsOf, levelOnAxis, pick, quoted, rowsByPath, sizeOf, toRows, tradesOf,
   type BlotterRow, type Quoted, type Size,
 } from './blotter';
 import { PLUS, entityText, instantMs, peaks, type Peak } from './desk';
@@ -252,7 +252,7 @@ export function chargeAsk(pending: Pick<PendingQuote, 'quote' | 'deal' | 'booked
 
 /** One line of a credit charge: a number of the client's netting set with the trade and without
  * it - a peak with the day each falls on - and what the trade does to it, as a word and a size. */
-export type ChargeLine = {
+type ChargeLine = {
   what: string; plus?: string; kind: 'money' | 'whole'; with: number; without: number;
   days?: { with: string; without: string }; moves: 'adds' | 'takes off' | 'no change'; by: number;
 };
@@ -364,17 +364,9 @@ export const quoteAt = (rows: QuoteGiven[], path: string, reference: unknown) =>
 
 /** Where a booked quote's trade stands in the file now: the first trade `tied` to it in the file's
  * order - none where the file holds it no more. */
-export function landedAt(nodes: DealNode[], booked: NonNullable<QuoteGiven['booked']>,
-                         at = ''): string | undefined {
-  for (const [position, node] of nodes.entries()) {
-    const path = `${at}${position}`;
-    const deal = node.Instrument['.Deal'];
-    const found = deal.Object === SET ? landedAt(node.Children ?? [], booked, `${path}/`)
-      : tied(booked, path, deal.Reference) ? path : undefined;
-    if (found !== undefined) return found;
-  }
-  return undefined;
-}
+export const landedAt = (nodes: DealNode[], booked: NonNullable<QuoteGiven['booked']>):
+  string | undefined => tradesOf(toRows(nodes, [], undefined))
+  .find((row) => tied(booked, row.path, row.reference))?.path;
 
 /** A re-quote made here and the quote it re-quotes, which the service does not link. */
 export type Kept = { id: string; from: string };

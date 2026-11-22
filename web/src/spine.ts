@@ -8,7 +8,7 @@
 // `spine` comes back null, the verdict is `none`, and the two screens render nothing at all.
 
 import { plural } from './desk';
-import { unrecorded } from './positions';
+import { positionName, unrecorded } from './positions';
 import type { Source } from './state';
 import { formatNumber } from './tokens';
 import type {
@@ -17,7 +17,7 @@ import type {
 
 /** How many strip rows a client holds. The service caps a page at 200 and this caps what has been
  * MERGED, so a poll running all day cannot grow the array without bound. */
-export const STRIP_ROWS = 200;
+const STRIP_ROWS = 200;
 
 /** Whether the served book is asked every beat if it moved: the desk's own is, which any client
  * books into, and a document opened from a file is read once and again after each write this
@@ -48,7 +48,7 @@ export function pinnedAt(spine: SpineBlock | null): string | null {
 /** A reconcile answer as one comparable value - the position it was folded at and every row of
  * the three lists. A fetched answer is a NEW object every time, so identity would repaint the
  * whole desk once per fold; what a desk reads is these rows. */
-export function reconciledAs(reconcile: Reconcile | null): string | null {
+function reconciledAs(reconcile: Reconcile | null): string | null {
   return reconcile === null ? null : JSON.stringify([
     reconcile.lsn, reconcile.events_behind, reconcile.positions_behind,
     reconcile.in_record_not_in_file.map((row) => [row.instrument, row.netting_set, row.quantity]),
@@ -111,9 +111,9 @@ export function wantsReconcile(spine: SpineBlock | null, heldAt: string | null,
 }
 
 /** What the banner says about the file it is looking at. `none` is a desk that records nothing. */
-export type VerdictState = 'none' | 'clean' | 'behind' | 'drifted';
+type VerdictState = 'none' | 'clean' | 'behind' | 'drifted';
 
-export type Verdict = {
+type Reconciled = {
   state: VerdictState;
   /** The banner's one line, empty where it shows nothing. */
   line: string;
@@ -127,13 +127,13 @@ export type Verdict = {
 
 /** One disagreement as a desk reads it: the trade it is on, what disagrees, what to do, and what a
  * click opens - the deal the file holds, the position the record holds, or the agreement. */
-export type Divergence = {
+type Divergence = {
   key: string; trade: string; what: string; todo: string;
   deal?: string; position?: { instrument: string; agreement: string }; agreement?: string;
 };
 
 const traded = (row: { reference: string | null; instrument: string; client: string | null }) =>
-  `${row.reference ?? row.instrument.slice(0, 12)}${row.client ? ` for ${row.client}` : ''}`;
+  `${positionName(row)}${row.client ? ` for ${row.client}` : ''}`;
 
 /** The reconcile lists as the rows a desk reads, in their order. */
 export function divergences(reconcile: Reconcile): Divergence[] {
@@ -198,7 +198,7 @@ export function ringsAhead(beat: Doorbell, cursor: number): boolean {
  * `clean` is every list empty, whatever the counts say, so a fixings policy past the pin lights
  * nothing. */
 export function reconcileVerdict(spine: SpineBlock | null | undefined,
-                                 reconcile: Reconcile | null): Verdict {
+                                 reconcile: Reconcile | null): Reconciled {
   const counts = {
     events: spine?.events_behind ?? 0,
     positions: spine?.positions_behind ?? 0,
@@ -273,7 +273,7 @@ export function noWork(recording: boolean, live: boolean): { title: string; hint
 
 /** A close with what it stands over said out loud: a close is superseded by a NEW close rather
  * than corrected in place, so the first one on a market says that instead of naming nothing. */
-export type CloseRow = MarketClose & { supersedes: string };
+type CloseRow = MarketClose & { supersedes: string };
 
 const newestFirst = (a: { lsn: number }, b: { lsn: number }) => b.lsn - a.lsn;
 

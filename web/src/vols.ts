@@ -45,7 +45,7 @@ export function triples(rows: number[][], key?: number): number[][] {
   return rows.filter((row) => row[2] === key).map((row) => [row[0], row[1], row[3]]);
 }
 
-export type Smile = { expiry: number; label: string; points: [number, number][] };
+type Smile = { expiry: number; label: string; points: [number, number][] };
 
 export type Shaped = {
   expiries: number[];

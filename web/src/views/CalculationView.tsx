@@ -8,7 +8,7 @@ import { DescriptorPanel } from '../components/FieldView';
 import { DataTable } from '../components/DataTable';
 import { Navigator, type Page } from '../components/Navigator';
 import { TimeSeriesChart } from '../components/TimeSeriesChart';
-import { currencyOf, lagsBook, ownDials, stampText, tableReading } from '../desk';
+import { reportCurrency, lagsBook, ownDials, stampText, tableReading } from '../desk';
 import { clockOf, marketOf, runHeld, useApp, usePolled, useRead } from '../state';
 import { formatNumber, isObject, token } from '../tokens';
 import type { JobDoc, Schema, TableShape } from '../types';
@@ -247,7 +247,7 @@ function RunStrip({ origin, submit, extra }: {
         <>
           <OnStrip
             computed={<>asked for {stampText(new Date(run.startedAt!).toISOString())}</>}
-            title={`result ${run.resultId}`} currency={currencyOf(run.doc)} doc={run.doc}
+            title={`result ${run.resultId}`} currency={reportCurrency(run.doc)} doc={run.doc}
             lagging={lagsBook(run.clock, clockOf(state))} loading={false}
             again=" Run it again for the numbers of the book on screen." />
           <Results doc={run.doc} />
@@ -381,7 +381,7 @@ function Results({ doc }: { doc: JobDoc }) {
       {reading && (
         <div className="tablenote">
           <span><b>{run.page!.name}</b> — amounts in <b>{reading.currency || '—'}</b>
-            {reading.currency === currencyOf(doc) && ", the run's report currency"}
+            {reading.currency === reportCurrency(doc) && ", the run's report currency"}
             {reading.collateral.length > 0 && <>; the exposure is net of the collateral held
               under {reading.collateral.join(', ')}, so a set holding more than it is owed reads
               below nought</>}</span>

@@ -5,7 +5,7 @@ import {
 } from '../blotter';
 import { EmptyState } from '../components/EmptyState';
 import { FieldView } from '../components/FieldView';
-import { currencyOf, lagsBook, stampText } from '../desk';
+import { reportCurrency, lagsBook, stampText } from '../desk';
 import {
   NO_PAPER, byPath, clientName, closed, netOf, nodeAt, type Position, type Ticket,
 } from '../positions';
@@ -423,7 +423,7 @@ function Unwind({ row, position, onVerdict }: {
   const held = position.quantity;
   const [units, setUnits] = useState(String(Math.abs(held)));
   const [price, setPrice] = useState('');
-  const [currency, setCurrency] = useState(currencyOf(state.doc));
+  const [currency, setCurrency] = useState(reportCurrency(state.doc));
   const [day, setDay] = useState('');
   const [asking, setAsking] = useState<string | null>(null);
   const [filing, setFiling] = useState(false);

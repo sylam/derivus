@@ -642,12 +642,14 @@ restruck deal opening the terms the file holds now. The web banner (`web/src/spi
 reconcile's lists, never the behind counts, because every write re-pins the file at the head, a
 delete included, and names each disagreement's trade, what is wrong and what to do.
 `GET /book/worklist` lists what waits on the asking seat, `seat` null where none was named, each
-row keyed by what its clearing fact is filed against and a ticket's row naming its trade, booker,
+row keyed by what its clearing fact is filed against, a call's naming the kinds of money it
+settles as (`settles_as`, the record's `HELD`), and a ticket's row naming its trade, booker,
 tier, booked price and the tier's sentence for why it waits. Its `pending` are the tickets the
 seat may sign; those it is shown and may not are `elsewhere`, each with `may`, the record's
 sentence why - the denial of its approval where the verdict is filed (`service.filed_at`), else
 its tier's four eyes (`tiers.refuses`) - so a maker reads its own ticket waiting on a checker,
 never as its to sign. **Held by**
+`test_pnl.py::test_a_collateral_call_is_read_on_a_marked_close_and_settled_as_a_movement`,
 `test_spine_engine.py::test_a_page_walks_the_record_forward_one_event_at_a_time`,
 `::test_what_the_file_lost_is_drift_under_a_pin_that_has_seen_every_position`,
 `::test_a_strip_row_names_the_trade_who_did_it_and_what_it_opens`,

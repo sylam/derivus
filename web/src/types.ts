@@ -72,13 +72,13 @@ export type Schema = {
 
 /** One leg a structure books: a declared instrument type, what the structure pins on it and the
  * parameter each remaining field is filled from. */
-export type StructureLeg = {
+type StructureLeg = {
   deal_type: string; pinned: Record<string, unknown>; slots: Record<string, string>;
 };
 
 /** One way a structure is dealt: the side of the pair its client buys, its own parameters and
  * legs. */
-export type Variation = {
+type Variation = {
   buys: 'base' | 'quote'; fields: Section; legs: Record<string, StructureLeg>;
 };
 
@@ -294,7 +294,7 @@ export type GreekRow = {
 /** One quote: the report-currency derivative per unit of the quote AS QUOTED - a par rate in
  * percent reads per 1% - taken through the calibration that builds a factor from it, and read per
  * its natural move where it has one. */
-export type QuoteRow = {
+type QuoteRow = {
   block: string; quote: string; value: number; level?: number | null; risk?: number | null;
   per?: string;
 };
@@ -467,7 +467,7 @@ export type MarketClose = {
   lsn: number;
 };
 
-export type MarketName = {
+type MarketName = {
   name: string;
   values_hash: string;
   actor: string;
@@ -475,7 +475,7 @@ export type MarketName = {
   lsn: number;
 };
 
-export type MarketSnapshot = { blob: string; book: string | null; lsn: number };
+type MarketSnapshot = { blob: string; book: string | null; lsn: number };
 
 export type BookMarkets = {
   lsn: number;
@@ -506,14 +506,14 @@ export type Reconcile = {
 /** One row of `GET /book/worklist`: what waits, and `key` the fact that clears it is filed
  * against - a ticket, a diary key, a fill's own key, an agreement, a day; a payment carries its
  * amount, currency and the agreement it is due under where it is one, a call the amount and
- * currency it calls, and a call nobody can work out what is not known. A ticket's row names its
- * trade, and a pending one its tier, what it fell past first as its ticket reads it, what it was
- * booked at, why it waits and `may`: null where the seat may sign it, else the record's sentence
- * why not. */
+ * currency it calls and the kinds of money it settles as, and a call nobody can work out what is
+ * not known. A ticket's row names its trade, and a pending one its tier, what it fell past first
+ * as its ticket reads it, what it was booked at, why it waits and `may`: null where the seat may
+ * sign it, else the record's sentence why not. */
 export type WorkRow = {
   kind: string; what: string; key: string; lsn: number | null; since: string | null;
   amount?: number | null; currency?: string | null; agreement?: string | null;
-  unknown?: { instrument: string | null; what: string }[];
+  unknown?: { instrument: string | null; what: string }[]; settles_as?: string[];
   reference?: string | null; deal_path?: string | null; client?: string | null;
   booker?: string; tier?: string | null; fell_past?: string[] | null; price?: number | null;
   waits_on?: string | null; may?: string | null;

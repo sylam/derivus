@@ -5,14 +5,14 @@ import { Amount, Gated, Stat } from '../components/Desk';
 import { EmptyState } from '../components/EmptyState';
 import {
   behind, explained, factorLabel, FIGURES, noPnl, noWindow, opensOn, pnlQuery, pnlRead,
-  positionLabel, residualShare, type Pnl,
+  residualShare, type Pnl,
 } from '../pnl';
 import {
   grantsRead, noPositions, pnlHeld, readAs, runHeld, spineOf, useApp, useRead,
 } from '../state';
 import { formatNumber } from '../tokens';
 import { entityText } from '../desk';
-import { NO_PAPER } from '../positions';
+import { NO_PAPER, positionName } from '../positions';
 
 /** What a figure nobody can know says on its dash. */
 const UNKNOWN = 'not known: the lines above name what is missing';
@@ -168,7 +168,7 @@ export function PnlView() {
             <tbody>
               {answer.rows.map((row) => (
                 <tr key={`${row.instrument}:${row.agreement}:${row.portfolio}`}>
-                  <td title={row.instrument}>{positionLabel(row)}</td>
+                  <td title={row.instrument}>{positionName(row)}</td>
                   <td>{row.portfolio}</td>
                   <td>{row.agreement}</td>
                   <td className="n">

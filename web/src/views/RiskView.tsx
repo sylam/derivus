@@ -1,7 +1,7 @@
 import { Fragment, useMemo, useState } from 'react';
-import { EXPORTS, saveCsv } from '../blotter';
+import { EXPORTS, MARKED, saveCsv } from '../blotter';
 import {
-  MARK, NO_BOOK, QUOTE_HEADS, bucketAxes, factorFamily, lagsBook, markHolds, marksExport,
+  NO_BOOK, QUOTE_HEADS, bucketAxes, factorFamily, lagsBook, markHolds, marksExport,
   marksHeads, marksTotal, offBook, onPair, perOf, perUnitText, placeText, plural, positionsUnder,
   quoteView, quotesExport, readingExport, reconciles, riskOf, riskReading, sharedPer, sortGreeks,
   stampText, tenorText, unpriced, valuationDay, type GreekKey, type Ladder,
@@ -386,7 +386,7 @@ function Marks({ risk, currency }: { risk: BookRisk; currency: string }) {
         <table className="data desk marks">
           <thead>
             <tr>
-              {marksHeads(recording).map((head) => (head !== MARK ? <th key={head}>{head}</th> : (
+              {marksHeads(recording).map((head) => (head !== MARKED ? <th key={head}>{head}</th> : (
                 <th key={head} className="n" title="the mark from the desk's side: positive is worth that much to the desk">
                   {`${head}${currency ? ` (${currency})` : ''}`}</th>
               )))}

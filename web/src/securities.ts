@@ -13,7 +13,7 @@ export const USED_COLUMNS = ['curve', 'tenor', 'security', 'use', 'quote', 'prin
 
 /** One row of the join, flat. `print` is the BOOK's timestamp and `verified` the MAP's, which are
  * different dates and never the same column. */
-export type UsedTableRow =
+type UsedTableRow =
   Record<typeof USED_COLUMNS[number], string | number | null> & { tone: string };
 
 /** One field of an entry at the path a panel names it by - `['conventions', 'spot_days']`. Every
@@ -64,7 +64,7 @@ export function verifyRequest(scope: {
 /** The verdict column: the word the SERVICE answered - a rejection's own, its `unmapped` where the
  * map never heard of the ticker - or `verified` where the entry carries the date a terminal
  * answered on. The tone is the only rule here, and it is a colour. */
-export function verdictOf(evidence: Evidence): { text: string; tone: string } {
+export function evidenceRead(evidence: Evidence): { text: string; tone: string } {
   if (evidence.verdict) {
     return { text: evidence.verdict, tone: evidence.verdict === 'unmapped' ? '' : 'error' };
   }
@@ -75,7 +75,7 @@ export function verdictOf(evidence: Evidence): { text: string; tone: string } {
  * order the curve was solved in. `curve` narrows it to one. */
 export function usedRows(used: UsedRow[], curve?: string): UsedTableRow[] {
   return used.filter((row) => curve === undefined || row.curve === curve).map((row) => {
-    const verdict = verdictOf(row.evidence);
+    const verdict = evidenceRead(row.evidence);
     return {
       curve: row.curve, tenor: row.tenor, security: row.security, use: row.use, quote: row.quote,
       print: row.timestamp, verdict: verdict.text, tone: verdict.tone,
@@ -87,12 +87,12 @@ export function usedRows(used: UsedRow[], curve?: string): UsedTableRow[] {
 /** Every leaf of the map's blocks as `(path, entry)` - a leaf is a dict naming a `security`, and
  * anything else is a container or the metadata a block files beside its entries. The service's own
  * walk in the client's spelling, the map being JSON no schema declares. */
-export function mapRows(node: unknown, prefix: string[] = []): { path: string; entry: MapEntry }[] {
+export function securityRows(node: unknown, prefix: string[] = []): { path: string; entry: MapEntry }[] {
   if (!isObject(node)) return [];
   if (typeof node.security === 'string') {
     return [{ path: prefix.join('/'), entry: node as unknown as MapEntry }];
   }
-  return Object.entries(node).flatMap(([key, value]) => mapRows(value, [...prefix, key]));
+  return Object.entries(node).flatMap(([key, value]) => securityRows(value, [...prefix, key]));
 }
 
 /** The map as the pages the evidence files it on, blocks in order: a block whose entries all sit in

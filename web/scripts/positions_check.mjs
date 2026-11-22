@@ -226,4 +226,12 @@ check('a closed trade rolls off nobody\'s window',
         + 'no longer holds',
       blotter.rollingCount(ROLLING, 60), 1);
 
+check('a position, or a row of the record naming one, reads by the reference it was booked under, '
+      + 'else by the head of its address, cut short',
+      'the address shown where a reference exists, which no desk can read; or the address cut with '
+      + 'nothing saying so',
+      [positions.positionName({ instrument: 'a'.repeat(64), reference: 'CF-A' }),
+       positions.positionName({ instrument: 'b'.repeat(64), reference: null })],
+      ['CF-A', `${'b'.repeat(12)}…`]);
+
 done();

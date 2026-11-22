@@ -7,6 +7,7 @@ import {
   SEAT, failure, getBook, getBookStatus, getQuote, getQuotes, getResult, stored,
   type BookDealOutcome,
 } from './api';
+import { rowsByPath, toRows } from './blotter';
 import { bookClock, lagsBook } from './desk';
 import { NO_PAPER, type Grouping, type Paper } from './positions';
 import { ranAs } from './quote';
@@ -14,7 +15,7 @@ import { pinnedAt, readRecord, reconciledRecord, type RecordHeld } from './spine
 import { isObject } from './tokens';
 import { tradeAt } from './trade';
 import type {
-  ActivityPage, BookMarket, BookResponse, BookRisk, BookXva, DealNode, DescribeResult, JobDoc,
+  ActivityPage, BookMarket, BookResponse, BookRisk, BookXva, DescribeResult, JobDoc,
   Market, PathsAnswer, Reconcile, RefusalCode, ResultSummary, Schema, SeatGrants, SpineBlock,
   TablePage, ValidateResult, Worklist,
 } from './types';
@@ -24,7 +25,7 @@ export type Source =
   | { kind: 'book'; etag: string; path: string; opened?: string }
   | { kind: 'local'; name: string; note: string | null };
 
-export type RunState = {
+type RunState = {
   status: 'idle' | 'submitting' | 'queued' | 'running' | 'done' | 'error';
   resultId: string | null;
   /** The page that asked for the run - the book's own calculation, or a named one. */
@@ -45,7 +46,7 @@ export type RunState = {
 /** One fetched desk view: the answer, the failure that stands in its place, and whether a fetch
  * is in flight. A failure keeps its STATUS, because the three a book verb gives - 404 no book,
  * 422 a named cause, anything else - are three different screens. */
-export type Fetched<T> = {
+type Fetched<T> = {
   data: T | null;
   error: string | null;
   status: number | null;
@@ -56,17 +57,17 @@ export type Fetched<T> = {
  * book's etag and where the record stood. That is what makes "the numbers on screen are behind
  * the book" answerable - the risk's own `etag` is a hash of a different thing, and comparing the
  * two would always read stale. */
-export type Clocked<T> = Fetched<T> & { clock: string | null };
+type Clocked<T> = Fetched<T> & { clock: string | null };
 /** The risk, a failure keeping the refusal's `code` (`desk.unpriced`). */
-export type RiskState = Clocked<BookRisk> & { code: RefusalCode | null };
+type RiskState = Clocked<BookRisk> & { code: RefusalCode | null };
 
 /** What the RECORD answers this client, off the one poll the app already runs. The slice and both
  * its transitions live in `web/src/spine.ts`, where they are arithmetic a node check drives:
  * `spine` null is a desk that records nothing - not an empty record - and every reader of this
  * renders nothing at all under it. */
-export type RecordState = RecordHeld;
+type RecordState = RecordHeld;
 
-export type AppState = {
+type AppState = {
   schema: Schema | null;
   schemaError: string | null;
   doc: JobDoc | null;
@@ -97,19 +98,19 @@ export type AppState = {
   grants: { asked: string; read: SeatGrants | null; refused: string | null } | null;
 };
 
-export const IDLE_RUN: RunState = {
+const IDLE_RUN: RunState = {
   status: 'idle', resultId: null, origin: null, summary: null, error: null,
   table: null, page: null, scalars: {}, startedAt: null, clock: null, doc: null,
 };
 
 const NOTHING_FETCHED = { data: null, error: null, status: null, loading: false };
 
-export const IDLE_RISK: RiskState = { ...NOTHING_FETCHED, clock: null, code: null };
-export const IDLE_XVA: Clocked<BookXva> = { ...NOTHING_FETCHED, clock: null };
-export const IDLE_MARKET: Fetched<BookMarket> = NOTHING_FETCHED;
-export const IDLE_PATHS: Fetched<PathsAnswer> = NOTHING_FETCHED;
-export const IDLE_PAPER: Fetched<Paper> = NOTHING_FETCHED;
-export const NO_RECORD: RecordState = {
+const IDLE_RISK: RiskState = { ...NOTHING_FETCHED, clock: null, code: null };
+const IDLE_XVA: Clocked<BookXva> = { ...NOTHING_FETCHED, clock: null };
+const IDLE_MARKET: Fetched<BookMarket> = NOTHING_FETCHED;
+const IDLE_PATHS: Fetched<PathsAnswer> = NOTHING_FETCHED;
+const IDLE_PAPER: Fetched<Paper> = NOTHING_FETCHED;
+const NO_RECORD: RecordState = {
   spine: null, rows: null, reconcile: null, reconciledAt: null, worklist: null, worklistAt: null,
   worklistError: null,
 };
@@ -429,19 +430,9 @@ export function holds(record: unknown, path: string[]): boolean {
 export function standing(doc: JobDoc | null, reconcile: Reconcile | null,
                          agreement: { agreement: string; terms: Record<string, unknown> }):
   { path: string | null; moved: string[] } {
-  const find = (nodes: DealNode[], at: string): string | null => {
-    for (const [position, node] of nodes.entries()) {
-      const path = `${at}${position}`;
-      const deal = node.Instrument['.Deal'];
-      if (deal.Reference === agreement.agreement && deal.Object === agreement.terms.Object) {
-        return path;
-      }
-      const below = find(node.Children ?? [], `${path}/`);
-      if (below !== null) return below;
-    }
-    return null;
-  };
-  return { path: find(doc?.Calc.Deals.Deals.Children ?? [], ''),
+  const held = [...rowsByPath(toRows(doc?.Calc.Deals.Deals.Children ?? [], [], undefined)).values()]
+    .find((row) => row.reference === agreement.agreement && row.object === agreement.terms.Object);
+  return { path: held?.path ?? null,
            moved: reconcile?.terms_mismatch?.find((row) => row.agreement === agreement.agreement)
              ?.fields ?? [] };
 }

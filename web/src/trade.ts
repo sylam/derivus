@@ -7,10 +7,10 @@ import {
   type Size,
 } from './blotter';
 import { instantMs, plural } from './desk';
-import { type Agreement, type Position } from './positions';
+import { type Position } from './positions';
 import { salesNames } from './quote';
 import {
-  currencyOf, fieldLabel, formatNumber, setCurrency,
+  currencyOf, fieldLabel, formatNumber,
 } from './tokens';
 import type {
   ActivityPage, ActivityRow, BookRisk, DealMark, DealNode, Descriptor, Market, Moved, PositionMark,
@@ -254,15 +254,4 @@ export function waitedText(since: string | null, now: number): string {
   if (minutes < 60) return plural(minutes, 'minute');
   if (days < 1) return plural(Math.floor(minutes / 60), 'hour');
   return days === 1 ? 'since yesterday' : plural(days, 'day');
-}
-
-/** The paper a ticket books under in a line: the agreement and the document it is, and whether a
- * run collateralises it, as the service reads its terms, in the currency its balance is kept in;
- * an agreement the record never declared says so. */
-export function paperText(set: string, agreements: Agreement[]): string {
-  const paper = agreements.find((row) => row.agreement === set);
-  if (!paper) return `${set}, which the record declares no agreement for`;
-  const currency = setCurrency(paper.terms);
-  return `${set} (${paper.kind}), ${!paper.collateralized ? 'uncollateralised'
-    : `collateralised${currency ? ` in ${currency}` : ''}`}`;
 }

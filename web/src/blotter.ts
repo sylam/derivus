@@ -73,7 +73,7 @@ export function dateOf(value: unknown): string | undefined {
 
 /** Whole days from `from` to `to`, both ISO dates - the blotter's days-to-roll. UTC midnight on
  * both sides, so no timezone the browser happens to sit in can move a roll by a day. */
-export function daysBetween(from: string, to: string): number | undefined {
+function daysBetween(from: string, to: string): number | undefined {
   const a = ISO.exec(from);
   const b = ISO.exec(to);
   if (!a || !b) return undefined;
@@ -95,7 +95,7 @@ export function baseDateOf(doc: JobDoc, market: Market | null): string | undefin
 /** Every ISO date anywhere inside a value: a scalar, a `.DateList`-shaped grid of rows, a list of
  * expiry rows (`Accumulator_ExpiryDates`, `TARF_ExpiryDates`, `Barrier_Dates`). Depth-bounded, so
  * a shape nobody anticipated costs a shallow walk rather than a stack. */
-export function datesIn(value: unknown, depth = 0): string[] {
+function datesIn(value: unknown, depth = 0): string[] {
   const one = dateOf(value);
   if (one) return [one];
   if (depth >= 3) return [];
@@ -590,16 +590,18 @@ export const SET = 'NettingCollateralSet';
  * grouping, which picks nothing. */
 export const holdsTrades = (row: BlotterRow): boolean => row.target === null || row.object === SET;
 
+/** The trades among `rows`, in the file's order: a row that is one, with its legs inside it, and
+ * those a row holding trades holds - never the row itself. */
+export const tradesOf = (rows: BlotterRow[]): BlotterRow[] =>
+  rows.flatMap((row) => (holdsTrades(row) ? tradesOf(row.children) : [row]));
+
 const rollsWithin = (row: BlotterRow, horizon: number | null): boolean =>
   rollsOwn(row, horizon) || row.children.some((child) => rollsWithin(child, horizon));
 
 /** How many trades roll inside the window: a trade anything in which rolls is one - a structure is
- * one trade and its legs its parts - a closed one none, and a row holding trades counts what rolls
- * among them and never itself. */
-export function rollingCount(rows: BlotterRow[], horizon: number | null): number {
-  return rows.reduce((sum, row) => sum + (holdsTrades(row) ? rollingCount(row.children, horizon)
-    : Number(!closed(row.units) && rollsWithin(row, horizon))), 0);
-}
+ * one trade and its legs its parts - and a closed one none. */
+export const rollingCount = (rows: BlotterRow[], horizon: number | null): number =>
+  tradesOf(rows).filter((row) => !closed(row.units) && rollsWithin(row, horizon)).length;
 
 /** Sorted WITHIN the tree, never across it: siblings order by days-to-roll (undated last), and a
  * container keeps its own children. The blotter is a tree read as a list, and a sort that broke
@@ -627,6 +629,7 @@ export function flatten(rows: BlotterRow[], collapsed: Set<string>): BlotterRow[
  * a desk that records reads beside them. */
 export const HEADS = ['Reference', 'Type', 'Desk side', 'On', 'Amount', 'Ccy', 'Strike', 'Barrier',
   'Terms', 'Expiry', 'Next date', 'Days'];
+/** The head of a column of the desk's own mark of a row. */
 export const MARKED = 'Mark';
 export const RECORD_HEADS = ['Qty', 'Portfolio', 'Client', 'Status', 'Booked by', MARKED];
 

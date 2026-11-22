@@ -100,9 +100,10 @@ export const POSITION = 'position:';
 export const positionId = (position: Position): string =>
   POSITION + JSON.stringify([position.instrument, position.agreement, position.portfolio]);
 
-/** A position by the reference it was booked under, else by the head of its address. */
-export const positionName = (position: Position): string =>
-  position.reference ?? position.instrument.slice(0, 12);
+/** A position - or a row of the record naming one - by the reference it was booked under, else by
+ * the head of its address. */
+export const positionName = (position: { reference: string | null; instrument: string }): string =>
+  position.reference ?? `${position.instrument.slice(0, 12)}…`;
 
 /** Whether the record holds nothing of a trade - a position netted to nothing, which stands only to
  * say it closed, or a row of the file the record holds at a net of none. Closed counts as live
@@ -184,7 +185,7 @@ export function heldColumns(held: Position[], entities: Entity[]):
 function leaf(position: Position, other: string): TreeNode {
   return {
     id: positionId(position),
-    label: position.reference ?? `${position.instrument.slice(0, 12)}…`,
+    label: positionName(position),
     hint: `${closed(position.quantity) ? 'closed' : `×${formatNumber(position.quantity)}`} · ${
       position.deal_paths.length ? other : 'not in the file'}${
       position.expired ? ` · expired ${position.expired}, settles ${position.settles}` : ''}`,

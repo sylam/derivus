@@ -118,10 +118,4 @@ check('only a window ending now falls behind the book, and only once the book ha
        pnl.behind('', undefined, 'e2')],
       [false, true, false, false]);
 
-check('a position reads by the reference it was booked under, else by its address',
-      'the address shown where a reference exists, which no desk can read',
-      [pnl.positionLabel({ instrument: 'a'.repeat(64), reference: 'CF-A' }),
-       pnl.positionLabel({ instrument: 'b'.repeat(64), reference: null })],
-      ['CF-A', `${'b'.repeat(12)}…`]);
-
 done();

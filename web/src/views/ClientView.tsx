@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { getBookActivity, type About } from '../api';
-import { baseDateOf, quoted, rowsByPath, sizeOf, toRows, type BlotterRow } from '../blotter';
+import {
+  MARKED, baseDateOf, quoted, rowsByPath, sizeOf, toRows, type BlotterRow,
+} from '../blotter';
 import {
   CLIENT, RUNS, agreementsOf, fundedAt, heldUnder, readiness, ready, termsReading, touching,
   type Held, type Line, type Term,
@@ -307,7 +309,7 @@ function OnBook({ own, reads, rows, market, schema }: {
                       {reads.positions && <><th className="n">Qty</th><th>Status</th></>}
                       <th className="n"
                           title="the trade's own mark, positive is worth that much to the desk">
-                        Desk's value{risk?.currency ? ` (${risk.currency})` : ''}</th>
+                        {MARKED}{risk?.currency ? ` (${risk.currency})` : ''}</th>
                     </tr>
                   </thead>
                   <tbody>

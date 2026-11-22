@@ -76,7 +76,7 @@ function FactorBlock({ schema, name, block, priceModels, modelConfig, live, mark
 
 export function MarketDataView() {
   const { state } = useApp();
-  const { doc, schema, describe } = state;
+  const { doc, schema } = state;
   const market = marketOf(state);
   if (!doc || !schema || !market) return null;
 
@@ -101,9 +101,6 @@ export function MarketDataView() {
               : <>This document overlays a server-side market data file (
                 <b title={marketFile}>{fileName(marketFile)}</b>) —
                 only the overlay is shown here.</>}
-            {describe && ` The engine resolves ${describe.factors.resolved.length} factors from it` +
-              (describe.factors.missing.length
-                ? ` and is missing ${describe.factors.missing.join(', ')}.` : '.')}
           </div>
         ) : null}
       </>}

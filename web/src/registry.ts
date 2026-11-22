@@ -22,7 +22,7 @@ import { SettingsView } from './views/SettingsView';
 import { TradeView } from './views/TradeView';
 import { XvaView } from './views/XvaView';
 
-export type Workspace = { id: string; label: string; view: ComponentType };
+type Workspace = { id: string; label: string; view: ComponentType };
 
 export const WORKSPACES: Workspace[] = [
   { id: 'portfolio', label: 'Portfolio', view: PortfolioView },

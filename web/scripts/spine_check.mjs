@@ -199,7 +199,7 @@ check('a deal the file holds that nobody booked is DRIFT, not a lag, and the lin
       + 'the line counting lists, which names no trade a desk could go and look at',
       [drifted.state, drifted.line],
       ['drifted', 'The book file and the record disagree in 3 places: CF-ONE for Client A Ltd, '
-        + 'a2000d85d29c for Client A Ltd, BY_HAND for CPTY_B']);
+        + 'a2000d85d29c… for Client A Ltd, BY_HAND for CPTY_B']);
 check('a trade the file LOST under a pin that has seen everything is drift, said in full',
       'the `positions === 0` arm dropped, after which a deal deleted through the desk\'s own verb '
       + '- which records nothing and re-pins at the head - is invisible on every screen, forever; '
@@ -224,7 +224,7 @@ check('a lost trade opens the position the record holds, a deal nobody booked it
                          row.agreement ?? null]),
       [['CF-ONE for Client A Ltd', { instrument: 'a1d9443814bc', agreement: 'CLIENT_A' }, null,
         null],
-       ['a2000d85d29c for Client A Ltd', { instrument: 'a2000d85d29c', agreement: 'CLIENT_A' },
+       ['a2000d85d29c… for Client A Ltd', { instrument: 'a2000d85d29c', agreement: 'CLIENT_A' },
         null, null],
        ['BY_HAND for CPTY_B', null, '1/0', null], ['ISDA-A', null, null, 'ISDA-A']]);
 check('each says what to do, and the deal nobody booked says where it sits',

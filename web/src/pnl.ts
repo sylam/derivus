@@ -21,7 +21,7 @@ export type Unknown = { instrument: string | null; what: string };
 
 /** One position's P&L between the two marks, as `GET /book/pnl` answers it. A unit mark is the
  * close's own number, and `paid_*` what the unit paid that day, which the value takes out. */
-export type PnlRow = {
+type PnlRow = {
   instrument: string; agreement: string; portfolio: string; counterparty: string | null;
   reference: string | null; quantity_start: number; quantity_end: number;
   unit_start: number | null; unit_end: number | null; paid_start: number | null;
@@ -33,7 +33,7 @@ export type PnlRow = {
 };
 
 /** One risk factor the explain read: a quote the book's factors are built from, or a factor. */
-export type Moved = {
+type FactorMove = {
   block?: string; quote?: string; factor?: string; tenor?: number[];
   delta: number; start: number | null; end: number | null; move: number | null;
   pnl: number | null;
@@ -41,7 +41,7 @@ export type Moved = {
 
 export type Explain = {
   existing: number | null; carry: number | null; market: number | null;
-  residual: number | null; reserves: number | null; factors: Moved[]; unknown: Unknown[];
+  residual: number | null; reserves: number | null; factors: FactorMove[]; unknown: Unknown[];
   note: string | null;
 };
 
@@ -69,13 +69,9 @@ export const FIGURES: { key: keyof PnlRow; label: string }[] = [
   { key: 'unrealised', label: 'Unrealised' },
 ];
 
-/** A position as a desk knows it: the reference it was booked under, else its address. */
-export const positionLabel = (row: PnlRow): string =>
-  row.reference ?? `${row.instrument.slice(0, 12)}…`;
-
 /** A risk factor as a reader knows it: the quote and the block it sits in, or the factor and its
  * coordinates - a spot carrying none. */
-export function factorLabel(row: Moved): string {
+export function factorLabel(row: FactorMove): string {
   if (row.quote !== undefined) return `${row.block} · ${row.quote}`;
   return row.tenor?.length ? `${row.factor} · ${row.tenor.join(' × ')}` : row.factor ?? '';
 }

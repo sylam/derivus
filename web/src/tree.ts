@@ -19,7 +19,7 @@ export type TreeNode = {
 
 /** A group of this many leaves or fewer stands open until somebody closes it; a bigger one stands
  * closed, so a family of a few hundred blocks is one row until it is asked for. */
-export const OPEN_LEAVES = 12;
+const OPEN_LEAVES = 12;
 
 /** A group's id: its name behind a prefix no item id carries, so a group and an item spelled the
  * same are never one row. */

@@ -7,7 +7,7 @@ import { EditableScalar, FieldView } from '../components/FieldView';
 import { Navigator, type Page } from '../components/Navigator';
 import { offBook } from '../desk';
 import {
-  USED_COLUMNS, mapPages, mapRows, mergeRequest, rejectedRows, seedDescriptor, setAt, usedRows,
+  USED_COLUMNS, mapPages, securityRows, mergeRequest, rejectedRows, seedDescriptor, setAt, usedRows,
   verifyRequest, withMember,
 } from '../securities';
 import { heldBack, runHeld, useApp, useQueued, useRead } from '../state';
@@ -202,7 +202,7 @@ function evidencePages(answer: SecuritiesAnswer, verify?: Verification): Page[] 
   const rejected = rejectedRows(answer.map.rejected);
   return [
     ...mapPages(answer.map.blocks).map(({ block, key, node }) => {
-      const rows = mapRows(node, key === null ? [block] : [block, key]);
+      const rows = securityRows(node, key === null ? [block] : [block, key]);
       return {
         id: key === null ? block : `${block}/${key}`, label: key ?? block,
         folder: key === null ? undefined : block,

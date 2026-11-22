@@ -9,7 +9,7 @@ import {
 import { EmptyState } from '../components/EmptyState';
 import { TimeSeriesChart } from '../components/TimeSeriesChart';
 import {
-  NO_BOOK, PLUS, SURVIVAL, ageOf, currencyOf, entityText, heldSpreads, lagsBook, offBook, peaks,
+  NO_BOOK, PLUS, SURVIVAL, ageOf, reportCurrency, entityText, heldSpreads, lagsBook, offBook, peaks,
   plural, replayRows, stampText, tableReading, valuationDay, xvaTotals, type Peak,
 } from '../desk';
 import {
@@ -162,7 +162,7 @@ export function useCredit() {
   if (!xva.data || !doc || !schema || (recording && !paper)) return null;
 
   const view = xva.data;
-  const currency = risk.data?.currency ?? currencyOf(doc);
+  const currency = risk.data?.currency ?? reportCurrency(doc);
   const market = marketOf(state);
   const factors = market?.['Price Factors'] ?? {};
   const rows = rowsByPath(toRows(doc.Calc.Deals.Deals.Children, [], undefined));

@@ -8,13 +8,13 @@
 // the XVA verb never runs anything at all. A recalc is asked for through the MCP verbs, and this
 // module has no vocabulary for one on purpose.
 
-import { levelOnAxis } from './blotter';
+import { MARKED, levelOnAxis, rowsByPath, toRows } from './blotter';
 import { clientName, positionName, under, type Entity, type Position } from './positions';
 import {
   axisText, curveOf, formatNumber, isObject, label, tenorLabel, token, ungrouped,
 } from './tokens';
 import type {
-  BookRisk, BookXva, DealMark, DealNode, Descriptor, GreekRow, JobDoc, Market, RefusalCode,
+  BookRisk, BookXva, DealMark, Descriptor, GreekRow, JobDoc, Market, RefusalCode,
   Schema, XvaSet,
 } from './types';
 import { axisNames } from './vols';
@@ -80,7 +80,7 @@ export function plural(count: number, unit: string): string {
  * day old, and a stamp that precise invites a precision the number does not have. FLOORED at every
  * unit, so an age understates - `3 hours ago` for a row of three hours and fifty minutes is at
  * least true, where rounding it up to four would age a number that had not aged. */
-export function ageText(ms: number): string {
+function ageText(ms: number): string {
   const minutes = Math.floor(ms / 60_000);
   if (minutes < 1) return 'moments ago';
   if (minutes < 60) return `${plural(minutes, 'minute')} ago`;
@@ -93,9 +93,9 @@ export function ageText(ms: number): string {
  * act minutes of device time long, so a desk runs one and reads it for the rest of the session;
  * a row carried over from yesterday is a number about a different market. Half a day is that line,
  * and it is a READING of the number, not a claim the service makes. */
-export const FRESH_MS = 12 * 3_600_000;
+const FRESH_MS = 12 * 3_600_000;
 
-export type Age = { text: string; tone: 'fresh' | 'stale' | 'none'; title: string };
+type Age = { text: string; tone: 'fresh' | 'stale' | 'none'; title: string };
 
 /** A row's age, measured against the read that carried it. `ran` null is the 'never run' case -
  * the book carries the set and no recalc has ever produced a row for it - which is not old, it is
@@ -206,7 +206,7 @@ export function perUnitText(row: GreekRow): string {
 }
 
 /** One bucket of a ladder: its coordinates less the one summed across, the risk of its nodes. */
-export type Bucket = { key: number[]; risk: number; nodes: GreekRow[] };
+type Bucket = { key: number[]; risk: number; nodes: GreekRow[] };
 
 /** One factor's buckets in coordinate order, the names of its axes - `across` the position of the
  * one its buckets sum over, -1 where none is - and its parallel move, every node at once. */
@@ -375,12 +375,11 @@ export const refusedAt = (code: RefusalCode | null, request: SpreadRequest):
 export function creditCounterparties(entities: Entity[] | null, doc: JobDoc | null,
                                      factors: Record<string, unknown>): string[] {
   if (entities) return entities.map((entity) => entity.entity).sort();
-  const named = (nodes: DealNode[]): unknown[] => nodes.flatMap((node) => [
-    token(node.Instrument['.Deal'].Credit_Support_Amounts, 'Counterparty'),
-    ...named(node.Children ?? [])]);
+  const named = [...rowsByPath(toRows(doc?.Calc.Deals.Deals.Children ?? [], [], undefined)).values()]
+    .map((row) => token(row.deal.Credit_Support_Amounts, 'Counterparty'));
   const held = Object.keys(factors).filter((name) => factorFamily(name) === SURVIVAL)
     .map((name) => name.slice(SURVIVAL.length + 1));
-  return [...new Set([...named(doc?.Calc.Deals.Deals.Children ?? []), ...held])]
+  return [...new Set([...named, ...held])]
     .filter((id): id is string => typeof id === 'string' && id !== '').sort();
 }
 
@@ -408,7 +407,7 @@ export function peaks(held: XvaSet['peaks']): { ee?: Peak; pfe: (Peak & { quanti
   }) };
 }
 
-export type TableReading = { currency: string; collateral: string[]; columns: [string, string][] };
+type TableReading = { currency: string; collateral: string[]; columns: [string, string][] };
 
 /** What a run's table is in: one filed under a currency the market holds a spot for -
  * `cashflows/ZAR` - in that currency, any other in the run's report currency; one over dates of a
@@ -421,7 +420,7 @@ export function tableReading(name: string, columns: unknown[], dated: boolean, d
   const own = !!filed && `FxRate.${filed}` in (market?.['Price Factors'] ?? {});
   const paths = dated && columns.length > 0 && columns.every((column, at) => column === at);
   return {
-    currency: own ? filed : currencyOf(doc),
+    currency: own ? filed : reportCurrency(doc),
     collateral: dated && !own ? collateralised : [],
     columns: paths ? [[`0–${columns.length - 1}`, 'one simulated path each']]
       : columns.map(String).flatMap((column) => EXPOSURE.flatMap(([rule, words]) => {
@@ -456,12 +455,9 @@ export function marksTotal(rows: DealMark[]): number {
 
 // ---- the exports: a table's rows under its own heads, every number as itself --------------------
 
-/** The head of a mark's column. */
-export const MARK = "Desk's value";
-
 /** The marks table's heads: on a desk that records, each row's clients and what waits in it too. */
 export const marksHeads = (recording: boolean): string[] => ['Reference',
-  ...(recording ? ['Client'] : []), 'Path', ...(recording ? ['Waiting on a second seat'] : []), MARK];
+  ...(recording ? ['Client'] : []), 'Path', ...(recording ? ['Waiting on a second seat'] : []), MARKED];
 
 /** The marks as their export writes them, their heads first: each mark the number itself, its
  * currency in a column of its own, and - with `holds`, on a desk that records - each row's clients
@@ -517,7 +513,7 @@ export function readingExport(rows: GreekRow[], schema: Schema | null, market: M
 
 /** Relative, because one number reached by two roads - the same rows summed in a different order -
  * differs in its last bits. */
-export const RECONCILE_TOLERANCE = 1e-9;
+const RECONCILE_TOLERANCE = 1e-9;
 
 /** Whether `mtm` is the sum of the per-deal rows, which the service promises it is on any book.
  * Checked rather than assumed: the marks table shows a total, and a total that did not agree with
@@ -590,7 +586,7 @@ export function lagsBook(fetchedAt: string | null, now: string | null | undefine
 
 /** The report currency, off the document the app already holds - the one the risk answer states
  * and a recalc would report in now; an XVA row states its own. */
-export function currencyOf(doc: JobDoc | null): string {
+export function reportCurrency(doc: JobDoc | null): string {
   const currency = doc?.Calc?.Calculation?.['Currency'];
   return typeof currency === 'string' ? currency : '';
 }
@@ -631,7 +627,7 @@ export function ownDials(own: Record<string, unknown>, block: Record<string, unk
 /** A row whose set has left the book. It keeps its last numbers - a number that was on the
  * blotter yesterday vanishing without a word is how a desk loses track of a position - and the
  * service sorts these after the book's own sets, an order this module never re-imposes. */
-export function isOrphan(set: XvaSet): boolean {
+function isOrphan(set: XvaSet): boolean {
   return set.note !== null;
 }
 
@@ -639,11 +635,11 @@ export function isOrphan(set: XvaSet): boolean {
  * whose exposure has left the book, nor a set with no number - and the FVA over the rows that CARRY
  * one, counted apart since a row filed before the column existed reads null there. `currency` is
  * null for rows filed before the run kept one. */
-export type XvaSum = {
+type XvaSum = {
   currency: string | null; cva: number; counted: number; fva: number; countedFva: number;
 };
 
-export type XvaTotals = {
+type XvaTotals = {
   /** Sets the book holds now. Orphans are counted apart, because they are not the book's. */
   sets: number;
   done: number;

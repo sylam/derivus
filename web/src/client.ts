@@ -135,7 +135,7 @@ export type Term = {
 
 /** Whether the terms state the collateral flag, the currency its collateral amounts are in, its
  * terms and those at their conventions apart. */
-export type TermsReading = {
+type TermsReading = {
   stated: boolean; currency?: string; terms: Term[]; conventions: Term[];
 };
 
@@ -243,7 +243,7 @@ export type CreditLine = {
 /** What the lines are read off: the projection's sets, the client's agreements (`agreementsOf`),
  * the file's rows, the risk's marks (`bookRisk`), none where it is not read, and - each null where
  * it is not read - the record's positions and the calls on the marked close. */
-export type CreditReads = {
+type CreditReads = {
   sets: XvaSet[]; agreements: Agreement[]; rows: Map<string, BlotterRow>;
   positions: Position[] | null; marks: DealMark[]; calls: CollateralCall[] | null;
 };
@@ -353,9 +353,20 @@ export function runSum(lines: CreditLine[], key: 'cva' | 'fva'):
            value: currencies.size === 1 ? summed(runs.map((run) => run[key])) : null };
 }
 
-/** What a line's paper reads: no agreement in force, or whether its terms collateralise. */
-export const paperText = (line: CreditLine): string => (line.paper === null ? 'no agreement'
-  : line.collateralised ? 'collateralised' : 'uncollateralised');
+/** What a set's paper reads: no agreement in force, or whether a run collateralises it. */
+export const paperText = ({ paper, collateralised }: Pick<CreditLine, 'paper' | 'collateralised'>):
+  string => (paper === null ? 'no agreement' : collateralised ? 'collateralised' : 'uncollateralised');
+
+/** The paper a ticket books under in a line: the agreement and the document it is, and what its
+ * paper reads (`paperText`) - collateral in the currency its balance is kept in; an agreement the
+ * record never declared says so. */
+export function paperLine(set: string, agreements: Agreement[]): string {
+  const paper = agreements.find((row) => row.agreement === set);
+  if (!paper) return `${set}, which the record declares no agreement for`;
+  const currency = paper.collateralized && setCurrency(paper.terms);
+  return `${set} (${paper.kind}), ${paperText({ paper: paper.kind, collateralised: paper.collateralized })}${
+    currency ? ` in ${currency}` : ''}`;
+}
 
 /** The credit table as its export writes it, its heads first: a row per set under its client, a
  * client with none a row of its own; every amount the number itself, its currency in a column

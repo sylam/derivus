@@ -2260,9 +2260,9 @@ def test_a_collateral_call_is_read_on_a_marked_close_and_settled_as_a_movement(r
     until it is returned. A day with no marks is refused by name, the book's own day by default; a
     seat acting at one node reads the agreements whose positions sit there, one acting everywhere
     every collateralised agreement, one nothing is held under included; a seat's worklist lists the
-    calls, each with the amount and currency it calls, of the agreements whose positions sit where
-    it posts collateral, one holding the back office's other two verbs having none; and the
-    binding's `collateral_calls` answers what the verb does.
+    calls, each with the amount and currency it calls and the kinds of money it settles as, of the
+    agreements whose positions sit where it posts collateral, one holding the back office's other
+    two verbs having none; and the binding's `collateral_calls` answers what the verb does.
 
     Killing mutations: the day's payment never added back, or added back under
     `Exclude_Paid_Today` too; a position closed on its last day rather than held through it; margin
@@ -2271,7 +2271,8 @@ def test_a_collateral_call_is_read_on_a_marked_close_and_settled_as_a_movement(r
     balance written into a base valuation; an uncrossable asset let through a run that values the
     book; a call nobody can work out dropped from the worklist; the narrowing dropped, or a seat
     acting everywhere narrowed like a node seat; the worklist's calls not narrowed to `collateral`;
-    the default day the last one marked; the binding dropping the day it was asked for.
+    the default day the last one marked; the binding dropping the day it was asked for; a call
+    offered every movement kind to settle as, a payment and a fee among them.
     """
     designated(recorded, fixings=False)
     surviving(desk, 'CPTY_A', 'CPTY_B')
@@ -2300,8 +2301,10 @@ def test_a_collateral_call_is_read_on_a_marked_close_and_settled_as_a_movement(r
     assert b['exposure'] == pytest.approx(-unit(NEW, START, 18.5) / 18.5, rel=1e-12)
     assert b['call'] == pytest.approx(b['exposure'] + 50_000.0, rel=1e-12)
     assert (first['CSA-D']['exposure'], first['CSA-D']['direction']) == (0.0, None)
-    assert [(row['key'], row['amount'], row['currency']) for row in worklist()['calls']] == [
-        ('CSA-A', a['call'], 'USD'), ('CSA-B', b['call'], 'ZAR')]
+    assert [(row['key'], row['amount'], row['currency'], row['settles_as'])
+            for row in worklist()['calls']] == [
+        ('CSA-A', a['call'], 'USD', ['collateral', 'margin']),
+        ('CSA-B', b['call'], 'ZAR', ['collateral', 'margin'])]
 
     risk = CLIENT.get('/book/risk').json()
     cached = service.BOOK.risk_cache.get(risk['etag'])

@@ -32,7 +32,7 @@ export const SIDE = 'the desk\'s side of the trade, as the desk booked it: '
 
 /** Buy or sell chip, whatever field name the family uses: in the desk's frame, else in the one
  * `whose` says. */
-export function Side({ side, whose = SIDE }: { side?: Picked; whose?: string }) {
+function Side({ side, whose = SIDE }: { side?: Picked; whose?: string }) {
   const text = side ? cellText(side.value) : undefined;
   if (!text) return null;
   const short = ['Sell', 'Pay', 'Payer', 'Lender'].includes(text) ? 'sell' : 'buy';

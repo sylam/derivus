@@ -105,7 +105,7 @@ export const kindOf = (descriptor?: Descriptor): Kind => (descriptor?.sized ? 'm
   : descriptor?.obj === 'Percent' ? 'percent' : descriptor?.obj === 'Basis' ? 'basis' : 'plain');
 
 /** An excel day number as the ISO date it names. */
-export const excelDate = (serial: number): string =>
+const excelDate = (serial: number): string =>
   new Date(Date.UTC(1899, 11, 30) + Math.round(serial) * 86_400_000).toISOString().slice(0, 10);
 
 /** A length in years as a dealer says it - 3D, 1W, 2M, 18M, 7Y - a month count within half a week

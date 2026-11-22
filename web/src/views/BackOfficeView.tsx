@@ -3,6 +3,7 @@ import {
   approveTicket, failure, getCloseCheck, postClose, postTransition, rejectTicket,
 } from '../api';
 import { baseDateOf, rowsByPath, toRows, type BlotterRow } from '../blotter';
+import { paperLine } from '../client';
 import { EmptyState } from '../components/EmptyState';
 import { stampText } from '../desk';
 import { NO_PAPER } from '../positions';
@@ -12,7 +13,7 @@ import {
   type Act, grantsRead, heldBack, marketOf, opened, useApp, useQuoteList, useQuotes, useRead,
 } from '../state';
 import { formatNumber, ungrouped } from '../tokens';
-import { paperText, ticketWords, tradeAt, tradeName, waitedText } from '../trade';
+import { ticketWords, tradeAt, tradeName, waitedText } from '../trade';
 import type { CloseVerdict, Decided, PendingQuote, WorkRow, Worklist } from '../types';
 import { TicketCard } from '../components/TicketCard';
 
@@ -241,7 +242,7 @@ function Signing({ row, trade, now, hold, execution, quote, onSaid }: {
         <dt>quoted</dt>
         <dd>{quoted()}</dd>
         <dt>paper</dt>
-        <dd>{row.agreement ? paperText(row.agreement, paper.agreements) : ''}</dd>
+        <dd>{row.agreement ? paperLine(row.agreement, paper.agreements) : ''}</dd>
       </dl>
       {showing && quote && <TicketCard pending={quote} />}
       {hold !== null ? hold && <div className="note">{hold}</div> : (
@@ -264,15 +265,15 @@ function Signing({ row, trade, now, hold, execution, quote, onSaid }: {
 }
 
 /** One row and the fact that clears it: a payment `settled` with its money, under the agreement
- * the row carries; a fill `confirmed`; a call `settled` as collateral or margin, its agreement the
- * subject. The amount and the value date start at the row's own, the reference is the settlement
- * system's to state. */
+ * the row carries; a fill `confirmed`; a call `settled` as a kind the row says it settles as, its
+ * agreement the subject. The amount and the value date start at the row's own, the reference is
+ * the settlement system's to state. */
 function Clearing({ list, row, day }: { list: List; row: WorkRow; day: string }) {
   const [amount, setAmount] = useState(row.amount === null || row.amount === undefined
     ? '' : String(row.amount));
   const [valueDate, setValueDate] = useState(list === 'payments' ? row.since ?? day : day);
   const [reference, setReference] = useState('');
-  const [kind, setKind] = useState('collateral');
+  const [kind, setKind] = useState(row.settles_as?.[0] ?? '');
   const [refused, setRefused] = useState<string | null>(null);
   const [filing, setFiling] = useState(false);
   const moves = list !== 'unconfirmed';
@@ -317,10 +318,9 @@ function Clearing({ list, row, day }: { list: List; row: WorkRow; day: string })
                    onChange={(event) => setReference(event.target.value)} />
           </td>
           <td>
-            {list === 'calls' && (
+            {row.settles_as && (
               <select value={kind} onChange={(event) => setKind(event.target.value)}>
-                <option>collateral</option>
-                <option>margin</option>
+                {row.settles_as.map((held) => <option key={held}>{held}</option>)}
               </select>
             )}
           </td>

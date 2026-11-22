@@ -3936,7 +3936,8 @@ def book_worklist(actor: str = None):
     - six lists of what waits on THIS seat and the tickets it is shown waiting on another, each row
     `{kind, what, key, lsn, since}` with `key` what the fact that
     clears it is filed against - a payment's also its `amount`, `currency` and the `agreement` it
-    is due under where it is one (`answered`), a call's its `amount` and `currency` - `counts`
+    is due under where it is one (`answered`), a call's its `amount`, `currency` and the kinds of
+    money held under an agreement it is settled as (`settles_as`) - `counts`
     how many each list holds and each list the newest `WORKLIST_ROWS` of them. Nothing here is
     filed: every list is read off what stands, so a row leaves the moment its fact lands.
 
@@ -4053,7 +4054,8 @@ def book_worklist(actor: str = None):
             if call['direction'] else '{}: the call is not known - {}'.format(
                 call['agreement'], '; '.join(entry['what'] for entry in call['unknown'])),
             call['agreement'], marks[day]['lsn'], day), amount=call['call'],
-            currency=call['currency'], unknown=call['unknown'])
+            currency=call['currency'], unknown=call['unknown'],
+            settles_as=list(spine.package().verbs.HELD))
 
     shown = waiting(ticketed(None, 'pending', 'awaits a second seat\'s approval', ticket,
                              lambda position, entry, at: entry['status'] == 'pending'))

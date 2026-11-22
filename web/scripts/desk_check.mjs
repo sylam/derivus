@@ -363,10 +363,10 @@ check('the marks export under the heads the table shows, each mark the number it
       + 'as text a spreadsheet cannot add and rounds what it keeps; the currency left in the head; '
       + "or the record's two columns headed on a desk keeping none, every value under the wrong head",
       [desk.marksExport(MARKED), desk.marksExport(MARKED, inside)],
-      [[['Reference', 'Path', "Desk's value", 'Ccy'], ['ISDA-KESTREL', '0', 1234567.891, 'USD'],
+      [[['Reference', 'Path', 'Mark', 'Ccy'], ['ISDA-KESTREL', '0', 1234567.891, 'USD'],
         ['TWICE', null, -0.30000000000000004, 'USD']],
-       [['Reference', 'Client', 'Path', 'Waiting on a second seat', "Desk's value", 'Ccy'],
-        ['ISDA-KESTREL', 'Kestrel (KES), Alderby (ALD)', '0', `NDF-2, ${'b'.repeat(12)}`, 1234567.891, 'USD'],
+       [['Reference', 'Client', 'Path', 'Waiting on a second seat', 'Mark', 'Ccy'],
+        ['ISDA-KESTREL', 'Kestrel (KES), Alderby (ALD)', '0', `NDF-2, ${'b'.repeat(12)}…`, 1234567.891, 'USD'],
         ['TWICE', '', null, '', -0.30000000000000004, 'USD']]]);
 
 const QUOTE_ROW = { factor: 'FXVolPrices.USD.ZAR', quote: 'ATM 0.5', value: 513753.0, level: 0.15,
