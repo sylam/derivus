@@ -125,7 +125,8 @@ export type Stepped<T> = { with: T; without: T; increment: number };
 
 /** `stats.Increment` of a what-if asked for its XVA increment: what the candidate does to the
  * netting set it goes into, in the run's `currency` - its CVA and FVA, and under each exposure
- * column (`EE`, every `PFE_<percentile>`) a `Stepped` peak with its day - on the `paths` both
+ * column (`EE`, every `PFE_<percentile>`) a `Stepped` peak, its `value` and `day` as an XVA
+ * row's (`XvaSet.peaks`) - on the `paths` both
  * runs drew. */
 export type Increment = {
   netting_set: string; counterparty: string | null; currency: string | null;

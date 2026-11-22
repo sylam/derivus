@@ -388,7 +388,7 @@ check('a booked quote lands where the file holds its trade now: the trade under 
 
 // --- what its trade does to the client's credit numbers: a `stats.Increment` as the service
 // files it, a collar that adds to the set's CVA and takes off its funding cost and its peak EE
-const peak = (value, day) => ({ peak: value, day });
+const peak = (value, day) => ({ value, day });
 const INCREMENT = {
   netting_set: 'ISDA-K', counterparty: 'KESTREL', currency: 'USD',
   paths: { seed: 5120, dates: 24, factors: ['FxRate.ZAR', 'FxRate.GBP'], count: 1024 },
@@ -404,8 +404,9 @@ check('a credit charge reads its CVA and FVA, then each exposure column\'s peak 
       'the sign read the other way, which tells a salesperson a trade adding to the client\'s CVA '
         + 'takes it off; a signed size kept under the word, which reads "takes off -8.30"; the '
         + 'paths or the run\'s terms read as an exposure column; one run\'s day printed under both '
-        + 'peaks; a PFE read without its percentile; or what a plus is said another way than '
-        + 'the credit tables say it under their CVA and FVA heads',
+        + 'peaks; a peak\'s number read off another field than its `value`, as an XVA row\'s; a '
+        + 'PFE read without its percentile; or what a plus is said another way than the credit '
+        + 'tables say it under their CVA and FVA heads',
       quote.chargeLines(INCREMENT),
       [{ what: 'CVA', plus: '+ is an expected loss', kind: 'money', with: 1163.61, without: 1060.61,
          moves: 'adds', by: 103 },

@@ -7,7 +7,7 @@ import {
   SET, STRIP_FIELDS, fieldsOf, levelOnAxis, pick, quoted, rowsByPath, sizeOf, toRows,
   type BlotterRow, type Quoted, type Size,
 } from './blotter';
-import { PLUS, entityText, instantMs, peaks } from './desk';
+import { PLUS, entityText, instantMs, peaks, type Peak } from './desk';
 import { under, type Agreement, type Entity } from './positions';
 import { formatNumber, isBlank, isObject } from './tokens';
 import type {
@@ -270,12 +270,12 @@ export function chargeLines(answer: Increment): ChargeLine[] {
   return [
     cost('CVA', answer.cva), cost('FVA', answer.fva),
     ...Object.entries(answer).flatMap(([column, held]): ChargeLine[] => {
-      const step = held as Stepped<{ peak: number; day: string }>;
+      const step = held as Stepped<Peak>;
       if (!isObject(step) || !isObject(step.with)) return [];
-      const read = peaks({ [column]: { value: step.with.peak, day: step.with.day } });
+      const read = peaks({ [column]: step.with });
       const what = read.ee ? 'Peak expected exposure (EE)' : read.pfe.length
         ? `Peak exposure at the ${formatNumber(read.pfe[0].quantile)}th percentile (PFE)` : column;
-      return [{ what, kind: 'whole', with: step.with.peak, without: step.without.peak,
+      return [{ what, kind: 'whole', with: step.with.value, without: step.without.value,
                 days: { with: step.with.day, without: step.without.day },
                 ...moved(step.increment) }];
     }),
