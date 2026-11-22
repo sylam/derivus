@@ -5490,15 +5490,18 @@ def curve_quotes(source, document, base_date=None, reading=Context):
     it back. A block this emitter cannot read, an older book's among them, is named and left
     exactly as it stands rather than taking the tick down with it.
 
-    THE SNAP SETS THE DATE: the blocks are authored on the latest print the terminal answered with
-    where that is later than the book's own day. `base_date` authors on a day a desk STATED
-    instead, and no source is the same walk with no terminal at all - the rows exactly as they
-    stand, re-rolled onto that day. `reading` makes the contexts it loads on (`spine.reading`).
+    THE SNAP SETS THE DATE: the rows are screened against the book's own day and the blocks
+    authored on the latest print the terminal answered with where that is later than `base_date`,
+    the book's day unless the rest of the trip snapped a later one, so every block of one write is
+    dated alike. No source is the same walk with no terminal at all - the rows exactly as they
+    stand, re-rolled onto `base_date`, a day a desk STATED. `reading` makes the contexts it loads
+    on (`spine.reading`).
     """
     from derivus_bloomberg import ir_curve, security_map
     from derivus_bloomberg.errors import BloombergFXError
 
-    as_of, read, quotes, held = base_date or book_base_date(document), {}, {}, []
+    dated, read, quotes, held = book_base_date(document), {}, {}, []
+    as_of = base_date or dated
     prices = market_of(document, reading())['Market Prices']
     for name in sorted(prices):
         if not name.startswith(CURVE_FAMILY + '.'):
@@ -5510,7 +5513,7 @@ def curve_quotes(source, document, base_date=None, reading=Context):
                 instrument, security_map.curve_seed(curve), curve)
             rows = ir_curve.block_rows(instrument)
             if source is not None:
-                rows = ir_curve.price_rows(source, rows, as_of, conventions)
+                rows = ir_curve.price_rows(source, rows, dated, conventions)
                 held += ['{} {} ({}): {}'.format(name, row.label, row.security, row.verdict)
                          for row in rows if row.verdict]
             read[name] = (curve, instrument, conventions, ir_curve.hold_out(rows))
@@ -5518,7 +5521,7 @@ def curve_quotes(source, document, base_date=None, reading=Context):
             # a block authored before the conventions rode beside the quotes declares no
             # `Spot_Days` to re-roll under, and neither does one this emitter did not write
             held.append('{} left as it stands - {}'.format(name, error))
-    if base_date is None:
+    if source is not None:
         as_of = snap_date([row for _, _, _, rows in read.values() for row in rows], as_of)
     for name, (curve, instrument, conventions, rows) in read.items():
         try:
@@ -5873,13 +5876,14 @@ def refusal(error):
 Snapped = namedtuple('Snapped', 'quotes curves spots held unrouted as_of late')
 
 
-def market_fetch(source, mapped, document, pairs, surface={}, note=None):
+def market_fetch(source, mapped, document, pairs, surface={}, note=None, as_of=None):
     """The desk's market off ONE session: every named surface, every `InterestRatePrices` block the
     book carries re-valued off its own rows, and every routed spot re-crossed - as `Snapped`.
 
     THE ONE FETCH BOTH JOBS TAKE. A tick IS this; a set-up whose prints would roll the book's date
     takes it for the market the book already carries, so a book never holds two days of quotes
-    under one date and there is no second spelling of the trip to drift.
+    under one date and there is no second spelling of the trip to drift. `as_of` is the day the
+    rest of that set-up's trip snapped, which the curve blocks are authored on at the earliest.
 
     Every quote is checked for freshness before any is fetched, so `late` names every dead security
     rather than the first one found and nothing is fetched at all when one is there.
@@ -5905,7 +5909,7 @@ def market_fetch(source, mapped, document, pairs, surface={}, note=None):
         quotes['FXVolPrices.' + snapshot.surface_name] = as_json(
             to_market_prices_block(snapshot))
     note('valuing the curve rows', len(pairs), len(pairs))
-    curves, held, as_of = curve_quotes(source, document)
+    curves, held, as_of = curve_quotes(source, document, as_of)
     return Snapped(quotes, curves, book_spots(source, routes, document) if routes else {},
                    held, unrouted, as_of, {})
 
@@ -6825,7 +6829,7 @@ class SetupJob:
                 # WHEN THE PRINTS MOVE THE DATE the market the book already carries is re-priced in
                 # this same session and lands in the same write, so it never holds two days at once
                 rolled = market_fetch(session, mapped, document, standing_pairs(document),
-                                      note=self.note) if as_of > dated else None
+                                      note=self.note, as_of=as_of) if as_of > dated else None
             if rolled is not None and rolled.late:
                 return self.outcome(
                     started, not_supplied=not_supplied, discovered=discovered,

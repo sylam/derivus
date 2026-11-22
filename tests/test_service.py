@@ -4500,7 +4500,9 @@ def test_an_installed_spot_names_the_curve_that_was_built(desk_setup, tmp_path, 
         service.BOOK = None
 
 
-def test_a_roll_re_prices_the_market_the_book_already_carried(desk_setup, tmp_path, monkeypatch):
+@pytest.mark.parametrize('euro_back, rand_back', [(0, 3), (3, 0)])
+def test_a_roll_re_prices_the_market_the_book_already_carried(desk_setup, tmp_path, monkeypatch,
+                                                              euro_back, rand_back):
     """WHEN THE PRINTS MOVE THE DATE, THE SET-UP IS A TICK AS WELL. A book ten days behind its
     prints gains a new market AND has the one it already carried re-priced off the terminal in the
     same session, landing in the same write - the standing surface, the standing curve's rows and
@@ -4509,33 +4511,37 @@ def test_a_roll_re_prices_the_market_the_book_already_carried(desk_setup, tmp_pa
 
     THE NUMBER IS WHAT SAYS SO: the euro benchmarks print somewhere new, and the block that lands
     carries the new print rather than the one it was authored on. The write is dated by the whole
-    trip, the roll's own snap included - later here than the day the new strip printed - the roll's
-    held-out rows travel in `held_out`, `check` names every standing block that moved under the
-    desk's feet, and a standing currency's `FxRate` keeps the curve IT discounts on rather than the
-    one this set-up built.
+    trip - the roll's own snap, or the new strip's where that is the later one - and EVERY block in
+    it is authored on that day, so re-dating the book onto the day it landed re-authors nothing.
+    The roll's held-out rows travel in `held_out`, `check` names every standing block that moved
+    under the desk's feet, and a standing currency's `FxRate` keeps the curve IT discounts on
+    rather than the one this set-up built.
 
     A book already standing on the prints' day asks the terminal about nothing standing: only the
     wants are fetched.
 
     Killing mutations: the roll dropped, or fetched and never merged into the write, which
     re-authors the standing curve on stale numbers while `check` announces it was re-priced; the
-    write's date ignoring the day the roll's own prints were snapped; the roll's held rows dropped;
-    no standing SURFACE re-priced at all; every spot authored as a new block, which re-points a
-    standing spot at the curve this set-up happened to install.
+    write's date ignoring the day the roll's own prints were snapped; the roll authored on its own
+    snap rather than on the trip's (`market_fetch` handed no `as_of`), which dates the euro curve
+    behind the write when the rand strip printed later and the set-up refuses; the roll's held
+    rows dropped; no standing SURFACE re-priced at all; every spot authored as a new block, which
+    re-points a standing spot at the curve this set-up happened to install.
     """
     scopes = (('fx_vol', 'EURZAR'), ('fx_spot', 'EURUSD'), ('rates', 'EUR'),
               ('fx_spot', 'USDZAR'), ('rates', 'ZAR-ZARONIA'), ('fx_spot', 'USDCHF'),
               ('rates', 'CHF'))
     seeded_map(tmp_path / 'home', *scopes)
-    # the rand strip prints three days back, so the day the ROLL snapped is the later one
-    rand = (datetime.date.today() - datetime.timedelta(3)).isoformat()
-    stamps = {row['security']: rand for row in seeded_rows_of('ZAR-ZARONIA')}
-    spots = {'EURUSD BGN Curncy': 1.0855, 'USDZAR BGN Curncy': 18.5, 'USDCHF BGN Curncy': 0.79}
-    setup_terminal(monkeypatch, *scopes, stamps=stamps, **spots)
-    assert set_up({'pair': 'EURZAR'})[1]['written'] is True
-    behind = (datetime.date.today() - datetime.timedelta(10)).isoformat()
-    assert CLIENT.post('/book/date', json={'base_date': behind}).status_code == 200
     euro = [row['security'] for row in seeded_rows_of('EUR')]
+    day = lambda back: (datetime.date.today() - datetime.timedelta(back)).isoformat()
+    stamps = dict({row['security']: day(rand_back) for row in seeded_rows_of('ZAR-ZARONIA')},
+                  **dict.fromkeys(euro, day(euro_back)))
+    spots = {'EURUSD BGN Curncy': 1.0855, 'USDZAR BGN Curncy': 18.5, 'USDCHF BGN Curncy': 0.79}
+    # the euro curve is first authored four days back, so the row the roll holds out keeps a stamp
+    # older than either of the trip's own snaps
+    setup_terminal(monkeypatch, *scopes, stamps=dict.fromkeys(euro, day(4)), **spots)
+    assert set_up({'pair': 'EURZAR'})[1]['written'] is True
+    assert CLIENT.post('/book/date', json={'base_date': day(10)}).status_code == 200
     terminal = setup_terminal(monkeypatch, *scopes, stamps=stamps, dead=euro[-1:],
                               **dict(spots, **dict.fromkeys(euro, 3.25)))
 
@@ -4559,6 +4565,8 @@ def test_a_roll_re_prices_the_market_the_book_already_carried(desk_setup, tmp_pa
     assert [row for row in outcome['held_out'] if euro[-1] in row], outcome['held_out']
     assert factors['FxRate.ZAR']['Interest_Rate'] == 'ZAR', 'a standing spot took the new curve'
     assert factors['FxRate.ZAR']['Spot'] == pytest.approx(1.0 / 18.5)
+    redated = CLIENT.post('/book/date', json={'base_date': outcome['base_date']}).json()
+    assert redated['reauthored'] == [], 'a block of the write was authored off its day'
 
     terminal.asked.clear()
     result, again = set_up({'deal': dict(json.loads(dump(CASHFLOW)), Reference='CFC',

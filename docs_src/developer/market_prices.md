@@ -244,11 +244,13 @@ held out with `Use` No, by name: one dead ticker is one knot fewer. **Held by**
 `test_service.py::test_the_tick_values_the_books_curve_rows_and_holds_a_dead_one_out`.
 
 **The snap sets the date.** A row priced off a terminal carries the print's clock, so the curve
-verb, the tick and a set-up author on the latest print; where that is after the book's day, both
-base dates roll onto it and every other curve block is re-authored there, two curves dated
-differently being one solved for a day nobody asked about. A snap never rolls a book back: an old
-print is evidence about a quote, not a valuation date. **Held by**
+verb, the tick and a set-up author on the latest print of the whole trip, a set-up's new strip and
+its roll's rows alike; where that is after the book's day, both base dates roll onto it and every
+other curve block is re-authored there, two curves dated differently being one solved for a day
+nobody asked about. A snap never rolls a book back: an old print is evidence about a quote, not a
+valuation date. **Held by**
 `test_service.py::test_a_later_print_rolls_the_books_date_through_the_tick_and_an_older_one_does_not`,
+`test_service.py::test_a_roll_re_prices_the_market_the_book_already_carried`,
 `test_service.py::test_a_tick_landing_while_the_terminal_priced_the_rows_refuses_rather_than_rolling_back`,
 `test_service.py::test_the_date_verb_sets_both_dates_and_re_rolls_every_curve_onto_them`.
 
