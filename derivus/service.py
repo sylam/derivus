@@ -3182,6 +3182,11 @@ def marked_instruments(book, since, head=None):
         fill['instrument'] for fill in spine.fills(after=since, until=head) if fill['book'] == book}
 
 
+#: How a read off the marks opens its refusal of a day none stand for: the day, the market and
+#: the days marked. Each read adds what to do.
+NO_MARKS = 'no marks stand for {} on {!r} - the days marked are {}; '
+
+
 @app.get('/book/pnl', summary="The desk's P&L between two marked closes, or since the last")
 def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreement: str = None,
              client: str = None, explain: bool = False, actor: str = None):
@@ -3230,11 +3235,9 @@ def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreemen
         (day for day in days if end_day is None or day < end_day), default=None)
     for day in [start_day] + ([] if end_day is None else [end_day]):
         if day not in marks:
-            raise HTTPException(422, 'no marks stand for {} on {!r} - the days marked are {}; mark '
-                                     'the book at a close (mark_book)'.format(
-                                         day or end_day and 'a day before {}'.format(end_day)
-                                         or 'any day', market['name'],
-                                         ', '.join(days) or 'none'))
+            raise HTTPException(422, (NO_MARKS + 'mark the book at a close (mark_book)').format(
+                day or end_day and 'a day before {}'.format(end_day) or 'any day',
+                market['name'], ', '.join(days) or 'none'))
     first = PnL.loaded(marks[start_day], spine.stored)
     last = (PnL.loaded(marks[end_day], spine.stored) if end_day is not None
             else live_marks(document, book, first))
@@ -3527,10 +3530,9 @@ def book_collateral(date: str = None, actor: str = None):
     marks = book_marks_on(book_name(document), spine.closes(market))
     day = read_day(date) if date is not None else spine.base_day(document)
     if day not in marks:
-        raise HTTPException(422, 'no marks stand for {} on {!r} - the days marked are {}; a call '
-                                 'is read on a marked close, so mark the book at it '
-                                 '(mark_book)'.format(day, market, ', '.join(sorted(marks))
-                                                      or 'none'))
+        raise HTTPException(422, (NO_MARKS + 'a call is read on a marked close, so mark the book '
+                                             'at it (mark_book)').format(
+                                                 day, market, ', '.join(sorted(marks)) or 'none'))
     return collateral_calls(document, marks, day, market, spine.sight(actor))
 
 
