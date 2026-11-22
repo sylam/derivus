@@ -42,7 +42,6 @@ reaching for a default home. That is the regression bar, asserted first.
     record refuses leaves the file byte-identical.
 """
 import asyncio
-import functools
 import hashlib
 import itertools
 import json
@@ -6043,13 +6042,11 @@ OFFICIAL = {'Simulation_Batches': 2, 'Funding_Valuation_Adjustment': {
     'Funding_Cost_Interest_Curve': 'FUND', 'Funding_Benefit_Interest_Curve': 'USD'}}
 
 
-def policy_posted(route, section, stated, **body):
-    """The policy whose one `section` is `stated`, declared through the service's verb at `route`:
-    its response."""
-    return CLIENT.post(route, content=dump(dict({section: stated}, **body)), headers=JSON)
-
-
-official = functools.partial(policy_posted, '/book/calculations', 'calculations')
+def policy_posted(section, stated, **body):
+    """The policy whose one `section` is `stated`, declared through the service's verb at
+    `/book/<section>`: its response."""
+    return CLIENT.post('/book/' + section, content=dump(dict({section: stated}, **body)),
+                       headers=JSON)
 
 
 def test_the_official_calculation_is_judged_by_the_engine_before_the_record_takes_it(recorded,
@@ -6078,11 +6075,11 @@ def test_the_official_calculation_is_judged_by_the_engine_before_the_record_take
              'CreditMonteCarlo declares no Object - it declares '),
             ({'BaseValuation': {'Greeks': 'First'}},
              "states a block for 'BaseValuation', which no official run reads")):
-        refused = official(blocks)
+        refused = policy_posted('calculations', blocks)
         assert refused.status_code == 422 and said in refused.json()['detail'], refused.text
     assert head(recorded) == started, 'a refused declaration recorded something'
 
-    declared = official({'CreditMonteCarlo': OFFICIAL})
+    declared = policy_posted('calculations', {'CreditMonteCarlo': OFFICIAL})
     assert declared.status_code == 200, declared.text
     blob = declared.json()['blob']
     assert declared.json() == {'recorded': {'lsn': started + 1}, 'blob': blob}
@@ -6092,15 +6089,12 @@ def test_the_official_calculation_is_judged_by_the_engine_before_the_record_take
         started + 1, 'policy_declared', {'policy': policy.CALCULATION_POLICY, 'blob': blob})
 
     entitle(recorded, [(ACTOR, 'admin', '*')])
-    stranger = official({}, actor='subject-nobody')
+    stranger = policy_posted('calculations', {}, actor='subject-nobody')
     assert stranger.status_code == 422 and 'subject-nobody' in stranger.json()['detail']
     assert facts(recorded, 'capability_denied')[-1][2] == {
         'subject': 'subject-nobody', 'verb': 'admin', 'book': '*',
         'attempted_type': 'policy_declared'}
     assert CLIENT.get('/book/calculations').json()['lsn'] == started + 1
-
-
-limits_declared = functools.partial(policy_posted, '/book/limits', 'limits')
 
 
 def entity_declared(entity, parent=None):
@@ -6132,11 +6126,11 @@ def test_a_limit_is_declared_on_a_legal_entity_the_record_holds_and_on_no_other(
             ({'LEI-A': limit, 'LEI-GHOST': limit}, "a limit's entity 'LEI-GHOST' is no legal"),
             ({'LEI-A': dict(limit, amount=0)}, "the limit on 'LEI-A' is the amount 0"),
             (None, 'limits is NoneType')):
-        refused = limits_declared(limits)
+        refused = policy_posted('limits', limits)
         assert refused.status_code == 422 and said in refused.json()['detail'], refused.text
     assert head(recorded) == started, 'a refused declaration recorded something'
 
-    declared = limits_declared({'LEI-A': limit})
+    declared = policy_posted('limits', {'LEI-A': limit})
     assert declared.status_code == 200, declared.text
     blob = declared.json()['blob']
     assert declared.json() == {'recorded': {'lsn': started + 1}, 'blob': blob}
@@ -6144,11 +6138,11 @@ def test_a_limit_is_declared_on_a_legal_entity_the_record_holds_and_on_no_other(
         'limits': {'LEI-A': limit}, 'blob': blob, 'lsn': started + 1}
     assert facts(recorded, 'policy_declared')[-1] == (
         started + 1, 'policy_declared', {'policy': policy.LIMITS_POLICY, 'blob': blob})
-    assert limits_declared({}).status_code == 200
+    assert policy_posted('limits', {}).status_code == 200
     assert CLIENT.get('/book/limits').json()['limits'] == {}
 
     entitle(recorded, [(ACTOR, 'admin', '*')])
-    stranger = limits_declared({'LEI-A': limit}, actor='subject-nobody')
+    stranger = policy_posted('limits', {'LEI-A': limit}, actor='subject-nobody')
     assert stranger.status_code == 422 and 'subject-nobody' in stranger.json()['detail']
     assert facts(recorded, 'capability_denied')[-1][2] == {
         'subject': 'subject-nobody', 'verb': 'admin', 'book': '*',
@@ -6209,7 +6203,7 @@ def test_a_credit_run_under_the_policy_is_the_run_of_the_same_block_written_in_t
     written = credit_runs()
     stating(credit_hub, Simulation_Batches=None, Funding_Valuation_Adjustment=FUNDED)
     own = credit_runs()
-    assert official({'CreditMonteCarlo': OFFICIAL}).status_code == 200
+    assert policy_posted('calculations', {'CreditMonteCarlo': OFFICIAL}).status_code == 200
     declared = credit_runs()
 
     assert declared == written and sorted(declared) == ['NS_A', 'NS_B']
@@ -6229,10 +6223,11 @@ def test_the_policy_stands_over_the_book_file_which_stands_where_the_policy_says
     Killing mutation: the file's block laid over the policy's, where the second run draws 512.
     """
     stating(credit_hub, Batch_Size=512)
-    assert official({'CreditMonteCarlo': {'Simulation_Batches': 2}}).status_code == 200
+    assert policy_posted(
+        'calculations', {'CreditMonteCarlo': {'Simulation_Batches': 2}}).status_code == 200
     silent = credit_runs(['NS_A'])['NS_A']
-    assert official({'CreditMonteCarlo': {'Simulation_Batches': 2, 'Batch_Size': 256}}
-                    ).status_code == 200
+    assert policy_posted('calculations', {'CreditMonteCarlo': {
+        'Simulation_Batches': 2, 'Batch_Size': 256}}).status_code == 200
     both = credit_runs(['NS_A'])['NS_A']
 
     assert (drew(silent), drew(both)) == ((512, 2), (256, 2))
@@ -6269,7 +6264,7 @@ def test_a_field_an_adjustment_block_states_stands_over_the_recalc_s_floor(credi
     stating(credit_hub, **stated)
     own = credit_runs(['NS_A'])['NS_A']
     stating(credit_hub, Credit_Valuation_Adjustment=None)
-    assert official({'CreditMonteCarlo': stated}).status_code == 200
+    assert policy_posted('calculations', {'CreditMonteCarlo': stated}).status_code == 200
     declared = credit_runs(['NS_A'])['NS_A']
 
     assert declared == own and own[2] != floor[2] and floor[2] > 0.0, (floor, own, declared)
@@ -6305,7 +6300,7 @@ def test_a_declaration_moves_no_plan_but_a_credit_run_s(recorded, quoting):
         return CLIENT.get('/book/quote/{}'.format(quote['quote_id'])).json()['pinned']['plan_hash']
 
     before, struck = standing(), quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
-    assert official({'CreditMonteCarlo': OFFICIAL}).status_code == 200
+    assert policy_posted('calculations', {'CreditMonteCarlo': OFFICIAL}).status_code == 200
     assert standing() == before
     assert pinned(quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)) == pinned(struck)
 
@@ -6337,10 +6332,11 @@ def test_a_restated_policy_is_a_new_plan_and_a_job_compiled_before_it_is_the_ear
         return CLIENT.post('/book/xva', content=dump({'netting_sets': ['NS_A']}),
                            headers=JSON).json()['queued'][0]['result_id']
 
-    assert official({'CreditMonteCarlo': OFFICIAL}).status_code == 200
+    assert policy_posted('calculations', {'CreditMonteCarlo': OFFICIAL}).status_code == 200
     first, before = credit_runs(['NS_A'])['NS_A'], head(recorded)
     assert asked() == first[1]
-    assert official({'CreditMonteCarlo': dict(OFFICIAL, Simulation_Batches=3)}).status_code == 200
+    assert policy_posted('calculations', {'CreditMonteCarlo': dict(
+        OFFICIAL, Simulation_Batches=3)}).status_code == 200
     moved = asked()
     assert moved != first[1], 'the restatement left the credit run where it was'
     second = credit_runs(['NS_A'])['NS_A']
@@ -6372,7 +6368,8 @@ def test_a_credit_job_a_seat_posts_whole_runs_at_its_own_calculation_under_any_p
         return CLIENT.post('/prepare', content=dump(posted), headers=JSON).json()['plan_id']
 
     own = planned()
-    assert official({'CreditMonteCarlo': {'Simulation_Batches': 2}}).status_code == 200
+    assert policy_posted(
+        'calculations', {'CreditMonteCarlo': {'Simulation_Batches': 2}}).status_code == 200
     assert planned() == own, 'the policy moved the plan of a job a seat posted whole'
     ran = drained(submit(posted))
     assert ran['status'] == 'done', ran.get('error')
@@ -6390,7 +6387,7 @@ def test_the_increment_and_the_credit_charge_start_from_the_policy(recorded, cre
     Killing mutation: the increment's book compiled as the calculation the file names rather than
     as a credit run (`book_price`), where its legs run at the file's own block, one batch.
     """
-    assert official({'CreditMonteCarlo': OFFICIAL}).status_code == 200
+    assert policy_posted('calculations', {'CreditMonteCarlo': OFFICIAL}).status_code == 200
     standing = credit_runs(['NS_A'])['NS_A']
     held = answered(deal_path='0/0', reference='OPT_A')
     assert (held['cva']['with'], held['fva']['with']) == standing[2:]
@@ -6413,7 +6410,7 @@ def test_a_seat_s_own_credit_calculation_goes_over_the_policy(recorded, credit_h
     Killing mutation: the compiled calculation laid over the seat's block (`with_overrides`), where
     the calculation stating three runs at the policy's two.
     """
-    assert official({'CreditMonteCarlo': OFFICIAL}).status_code == 200
+    assert policy_posted('calculations', {'CreditMonteCarlo': OFFICIAL}).status_code == 200
     standing = CLIENT.get('/book/calculations').json()
 
     def ran(name, **stated):
@@ -6453,13 +6450,14 @@ def test_the_xva_view_names_the_curves_a_credit_run_would_fund_at_and_keeps_the_
     first = kept()
     assert first == funding() and kept() is first, 'a poll with nothing moved worked it out again'
 
-    assert official({'CreditMonteCarlo': OFFICIAL}).status_code == 200
+    assert policy_posted('calculations', {'CreditMonteCarlo': OFFICIAL}).status_code == 200
     assert kept() is None, 'the declaration left the poll key where it was'
     assert funding() == {'cost': 'FUND', 'benefit': 'USD'} == kept()
     cost = {'Funding_Valuation_Adjustment': {'Funding_Cost_Interest_Curve': 'USD'}}
-    assert official({'CreditMonteCarlo': cost}).status_code == 200
+    assert policy_posted('calculations', {'CreditMonteCarlo': cost}).status_code == 200
     assert funding() == {'cost': 'USD', 'benefit': None}
-    assert official({'CreditMonteCarlo': {'Simulation_Batches': 2}}).status_code == 200
+    assert policy_posted(
+        'calculations', {'CreditMonteCarlo': {'Simulation_Batches': 2}}).status_code == 200
     assert funding() == {'cost': 'FUND', 'benefit': 'FUND'}
 
 
@@ -6528,7 +6526,7 @@ def test_usage_against_a_limit_is_the_peak_exposure_of_the_entity_s_sets_and_of_
         entity_declared(entity, parent)
     parent, child = usd(100_000.0), usd(50_000.0)
     assert limits_view() == {}
-    assert limits_declared({'CPTY_A': parent, 'CPTY_B': child}).status_code == 200
+    assert policy_posted('limits', {'CPTY_A': parent, 'CPTY_B': child}).status_code == 200
     assert limits_view() == {
         'CPTY_A': held_to('CPTY_A', parent, usage=0.0, unrun=3, breached=False),
         'CPTY_B': held_to('CPTY_B', child, usage=0.0, unrun=2, breached=False)}
@@ -6549,7 +6547,7 @@ def test_usage_against_a_limit_is_the_peak_exposure_of_the_entity_s_sets_and_of_
                           headroom=50_000.0 - (b + c))}
 
     rows, euros = xva_rows(), {'amount': 100_000.0, 'currency': 'EUR'}
-    assert limits_declared({'CPTY_A': euros, 'CPTY_B': usd(25_000.0)}).status_code == 200
+    assert policy_posted('limits', {'CPTY_A': euros, 'CPTY_B': usd(25_000.0)}).status_code == 200
     assert limits_view() == {
         'CPTY_A': held_to('CPTY_A', euros, sets=3,
                           not_comparable=service.NOT_COMPARABLE.format('EUR', 'USD')),
@@ -6578,14 +6576,14 @@ def test_the_limits_are_kept_under_the_poll_s_key_and_a_restated_one_is_read_at_
         return service.BOOK.polls.get(('limits',) + service.poll_key(service.BOOK))
 
     entity_declared('CPTY_A')
-    assert limits_declared({'CPTY_A': usd(100_000.0)}).status_code == 200
+    assert policy_posted('limits', {'CPTY_A': usd(100_000.0)}).status_code == 200
     assert kept() is None and limits_view()['CPTY_A']['limit'] == usd(100_000.0)
     first = kept()
     assert first == [{'entity': 'CPTY_A', 'name': 'CPTY_A Ltd', 'limit': usd(100_000.0),
                       'clients': ['CPTY_A']}]
     assert limits_view() and kept() is first, 'a poll with nothing moved read the record again'
 
-    assert limits_declared({'CPTY_A': usd(60_000.0)}).status_code == 200
+    assert policy_posted('limits', {'CPTY_A': usd(60_000.0)}).status_code == 200
     assert kept() is None, 'the declaration left the poll key where it was'
     assert limits_view()['CPTY_A']['limit'] == usd(60_000.0) == kept()[0]['limit']
     assert service.EXECUTOR.queue.empty() and not (group_hub.parent / service.XVA_FILE).exists()
@@ -6622,7 +6620,7 @@ def test_a_credit_charge_holds_each_limit_its_set_draws_on_against_the_usage_wit
     for entity, parent in (('CPTY_A', None), ('CPTY_B', 'CPTY_A')):
         entity_declared(entity, parent)
     parent, child = usd(200_000.0), usd(40_000.0)
-    assert limits_declared({'CPTY_A': parent, 'CPTY_B': child}).status_code == 200
+    assert policy_posted('limits', {'CPTY_A': parent, 'CPTY_B': child}).status_code == 200
     recalc(['NS_A', 'NS_B'])
     a = pfe('NS_A')
 
@@ -6652,13 +6650,13 @@ def test_a_credit_charge_holds_each_limit_its_set_draws_on_against_the_usage_wit
     assert second['limits'][1]['headroom'] < 0.0 < second['cva']['increment']
 
     euros = {'amount': 40_000.0, 'currency': 'EUR'}
-    assert limits_declared({'CPTY_B': euros}).status_code == 200
+    assert policy_posted('limits', {'CPTY_B': euros}).status_code == 200
     assert charged()[0]['limits'] == [dict(
         held_to('CPTY_B', euros, sets=2,
                 not_comparable=service.NOT_COMPARABLE.format('EUR', 'USD')),
         usage_without=None, breached_without=None)]
 
-    assert limits_declared({'CPTY_B': child}).status_code == 200
+    assert policy_posted('limits', {'CPTY_B': child}).status_code == 200
     assert 'limits' not in charged('NS_A')[0]
 
 
@@ -6705,7 +6703,8 @@ def test_a_block_declared_past_the_engine_s_judge_refuses_the_credit_run_by_name
     assert not (tmp_path / service.XVA_FILE).exists(), 'a refused recalc filed a row'
     assert CLIENT.post('/book/price', content=dump({}), headers=JSON).status_code == 200
 
-    assert official({'CreditMonteCarlo': {'Simulation_Batches': 2}}).status_code == 200
+    assert policy_posted(
+        'calculations', {'CreditMonteCarlo': {'Simulation_Batches': 2}}).status_code == 200
     assert drew(credit_runs(['NS_A'])['NS_A']) == (1024, 2)
 
 
@@ -6733,5 +6732,5 @@ def test_the_xva_view_answers_its_rows_while_the_policy_in_force_cannot_be_read(
     assert view.json()['funding'] == {'cost': None, 'benefit': None,
                                       'refused': [refused.json()['detail']]}
 
-    assert official({'CreditMonteCarlo': OFFICIAL}).status_code == 200
+    assert policy_posted('calculations', {'CreditMonteCarlo': OFFICIAL}).status_code == 200
     assert CLIENT.get('/book/xva').json()['funding'] == {'cost': 'FUND', 'benefit': 'USD'}
