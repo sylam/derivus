@@ -3950,9 +3950,9 @@ def book_worklist(actor: str = None):
     day's standing close where it is not the one its marks were taken on - marks run forward, so no
     earlier day is owed - for `mark` over the book; and `rejected` the tickets
     rejected that still stand in a position netting to something, for `book` - the trade
-    happened, and closing it is somebody's act. A read no seat signs on a box checking no token
-    lists them all, `seat` null; otherwise `seat` is the seat the lists wait on. 404 where no home
-    is configured.
+    happened, and closing it is somebody's act. `seat` is the seat they are read for - every list,
+    where nothing narrows it - and null where no seat signs the read, on a box checking no token,
+    which lists them all. 404 where no home is configured.
 
     A ticket's row - `pending`, `unconfirmed`, `rejected` - names its trade: the `reference` and
     `deal_path` the file holds it at, the `client`, the `agreement` and its `booker`; a pending
@@ -4063,8 +4063,7 @@ def book_worklist(actor: str = None):
                              and position['quantity'])}
     return dict({name: sorted(found, key=lambda row: (row['since'] or '', row['lsn'] or 0))[
         -WORKLIST_ROWS:] for name, found in lists.items()}, date=day,
-        counts={name: len(found) for name, found in lists.items()},
-        seat=None if sight is None else spine.reader(actor))
+        counts={name: len(found) for name, found in lists.items()}, seat=spine.reader(actor))
 
 
 #: The runs the queue admits that a seat's `may` answers for, by the lane `spine.admit` judges each

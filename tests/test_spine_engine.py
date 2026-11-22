@@ -3798,20 +3798,20 @@ def test_the_worklist_names_each_ticket_and_the_seat_it_waits_on(recorded, desk)
     """ONE ANSWER FOR WHAT WAITS ON A SEAT. A ticket under four eyes waits on the seat that may sign
     it, named as a trade - its reference, path, client and agreement, its booker, its tier, the
     price it was booked at and the tier's own sentence for what it wants, which its booker's own
-    signature does not clear - and on no seat that may sign nothing; a read no seat signs, or one
-    on a box narrowing no seat's reads, lists it beside `seat` null. Signed by the second seat, it
-    leaves the list.
+    signature does not clear - and on no seat that may sign nothing; a read no seat signs lists it
+    beside `seat` null, and one on a box narrowing nothing is read for the seat it names. Signed by
+    the second seat, it leaves the list.
 
-    Killing mutations: `seat` answered as the name the request carried, which tells a box that
-    narrows no seat that its lists wait on one; the tier's four eyes dropped from the sentence,
-    which reads the booker's own signature as the verdict standing; and the client named by its
-    entity id, which a desk reads as a code.
+    Killing mutations: `seat` answered null on a box narrowing nothing, which a desk reads as no
+    seat named and shows the seat nothing it may sign; the tier's four eyes dropped from the
+    sentence, which reads the booker's own signature as the verdict standing; and the client named
+    by its entity id, which a desk reads as a code.
     """
     def worklist(**params):
         return CLIENT.get('/book/worklist', params=params).json()
 
     with_client(desk)
-    assert worklist(actor=DESK_TWO)['seat'] is None, 'a box narrowing no seat named one'
+    assert worklist(actor=DESK_TWO)['seat'] == DESK_TWO, 'the seat named read as no seat'
     papered(recorded)
     waiting = ticketed('EXEC-BIG', amount=BIG, price=1250.0).json()
     assert CLIENT.post('/book/approve', json={'ticket': waiting['ticket'], 'actor': ACTOR}
