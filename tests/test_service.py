@@ -561,12 +561,13 @@ def test_a_missing_book_file_starts_blank_and_takes_its_first_booking(tmp_path):
 
 
 def test_without_a_book_the_book_verbs_are_a_404():
-    """A miss is a refusal naming the fix, never a book invented in memory that no file backs.
+    """A miss is a refusal naming who puts it right, never a book invented in memory that no file
+    backs.
 
     Killing mutation: a missing book read through rather than refused, which 500s every book verb.
     """
     assert CLIENT.get('/book').status_code == 404
-    assert '--book' in CLIENT.get('/book').json()['detail']
+    assert CLIENT.get('/book').json()['detail'].endswith('until whoever runs the desk serves one')
 
 
 def test_a_booking_lands_in_the_file_and_every_client_sees_it(book):
@@ -2891,7 +2892,7 @@ def test_the_bloomberg_verb_needs_a_book_and_a_bootstrapper(book):
 
     assert bare.status_code == 422
     assert 'Bootstrapper Configuration' in bare.json()['detail']
-    assert missing.status_code == 404 and '--book' in missing.json()['detail']
+    assert missing.status_code == 404 and 'this desk serves no book' in missing.json()['detail']
 
 
 def test_the_metronome_skips_the_beat_its_last_tick_is_still_in_flight():
@@ -3652,7 +3653,7 @@ def test_the_walk_refuses_by_name_what_it_cannot_walk(book, vocabulary):
     for name, answer in answers.items():
         assert answer.status_code == 422, (name, answer.json())
     assert '`deal`' in answers['empty'].json()['detail']
-    assert 'with book_dependencies' in answers['null'].json()['detail']
+    assert 'what the book itself needs is read without one' in answers['null'].json()['detail']
     assert 'names both' in answers['both'].json()['detail']
     assert answers['nameless'].json()['detail'] == CLIENT.post(
         '/book/deals', content=dump({'deal': malformed}), headers=JSON).json()['refused'][0]
@@ -8800,14 +8801,16 @@ def test_a_retire_the_market_cannot_stand_on_writes_nothing(file_book):
     book, market = file_book
     before = book.read_bytes()
     refused = CLIENT.post('/book/market', json={'retire': [['Price Factors', 'FxRate.ZAR']]})
-    assert refused.status_code == 422 and refused.json()['detail'] == "'Price Factors'"
+    assert refused.status_code == 422 and refused.json()['detail'] == (
+        "'Price Factors' is not stated, and nothing is done without it")
     assert book.read_bytes() == before
 
     path = twin(book, market)
     service.BOOK = service.Book(str(path))
     before = path.read_bytes()
     refused = CLIENT.post('/book/market', json={'retire': [['Price Factors', 'FxRate.ZAR']]})
-    assert refused.status_code == 422 and refused.json()['detail'] == "'FxRate.ZAR'"
+    assert refused.status_code == 422 and refused.json()['detail'] == (
+        "'FxRate.ZAR' is not stated, and nothing is done without it")
     assert path.read_bytes() == before
 
 
