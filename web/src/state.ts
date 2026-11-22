@@ -460,6 +460,9 @@ export type Act = 'fill' | 'amendment' | 'quote_filed' | 'approval' | 'entity_de
   | 'agreement_declared' | 'official_close_declared' | 'status_transition' | 'confirmed'
   | 'collateral' | 'mark' | 'validate';
 
+/** What `GET /book/seat` answered for the seat on screen, null until it is read for that seat. */
+const grantsRead = (state: AppState) => (state.grants?.asked === state.seat ? state.grants : null);
+
 /** Why the seat may not `act` at `node` - the book by default, null for the firm's own facts, which
  * only a grant over every node reaches - in a line naming the verb the act demands under the map
  * in force (`demands`), a verb the service asks being itself; null where it may: off a desk that
@@ -469,10 +472,8 @@ export type Act = 'fill' | 'amendment' | 'quote_filed' | 'approval' | 'entity_de
 export function heldBack(state: AppState, act: Act,
                          node: string | null = String(state.doc?.Calc.Deals.Reference ?? '')):
   string | null {
-  const { grants } = state;
-  if (!spineOf(state) || grants?.asked !== state.seat) {
-    return null;
-  }
+  const grants = grantsRead(state);
+  if (!spineOf(state) || !grants) return null;
   if (grants.refused !== null) return grants.refused;
   const { read } = grants;
   const verb = read?.demands[act] ?? act;
@@ -488,7 +489,7 @@ export function heldBack(state: AppState, act: Act,
 /** Whether a read the seat's grants gate must wait: on a desk that records, until the grants are
  * read for the seat on screen, what holds it is not known, and a held seat's ask files a denial. */
 export const grantsOwed = (state: AppState): boolean =>
-  spineOf(state) !== null && state.grants?.asked !== state.seat;
+  spineOf(state) !== null && !grantsRead(state);
 
 /** Why a run the queue admits is not asked now, in its button's place - a calculation, a quote, a
  * credit charge, a tick, a verification: that the seat's grants are being read until they are
@@ -527,21 +528,21 @@ export function riskNow(state: AppState) {
  * filed under (`GET /book/seat`), a sign-in token's or the header box's, and the box's own where
  * that is not read for it. */
 export const actingSeat = (state: AppState): string =>
-  (state.grants?.asked === state.seat && state.grants.read?.seat) || state.seat;
+  grantsRead(state)?.read?.seat || state.seat;
 
 /** What a seat shown nothing of a thing on the record is told - no position in a trade, no row of
  * its history or of the record's strip - the record showing a seat what sits under the nodes it
  * holds a grant at: `whole`, that the record holds none, where it is shown the whole book - a node
  * at or above it, or no grants read - and else that the seat is shown none, with what it sees. */
 export function noneShown(state: AppState, whole = 'The record holds none of it now'): string {
-  const { grants } = state;
+  const read = grantsRead(state)?.read;
   const book = String(state.doc?.Calc.Deals.Reference ?? '');
-  const held = grants?.asked === state.seat ? Object.values(grants.read?.verbs ?? {}) : [];
+  const held = Object.values(read?.verbs ?? {});
   const sees = [...new Set(held.flatMap((at) => at ?? [book]))].sort();
   if (!held.length || sees.some((node) => book === node || book.startsWith(`${node}/`))) {
     return whole;
   }
-  return `${grants!.read!.seat} is shown none of it, ${sees.length
+  return `${read!.seat} is shown none of it, ${sees.length
     ? `seeing only what sits under ${sees.join(', ')}` : 'holding no grant at any node'}`;
 }
 
