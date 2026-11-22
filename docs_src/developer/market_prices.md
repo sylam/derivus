@@ -254,10 +254,13 @@ valuation date. **Held by**
 `test_service.py::test_a_tick_landing_while_the_terminal_priced_the_rows_refuses_rather_than_rolling_back`,
 `test_service.py::test_the_date_verb_sets_both_dates_and_re_rolls_every_curve_onto_them`.
 
-**Vocabulary and evidence.** The seed (`$DV_HOME/seed.json`) names what a desk could quote; the map
+**Vocabulary and evidence.** The seed (`$DV_HOME/seed.json`) names what a desk could quote, read
+once as the packaged questionnaire with the desk's file over it entry by entry (`desk_seed`) by
+every verb that reads it, so the strip a set-up prices is the one the Curves screen offers; the map
 (`$DV_HOME/security_map.json`) is what a terminal verified, beside a `rejected` ledger verification
 re-asks, a rejection being one day's answer; `used` joins each curve row to that evidence. **Held by**
 `test_service.py::test_a_vocabulary_entry_is_merged_kept_and_refused_by_name`,
+`test_service.py::test_a_set_up_reads_the_curve_its_own_seed_verified`,
 `test_service.py::test_every_knot_names_the_print_it_was_solved_from`.
 
 **Set-up.** The want-list is the dependency walk; for a pair a vanilla on it is walked, so each leg's

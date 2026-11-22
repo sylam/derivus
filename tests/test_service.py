@@ -3984,15 +3984,16 @@ def test_the_snap_sets_the_date_for_a_set_up(desk_setup, tmp_path, monkeypatch):
 
 
 def test_a_set_up_reads_the_curve_its_own_seed_verified(desk_setup, tmp_path, monkeypatch):
-    """ONE SEED READER PER JOB. A desk that restates a curve's SPELLING without restating its
-    conventions is the legacy case the seed's own fallback exists for, and it is exactly where two
-    readings diverge: the want, the count, the discovery and the strip that is PRICED must all be
-    the one merged entry - the desk's spelling over the packaged conventions - or the map is grown
-    with one family of tickers and the curve built out of another, which the Securities screen
-    then reads as `unmapped` for every knot.
+    """ONE SEED READER. A desk that restates a curve's SPELLING without restating its conventions
+    is the legacy case the seed's own fallback exists for, and it is exactly where two readings
+    diverge: the want, the count, the discovery, the strip that is PRICED and the strip the Curves
+    screen pre-fills must all be the one merged entry (`desk_seed`) - the desk's spelling over the
+    packaged conventions - or the map is grown with one family of tickers and the curve built out
+    of another, which the Securities screen then reads as `unmapped` for every knot.
 
-    Killing mutation: the strip read off `seeded_rates`, which takes the desk entry only where it
-    declares conventions - the map holds `EUSA*` and the block is authored from `EESWE*`.
+    Killing mutations: the strip, or `GET /book/curve`'s `seeded`, read off the packaged entry
+    where the desk's declares no conventions - the map holds `EUSA*` and the block is authored, or
+    offered, from `EESWE*`.
     """
     assert CLIENT.post('/book/securities', json={
         'block': 'rates', 'key': 'EUR', 'entry': {'prefix': 'EUSA', 'expect': 'EUR SWAP (ESTR)',
@@ -4014,6 +4015,11 @@ def test_a_set_up_reads_the_curve_its_own_seed_verified(desk_setup, tmp_path, mo
     # the conventions are the packaged ones the desk did not restate, which is what makes the
     # spelling it DID restate usable at all
     assert curve_block(desk_setup, 'EUR')['Compounding'] == 'OIS'
+    # and the Curves screen pre-fills off the same entry, so the strip it offers is the one priced
+    seeded = CLIENT.get('/book/curve').json()['seeded']['EUR']
+    assert [row['security'] for row in seeded['rows'] if row['tenor'] == '10Y'] == [
+        'EUSA10 BGN Curncy']
+    assert seeded['conventions']['compounding'] == 'OIS'
 
 
 def test_a_set_up_installs_no_curve_the_book_does_not_discount_on(tmp_path, monkeypatch):

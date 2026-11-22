@@ -5420,7 +5420,7 @@ def authored_curve(document, request):
     and its refusals are re-raised as the `ValueError` every /book verb answers 422 on.
     """
     try:
-        from derivus_bloomberg import ir_curve, security_map
+        from derivus_bloomberg import ir_curve
         from derivus_bloomberg.errors import BloombergFXError
     except ImportError as error:
         raise ValueError('a curve is authored by `derivus_bloomberg`, which is not importable '
@@ -5428,7 +5428,7 @@ def authored_curve(document, request):
     curve, as_of = request['curve'], book_base_date(document)
     try:
         conventions = ir_curve.curve_conventions(
-            security_map.curve_seed(curve), curve,
+            desk_seed(), curve,
             {name: value for name, value in request.items() if name not in CURVE_FIELDS})
         rows = live_rows(tuple(ir_curve.RatePrint(
             label=row['tenor'], kind='', security=row.get('security', ''),
@@ -5484,7 +5484,7 @@ def curve_quotes(source, document, base_date=None, reading=Context):
     off `source` - `(blocks, held out, date)`.
 
     THE BLOCK IS THE CURVE'S DEFINITION, so its own conventions are what a rolled date is re-rolled
-    under and nothing is read off the seed but the print scale. A row whose print the screen
+    under and nothing is read off the seed (`desk_seed`) but the print scale. A row whose print the screen
     refuses keeps the number it had, is held out with `Use` No and is NAMED - one dead ticker is
     one knot fewer where a refused strip is no curve at all - and `POST /book/curve` is what puts
     it back. A block this emitter cannot read, an older book's among them, is named and left
@@ -5497,10 +5497,10 @@ def curve_quotes(source, document, base_date=None, reading=Context):
     stand, re-rolled onto `base_date`, a day a desk STATED. `reading` makes the contexts it loads
     on (`spine.reading`).
     """
-    from derivus_bloomberg import ir_curve, security_map
+    from derivus_bloomberg import ir_curve
     from derivus_bloomberg.errors import BloombergFXError
 
-    dated, read, quotes, held = book_base_date(document), {}, {}, []
+    dated, read, quotes, held, seed = book_base_date(document), {}, {}, [], desk_seed()
     as_of = base_date or dated
     prices = market_of(document, reading())['Market Prices']
     for name in sorted(prices):
@@ -5509,8 +5509,7 @@ def curve_quotes(source, document, base_date=None, reading=Context):
         curve = name.split('.', 1)[1]
         try:
             instrument = prices[name]['instrument']
-            conventions = ir_curve.block_conventions(
-                instrument, security_map.curve_seed(curve), curve)
+            conventions = ir_curve.block_conventions(instrument, seed, curve)
             rows = ir_curve.block_rows(instrument)
             if source is not None:
                 rows = ir_curve.price_rows(source, rows, dated, conventions)
@@ -5617,12 +5616,12 @@ def book_curves(curve: str = None):
     the tenor/security rows it could be set up with. NONE of those is verified against a terminal;
     the map is what verifies, and a quote is what a row needs to reach a curve.
     """
-    from derivus_bloomberg import ir_curve, security_map
+    from derivus_bloomberg import ir_curve
     from derivus_bloomberg.errors import BloombergFXError
 
     document, etag = live_book().read()
     market = market_of(document)
-    seed = {'rates': security_map.seeded_rates()}
+    seed = desk_seed()
     answer = {'etag': etag, 'base_date': book_base_date(document, market).isoformat(),
               'curves': curve_blocks(market, curve)}
     for name, entry in answer['curves'].items():
@@ -6934,24 +6933,22 @@ class SetupJob:
             answer = {'written': False, 'installed': [], 'refused': [refusal(error)]}
         return self.outcome(started, discovered=discovered, held_out=held,
                             not_supplied=not_supplied,
-                            check=self.check(base, answer, own, held, repriced), **answer)
+                            check=self.check(base, seed, answer, own, held, repriced), **answer)
 
-    def check(self, base_currency, answer, curves, held, repriced=()):
-        """What a trader should look at after a set-up: a curve nobody on this desk declared the
-        conventions for, the benchmarks the screen held out, every standing block the roll
-        re-priced, and a surface the book's base currency is neither leg of. Empty where a set-up
-        wrote nothing."""
+    def check(self, base_currency, seed, answer, curves, held, repriced=()):
+        """What a trader should look at after a set-up: a curve on the conventions the packaged
+        questionnaire ships rather than ones this desk declared, the benchmarks the screen held
+        out, every standing block the roll re-priced, and a surface the book's base currency is
+        neither leg of. Empty where a set-up wrote nothing."""
         from derivus_bloomberg import security_map
 
         if not answer.get('written'):
             return []
-        # the desk's OWN file, never the packaged questionnaire `read_seed` falls back to: a curve
-        # nobody here declared is one a desk should read back before it prices off it
-        own = os.path.join(security_map.home(), 'seed.json')
-        declared = (security_map.read_seed(own).get('rates') or {}) if os.path.isfile(own) else {}
+        shipped = security_map.read_seed(security_map.packaged_seed())['rates']
+        named = sorted(name.split('.', 1)[1] for name in curves)
         rows = ['{} was set up on the conventions this build ships - read them back on the Curves '
-                'screen'.format(name.split('.', 1)[1]) for name in sorted(curves)
-                if not (declared.get(name.split('.', 1)[1]) or {}).get('conventions')]
+                'screen'.format(curve) for curve in named if seed['rates'][curve].get('conventions')
+                == (shipped.get(curve) or {}).get('conventions')]
         rows += ['{} benchmark rows were held out - the Securities screen names the print behind '
                  'each'.format(len(held))] if held else []
         # the roll re-prices the market the book already carried, and a block whose quotes moved

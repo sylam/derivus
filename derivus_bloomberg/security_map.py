@@ -24,7 +24,6 @@ check `stale` beside a tick).
 """
 import datetime
 import json
-import logging
 import math
 import os
 
@@ -55,34 +54,6 @@ def read_seed(path=None):
     candidate = path or os.path.join(home(), 'seed.json')
     with open(candidate if os.path.isfile(candidate) else packaged_seed(), encoding='utf-8') as f:
         return json.load(f)
-
-
-def curve_seed(curve, path=None):
-    """The seed one curve's conventions are read off: the desk's own where its entry DECLARES them,
-    else the PACKAGED one, said at INFO.
-
-    A desk seed written before the conventions existed names a curve and says nothing about what it
-    accrues on, and one written before a curve was keyed has no entry at all - `ZAR-ZARONIA` is
-    one. The packaged entry is a declaration this build ships rather than a view the desk owns, so
-    it is READ and never copied into the desk's file.
-    """
-    seed = read_seed(path)
-    if ((seed.get('rates') or {}).get(curve) or {}).get('conventions'):
-        return seed
-    packaged = read_seed(packaged_seed())
-    if ((packaged.get('rates') or {}).get(curve) or {}).get('conventions'):
-        logging.info("this desk's seed declares no conventions for %s - reading the packaged "
-                     'entry and leaving %s alone', curve, path or os.path.join(home(), 'seed.json'))
-        return packaged
-    return seed
-
-
-def seeded_rates(path=None):
-    """Every curve entry a desk could author from - `curve_seed`'s rule over the whole file: the
-    packaged declarations with the desk's own over them wherever those declare their conventions."""
-    desk = read_seed(path).get('rates', {})
-    return dict(read_seed(packaged_seed()).get('rates', {}),
-                **{curve: spec for curve, spec in desk.items() if spec.get('conventions')})
 
 
 def pair_name(pair):
