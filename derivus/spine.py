@@ -450,12 +450,13 @@ def _state(log, projector, lsn=None, folds=None):
     return state
 
 
-def _rows(projector, lsn=None):
-    """One projector's rows at `lsn`, folded off the home - what every read below is made of.
-    Copied so callers cannot mutate state held in advancing folds or a read memo."""
+def _rows(projector, lsn=None, folds=None):
+    """One projector's rows at `lsn`, folded off the home and ADVANCED in `folds` where held - what
+    every read below is made of. Copied so callers cannot mutate state held in advancing folds or a
+    read memo."""
     def fold(log):
         named = package().projections.PROJECTORS[projector]
-        return deepcopy(named.rows(_state(log, named, lsn)))
+        return deepcopy(named.rows(_state(log, named, lsn, folds)))
 
     return folded(fold)
 
@@ -832,9 +833,7 @@ def _balances(document, papers, lsn=None, folds=None):
     if not sets:
         return {}
     spine = package()
-    cash = spine.projections.PROJECTORS['cash']
-    held = spine.projections.CSA.held(folded(lambda log: cash.rows(_state(
-        log, cash, lsn, folds))), base_day(document))
+    held = spine.projections.CSA.held(_rows('cash', lsn, folds), base_day(document))
     balances, market = {}, None
     for agreement, terms in sets.items():
         holding = held.get(agreement, spine.projections.CSA.NOTHING)[spine.verbs.COLLATERAL]
@@ -1380,12 +1379,7 @@ def positions(lsn=None):
 def positions_of(book, lsn=None, folds=None):
     """The `positions` rows of the book `book` at `lsn`, read off the fold ADVANCED in `folds`:
     what one book file prices, a fill filed under another book or under none being none of its."""
-    def fold(log):
-        named = package().projections.PROJECTORS['positions']
-        return deepcopy([row for row in named.rows(_state(log, named, lsn, folds))
-                         if row['book'] == book])
-
-    return folded(fold)
+    return [row for row in _rows('positions', lsn, folds) if row['book'] == book]
 
 
 def entities(lsn=None):
