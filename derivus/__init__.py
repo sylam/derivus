@@ -255,14 +255,19 @@ def dv_home():
 PATHS_FILE = 'paths.json'
 
 
+def desk_file(name, absent):
+    """The JSON the home keeps under `name`, or `absent` where there is no such file."""
+    try:
+        with open(os.path.join(dv_home(), name), encoding='utf-8') as handle:
+            return json.load(handle)
+    except FileNotFoundError:
+        return absent
+
+
 def home_paths():
     """`{path_transform, file_transform}` as `dv_home()/paths.json` states them, both empty where
     the file does not exist."""
-    path = os.path.join(dv_home(), PATHS_FILE)
-    if not os.path.isfile(path):
-        return {'path_transform': {}, 'file_transform': {}}
-    with open(path, encoding='utf-8') as handle:
-        return json.load(handle)
+    return desk_file(PATHS_FILE, {'path_transform': {}, 'file_transform': {}})
 
 
 class Context:

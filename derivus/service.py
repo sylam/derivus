@@ -54,6 +54,7 @@ doorbell carry an ID token that set verifies, whose subject IS the seat; narrow 
 
 import asyncio
 import contextlib
+import datetime
 import json
 import logging
 import math
@@ -77,14 +78,14 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 import pandas as pd
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import (PATHS_FILE, Context, bootstrappers, content_hash, dv_home, instruments, riskfactors,
-               solve_deal_field, spine, structures, utils)
+from . import (PATHS_FILE, Context, bootstrappers, content_hash, desk_file, dv_home, instruments,
+               riskfactors, solve_deal_field, spine, structures, utils)
 from .schema import (EXPOSURES, PRICES_KEY, mapping, deal_at, declared_block,
                      declared_defaults, declared_factors, declared_fields, declared_settlements,
                      instrument_of, job_children, live_deals, netting_sets, quote_plan,
                      quote_stamps, remove_deal, settlement_days, sniff_indent, splice_deal,
                      stated_messages, tables_of, tenor_fields, update_market_quote,
-                     validate_instrument, value_message, walk_job_deals)
+                     validate_instrument, value_message, walk, walk_job_deals)
 from ._version import __version__
 from .config import Config, ModelParams, as_json, family_entries
 from .instruments import construct_instrument
@@ -304,22 +305,25 @@ def cost(calculation):
             'basis': 'Batch_Size x Simulation_Batches x Time_Grid segments - an estimate'}
 
 
+def cost_class(context):
+    """The queue's cost class of the calculation `context` loaded (`cost`)."""
+    return cost(context.current_cfg.deals['Calculation'])['class']
+
+
 def shape(table):
     """What a client renders a header and a pager from: how many rows a table has and what its
-    columns are called. A serialised ndarray has rows and no column labels; a scalar is one row."""
-    frame = table.get('.DataFrame') if isinstance(table, dict) else None
-    if frame is not None:
-        return {'rows': len(frame['data']), 'columns': frame['columns']}
-    return {'rows': len(table) if isinstance(table, list) else 1, 'columns': []}
+    columns are called (`rows_of`)."""
+    rows, _, columns = rows_of(table)
+    return {'rows': len(rows), 'columns': columns}
 
 
 def rows_of(table):
-    """The rows a table pages along, and the index labelling them — a frame's `data` and `index`,
-    an ndarray's own list, or a scalar as the single row it is."""
+    """`(rows, index, columns)` of a table - a frame's `data`, `index` and `columns`, an ndarray's
+    own list labelled by neither, or a scalar as the single row it is."""
     frame = table.get('.DataFrame') if isinstance(table, dict) else None
     if frame is not None:
-        return frame['data'], frame['index']
-    return (table if isinstance(table, list) else [table]), []
+        return frame['data'], frame['index'], frame['columns']
+    return (table if isinstance(table, list) else [table]), [], []
 
 
 def plain(label):
@@ -534,6 +538,12 @@ SPINE_PIN = 'Spine'
 #: ms on Windows' default timer - and on a filesystem stamping whole seconds, two of them.
 TICK_NS, COARSE_TICK_NS = 16_000_000, 2_000_000_000
 
+
+def ticked(stamp):
+    """The time past which no second write lands on a file stamped `stamp`, in nanoseconds: a tick
+    of the clock that stamped it, a whole-second stamp being a coarse filesystem's."""
+    return stamp + (TICK_NS if stamp % 1_000_000_000 else COARSE_TICK_NS)
+
 #: How often a read is tried, a tick apart, before the text in hand answers a reader - an outside
 #: save caught in flight.
 READS = 3
@@ -610,8 +620,7 @@ class Book:
         write (`strict`), nor past the time a save takes where the text will not parse."""
         now, stat = time.time_ns(), os.stat(self.path)
         key = (stat.st_mtime_ns, stat.st_size)
-        tick = TICK_NS if stat.st_mtime_ns % 1_000_000_000 else COARSE_TICK_NS
-        if key == self._cache[0] and self._cache[1] >= key[0] + tick:
+        if key == self._cache[0] and self._cache[1] >= ticked(key[0]):
             return self._cache[2]
         for attempt in range(READS):
             try:
@@ -954,7 +963,7 @@ def executed(job, book):
                                      'lane, which records nothing')
         evidence = evidence_for(job, context)
     submitted = Job(content_hash(stamp), context, stamp, lane, evidence, job.get('actor'), book)
-    answer = queued(submitted, cost(context.current_cfg.deals['Calculation'])['class'])
+    answer = queued(submitted, cost_class(context))
     # a standing run whose numbers already exist still attests - the lane is about standing rather
     # than arithmetic. One that coalesced onto a queued or running run was promoted in `submit`
     if attests(submitted) and answer['status'] == 'done':
@@ -1000,7 +1009,7 @@ def table(result_id: str, table: str, offset: int = 0, limit: int = None, width:
     if result is None or table not in result.get('tables', {}):
         raise HTTPException(404, 'Unknown table {} of result {}'.format(table, result_id))
     found = result['tables'][table]
-    rows, index = rows_of(found)
+    rows, index, _ = rows_of(found)
     end = len(rows) if limit is None else offset + limit
     page = dict(shape(found), name=table, offset=offset,
                 index=index[offset:end], data=rows[offset:end])
@@ -1037,8 +1046,7 @@ def settled(path):
         stat = os.stat(path)
     except FileNotFoundError:
         return ()
-    tick = TICK_NS if stat.st_mtime_ns % 1_000_000_000 else COARSE_TICK_NS
-    return (stat.st_mtime_ns, stat.st_size) if time.time_ns() >= stat.st_mtime_ns + tick else None
+    return (stat.st_mtime_ns, stat.st_size) if time.time_ns() >= ticked(stat.st_mtime_ns) else None
 
 
 def poll_key(live, *own):
@@ -1074,9 +1082,10 @@ def book():
     """The book, whole and in wire form, with the etag naming its current state. A client renders
     the document and then polls only the etag question - re-fetching when it moves - so a deal
     booked by any other client appears within a poll tick."""
-    document, etag = live_book().read()
-    answer = {'document': document, 'etag': etag, 'path': live_book().path}
-    folder, name = os.path.split(os.path.abspath(live_book().path))
+    live = live_book()
+    document, etag = live.read()
+    answer = {'document': document, 'etag': etag, 'path': live.path}
+    folder, name = os.path.split(os.path.abspath(live.path))
     if folder == os.path.abspath(os.path.join(dv_home(), INBOX)):
         answer['opened'] = name
     pinned = pin_of(document)
@@ -1157,9 +1166,7 @@ def deal_references(node):
     """Every `Reference` in a booked subtree: the deal itself, then each leg under it. What the
     verdict has to read - a container whose LEG is misauthored is a refused booking, not a
     booking whose container had nothing said about it."""
-    return [node['Instrument']['.Deal'].get('Reference')] + [
-        reference for child in node.get('Children', [])
-        for reference in deal_references(child)]
+    return [each['Instrument']['.Deal'].get('Reference') for _, each in walk([node])]
 
 
 def newly_said(verdict, references, baseline):
@@ -1742,7 +1749,8 @@ def book_price(request: dict):
     THE LANE IS CURIOSITY AND NOT A PARAMETER: nothing here will ever be cited by a fact, so it
     mints nothing whether or not a spine home is configured. A candidate that becomes a trade is
     quoted through `/book/structure` and booked through `/book/quote`."""
-    document, etag = live_book().read()
+    live = live_book()
+    document, etag = live.read()
     pending = book_quote_pending(request['quote_id']) if request.get('quote_id') else None
     if pending and pending.get('booked'):
         raise HTTPException(422, 'quote {} is booked at {} - a what-if of it would price a second '
@@ -1751,7 +1759,7 @@ def book_price(request: dict):
                                                       pending['booked']['deal_path']))
     parent = pending['quote'].get('netting_set') if pending else request.get('parent_reference')
     candidate = pending is not None or request.get('deal') is not None
-    baseline = live_book().baseline(document, etag) if candidate else None
+    baseline = live.baseline(document, etag) if candidate else None
     overrides, increment = request.get('calculation_overrides') or {}, request.get('xva_increment')
     document = priced(document, 'CreditMonteCarlo' if increment else overrides.get('Object'))
     deal_path = request.get('deal_path')
@@ -1784,8 +1792,7 @@ def book_price(request: dict):
             {'with': stamp, 'without': dict(stamp, plan_hash=contexts[1].plan_hash())},
             **({'limits': content_hash(limits)} if limits else {}))
     return queued(Job(content_hash(stamp), run, stamp, spine.CURIOSITY, actor=request.get('actor'),
-                      book=book_name(document)),
-                  cost(contexts[0].current_cfg.deals['Calculation'])['class'])
+                      book=book_name(document)), cost_class(contexts[0]))
 
 
 #: The desk's own named calculations in `DV_HOME` beside its book, `{"calculations": {name: block}}`
@@ -1798,10 +1805,7 @@ def read_calculations():
     file that is there and not JSON refuses by name: "none saved" and "the file is broken" are two
     different facts."""
     try:
-        with open(os.path.join(dv_home(), CALCULATIONS_FILE), encoding='utf-8') as handle:
-            return json.load(handle)['calculations']
-    except FileNotFoundError:
-        return {}
+        return desk_file(CALCULATIONS_FILE, {'calculations': {}})['calculations']
     except (ValueError, KeyError) as error:
         raise HTTPException(422, 'the desk\'s saved calculations are not readable ({}): the file '
                                  'that keeps them is damaged, which the operator puts '
@@ -1863,8 +1867,7 @@ def run_calculation(request: dict):
     context = load(document)
     stamp = replay(context)
     return queued(Job(content_hash(stamp), context, stamp, spine.CURIOSITY,
-                      actor=request.get('actor'), book=book_name(document)),
-                  cost(context.current_cfg.deals['Calculation'])['class'])
+                      actor=request.get('actor'), book=book_name(document)), cost_class(context))
 
 
 def as_of():
@@ -1874,8 +1877,6 @@ def as_of():
     by. The service's own clock with the offset it runs at, so a reader on another clock can
     compare it and an age measured across a change of offset stays true.
     """
-    import datetime
-
     return datetime.datetime.now().astimezone().isoformat(timespec='milliseconds')
 
 
@@ -2618,8 +2619,6 @@ def read_day(date):
     to round-trip exactly: a time on it names an instant rather than a close, and `2024` names a
     year rather than a day.
     """
-    import datetime
-
     try:
         day = datetime.date.fromisoformat(date).isoformat()
     except (ValueError, TypeError):
@@ -5376,8 +5375,6 @@ def wire_stamp(stated):
 def read_stamp(stated):
     """A date as a `datetime.date` - an ISO day, or the wire `{'.Timestamp': ...}` the book itself
     carries, so what a client read off the book is what it can hand back."""
-    import datetime
-
     try:
         return datetime.date.fromisoformat(wire_stamp(stated)[:10])
     except (TypeError, ValueError):
@@ -5419,8 +5416,6 @@ def curve_holidays(document, calendar, reading=Context):
     """The dates a block's `Calendar` names, off the book's own calendar file, taken from the live
     book's parses - the holiday set the emitter rolls against, read on a context `reading` makes
     (`spine.reading`). No file, or a location it does not carry, is the weekday rule."""
-    import datetime
-
     path = document['Calc'].get('CalendDataFile')
     if not (calendar and path and os.path.isfile(path)):
         return ()
@@ -5991,8 +5986,6 @@ class BloombergJob(Progressing):
             **fields, seconds=round(time.perf_counter() - started, 2))}}
 
     def run_job(self):
-        import datetime
-
         from derivus_bloomberg import discover
         from derivus_bloomberg.errors import BloombergFXError
         from derivus_bloomberg.session import BloombergSession
@@ -6329,8 +6322,6 @@ class VerifyJob(Progressing):
         self.scope, self.result_id = scope, result_id
 
     def run_job(self):
-        import datetime
-
         from derivus_bloomberg import discover
         from derivus_bloomberg.session import BloombergSession
 
@@ -6516,8 +6507,6 @@ def pair_factors(document, pair):
     by name - it is the one thing no walk can find until the block exists - unless the book already
     carries THAT curve, which the leg's new spot discounts on rather than re-authoring it.
     """
-    import datetime
-
     factors = market_of(document)['Price Factors']
     left, right = structures.split_pair(pair)
     expiry = {'.Timestamp': (book_base_date(document) + datetime.timedelta(365)).isoformat()}
@@ -6776,8 +6765,6 @@ class SetupJob(Progressing):
                  if row['status'] == 'missing' and not row['supply']])
 
     def run_job(self):
-        import datetime
-
         from derivus_bloomberg import discover, ir_curve, security_map
         from derivus_bloomberg.errors import BloombergFXError
         from derivus_bloomberg.session import BloombergSession
@@ -7526,8 +7513,6 @@ def quote_age(stamp, until=None):
     where there is nothing readable to measure: a pending file from before quotes were stamped, or
     a stamp that will not parse. None is not zero: an age nobody can establish is not an age inside
     a window. A stamp carrying no zone reads as UTC."""
-    import datetime
-
     if not stamp:
         return None
     try:
@@ -7563,8 +7548,6 @@ def firmness(pending, read):
     and `lapsed` past it, an age nobody can establish being past it; `until` the stamp the window
     closes at and `age` the quote's seconds (`quote_age`). What the acceptance refuses by and every
     quote read answers."""
-    import datetime
-
     seconds, age = read['firm_seconds'], quote_age(pending.get('quoted_at'), read['as_of'])
     if seconds is None:
         return 'quoted', None, age
@@ -8186,8 +8169,6 @@ def blank_book():
 
     NO INNER PATH COUNT, here or in the skeleton: the calculation's own declaration is the one
     number a quote and a mark share, and a book that states one states it on purpose."""
-    import datetime
-
     document = json.loads(json.dumps(JOB_SKELETON))
     job_children(document)[:] = []
     stamp_base_date(document, datetime.date.today())
@@ -8214,7 +8195,6 @@ def mount_ui(application, directory):
     subpath, so the SPA navigates by tab state rather than URL path - a router would ship deep
     links that 404 on reload.
     """
-    import os
     from fastapi.staticfiles import StaticFiles
 
     if not os.path.isfile(os.path.join(directory, 'index.html')):
