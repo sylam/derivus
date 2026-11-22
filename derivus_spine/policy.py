@@ -291,7 +291,7 @@ def _tier(tier, position, named, refuse):
         refuse('{} covers the scope {!r}: a scope is a node - a book, or a path of named segments '
                'under it'.format(at, tier['scope']))
     if 'max_notional' in tier:
-        _cap(tier['max_notional'], at, refuse)
+        _cap(tier['max_notional'], '{} caps max_notional at'.format(at), refuse)
     if 'max_tenor_years' in tier and (not is_number(tier['max_tenor_years'])
                                       or tier['max_tenor_years'] < 0):
         refuse('{} caps max_tenor_years at {!r} - a tenor bound is a finite number of years and is '
@@ -303,22 +303,23 @@ def _tier(tier, position, named, refuse):
         _public(tier['market'], at, refuse)
 
 
-def _cap(cap, at, refuse):
-    """A tier's `max_notional`, checked: an amount and the currency it is an amount OF.
+def _cap(cap, at, refuse, called='cap', zero=True):
+    """An `{amount, currency}` object, checked: an amount and the currency it is an amount OF.
+    `at` opens each refusal, `called` is what the amount is and `zero` whether it may be nothing.
 
-    Closed at those two. A cap that does not name its currency is a number nothing can compare a
-    ticket against, and a policy check that crossed one currency into another would read a market.
+    Closed at those two. One that does not name its currency is a number nothing can be compared
+    against, and a policy check that crossed one currency into another would read a market.
     """
     if not isinstance(cap, dict) or sorted(cap) != ['amount', 'currency']:
-        refuse('{} caps max_notional at {!r}: a cap is {{"amount": number, "currency": name}} and '
-               'is closed at those two - a cap that does not name its currency is a number no '
-               'ticket can be compared against'.format(at, cap))
-    if not is_number(cap['amount']) or cap['amount'] < 0:
-        refuse('{} caps max_notional at the amount {!r} - a cap is a finite number of its own '
-               'currency and is never negative'.format(at, cap['amount']))
+        refuse('{} {!r}: a {} is {{"amount": number, "currency": name}} and is closed at those '
+               'two - one that does not name its currency is a number nothing can be compared '
+               'against'.format(at, cap, called))
+    if not is_number(cap['amount']) or cap['amount'] < 0 or not (zero or cap['amount']):
+        refuse('{} the amount {!r} - a {} is a finite number of its own currency and is {}'.format(
+            at, cap['amount'], called, 'never negative' if zero else 'above zero'))
     if not is_text(cap['currency']):
-        refuse('{} caps max_notional in the currency {!r}, and a currency that names nothing is not '
-               'one a ticket can state its notional in'.format(at, cap['currency']))
+        refuse('{} an amount in the currency {!r}, and a currency that names nothing is not one '
+               'a {} can be stated in'.format(at, cap['currency'], called))
 
 
 def _designations(document, refuse):
@@ -437,16 +438,7 @@ def parse_limits(document, where):
                'so with an empty object, so that silence is never mistaken for absence'.format(
                    LIMITS_SECTION, type(entries).__name__))
     for entity, limit in sorted(entries.items()):
-        if not isinstance(limit, dict) or sorted(limit) != ['amount', 'currency']:
-            refuse('the limit on {!r} is {!r}: a limit is {{"amount": number, "currency": name}} '
-                   'and is closed at those two - one that does not name its currency is a number '
-                   'no exposure can be held against'.format(entity, limit))
-        if not is_number(limit['amount']) or limit['amount'] <= 0:
-            refuse('the limit on {!r} is the amount {!r} - a limit is a finite number of its own '
-                   'currency and is above zero'.format(entity, limit['amount']))
-        if not is_text(limit['currency']):
-            refuse('the limit on {!r} is in the currency {!r}, and a currency that names nothing '
-                   'is not one an exposure is reported in'.format(entity, limit['currency']))
+        _cap(limit, 'the limit on {!r} is'.format(entity), refuse, 'limit', zero=False)
     return {LIMITS_SECTION: {entity: dict(limit) for entity, limit in entries.items()}}
 
 

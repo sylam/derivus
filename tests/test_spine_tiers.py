@@ -109,7 +109,8 @@ def test_a_tiers_policy_is_closed_at_the_field_level_and_refuses_where_it_is_dec
     stored is the COMPLETED document - `four_eyes` false and an empty `designations` written in
     before the bytes are hashed - so one workflow is one blob however it was spelled.
 
-    Killing mutation: the restated staleness window let through to the tier's field check.
+    Killing mutations: the restated staleness window let through to the tier's field check; a cap
+    of nothing refused as a limit of nothing is (`_cap`'s `zero` defaulting to refused).
     """
     home, log = minted(tmp_path)
     broken = (
@@ -120,6 +121,8 @@ def test_a_tiers_policy_is_closed_at_the_field_level_and_refuses_where_it_is_dec
         ('declared twice', {'tiers': [{'name': 'auto'}, {'name': 'auto'}]}),
         ('currency', {'tiers': [{'name': 'auto', 'max_notional': {'amount': 1.0}}]}),
         ('max_notional', {'tiers': [{'name': 'auto', 'max_notional': 5_000_000.0}]}),
+        ('never negative', {'tiers': [{'name': 'auto', 'max_notional': {
+            'amount': -1.0, 'currency': 'USD'}}]}),
         ('max_tenor_years', {'tiers': [{'name': 'auto', 'max_tenor_years': -1.0}]}),
         ('escalates_to', {'tiers': [{'name': 'auto', 'escalates_to': 'desk'}]}),
         ('four_eyes', {'tiers': [{'name': 'auto', 'four_eyes': 'yes'}]}),
@@ -150,6 +153,9 @@ def test_a_tiers_policy_is_closed_at_the_field_level_and_refuses_where_it_is_dec
         log, policy.declare(log, MINT, policy.TIERS_POLICY,
                             {'tiers': [{'name': 'board'}]})['lsn']) == {
         'tiers': [{'name': 'board', 'four_eyes': False}], 'designations': {}}
+    # a cap of nothing is a cap, the tier admitting no ticket
+    assert policy.declare(log, MINT, policy.TIERS_POLICY, {'tiers': [{
+        'name': 'shut', 'max_notional': {'amount': 0, 'currency': 'USD'}}]})['lsn'] == 7
     log.close()
 
 

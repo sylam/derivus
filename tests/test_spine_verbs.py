@@ -1326,8 +1326,9 @@ def test_a_limits_policy_is_a_credit_limit_per_legal_entity_and_the_record_check
     capabilities document granting the genesis seat `admin`, a seat holding none is refused by the
     record, the denial landed.
 
-    Killing mutations: a limit of zero let through (`<= 0` read as `< 0`), which declares a limit
-    every exposure breaches; the reader answering the head whatever position it is asked at.
+    Killing mutations: a limit of zero let through (`_cap` asked with `zero` admitted), which
+    declares a limit every exposure breaches; the reader answering the head whatever position it
+    is asked at.
     """
     home, log = minted(tmp_path)
     limit = {'amount': 5_000_000, 'currency': 'USD'}
@@ -1337,7 +1338,7 @@ def test_a_limits_policy_is_a_credit_limit_per_legal_entity_and_the_record_check
                {'limits': {'LEI-A': dict(limit, amount=-1.0)}}),
               ('one that does not name its currency', {'limits': {'LEI-A': {'amount': 5e6}}}),
               ('is closed at those two', {'limits': {'LEI-A': dict(limit, measure='PFE_95')}}),
-              ("the limit on 'LEI-A' is in the currency None",
+              ("the limit on 'LEI-A' is an amount in the currency None",
                {'limits': {'LEI-A': dict(limit, currency=None)}}),
               ('limits is NoneType', {}),
               ('a limits policy is list', ['limits']))
