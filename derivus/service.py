@@ -7320,6 +7320,8 @@ def book_solve(request: dict):
     iterate, and the loop would die reading a row the marks frame does not carry. It refuses 422
     in the booking's own words instead.
     """
+    if 'deal' not in request:
+        raise HTTPException(422, 'a solve names the deal it solves')
     document, etag = live_book().read()
     try:
         baseline = live_book().baseline(document, etag)

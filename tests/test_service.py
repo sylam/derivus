@@ -4816,6 +4816,19 @@ def test_a_solve_refuses_a_field_and_a_bounds_the_deal_cannot_carry(book):
     assert answers['reach']['error'].startswith('solve for Amount never reached 1e+300')
 
 
+def test_a_solve_naming_no_deal_or_no_field_is_refused_by_name_before_it_queues(book):
+    """A solve names the deal it solves and the field it moves; one naming either not is refused
+    by name with its code, before anything queues, never a 500 naming a missing key.
+
+    Killing mutation: the deal read off the request unchecked, which answers 500 `KeyError: 'deal'`.
+    """
+    for request, said in (({'field': 'Amount'}, 'a solve names the deal it solves'),
+                          ({'deal': dict(CASHFLOW, Reference='SLV_NONE')},
+                           'a solve names the field it moves')):
+        refused = CLIENT.post('/book/solve', content=dump(request), headers=JSON)
+        assert (refused.status_code, refused.json()) == (422, {'detail': said, 'code': 'refused'})
+
+
 def test_a_solve_on_a_candidate_naming_market_data_the_book_lacks_is_refused(book):
     """The solve validates its candidate before it queues, in the booking's own words - the
     what-if's check. Without it the candidate LOADS, discovery drops it on the first iterate, the
