@@ -1571,7 +1571,7 @@ async def recalc_xva(netting_sets: list | None = None, actor: str | None = None,
         {'netting_sets': netting_sets}, **_stated(actor=actor)))
     queued = submitted['queued']
     if not queued:
-        return dict(submitted, hint='the book carries no netting sets - there is no XVA to run')
+        return submitted
     # Freshly queued sets drain in order through one worker, so the last settling usually means
     # every one has - but a cached set answers 'done' at once, so xva_view's per-row status rules.
     last = await _await_result(queued[-1]['result_id'], wait_seconds, ctx)

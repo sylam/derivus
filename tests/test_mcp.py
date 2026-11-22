@@ -873,6 +873,22 @@ def test_the_increment_tool_answers_the_services_own_increment(tmp_path, monkeyp
         service.BOOK = None
 
 
+def test_a_recalc_naming_no_set_relays_what_the_service_queued(tmp_path, monkeypatch):
+    """`recalc_xva(netting_sets=[])` names no set and the service queues none: the tool relays that
+    answer whole and says nothing of the book, which carries a set.
+
+    Killing mutation: the tool's own hint on an empty queue, which tells a model the book carries
+    no netting sets.
+    """
+    from test_service import netting_set, xva_book
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    xva_book(tmp_path, [netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')])])
+    try:
+        assert asyncio.run(mcp_server.recalc_xva([])) == {'queued': []}
+    finally:
+        service.BOOK = None
+
+
 def test_the_xva_view_answers_one_set_s_row_with_its_profile_and_no_place_on_the_server(
         tmp_path, monkeypatch):
     """`xva_view` lists every set's row and, asked for one by `reference`, answers that row with the
