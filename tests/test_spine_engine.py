@@ -5927,14 +5927,17 @@ def test_a_refusal_names_its_kind_beside_its_sentence(recorded, desk, monkeypatc
     """A REFUSAL CARRIES ITS KIND, `code`, a short stable name beside its sentence, so a client
     branches on the name and never on the words: an act no seat signs is `no_actor`, with no
     deployment seat and under a document alike; a seat without the grant is `not_granted`, whether
-    the writer turns its fill away or the queue its risk read; a document opened on a desk that
+    the writer turns its fill away or the queue its risk read or a job it posts to be validated,
+    described, prepared or run - asked before the job is loaded, so one with no calculation is the
+    seat's refusal and never the document's; a document opened on a desk that
     records is `recorded`; and a refusal of no named kind - the record's own reserved name, an
     unknown result, a body or a query that does not read - is `refused`, in a sentence.
 
     Killing mutations: the writer's denial translated without its kind, which answers the fill
     `refused`; the handler of the service's own refusals removed, which answers `recorded` with no
     `code`; the unnamed act refused without its kind; the handler no longer taking a request that
-    does not read, which answers FastAPI's list of errors and no `code`.
+    does not read, which answers FastAPI's list of errors and no `code`; `/execute` admitting after
+    it loads, which refuses the missing calculation instead; `/validate` admitting nobody.
     """
     with_client(desk)
 
@@ -5952,6 +5955,12 @@ def test_a_refusal_names_its_kind_beside_its_sentence(recorded, desk, monkeypatc
                          (CLIENT.get('/book/risk', params={'actor': DESK_FX}), 'validate')):
         status, code, detail = kind(answer)
         assert (status, code) == (422, 'not_granted') and 'holds no {} scope'.format(verb) in detail
+    # admitted before anything is loaded: a job with no calculation is the seat's refusal
+    unrun = dict(CLIENT.get('/book').json()['document'], actor=DESK_FX)
+    del unrun['Calc']['Calculation']
+    for route in ('/validate', '/describe', '/prepare', '/execute'):
+        status, code, detail = kind(CLIENT.post(route, json=unrun))
+        assert (status, code) == (422, 'not_granted') and 'holds no validate scope' in detail
     assert kind(CLIENT.post('/book/open', json={'name': 'FOREIGN.json', 'document': {}}))[:2] == (
         422, 'recorded')
     assert kind(CLIENT.get('/book/seat', params={'actor': 'writer'})) == (

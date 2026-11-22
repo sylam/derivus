@@ -409,11 +409,11 @@ class ComputeExecutor:
         """File and enqueue the job unless its `result_id` is already known, and return the status
         the caller sees immediately - `queued`, or wherever an identical earlier submission got to.
 
-        ADMISSION IS THE FIRST THING AND THE ONLY ONE: every queued job passes here, `pin_result`
-        has no HTTP verb, and so this is the whole of what an unscoped actor could make this box
-        spend. A refused seat gets the record's own sentence and nothing is filed, enqueued or
-        served - a stored result the queue would not have run is a number this seat was not admitted
-        to.
+        ADMISSION IS THE FIRST THING: every queued job passes here, so a verb that queues without
+        asking first is still asked - each verb asks before its own work, a load or a compile, and
+        this asks again of every job. A refused seat gets the record's own sentence and nothing is
+        filed, enqueued or served - a stored result the queue would not have run is a number this
+        seat was not admitted to.
 
         A standing submission coalescing onto a run still in flight is PROMOTED here, this being
         the only place that sees both: the job the worker dequeued carries the first caller's lane,
@@ -833,7 +833,9 @@ def validate(job: dict):
     """What would stop this job running, verbatim from `cx.validate()` — the authoring messages of
     every deal in the book, the price factors it names that the market data has no block for, and
     what the `Calculation` block's declarations say against it. Answered inline: it runs nothing,
-    prices nothing and never reaches the queue."""
+    prices nothing and never reaches the queue, and asks of the seat `job` names what the queue
+    asks of a what-if (`spine.admit`) before it loads anything."""
+    spine.admit(spine.CURIOSITY, job.get('actor'), book_name(job))
     return context_for(job).validate()
 
 
@@ -843,8 +845,9 @@ def describe(job: dict):
     the dispatcher's own reading under `cost`, each price factor's process under `processes`
     (`factor_processes`) and each interpolated type's scheme under `interpolation`
     (`type_schemes`). Nothing here writes, so describing a job and then executing it reports
-    exactly what executing it alone reports.
+    exactly what executing it alone reports. The seat is admitted as `/validate` admits it, first.
     """
+    spine.admit(spine.CURIOSITY, job.get('actor'), book_name(job))
     context = context_for(job)
     config = context.current_cfg
     return dict(as_json(context.describe()), cost=cost(config.deals['Calculation']),
@@ -886,13 +889,11 @@ def prepare(job: dict):
     `/execute` then takes `{"plan_id": ..., "Patch": {...}}` in place of the document, which is what
     a client streaming market values wants: the plan is sent once and a tick is a delta.
 
-    The job is COMPILED against the record first, exactly as `/execute` compiles it, so a plan named
-    here and run there is one plan rather than two.
+    The job is COMPILED against the record, exactly as `/execute` compiles it, so a plan named here
+    and run there is one plan rather than two - once the seat is admitted as `/validate` admits it.
     """
-    try:
-        job = spine.compiled_job(job, folds=folds())
-    except spine.SpineRefused as refused:
-        raise HTTPException(422, str(refused))
+    spine.admit(spine.CURIOSITY, job.get('actor'), book_name(job))
+    job = spine.compiled_job(job, folds=folds())
     context = context_for(job)
     return {'plan_id': PLANS.put(context), 'values_hash': context.values_hash(),
             'engine_version': __version__}
@@ -934,38 +935,31 @@ def execute(job: dict):
 
 
 def executed(job, book):
-    """`/execute`'s act, the queue admitting the job over `book`: the job's own, or the book the
-    marks a close is valued at belong to."""
-    try:
-        # the PLAN is terms plus the observations the record holds, so what runs and what an
-        # auditor recompiles are one document. Without a home this is the document as posted
-        job = spine.compiled_job(job, folds=folds())
-    except spine.SpineRefused as refused:
-        raise HTTPException(422, str(refused))
+    """`/execute`'s act, the queue admitting the job over `book` - the job's own, or the book the
+    marks a close is valued at belong to - before anything is compiled or loaded, so a seat the
+    queue refuses costs this box nothing."""
+    lane, evidence = lane_of(job), None
+    spine.admit(lane, job.get('actor'), book)
+    # the PLAN is terms plus the observations the record holds, so what runs and what an auditor
+    # recompiles are one document. Without a home this is the document as posted
+    job = spine.compiled_job(job, folds=folds())
     context = context_for(job)
     context.patch_market(job.get('Patch', {}))
     stamp = replay(context)
-    try:
-        lane, evidence = lane_of(job), None
-        if lane == spine.STANDING:
-            if 'plan_id' in job:
-                raise HTTPException(422, 'a standing run is attested from the job document '
-                                         'itself, and a plan_id names a prepared copy rather than '
-                                         'the document - send the job itself, or run it in the '
-                                         'curiosity lane, which records nothing')
-            evidence = evidence_for(job, context)
-    except spine.SpineRefused as refused:
-        raise HTTPException(422, str(refused))
+    if lane == spine.STANDING:
+        if 'plan_id' in job:
+            raise HTTPException(422, 'a standing run is attested from the job document itself, '
+                                     'and a plan_id names a prepared copy rather than the '
+                                     'document - send the job itself, or run it in the curiosity '
+                                     'lane, which records nothing')
+        evidence = evidence_for(job, context)
     submitted = Job(content_hash(stamp), context, stamp, lane, evidence, job.get('actor'), book)
     answer = queued(submitted, cost(context.current_cfg.deals['Calculation'])['class'])
     # a standing run whose numbers already exist still attests - the lane is about standing rather
     # than arithmetic. One that coalesced onto a queued or running run was promoted in `submit`
     if attests(submitted) and answer['status'] == 'done':
         stored = EXECUTOR.result(submitted.result_id)
-        try:
-            answer['attested'] = attested(attest(submitted, spine.result_stored(stored)))
-        except spine.SpineRefused as refused:
-            raise HTTPException(422, str(refused))
+        answer['attested'] = attested(attest(submitted, spine.result_stored(stored)))
         EXECUTOR.note(submitted.result_id, attested=answer['attested'])
     return answer
 

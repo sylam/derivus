@@ -956,7 +956,10 @@ of the start's job and the end's (`sensed`, `carried`, the maker threaded throug
 
 `ComputeExecutor.submit` asks before anything runs: `mark` over its book for a standing run,
 `validate` over the book or a node under it otherwise; a refusal files a denial and queues nothing.
-The reads that value on the request thread, `/book/risk` and a P&L read to now or with its
+A posted job is asked that question before it is loaded or compiled - `/execute` in its own lane,
+`/validate`, `/describe` and `/prepare` as a what-if - so a seat refused costs the box nothing and
+a job it could not load is its refusal, never the document's. The reads that value on the
+request thread, `/book/risk` and a P&L read to now or with its
 `explain` (`PNL_RUNS`, which a seat's `may` reads too), ask a what-if's question before
 they value. A posted tick and a securities verification
 queue under the seat that asked; the poll paths (a read's diary, the metronome's beat) run under
@@ -977,7 +980,8 @@ before the grants are read for the seat on screen (`grantsOwed`), the book loadi
 `test_spine_engine.py::test_under_a_document_the_queue_asks_before_the_executor_does`,
 `::test_the_poll_paths_own_jobs_are_admitted_under_the_deployments_seat`,
 `::test_the_consolidated_risk_and_the_explain_ask_the_queue_s_question`,
-`::test_the_tick_and_the_verification_queue_under_the_seat_that_asked`.
+`::test_the_tick_and_the_verification_queue_under_the_seat_that_asked`,
+`::test_a_refusal_names_its_kind_beside_its_sentence`.
 
 ## The replica and the doorbell {#replica}
 

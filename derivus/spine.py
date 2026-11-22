@@ -1933,9 +1933,9 @@ def designation(process):
 def admit(lane, actor_name=None, book=None):
     """Let this seat put work on the hub's compute, or refuse in the record's own words.
 
-    THE QUEUE IS THE ONE WAY IN. `pin_result` has no HTTP verb, so a submission is the whole of what
-    an unscoped actor could make this box pay for, and the question is asked once where every job
-    passes rather than in each verb. A STANDING run is numbers a fact is about to cite - the hub
+    ASKED BEFORE ANY WORK: each verb that loads or compiles a posted job asks first, so a refused
+    seat costs this box nothing, and the queue asks again where every job passes. A STANDING run
+    is numbers a fact is about to cite - the hub
     attests them in its own voice - so it asks `mark` over the book the job marks; every other lane
     mints nothing and asks `validate` over the book or any node under it, a seat working one node
     of a book being admitted to price the book.
