@@ -1986,36 +1986,36 @@ def withheld(log, verb, subject, book, refused, anywhere=False):
     return spine.log.DENIED.format(subject, verb, over, refused, spine.log.UNGRANTED.format(over))
 
 
-def may(named, nodes, runs):
-    """act -> node -> None where the seat `named` may perform the act at that node of `nodes`, else
-    the sentence the record refuses it with there, before where its denial would stand: each act
-    the map in force has a seat's verb do, judged as the writer judges it (`SpineLog.denied`), and
-    each of `runs`, name -> the lane the queue admits it in (`admission`). Null throughout where no
-    capabilities document is in force."""
+def may(named, nodes, asks):
+    """act -> node -> None where the seat `named` may perform the act at that node, else the
+    sentence the record refuses it with there, before where its denial would stand: each act the
+    map in force has a seat's verb do, at every node of `nodes`, judged as the writer judges it
+    (`SpineLog.denied`), and each of `asks`, name -> `(verb, refused, anywhere, at)` as `entitled`
+    asks it (`withheld`), at the nodes `at` - the firm keyed `*` - or every node where None. Null
+    throughout where no capabilities document is in force."""
     def read(log):
         spine = package()
         capability = spine.capability
         document, genesis = log.capabilities()
-        acts = [act for act in capability.ACT_VERB
-                if capability.demanded(act, document) in spine.vocabulary.VERBS]
-        if document is None:
-            return {name: dict.fromkeys(nodes) for name in acts + list(runs)}
-        subject = actor(named, log)
+        subject = None if document is None else actor(named, log)
+        judged = dict({act: nodes for act in capability.ACT_VERB
+                       if capability.demanded(act, document) in spine.vocabulary.VERBS},
+                      **{name: nodes if at is None else at for name, (*_, at) in asks.items()})
 
-        def filed(act, node):
+        def verdict(name, node):
+            if subject is None:
+                return None
+            if name in asks:
+                verb, refused, anywhere, _ = asks[name]
+                return withheld(log, verb, subject, node, refused, anywhere)
             # a transition's narrower acts are filed as the transition
-            kind = act if act in spine.vocabulary.EVENT_VERB else capability.VERB_TYPES[0]
-            scope, verb = capability.scope_of(kind, None, node), capability.demanded(act, document)
+            kind = name if name in spine.vocabulary.EVENT_VERB else capability.VERB_TYPES[0]
+            scope, verb = capability.scope_of(kind, None, node), capability.demanded(name, document)
             return None if capability.evaluate(document, genesis, subject, verb, scope) \
                 else log.denied(kind, subject, verb, scope)
 
-        def admitted(lane, node):
-            verb, _, refused, anywhere = admission(lane)
-            return withheld(log, verb, subject, node, refused, anywhere)
-
-        return dict({act: {node: filed(act, node) for node in nodes} for act in acts},
-                    **{name: {node: admitted(lane, node) for node in nodes}
-                       for name, lane in runs.items()})
+        return {name: {capability.ANY_BOOK if node is None else node: verdict(name, node)
+                       for node in at} for name, at in judged.items()}
 
     return folded(read)
 

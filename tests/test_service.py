@@ -6738,16 +6738,18 @@ MARKET_WRITES = (
     ('/book/model', {'pair': 'USDZAR'}, 'spot_model'),
     ('/book/securities', {'block': 'fx_vol', 'key': 'pillars', 'entry': [0.25]},
      'ticker_vocabulary'),
-    ('/book/securities/verify', {'block': 'nonsense'}, 'security_map'))
+    ('/book/securities/verify', {'block': 'nonsense'}, 'security_map'),
+    ('/paths', {'path_transform': {}, 'file_transform': {}}, 'paths'))
 
 
 def test_the_market_is_the_marking_seats_on_a_recorded_desk(recorded, book, tmp_path):
     """ON A RECORDED DESK THE MARKET IS THE MARKING SEAT'S. Under a capabilities document a seat
-    holding `book` and `validate` but no `mark` asks each of the ten verbs that write market data or
-    its set-up, and each refuses in the record's one sentence naming what is not written, its denial
-    landed in turn - the book and the desk's seed untouched. A request naming no seat is refused at
-    each before anything is recorded. The marking seat then sets the curve up naming itself, and
-    patches the spot to 19.25.
+    holding `book` and `validate` but no `mark` asks each of the eleven verbs that write market data
+    or its set-up - every write the service names but the metronome's own beat - and each refuses
+    in the record's one sentence naming what is not written, the one its seat read says before
+    (`may`), its denial landed in turn - the book and the desk's seed untouched. A request naming
+    no seat is refused at each before anything is recorded. The marking seat then sets the curve
+    up naming itself, and patches the spot to 19.25.
 
     The terminal verbs are asked of a book configuring no bootstrapper, for a vocabulary block the
     seed does not carry and a pair with no built surface, so each refuses on its own before anything
@@ -6755,9 +6757,10 @@ def test_the_market_is_the_marking_seats_on_a_recorded_desk(recorded, book, tmp_
 
     Killing mutations: `/book/market` asking no `mark`, which writes the spot the unscoped seat
     patched; `actor` read as a curve convention, which refuses the marking seat's own curve; and
-    the sentence naming `DV_Spine grant --file` for its remedy, a command no seat at a desk runs.
+    the sentence naming `DV_Spine grant --file` for its remedy, a command no seat at a desk runs;
+    a write left out of the service's table, which its route and the seat read cannot name.
     """
-    from derivus_spine import SpineLog
+    from derivus_spine import SpineLog, log as spine_log
     from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 
     desk, trader = 'subject-desk-one', 'subject-trader'
@@ -6780,6 +6783,8 @@ def test_the_market_is_the_marking_seats_on_a_recorded_desk(recorded, book, tmp_
         finally:
             log.close()
 
+    assert {name for _, _, name in MARKET_WRITES} == set(service.MARKET_WRITES) - {'bloomberg_tick'}
+    may = CLIENT.get('/book/seat', params={'actor': trader}).json()['may']
     before = book.read_bytes()
     said = [CLIENT.post(route, content=dump(dict(body, actor=trader)), headers=JSON)
             for route, body, _ in MARKET_WRITES]
@@ -6795,6 +6800,7 @@ def test_the_market_is_the_marking_seats_on_a_recorded_desk(recorded, book, tmp_
                                  'no {} is written: '.format(attempted.replace('_', ' '))), detail
         assert "a seat holding admin over 'service' can grant it" in detail, detail
         assert detail.endswith('recorded at LSN {}'.format(lsn)) and 'DV_Spine' not in detail
+        assert detail == may[attempted]['service'] + spine_log.RECORDED.format(lsn), detail
     unsigned = [CLIENT.post(route, content=dump(body), headers=JSON)
                 for route, body, _ in MARKET_WRITES]
     assert {(answer.status_code, answer.json()['detail']) for answer in unsigned} == {

@@ -4085,10 +4085,11 @@ def book_seat(actor: str = None):
     is act -> node -> null where the seat may perform it there, else the sentence the record
     refuses it with before where its denial would stand (`spine.may`): every act the map has a
     seat's verb do and every run in `RUNS`, at the book, each node the record declares or holds a
-    position at, and each node above one - kept on the served book under the poll's key. `sees` is
-    null where the seat is shown the whole book, a verb held at it or above (`spine.reaches`), else
-    the nodes whose positions it is shown, sorted. A request naming no seat is refused as each of
-    its acts would be. 404 where no home is configured.
+    position at, and each node above one, and each write of `MARKET_WRITES` at the node it is
+    judged at (`written`), the firm's keyed `*` - kept on the served book under the poll's key.
+    `sees` is null where the seat is shown the whole book, a verb held at it or above
+    (`spine.reaches`), else the nodes whose positions it is shown, sorted. A request naming no
+    seat is refused as each of its acts would be. 404 where no home is configured.
     """
     recorded()
     seat = spine.actor(actor)
@@ -4098,13 +4099,17 @@ def book_seat(actor: str = None):
         held = ({spine.book_name(document)} | {row['path'] for row in spine.portfolios()}
                 | {row['portfolio'] for row in spine.positions()}) - {None}
         nodes = {node.rsplit('/', depth)[0] for node in held for depth in range(node.count('/') + 1)}
-        return spine.may(seat, sorted(nodes), RUNS)
+        runs = {name: spine.admission(lane) for name, lane in RUNS.items()}
+        return spine.may(seat, sorted(nodes), dict(
+            {name: (verb, refused, anywhere, None)
+             for name, (verb, _, refused, anywhere) in runs.items()},
+            **{name: written(name) for name in MARKET_WRITES}))
 
     return {'seat': seat, 'verbs': {verb: None if sight is None else sight[verb]
                                     for verb in spine.package().vocabulary.VERBS},
             'demands': spine.demands(),
             'may': may({}, None) if BOOK is None else polled(BOOK, ('seat', seat), may),
-            'sees': None if spine.reaches(sight, None if BOOK is None else BOOK.named()[1])
+            'sees': None if spine.reaches(sight, book_served())
             else sorted({at for nodes in sight.values() for at in nodes})}
 
 
@@ -5008,13 +5013,30 @@ def book_market(request: dict):
         raise HTTPException(422, str(error))
 
 
+#: Every write of the market or its set-up, by the name its denial files, and what a seat holding
+#: no `mark` is told is not written - a route's, and the metronome's own Bloomberg beat.
+MARKET_WRITES = {name: 'no {} is written'.format(name.replace('_', ' ')) for name in (
+    'base_date', 'bloomberg_tick', 'curve', 'market_configuration', 'market_setup', 'market_tick',
+    'paths', 'security_map', 'spot_model', 'survival_curve', 'terminal_tick', 'ticker_vocabulary')}
+
+
+def book_served():
+    """The name of the book served, None where none is."""
+    return None if BOOK is None else BOOK.named()[1]
+
+
+def written(name):
+    """`(verb, refused, anywhere, at)` - what a write of the market under `name` asks of a seat,
+    as `spine.may` reads it: `mark` over the book served, over the firm where none is."""
+    return spine.MARK, MARKET_WRITES[name], False, [book_served()]
+
+
 def marking(request, attempted):
     """Let the seat `request` names write the market - market data and its set-up are the marking
-    seat's, `mark` over the book served, over the firm where none is - or refuse in the record's own
-    words, the denial of `attempted` landed. Every seat where no home is configured."""
-    spine.entitled(spine.MARK, request.get('actor'),
-                   None if BOOK is None else BOOK.named()[1], attempted,
-                   'no {} is written'.format(attempted.replace('_', ' ')))
+    seat's (`written`) - or refuse in the record's own words, the denial of `attempted` landed.
+    Every seat where no home is configured."""
+    verb, refused, anywhere, (book,) = written(attempted)
+    spine.entitled(verb, request.get('actor'), book, attempted, refused, anywhere)
 
 
 #: Where a survival curve the desk writes ends: fifty years, past any exposure a book carries - the
