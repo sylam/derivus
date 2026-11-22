@@ -469,18 +469,13 @@ export const grantsRead = (state: AppState) => (state.grants?.asked === state.se
 
 /** Why the seat may not `act` at `node`, the book where none is named - as for the firm's own facts
  * (null), which the record judges at the firm whatever the node: the sentence the record refuses
- * it with, as `GET /book/seat` answers it (`may`) at the node or the nearest above it the answer
- * names; null where it may, off a desk that records, and until that answer is read. */
+ * it with, as `GET /book/seat` answers it (`may`); null where it may, at a node the answer does
+ * not name - the act is judged when it is sent - off a desk that records, and until it is read. */
 export function heldBack(state: AppState, act: Act, node?: string | null): string | null {
   const grants = grantsRead(state);
   if (!spineOf(state) || !grants) return null;
   if (grants.refused !== null) return grants.refused;
-  const verdicts = grants.read?.may[act] ?? {};
-  for (let at = node ?? String(state.doc?.Calc.Deals.Reference ?? ''); at;
-       at = at.slice(0, Math.max(0, at.lastIndexOf('/')))) {
-    if (verdicts[at] !== undefined) return verdicts[at];
-  }
-  return null;
+  return grants.read?.may[act]?.[node ?? String(state.doc?.Calc.Deals.Reference ?? '')] ?? null;
 }
 
 /** Whether a read the seat's grants gate must wait: on a desk that records, until the grants are

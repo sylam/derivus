@@ -617,17 +617,17 @@ const MAY = { fill: { HARBOURLINE: SAID.book, 'HARBOURLINE/fx': null },
               agreement_declared: { HARBOURLINE: SAID.firm, 'HARBOURLINE/fx': SAID.firm },
               run: { HARBOURLINE: null } };
 check("a control is held by the service's verdict on its act at its node, the book where none is "
-      + "named and for the firm's own facts, in the record's own sentence; a node the answer does "
-      + 'not name reads the nearest above it that it does, and an act it names nowhere is offered',
-      "the verdict read off another node or act; a node the answer does not name read as offered, "
-      + 'which shows HARBOURLINE/fxo a booking the record refuses; a node matched by prefix; a '
+      + "named and for the firm's own facts, in the record's own sentence; a node or an act the "
+      + 'answer does not name is offered, the act judged when it is sent',
+      "the verdict read off another node or act; a node the answer does not name read off a node "
+      + 'above it, which holds HARBOURLINE/fxo from a booking the service would judge itself; a '
       + "firm's fact read at no node; or the record's sentence spelled anew",
       [state.heldBack(mays(MAY), 'fill'), state.heldBack(mays(MAY), 'fill', 'HARBOURLINE/fx'),
        state.heldBack(mays(MAY), 'fill', 'HARBOURLINE/fx/spot'),
        state.heldBack(mays(MAY), 'fill', 'HARBOURLINE/fxo'),
        state.heldBack(mays(MAY), 'agreement_declared', null), state.heldBack(mays(MAY), 'run'),
        state.heldBack(mays(MAY), 'approval')],
-      [SAID.book, null, null, SAID.book, SAID.firm, null, null]);
+      [SAID.book, null, null, null, SAID.firm, null, null]);
 check('nothing is held back off a desk that records, before the grants of the seat on screen are '
       + 'read, or where nothing narrows the act; a refused read holds every act in its own words',
       'a plain desk held back for want of a record, which hides every control it can use; the '

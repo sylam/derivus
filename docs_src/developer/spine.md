@@ -325,7 +325,8 @@ force at each frame, so an old frame is judged by the map of its day, and the wo
 each list by the verb its clearing act demands (`spine.demands`). `GET /book/seat` answers that
 map as `demands` beside the nodes the seat holds each verb at, and a screen holds a control by the
 service's verdict on the act it performs (`may`, read by `heldBack` in `web/src/state.ts`) at its
-node or the nearest node above it the answer names, computing none of its own. An
+node, computing none of its own: a node the answer does not name is offered, the act judged when
+it is sent. An
 acceptance files a quote and its fill, so its control is held where either is (`acceptHeld`).
 `may` answers the verdict itself, act -> node -> null or the sentence the act is refused with
 there before its denial's LSN (`spine.may`): the writer's (`SpineLog.denied`) for each act the
