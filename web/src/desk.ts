@@ -579,12 +579,15 @@ export function leavingAsks(served: { etag: string; path: string; opened?: strin
   return `Edits made to ${served.opened} on this desk are lost unless it is downloaded first.`;
 }
 
+// the control that leaves a read-only copy for the book, by the label the header draws
+const LEAVE_COPY = 'Press "back to book" at the top to leave it';
+
 /** What a screen reading the desk's own book says over a file the desk shows as a read-only copy:
  * the control that leaves the copy, and `shown`, what the screen then shows of the book. */
 export const offBook = (shown: string): { title: string; hint: string } => ({
   title: "This screen reads the desk's own book.",
-  hint: 'The document on screen is a read-only copy of a file. Press "back to book" at the top '
-    + `to leave it: this screen then shows ${shown}.`,
+  hint: `The document on screen is a read-only copy of a file. ${LEAVE_COPY}: this screen then `
+    + `shows ${shown}.`,
 });
 
 /** What a file opened on a desk that records is, null on one that keeps no record, where it is
@@ -592,7 +595,7 @@ export const offBook = (shown: string): { title: string; hint: string } => ({
  * the desk's book is what its record holds - with the control that leaves the copy. */
 export const copyOnly = (recording: boolean, name: string): string | null => (recording
   ? `This desk's book is what its record holds, so ${name} is shown as a read-only copy and not `
-    + 'opened on the desk. Press "back to book" at the top to leave it.' : null);
+    + `opened on the desk. ${LEAVE_COPY}.` : null);
 
 /** What a screen says where the desk serves no book: what the reader can do, then who gives the
  * desk a book of its own. */
