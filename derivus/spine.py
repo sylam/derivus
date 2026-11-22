@@ -191,15 +191,12 @@ def package():
 
 
 def actor(named=None, log=None):
-    """Who this act is attributed to: the seat a request's token proves, a different name refused;
-    else the seat the caller named - else, where no capabilities document is in force,
-    `DV_SPINE_ACTOR` - and never the writer's reserved name, whoever says it. `log` is a handle
-    already open on the home, whose state says what is in force."""
+    """Who this act is attributed to: the seat the request is made as (`reader`) - else, where no
+    capabilities document is in force, `DV_SPINE_ACTOR` - and never the writer's reserved name,
+    whoever says it. `log` is a handle already open on the home, whose state says what is in
+    force."""
     spine = package()
-    signed = REQUESTER.get()
-    if signed is not None and named and named != signed:
-        raise SpineRefused(NOT_THE_BEARER.format(named, signed))
-    named = named or signed
+    named = reader(named)
     if not named and (folded(spine.capability.state_at) if log is None
                       else log.capabilities())[0] is not None:
         raise SpineRefused(UNNAMED)
@@ -531,9 +528,12 @@ def under(path, node):
 
 
 def reader(named=None):
-    """The seat a read is made as: the one `named`, else the one a request's token names, and None
-    where no seat signs it."""
-    return named or REQUESTER.get()
+    """The seat a request is made as: the one its token proves, a different name refused; else the
+    one `named`, and None where no seat signs it."""
+    signed = REQUESTER.get()
+    if signed is not None and named and named != signed:
+        raise SpineRefused(NOT_THE_BEARER.format(named, signed))
+    return named or signed
 
 
 def sight(named=None):

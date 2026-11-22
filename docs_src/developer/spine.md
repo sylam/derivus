@@ -248,10 +248,11 @@ its token. It answers `sub`; display names live in `names.json`, outside the cha
 
 Naming a key set (`DV_SPINE_JWKS`, with `DV_SPINE_ISSUER` and `DV_SPINE_AUDIENCE`) makes every request but the doorbell
 carry a token, its subject set in the request's context by an async dependency (a sync one would
-set a thread-pool copy). `spine.actor` answers that subject, refusing another name; else the stated
-name; else, with no capabilities document, `DV_SPINE_ACTOR`; under one, an unnamed act refuses
+set a thread-pool copy). `spine.reader` answers that subject, refusing another name, else the stated
+name, for a read and an act alike; `spine.actor` reads it, else, with no capabilities document, `DV_SPINE_ACTOR`; under one, an unnamed act refuses
 rather than file a name nobody chose. **Held by**
-`test_spine_engine.py::test_a_bearer_token_names_the_seat_and_nothing_else_does`.
+`test_spine_engine.py::test_a_bearer_token_names_the_seat_and_nothing_else_does`,
+`::test_a_read_naming_a_seat_its_token_does_not_prove_is_refused`.
 
 **Capabilities.** A canonical blob under the reserved name `capabilities`, each declaration a
 complete replacement, folded at an LSN so "could X do Y in March" replays: `{"grants": [{subject,
@@ -993,8 +994,8 @@ A client's pending quote is shown the same way, by the `portfolio` it books unde
 confidential to those who need it (FX Global Code, Principle 19): `GET /book/quotes` lists, and
 `GET /book/quote/{id}` and its sheet answer, the quotes under the seat's nodes and the quotes the
 seat gave itself (`quotes_shown`), one the seat is not shown answering as an id the desk holds
-nothing under. The seat a read is made as is the one it names, else its token's (`spine.reader`),
-which `spine.sight` and the worklist read too.
+nothing under. The seat a read is made as is its token's, another name refused, else the one it
+names (`spine.reader`), which `spine.sight` and the worklist read too.
 A trade's page tells a seat shown no position in it, no fill of it, no quote that landed at it or
 no row of its history that the record holds none only where the seat holds a grant at the book or
 above it, and else that the

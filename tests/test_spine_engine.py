@@ -5667,6 +5667,36 @@ def test_a_token_s_seat_is_shown_the_quotes_it_gave(recorded, quoting, tmp_path,
     assert CLIENT.get('/book/quote/' + given, headers=theirs).status_code == 404
 
 
+def test_a_read_naming_a_seat_its_token_does_not_prove_is_refused(desk, tmp_path, idp,
+                                                                  monkeypatch):
+    """A READ IS MADE AS THE TOKEN'S SEAT, as an act is (`spine.reader`, which `spine.actor`
+    reads). On a desk that keeps no record and checks tokens, the quotes read signed by one seat
+    and naming another is refused naming both, a 422; naming the token's own seat, or none, it
+    answers.
+
+    Killing mutation: `reader` answering the name a request states unchecked, where the read is
+    answered as the seat it names.
+    """
+    import time
+
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    keys = tmp_path / 'jwks.json'
+    keys.write_text(json.dumps(idp.jwks))
+    for name, value in (('DV_SPINE_JWKS', str(keys)),
+                        ('DV_SPINE_ISSUER', test_spine_identity.ISSUER),
+                        ('DV_SPINE_AUDIENCE', test_spine_identity.AUDIENCE)):
+        monkeypatch.setenv(name, value)
+    now = time.time()
+    signed = dict(JSON, authorization='Bearer ' + test_spine_identity.rs256(
+        idp.rsa_key, test_spine_identity.claims(exp=now + 300.0, iat=now - 10.0, nbf=now - 10.0)))
+    for named in (None, test_spine_identity.SUBJECT):
+        assert CLIENT.get('/book/quotes', headers=signed, params={'actor': named}).json() == {
+            'quotes': []}
+    other = CLIENT.get('/book/quotes', headers=signed, params={'actor': 'subject-other'})
+    assert (other.status_code, other.json()['detail']) == (
+        422, spine.NOT_THE_BEARER.format('subject-other', test_spine_identity.SUBJECT))
+
+
 def test_a_seat_reads_what_it_may_do_and_where(recorded, desk):
     """WHAT A SEAT MAY DO, read before it acts. With no capabilities document every seat holds every
     verb everywhere, null throughout, and a request naming none acts as the deployment's seat.
