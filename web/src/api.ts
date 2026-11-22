@@ -40,11 +40,14 @@ const seated = (path: string) => {
   return asked ? `${base}?${asked}` : base;
 };
 
+/** A refusal: its status, the service's sentence, and its kind's stable name (`code`) or null. */
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  code: string | null;
+  constructor(status: number, message: string, code: string | null = null) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -52,24 +55,19 @@ export class ApiError extends Error {
 export const NO_SEAT = 'No seat is set, and this desk files every act under the seat that asks: '
   + 'type yours in the seat box at the top right.';
 
-/** A thrown error as the pair a view renders: the status, and the service's OWN wording. A book
- * verb refusing carries its cause in `detail` (`the book will not price a consolidated risk run:
- * ...`), and printing the JSON envelope at a reader would put a second author between the engine
- * and the desk. Anything that is not an `ApiError` - the network being down - reads as itself. The
- * one rewording is a seat named by nobody, which the desk fixes in its own box. */
-export function failure(error: unknown): { status: number | null; error: string } {
-  if (!(error instanceof ApiError)) return { status: null, error: String(error) };
-  try {
-    const detail = (JSON.parse(error.message) as { detail?: unknown }).detail;
-    if (typeof detail === 'string' && detail.startsWith('no actor for this act')) {
-      return { status: error.status, error: NO_SEAT };
-    }
-    if (typeof detail === 'string') return { status: error.status, error: detail };
-  } catch { /* not JSON: the body is already the message */ }
-  return { status: error.status, error: error.message || `HTTP ${error.status}` };
+/** A thrown error as a view renders it: the status, the service's OWN wording and the refusal's
+ * `code`. Anything that is not an `ApiError` - the network being down - reads as itself. The one
+ * rewording is a seat named by nobody (`no_actor`), which the desk fixes in its own box. */
+export function failure(error: unknown):
+  { status: number | null; error: string; code: string | null } {
+  if (!(error instanceof ApiError)) return { status: null, code: null, error: String(error) };
+  return { status: error.status, code: error.code,
+           error: error.code === 'no_actor' ? NO_SEAT : error.message || `HTTP ${error.status}` };
 }
 
-/** One request, a refusal thrown as the `ApiError` `failure` reads. */
+/** One request, a refusal thrown as the `ApiError` `failure` reads: the service's sentence, its
+ * `detail`, where it sends one - printing the JSON envelope at a reader would put a second author
+ * between the engine and the desk - else the body, and the refusal's `code`. */
 async function send(method: string, path: string, body?: unknown): Promise<Response> {
   const token = stored(TOKEN);
   const response = await fetch(method === 'GET' ? seated(path) : path, {
@@ -82,7 +80,11 @@ async function send(method: string, path: string, body?: unknown): Promise<Respo
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new ApiError(response.status, text.slice(0, 500) || response.statusText);
+    let said: { detail?: unknown; code?: unknown } = {};
+    try { said = JSON.parse(text) ?? {}; } catch { /* not JSON: the body is the message */ }
+    throw new ApiError(response.status,
+      typeof said.detail === 'string' ? said.detail : text.slice(0, 500) || response.statusText,
+      typeof said.code === 'string' ? said.code : null);
   }
   return response;
 }

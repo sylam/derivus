@@ -202,17 +202,17 @@ check('an answer read before the record moved is behind the book, though the fil
        desk.lagsBook(desk.bookClock('e1', null), desk.bookClock('e2', null))],
       [true, false, true]);
 
-const UNPRICED = 'the book will not price a consolidated risk run: Cannot find InterestRate.ZAR-X';
 const who = (said) => said && [/the desk puts it right/.test(said), /its sender puts it right/.test(said),
                                said.includes('from-fo.json')];
-check('a book that will not price says who puts it right: the desk on its own book, the sender of '
-      + 'a document opened from another system by its name; any other refusal says for itself',
+check('a book that will not price, by its code, says who puts it right: the desk on its own book, '
+      + 'the sender of a document opened from another system by its name; any other refusal says '
+      + 'for itself',
       "the document's name left unread, which tells a desk to fix in its own book a file another "
       + 'system sent it; or every refusal read as a book that will not price, which says so under '
       + "the record's sentence to a seat it does not admit",
-      [who(desk.unpriced(UNPRICED)), who(desk.unpriced(UNPRICED, 'from-fo.json')),
-       who(desk.unpriced('sales-9 holds no validate over HARBOURLINE', 'from-fo.json')) ?? null],
-      [[true, false, false], [false, true, true], null]);
+      [who(desk.unpriced('unpriced')), who(desk.unpriced('unpriced', 'from-fo.json')),
+       who(desk.unpriced('not_granted', 'from-fo.json')) ?? null, desk.unpriced(null) ?? null],
+      [[true, false, false], [false, true, true], null, null]);
 
 // --- leaving a document opened here
 const COPY = { etag: 'e1', path: 'inbox/from-fo.json', opened: 'from-fo.json' };
@@ -788,6 +788,27 @@ check('every write of the market or its set-up names the seat the settings contr
       + "the curve's set-up or the vocabulary's entry - which a recording desk refuses outright",
       [await asking('marker'), await asking('')],
       [MARKET_WRITES.map((path) => [path, 'marker']), MARKET_WRITES.map((path) => [path, null])]);
+
+// --- a refusal told apart by its code: what a read the service refuses throws, as a view renders it
+const refusing = async (status, body) => {
+  globalThis.fetch = async () => ({ ok: false, status, statusText: '', text: async () => body });
+  return api.getBook().then(() => 'answered', api.failure);
+};
+const said = (detail, code) => JSON.stringify({ detail, code });
+check('a refusal is told apart by the code the service sends beside its sentence, never by its '
+      + 'words: a seat named by nobody is told to set one, any other refusal says its own sentence '
+      + 'and keeps its code, and a body that is no envelope reads as itself',
+      'the code dropped from the error thrown, which leaves the risk screen unable to say who puts '
+      + 'an unpriced book right; the rewording keyed on the words, which tells a seat its own '
+      + 'sentence in words the service did not send; or the JSON envelope printed at the reader',
+      [await refusing(422, said('the request names no seat', 'no_actor')),
+       await refusing(422, said('no actor for this act', 'refused')),
+       await refusing(422, said('the book will not price: no curve', 'unpriced')),
+       await refusing(500, 'Internal Server Error')],
+      [{ status: 422, code: 'no_actor', error: api.NO_SEAT },
+       { status: 422, code: 'refused', error: 'no actor for this act' },
+       { status: 422, code: 'unpriced', error: 'the book will not price: no curve' },
+       { status: 500, code: null, error: 'Internal Server Error' }]);
 
 const NETTED = { Calc: { Deals: { Deals: { Children: [
   { Instrument: { '.Deal': { Object: 'NettingCollateralSet', Credit_Support_Amounts: {

@@ -57,7 +57,8 @@ export type Fetched<T> = {
  * the book" answerable - the risk's own `etag` is a hash of a different thing, and comparing the
  * two would always read stale. */
 export type Clocked<T> = Fetched<T> & { clock: string | null };
-export type RiskState = Clocked<BookRisk>;
+/** The risk, a failure keeping the refusal's `code` (`desk.unpriced`). */
+export type RiskState = Clocked<BookRisk> & { code: string | null };
 
 /** What the RECORD answers this client, off the one poll the app already runs. The slice and both
  * its transitions live in `web/src/spine.ts`, where they are arithmetic a node check drives:
@@ -103,7 +104,7 @@ export const IDLE_RUN: RunState = {
 
 const NOTHING_FETCHED = { data: null, error: null, status: null, loading: false };
 
-export const IDLE_RISK: RiskState = { ...NOTHING_FETCHED, clock: null };
+export const IDLE_RISK: RiskState = { ...NOTHING_FETCHED, clock: null, code: null };
 export const IDLE_XVA: Clocked<BookXva> = { ...NOTHING_FETCHED, clock: null };
 export const IDLE_MARKET: Fetched<BookMarket> = NOTHING_FETCHED;
 export const IDLE_PATHS: Fetched<PathsAnswer> = NOTHING_FETCHED;
@@ -142,7 +143,7 @@ export type Action =
   // the desk views: one fetch each, off the etag the book poll already moves
   | { type: 'RISK_FETCHING' }
   | { type: 'RISK_LOADED'; risk: BookRisk; clock: string }
-  | { type: 'RISK_FAILED'; error: string; status: number | null }
+  | { type: 'RISK_FAILED'; error: string; status: number | null; code: string | null }
   | { type: 'XVA_FETCHING' }
   | { type: 'XVA_LOADED'; xva: BookXva; clock: string }
   | { type: 'XVA_FAILED'; error: string; status: number | null }
@@ -228,14 +229,16 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'RISK_LOADED':
       return {
         ...state,
-        risk: { data: action.risk, clock: action.clock, error: null, status: null, loading: false },
+        risk: { data: action.risk, clock: action.clock, error: null, status: null, code: null,
+                loading: false },
       };
     // a refusal REPLACES the numbers: a 422 says the book will not price, and a stale mark left
     // on screen under a red box is a number a desk might still read
     case 'RISK_FAILED':
       return {
         ...state,
-        risk: { data: null, clock: null, error: action.error, status: action.status, loading: false },
+        risk: { data: null, clock: null, error: action.error, status: action.status,
+                code: action.code, loading: false },
       };
     case 'XVA_FETCHING':
       return { ...state, xva: { ...state.xva, loading: true } };
