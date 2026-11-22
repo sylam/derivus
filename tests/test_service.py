@@ -6890,11 +6890,11 @@ MARKET_WRITES = (
 def test_the_market_is_the_marking_seats_on_a_recorded_desk(recorded, book, tmp_path):
     """ON A RECORDED DESK THE MARKET IS THE MARKING SEAT'S. Under a capabilities document a seat
     holding `book` and `validate` but no `mark` asks each of the eleven verbs that write market data
-    or its set-up - every write the service names but the metronome's own beat - and each refuses
-    in the record's one sentence naming what is not written, the one its seat read says before
-    (`may`), its denial landed in turn - the book and the desk's seed untouched. A request naming
-    no seat is refused at each before anything is recorded. The marking seat then sets the curve
-    up naming itself, and patches the spot to 19.25.
+    or its set-up - every write the service names, the metronome's beat filing as the tick - and
+    each refuses in the record's one sentence naming what is not written, the one its seat read
+    says before (`may`), its denial landed in turn - the book and the desk's seed untouched. A
+    request naming no seat is refused at each before anything is recorded. The marking seat then
+    sets the curve up naming itself, and patches the spot to 19.25.
 
     The terminal verbs are asked of a book configuring no bootstrapper, for a vocabulary block the
     seed does not carry and a pair with no built surface, so each refuses on its own before anything
@@ -6903,7 +6903,8 @@ def test_the_market_is_the_marking_seats_on_a_recorded_desk(recorded, book, tmp_
     Killing mutations: `/book/market` asking no `mark`, which writes the spot the unscoped seat
     patched; `actor` read as a curve convention, which refuses the marking seat's own curve; and
     the sentence naming `DV_Spine grant --file` for its remedy, a command no seat at a desk runs;
-    a write left out of the service's table, which its route and the seat read cannot name.
+    a write left out of the service's table, which its route and the seat read cannot name; a
+    second name for the tick (`bloomberg_tick`) in that table, which no route asks.
     """
     from derivus_spine import SpineLog, log as spine_log
     from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
@@ -6928,7 +6929,7 @@ def test_the_market_is_the_marking_seats_on_a_recorded_desk(recorded, book, tmp_
         finally:
             log.close()
 
-    assert {name for _, _, name in MARKET_WRITES} == set(service.MARKET_WRITES) - {'bloomberg_tick'}
+    assert {name for _, _, name in MARKET_WRITES} == set(service.MARKET_WRITES)
     may = CLIENT.get('/book/seat', params={'actor': trader}).json()['may']
     before = book.read_bytes()
     said = [CLIENT.post(route, content=dump(dict(body, actor=trader)), headers=JSON)

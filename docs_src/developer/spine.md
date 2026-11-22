@@ -287,7 +287,8 @@ neither seat's filing replaces the other's. **Held by**
 pays and append no event, so the service asks their verb itself (`spine.entitled`): a delete
 through `POST /book/deals` asks `book` at the deepest node holding the position, anywhere under
 the book where the record holds none; `POST /paths` and each beat of the scheduled tick ask
-`mark`, the tick of the hub's own seat; `POST /book/settlements` asks `settle` over the book.
+`mark`, the beat of the hub's own seat filing as `terminal_tick`, the act `POST /book/bloomberg`
+names; `POST /book/settlements` asks `settle` over the book.
 `POST /book/close` asks, over the firm and before it compiles anything, the verb its
 declaration demands under the map in force, `mark` unless a document moves the act. The close and the
 settlement file read the diary as the hub compiles it (`hub_diary`), so neither seat needs

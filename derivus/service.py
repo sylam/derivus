@@ -5066,10 +5066,10 @@ def book_market(request: dict):
 
 
 #: Every write of the market or its set-up, by the name its denial files, and what a seat holding
-#: no `mark` is told is not written - a route's, and the metronome's own Bloomberg beat.
+#: no `mark` is told is not written - a route's, the metronome's beat filing as the tick's.
 MARKET_WRITES = {name: 'no {} is written'.format(name.replace('_', ' ')) for name in (
-    'base_date', 'bloomberg_tick', 'curve', 'market_configuration', 'market_setup', 'market_tick',
-    'paths', 'security_map', 'spot_model', 'survival_curve', 'terminal_tick', 'ticker_vocabulary')}
+    'base_date', 'curve', 'market_configuration', 'market_setup', 'market_tick', 'paths',
+    'security_map', 'spot_model', 'survival_curve', 'terminal_tick', 'ticker_vocabulary')}
 
 
 def book_served():
@@ -7247,7 +7247,7 @@ class Metronome:
                 self.succeeded(settled)
             else:
                 self.failed(cause)
-        marking({'actor': spine.hub()}, 'bloomberg_tick')
+        marking({'actor': spine.hub()}, 'terminal_tick')
         self.pending = submit_bloomberg(self.scope, routine=True)['result_id']
 
     def run(self):

@@ -6270,8 +6270,9 @@ def test_a_tick_the_hub_may_not_mark_is_refused_and_the_cadence_lives(recorded, 
     warning a beat naming who can grant it, and its thread outlives the refusal to beat again;
     the beats' denials are one fact.
 
-    Killing mutation: the gate removed from `Metronome.beat`, which goes on to submit the tick -
-    refused on this book for declaring no bootstrapper, in a warning naming no grant.
+    Killing mutations: the gate removed from `Metronome.beat`, which goes on to submit the tick -
+    refused on this book for declaring no bootstrapper, in a warning naming no grant; the beat
+    filing under a name of its own (`bloomberg_tick`) beside the one the tick's route files.
     """
     import subprocess
 
@@ -6284,10 +6285,10 @@ def test_a_tick_the_hub_may_not_mark_is_refused_and_the_cadence_lives(recorded, 
     denial = facts(recorded, 'capability_denied')
     assert [body for _, _, body in denial] == [{
         'subject': ACTOR, 'verb': 'mark', 'book': 'spine-desk',
-        'attempted_type': 'bloomberg_tick'}], ran.stdout
+        'attempted_type': 'terminal_tick'}], ran.stdout
     assert said[:2] == [
         "bloomberg tick failed ({} in a row): actor '{}' holds no mark scope over 'spine-desk', "
-        "so no bloomberg tick is written: a seat holding admin over 'spine-desk' can grant it. "
+        "so no terminal tick is written: a seat holding admin over 'spine-desk' can grant it. "
         "The refusal is recorded at LSN {} - the book is untouched".format(
             beat, ACTOR, denial[0][0]) for beat in (1, 2)], ran.stdout
 
