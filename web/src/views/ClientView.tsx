@@ -280,8 +280,7 @@ function OnBook({ own, reads, rows, market, schema }: {
   const { state } = useApp();
   const risk = reads.risk.data;
   // a position's share is of the units held when its mark was read: none while the book has moved
-  const now = riskNow(state).data;
-  const marks = now ? [...now.per_deal, ...now.in_sets] : [];
+  const { marks } = riskNow(state);
   return (
     <section className="card">
       <h3>What the desk has on with it</h3>

@@ -277,7 +277,7 @@ function Worth({ path, reference, legs, shut }: {
       return <div className={risk.tone}>{risk.error}</div>;
     }
     if (!risk.data) return <div className="hint">{noMark(risk)}</div>;
-    const { own, inside } = markOf([...risk.data.per_deal, ...risk.data.in_sets], path);
+    const { own, inside } = markOf(risk.marks, path);
     const currency = risk.data.currency ?? '';
     const stat = (label: string, value: number, title: string) => (
       <div className="stat" title={title}>
@@ -461,8 +461,7 @@ function Unwind({ row, position, net, onVerdict }: {
     || 'the client';
   // the reference the price is typed beside: the desk's mark of these units, or why none is read
   const risk = riskNow(state);
-  const own = risk.data ? markOf([...risk.data.per_deal, ...risk.data.in_sets], row.path).own
-    : undefined;
+  const own = markOf(risk.marks, row.path).own;
   const against = own ? unwindAgainst(held, count, own.value, net, risk.data!.currency ?? '',
                                       price.trim() !== '' && isFinite(at) ? cost : undefined)
     : `the desk's mark of these units: ${noMark(risk)}`;

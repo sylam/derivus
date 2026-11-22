@@ -68,10 +68,9 @@ export function BlotterView() {
   const heads = recording ? [...HEADS, ...RECORD_HEADS] : HEADS;
   // a mark is of the book it was read on: the risk in the store, where the book has not moved since
   const risk = riskNow(state);
-  const marks = risk.data ? [...risk.data.per_deal, ...risk.data.in_sets] : [];
   const markOn = (row: BlotterRow): number | undefined =>
-    markShown(marks, markPath(row), heldAt, row.position);
-  const currency = marks.length ? risk.data?.currency : null;
+    markShown(risk.marks, markPath(row), heldAt, row.position);
+  const currency = risk.marks.length ? risk.data?.currency : null;
   // the deal path a trade's row opens its page at: its own, or the node its position is held at
   const tradeOf = (row: BlotterRow): string | undefined => (holdsTrades(row) ? undefined
     : row.target!.startsWith(POSITION) ? positions.get(row.target!)?.deal_paths[0] : row.target!);
