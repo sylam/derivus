@@ -622,9 +622,11 @@ logs it with its traceback.
 `code`, a short stable name a client branches on rather than the words — `no_actor` (an act no
 seat signs), `not_granted` (a seat without the grant the act asks), `unpriced` (`/book/risk` on a
 book that will not price), `recorded` (`/book/open` on a desk that keeps a record, nothing filed
-or served) and `refused` for every other kind. **Held by**
+or served), the request field a refused credit curve names - `counterparty`, `spread` or
+`recovery` (`/book/survival`) - and `refused` for every other kind. **Held by**
 `test_spine_engine.py::test_a_refusal_names_its_kind_beside_its_sentence`,
-`test_service.py::test_a_book_holding_a_deal_it_cannot_price_has_no_consolidated_risk`.
+`test_service.py::test_a_book_holding_a_deal_it_cannot_price_has_no_consolidated_risk`,
+`::test_a_refused_survival_curve_names_the_field_it_is_about`.
 
 **Generating a client.** The service publishes its own OpenAPI document at
 `http://localhost:8000/openapi.json`, with a summary and a description on every endpoint. An SPA

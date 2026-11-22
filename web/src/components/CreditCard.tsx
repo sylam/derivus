@@ -78,8 +78,8 @@ export function CreditCard({ id, title, factor, recording }: {
       setForm(spreadForm(undefined, state.schema));
       dispatch({ type: 'PICK', screen: 'curves', id: CREDIT + request.counterparty });
     } catch (error) {
-      const text = failure(error).error;
-      setSaid({ at: refusedAt(text, request), text });
+      const { error: text, code } = failure(error);
+      setSaid({ at: refusedAt(code, request), text });
     } finally {
       setSaving(false);
     }

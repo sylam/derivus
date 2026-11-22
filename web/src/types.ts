@@ -523,8 +523,10 @@ export type WorkRow = {
  * and the `collateral_columns` of its collateral tables - settlement state, not paper. */
 export type SettlementState = { fields: string[]; collateral_columns: string[] };
 
-/** The stable name of a refusal's kind, beside its sentence on every refusal the service words. */
-export type RefusalCode = 'no_actor' | 'not_granted' | 'unpriced' | 'recorded' | 'refused';
+/** The stable name of a refusal's kind, beside its sentence on every refusal the service words: a
+ * credit curve's names the field of the request it refuses. */
+export type RefusalCode = 'no_actor' | 'not_granted' | 'unpriced' | 'recorded' | 'refused'
+  | 'counterparty' | 'spread' | 'recovery';
 
 /** `GET /book/seat` - the seat a request's acts are filed under, per verb the nodes it holds it
  * at, each reaching every path under it and null where nothing narrows it, `demands`, the verb

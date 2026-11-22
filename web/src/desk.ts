@@ -365,12 +365,10 @@ export function spreadForm(factor: unknown, schema: Schema | null): SpreadForm {
            rows: rows.length ? rows : [{ tenor: '', spread: '' }] };
 }
 
-/** Where the survival route's refusal reads: beside the field of `request` its sentence opens with,
- * any other - the tenors, a seat without the grant - by the act. */
-export function refusedAt(sentence: string, request: SpreadRequest): keyof SpreadRequest | 'act' {
-  const field = sentence.split(' ')[0];
-  return Object.keys(request).includes(field) ? field as keyof SpreadRequest : 'act';
-}
+/** Where the survival route's refusal reads: beside the field of `request` its `code` names, any
+ * other - the tenors, a seat without the grant - by the act. */
+export const refusedAt = (code: RefusalCode | null, request: SpreadRequest):
+  keyof SpreadRequest | 'act' => (code && code in request ? code as keyof SpreadRequest : 'act');
 
 /** Who a credit curve is stated for: on a desk that records, the entities its record declares; on
  * one that does not, the counterparties the book's netting sets name and those a curve is held for. */

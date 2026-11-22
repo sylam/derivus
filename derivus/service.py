@@ -5074,10 +5074,10 @@ def book_survival(request: dict):
     hazard to fifty years. Nothing here looks a spread up.
 
     Under a home the seat holds `mark` over the book (`marking`) and the counterparty is an entity
-    the record declares. A counterparty that names nobody, a spread that is not a positive number, a
-    recovery outside [0, 1) and tenors that do not rise each refuse in a sentence of their own, the
-    first three opening with the field they are about and what it stated. One atomic write, as
-    every market verb.
+    the record declares. A counterparty that names nobody or no declared entity, a spread that is
+    not a positive number, a recovery outside [0, 1) and tenors that do not rise each refuse in a
+    sentence of their own, the first three opening with the field they are about and what it
+    stated, which is their `code`. One atomic write, as every market verb.
     """
     live, counterparty, recovery = live_book(), request.get('counterparty'), request.get(
         'recovery', 0.4)
@@ -5085,20 +5085,23 @@ def book_survival(request: dict):
     rows = spread if isinstance(spread, list) else [{'tenor': '1Y', 'spread': spread}]
     marking(request, 'survival_curve')
     if spine.configured():
-        spine.declared_entities('counterparty', [counterparty])
+        try:
+            spine.declared_entities('counterparty', [counterparty])
+        except spine.SpineRefused as refused:
+            raise Refusal(422, str(refused), 'counterparty')
     if not (isinstance(counterparty, str) and counterparty):
-        raise HTTPException(422, 'counterparty {!r} names nobody: a survival curve is written for '
-                                 'the counterparty a netting set names'.format(counterparty))
+        raise Refusal(422, 'counterparty {!r} names nobody: a survival curve is written for the '
+                           'counterparty a netting set names'.format(counterparty), 'counterparty')
     # a JSON true is a Python int, so a number is asked of its type
     if not (rows and all(isinstance(row, dict) and isinstance(row.get('tenor'), str)
                          and type(row.get('spread')) in (int, float) and row['spread'] > 0.0
                          for row in rows)):
-        raise HTTPException(422, 'spread {!r} is no positive spread: a credit spread is basis '
-                                 'points over nothing, one flat or rows [{{tenor, spread}}] of '
-                                 'them'.format(spread))
+        raise Refusal(422, 'spread {!r} is no positive spread: a credit spread is basis points '
+                           'over nothing, one flat or rows [{{tenor, spread}}] of them'.format(
+                               spread), 'spread')
     if not (type(recovery) in (int, float) and 0.0 <= recovery < 1.0):
-        raise HTTPException(422, 'recovery {!r} is outside [0, 1): it is the share of a claim '
-                                 'recovered on default, 0.4 by convention'.format(recovery))
+        raise Refusal(422, 'recovery {!r} is outside [0, 1): it is the share of a claim recovered '
+                           'on default, 0.4 by convention'.format(recovery), 'recovery')
 
     def edit(document, etag):
         base = pd.Timestamp(spine.base_day(document))

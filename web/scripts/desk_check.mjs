@@ -463,31 +463,13 @@ check("a curve read back stating no recovery reads at its field's declared defau
        desk.heldSpreads({ Recovery_Rate: 0.35 }, CREDIT)],
       [0.4, [[1, 120]], undefined]);
 const ASKED = desk.spreadRequest('KESTREL', FLAT);
-check("a refusal of a credit curve reads beside the box of the request field it opens with, any "
-      + 'other by the write',
-      'every refusal printed in one place; a field matched anywhere in the sentence, which files '
-      + "the recovery's refusal by the counterparty it never names first, or a seat's by the "
-      + 'spread; the first word taken without asking the request, which files the tenors by a '
-      + "field 'the'; or a word matched by prefix or case, which files 'spreads' or 'Recovery' by "
-      + 'a box',
-      ["counterparty 'NOBODY' is no legal entity the record declares - it declares ALDERBY-AM, "
-         + 'KESTREL, MARRICK: declare the entity first',
-       "counterparty '' names nobody: a survival curve is written for the counterparty a netting "
-         + 'set names',
-       'spread -5 is no positive spread: a credit spread is basis points over nothing, one flat '
-         + 'or rows [{tenor, spread}] of them',
-       'recovery 1.4 is outside [0, 1): it is the share of a claim recovered on default, 0.4 by '
-         + 'convention',
-       "the tenors ['5Y', '3Y'] do not rise - a term structure is one spread per tenor, shortest "
-         + 'first',
-       "'soon' is not a period - a count and one of D, W, M or Y, largest unit first (3M, 1Y6M)",
-       "actor 'sales-1' holds no mark scope over 'HARBOURLINE', so no survival curve is written: "
-         + 'the spread and the recovery are the marking seat\'s',
-       'No seat is set, and this desk files every act under the seat that asks',
-       'spreads are no field', 'Recovery is not the field']
-        .map((said) => desk.refusedAt(said, ASKED)),
-      ['counterparty', 'counterparty', 'spread', 'recovery', 'act', 'act', 'act', 'act', 'act',
-       'act']);
+check("a refusal of a credit curve reads beside the box of the request field its code names, any "
+      + 'other - the tenors, a seat without the grant, none named - by the write',
+      'every refusal printed in one place; or a code that names no field of the request, a '
+      + "seat's or the record's, filed by a box",
+      ['counterparty', 'spread', 'recovery', 'refused', 'not_granted', 'no_actor', null]
+        .map((code) => desk.refusedAt(code, ASKED)),
+      ['counterparty', 'spread', 'recovery', 'act', 'act', 'act', 'act']);
 
 const CURVES = { 'Price Factors': {
   'InterestRate.ZAR': {}, 'InterestRate.USD-OIS': {}, 'InterestRate.EUR': {}, 'FxRate.ZAR': {},
