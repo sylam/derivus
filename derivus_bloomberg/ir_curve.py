@@ -493,7 +493,7 @@ def price_rows(source, rows, as_of, conventions, screen=None, batch=BATCH, on_ba
     out by name (a tick) or refuses naming it (an authoring). A row with no security keeps what it
     carries - a benchmark quoted by hand is nothing the terminal knows about.
     """
-    wanted = [row for row in rows if _asked(row)]
+    wanted = [row for row in rows if asked(row)]
     report = probe(source, [row.security for row in wanted], batch=batch, on_batch=on_batch)
     prints, rejected = read_prints(report, [(row.label, row.kind, row.security) for row in wanted],
                                    conventions.quote_scale)
@@ -503,7 +503,7 @@ def price_rows(source, rows, as_of, conventions, screen=None, batch=BATCH, on_ba
     moved = []
     for row in rows:
         item = priced.get(row.security)
-        if not _asked(row):
+        if not asked(row):
             moved.append(row)
         elif item is not None:
             moved.append(replace(row, value=item.value, bid=item.bid, ask=item.ask,
@@ -513,7 +513,7 @@ def price_rows(source, rows, as_of, conventions, screen=None, batch=BATCH, on_ba
     return tuple(moved)
 
 
-def _asked(row):
+def asked(row):
     """A row the terminal is asked about: one the block uses, quoted off a security it names."""
     return row.use == 'Yes' and bool(row.security)
 

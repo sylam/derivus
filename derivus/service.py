@@ -5379,17 +5379,18 @@ def stamp_base_date(document, base_date):
 
 
 def snap_date(rows, as_of):
-    """The day a probed set of rows is authored on: the LATEST print among them where that is later
-    than the book's own date, and the book's otherwise.
+    """The day a probed set of rows is authored on: the LATEST print among the rows the terminal
+    priced (`ir_curve.asked`, the screen having held out the rest) where that is later than the
+    book's own date, and the book's otherwise.
 
     A curve is dated the day its quotes were snapped. A snap never rolls a book BACKWARDS - an old
-    print is evidence about a quote, not a valuation date - and a row a desk stated by hand carries
-    no print at all, so it is authored on the book's date as today.
+    print is evidence about a quote, not a valuation date - and a row held out or stated by hand
+    keeps the stamp it had and dates nothing, so a block of them is authored on the book's date.
     """
-    from derivus_bloomberg.ir_curve import read_date
+    from derivus_bloomberg import ir_curve
 
-    return max([as_of] + [day for day in (read_date(row.last_update) for row in rows)
-                          if day is not None])
+    return max([as_of] + [day for day in (ir_curve.read_date(row.last_update) for row in rows
+                                          if ir_curve.asked(row)) if day is not None])
 
 
 def curve_holidays(document, calendar, reading=Context):

@@ -3172,6 +3172,26 @@ def test_a_later_print_rolls_the_books_date_through_the_tick_and_an_older_one_do
         '.Timestamp': '2024-07-05'}
 
 
+def test_a_row_the_screen_held_out_dates_nothing(curve_desk, monkeypatch):
+    """A HELD-OUT ROW KEEPS THE NUMBER IT HAD AND DATES NOTHING: the snap is taken over the rows
+    that priced. The book is stated back to 2024-06-20 under rows stamped 2024-06-28; a tick whose
+    prints come back on 2024-06-25 with the 5Y refused dates the write 2024-06-25, the 5Y held out
+    under its own stamp.
+
+    Killing mutation: `snap_date` reading every row it is handed (`if ir_curve.asked(row)`
+    dropped), so the held-out 5Y's 2024-06-28 dates the write.
+    """
+    assert CLIENT.post('/book/date', json={'base_date': '2024-06-20'}).status_code == 200
+    result, outcome, _ = curve_tick(monkeypatch, canned(
+        {row['security']: row['quote'] for row in CURVE_ROWS}, dead=['SASW5 BGN Curncy'],
+        stamp='2024-06-25'))
+    points = {row['Tenor']: row for row in curve_block(curve_desk)['Points']}
+
+    assert result['status'] == 'done' and outcome['written'] is True, outcome
+    assert outcome['base_date'] == '2024-06-25', 'a row that did not price dated the write'
+    assert (points['5Y']['Use'], points['5Y']['Timestamp']) == ('No', {'.Timestamp': '2024-06-28'})
+
+
 def test_a_curve_set_up_off_a_later_print_rolls_the_book_and_every_other_curve(
         curve_desk, monkeypatch):
     """A SNAP IS A DATE, through the verb as through the tick. The desk sets the ZAR curve up
