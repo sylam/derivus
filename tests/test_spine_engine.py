@@ -42,6 +42,7 @@ reaching for a default home. That is the regression bar, asserted first.
     record refuses leaves the file byte-identical.
 """
 import asyncio
+import functools
 import hashlib
 import itertools
 import json
@@ -6042,10 +6043,13 @@ OFFICIAL = {'Simulation_Batches': 2, 'Funding_Valuation_Adjustment': {
     'Funding_Cost_Interest_Curve': 'FUND', 'Funding_Benefit_Interest_Curve': 'USD'}}
 
 
-def official(blocks, **body):
-    """The calculation policy declared through the service's verb: its response."""
-    return CLIENT.post('/book/calculations', content=dump(dict({'calculations': blocks}, **body)),
-                       headers=JSON)
+def policy_posted(route, section, stated, **body):
+    """The policy whose one `section` is `stated`, declared through the service's verb at `route`:
+    its response."""
+    return CLIENT.post(route, content=dump(dict({section: stated}, **body)), headers=JSON)
+
+
+official = functools.partial(policy_posted, '/book/calculations', 'calculations')
 
 
 def test_the_official_calculation_is_judged_by_the_engine_before_the_record_takes_it(recorded,
@@ -6096,10 +6100,7 @@ def test_the_official_calculation_is_judged_by_the_engine_before_the_record_take
     assert CLIENT.get('/book/calculations').json()['lsn'] == started + 1
 
 
-def limits_declared(limits, **body):
-    """The limits policy declared through the service's verb: its response."""
-    return CLIENT.post('/book/limits', content=dump(dict({'limits': limits}, **body)),
-                       headers=JSON)
+limits_declared = functools.partial(policy_posted, '/book/limits', 'limits')
 
 
 def entity_declared(entity, parent=None):
