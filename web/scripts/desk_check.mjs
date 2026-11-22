@@ -702,18 +702,21 @@ const READ = { data: { mtm: 5, per_deal: [ROWS[0]], in_sets: [ROWS[1]] }, error:
 const REFUSED = { data: null, error: 'the book will not price', loading: false, clock: null };
 const HOLD = 'Needs validate: sales-1 holds it nowhere.';
 const AS_HELD = { held: true, tone: 'note', joiner: '. ' };
-const AS_READ = { held: false, tone: 'error-box', joiner: ': ' };
+const AS_READ = { held: false, tone: 'hint', joiner: ': ' };
+const READING = { data: null, error: null };
 check("a read the seat may not ask shows what holds it in the read's place, nothing read before "
       + "it, and says it is held, a notice after a full stop; one it may ask stands as read, its "
-      + "refusal the service's own, an error after a colon",
+      + "refusal the service's own, an error after a colon, and a hint while it is being read",
       'the answer in hand kept under the hold, which shows a seat the numbers the seat before it '
       + "read; the service's refusal kept over the hold; the hold not said to be one, or its "
       + 'tone or joiner turned, which leaves it in the red box or runs a refusal on after a '
-      + 'full stop; or a read the seat may ask blanked, or said to be held',
+      + 'full stop; a read not yet answered drawn in the red box; or a read the seat may ask '
+      + 'blanked, or said to be held',
       [state.readAs(HOLD, READ), state.readAs(HOLD, REFUSED), state.readAs(null, READ),
-       state.readAs(null, REFUSED)],
+       state.readAs(null, REFUSED), state.readAs(null, READING)],
       [{ ...READ, data: null, error: HOLD, ...AS_HELD }, { ...REFUSED, error: HOLD, ...AS_HELD },
-       { ...READ, ...AS_READ }, { ...REFUSED, ...AS_READ }]);
+       { ...READ, ...AS_READ }, { ...REFUSED, ...AS_READ, tone: 'error-box' },
+       { ...READING, ...AS_READ }]);
 const risked = (grants, extra) =>
   state.bookRisk({ ...seated(grants, 'sales-1', extra), risk: READ });
 check('the risk is a what-if the queue admits: held from a seat holding validate nowhere, and '

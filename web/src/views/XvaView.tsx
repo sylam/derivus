@@ -12,7 +12,9 @@ import {
   NO_BOOK, PLUS, SURVIVAL, ageOf, currencyOf, entityText, lagsBook, offBook, peaks, plural,
   replayRows, spreads, stampText, tableReading, valuationDay, xvaTotals, type Peak,
 } from '../desk';
-import { bookRisk, clockOf, marketOf, nothingWrong, spineOf, useApp, useRead } from '../state';
+import {
+  bookRisk, clockOf, marketOf, nothingWrong, spineOf, unread, useApp, useRead,
+} from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
 import { Amount, LimitLine, Money, OnStrip } from '../components/Desk';
 
@@ -71,8 +73,8 @@ export function XvaView() {
   if (!xva.data || !doc || !schema || (recording && !state.paper.data)) {
     return (
       <EmptyState
-        title={state.paper.error ?? (xva.loading || state.paper.loading ? 'Reading the projection and the paper…'
-          : 'No projection has been read yet.')}
+        title={(recording && unread(state.paper))
+          || (xva.loading ? 'Reading the projection…' : 'No projection has been read yet.')}
         hint="The last run per netting set, joined with the book's own set list and the clients it trades with."
       />
     );

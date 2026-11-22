@@ -17,7 +17,9 @@ import {
   byPath, positionName, statusText, type Agreement, type Entity, type Position,
 } from '../positions';
 import { pinnedAt } from '../spine';
-import { bookRisk, marketOf, opened, riskNow, standing, useApp, useRead } from '../state';
+import {
+  bookRisk, marketOf, opened, readAs, riskNow, standing, unread, useApp, useRead,
+} from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
 import { markOf, markShown, markText, noMark, wholeRecord } from '../trade';
 import type {
@@ -53,8 +55,9 @@ export function ClientView() {
     return <EmptyState {...offBook('a page for each counterparty the book trades with')} />;
   }
   if (!schema || !doc) return null;
-  if (recording && !paper.data) {
-    return <EmptyState title={paper.error ?? "Reading the record's paper…"}
+  const unanswered = recording && unread(paper);
+  if (unanswered) {
+    return <EmptyState title={unanswered}
                        hint="The entities legal declares, their agreements and the positions under them." />;
   }
   const held = recording ? paper.data : null;
@@ -465,9 +468,8 @@ function Happened({ history }: {
       <section className="card">
         <h3>What happened</h3>
         {!history ? <div className="note">This desk keeps no record: nothing says who did what to
-          this client, or when.</div> : history.error
-          ? <div className="error-box">{history.error}</div>
-          : <div className="hint">Reading its history…</div>}
+          this client, or when.</div>
+          : <div className={readAs(null, history).tone}>{unread(history)}</div>}
       </section>
     );
   }

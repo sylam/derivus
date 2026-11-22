@@ -507,12 +507,13 @@ export const acceptHeld = (state: AppState, node?: string): string | null =>
  * line `heldBack` says, known before asking, so nothing is asked: that line in the read's place,
  * nothing read before it shown, and `held` saying so. Else the read as it stands, a refusal of it
  * one only the service could give. `tone` is the box its line is drawn in and `joiner` what
- * leads into it: a notice after a full stop where held, an error after a colon where refused. */
+ * leads into it: a notice after a full stop where held, an error after a colon where refused, and
+ * a hint while it is being read (`unread`). */
 export function readAs<T extends { data: unknown; error: string | null }>(
   hold: string | null, read: T): T & { held: boolean; tone: string; joiner: string } {
   const held = hold !== null;
   return { ...read, ...(held && { data: null, error: hold }), held,
-           tone: held ? 'note' : 'error-box', joiner: held ? '. ' : ': ' };
+           tone: held ? 'note' : read.error ? 'error-box' : 'hint', joiner: held ? '. ' : ': ' };
 }
 
 /** The consolidated risk as a screen shows it, its read a what-if the queue admits (`readAs`), and

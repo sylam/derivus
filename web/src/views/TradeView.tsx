@@ -12,8 +12,8 @@ import {
 import { clientText, quoteAt, verdictOf, type Verdict } from '../quote';
 import { pinnedAt } from '../spine';
 import {
-  bookRisk, clockOf, heldBack, marketOf, noneShown, riskNow, spineOf, unread, useApp, useQuoteList,
-  useQuotes, useRead, written,
+  bookRisk, clockOf, heldBack, marketOf, noneShown, readAs, riskNow, spineOf, unread, useApp,
+  useQuoteList, useQuotes, useRead, written,
 } from '../state';
 import { formatNumber, ungrouped } from '../tokens';
 import {
@@ -323,7 +323,7 @@ function History({ recording, history, deal }: {
         {!recording ? (
           <div className="note">This desk keeps no record: nothing says who booked or changed
             this trade.</div>
-        ) : !history.data ? <div className={history.error ? 'error-box' : 'hint'}>{unread(history)}</div> : (
+        ) : !history.data ? <div className={readAs(null, history).tone}>{unread(history)}</div> : (
           <div className="tablewrap">
             <table className="data desk">
               <tbody>
