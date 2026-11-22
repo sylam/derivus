@@ -323,9 +323,9 @@ next declaration; a document stored without a map reads the vocabulary's. Its on
 hook asks it under the document in force at the head, the oracle's seat invariant under the one in
 force at each frame, so an old frame is judged by the map of its day, and the worklist narrows
 each list by the verb its clearing act demands (`spine.demands`). `GET /book/seat` answers that
-map as `demands` beside the nodes the seat holds each verb at, so a screen judges a control by the
-act it performs (`heldBack` in `web/src/state.ts`): the act's verb under the map in force where
-the record files one, and the verb itself where the service asks it and files nothing. An
+map as `demands` beside the nodes the seat holds each verb at, and a screen holds a control by the
+service's verdict on the act it performs (`may`, read by `heldBack` in `web/src/state.ts`) at its
+node or the nearest node above it the answer names, computing none of its own. An
 acceptance files a quote and its fill, so its control is held where either is (`acceptHeld`).
 `may` answers the verdict itself, act -> node -> null or the sentence the act is refused with
 there before its denial's LSN (`spine.may`): the writer's (`SpineLog.denied`) for each act the
@@ -944,8 +944,8 @@ The reads that value on the request thread, `/book/risk` and a P&L read to now o
 they value. A posted tick and a securities verification
 queue under the seat that asked; the poll paths (a read's diary, the metronome's beat) run under
 `spine.hub()`, `DV_SPINE_ACTOR`, which a ticking desk must grant `validate`. Admission precedes the
-risk and diary caches, so no cached answer depends on who asked first. The web client judges
-every read and run the queue admits by that reach before it asks (`heldBack` asked `validate`), a
+risk and diary caches, so no cached answer depends on who asked first. The web client reads the
+service's verdict on every read and run the queue admits before it asks (`heldBack` of `run`), a
 refused ask filing a denial: a credit charge, a calculation run, a quote, and a tick or a
 verification after `mark`, each control saying what holds it; and the risk and a P&L to now or
 explained (`revalues` in `web/src/pnl.ts`), which a held seat is not sent, that line standing in

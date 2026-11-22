@@ -455,38 +455,31 @@ export function blockHint(doc: JobDoc, path: string[]): string | undefined {
 
 // ---- what the seat may do -----------------------------------------------------------------------
 
-/** What a control does: an act the record files, as the map in force keys it - a transition's a
- * payment's `status_transition`, a confirmation's `confirmed` or a collateral movement's
- * `collateral` - or a verb the service asks itself where nothing is filed: `mark`, of a write of
- * the market or of this box's paths, and `validate`, which its queue asks of a what-if. */
+/** What a control does, as `GET /book/seat` keys its verdicts (`may`): an act the record files, as
+ * the map in force keys it - a transition's a payment's `status_transition`, a confirmation's
+ * `confirmed` or a collateral movement's `collateral` - a write of the market or of this box's
+ * paths, `mark`, and `run`, a what-if on the book the queue admits. */
 export type Act = 'fill' | 'amendment' | 'quote_filed' | 'approval' | 'entity_declared'
   | 'agreement_declared' | 'official_close_declared' | 'status_transition' | 'confirmed'
-  | 'collateral' | 'mark' | 'validate';
+  | 'collateral' | 'mark' | 'run';
 
 /** What `GET /book/seat` answered for the seat on screen, null until it is read for that seat. */
 export const grantsRead = (state: AppState) => (state.grants?.asked === state.seat ? state.grants : null);
 
-/** Why the seat may not `act` at `node` - the book by default, null for the firm's own facts, which
- * only a grant over every node reaches - in a line naming the verb the act demands under the map
- * in force (`demands`), a verb the service asks being itself; null where it may: off a desk that
- * records, until its grants are read for this seat, and where it holds that verb at `node` or at
- * a node above it - a what-if at any node under it too, the queue admitting a seat that works one
- * node of a book to price the book. */
-export function heldBack(state: AppState, act: Act,
-                         node: string | null = String(state.doc?.Calc.Deals.Reference ?? '')):
-  string | null {
+/** Why the seat may not `act` at `node`, the book where none is named - as for the firm's own facts
+ * (null), which the record judges at the firm whatever the node: the sentence the record refuses
+ * it with, as `GET /book/seat` answers it (`may`) at the node or the nearest above it the answer
+ * names; null where it may, off a desk that records, and until that answer is read. */
+export function heldBack(state: AppState, act: Act, node?: string | null): string | null {
   const grants = grantsRead(state);
   if (!spineOf(state) || !grants) return null;
   if (grants.refused !== null) return grants.refused;
-  const { read } = grants;
-  const verb = read?.demands[act] ?? act;
-  const held = read?.verbs[verb];
-  if (!read || !held || (node !== null && held.some((at) => under(node, at)
-    || (act === 'validate' && under(at, node))))) {
-    return null;
+  const verdicts = grants.read?.may[act] ?? {};
+  for (let at = node ?? String(state.doc?.Calc.Deals.Reference ?? ''); at;
+       at = at.slice(0, Math.max(0, at.lastIndexOf('/')))) {
+    if (verdicts[at] !== undefined) return verdicts[at];
   }
-  return `Needs ${verb}${held.length ? ` over ${node ?? 'the whole firm'}` : ''}: ${read.seat} `
-    + `holds it ${held.length ? `only over ${held.join(', ')}` : 'nowhere'}.`;
+  return null;
 }
 
 /** Whether a read the seat's grants gate must wait: on a desk that records, until the grants are
@@ -497,8 +490,8 @@ export const grantsOwed = (state: AppState): boolean =>
 /** Why a run the queue admits is not asked now, in its button's place - a calculation, a quote, a
  * credit charge, a tick, a verification, a P&L read: that the seat's grants are being read until
  * they are (`grantsOwed`), a held seat's ask filing a denial, and then `hold`, by default the line
- * holding it from a what-if (`heldBack`). Null where it may be asked. */
-export const runHeld = (state: AppState, hold = heldBack(state, 'validate')): string | null =>
+ * holding it from a what-if (`heldBack` of `run`). Null where it may be asked. */
+export const runHeld = (state: AppState, hold = heldBack(state, 'run')): string | null =>
   (grantsOwed(state) ? 'reading what this seat may do…' : hold);
 
 /** Why the seat may not accept a quote that books at `node`, the book where it states none: an
@@ -522,7 +515,7 @@ export function readAs<T extends { data: unknown; error: string | null }>(
 /** The consolidated risk as a screen shows it, its read a what-if the queue admits (`readAs`), and
  * `marks`, its rows a mark is looked up in: every top-level node's, then a top-level set's trades. */
 export function bookRisk(state: AppState) {
-  const risk = readAs(heldBack(state, 'validate'), state.risk);
+  const risk = readAs(heldBack(state, 'run'), state.risk);
   return { ...risk, marks: risk.data ? [...risk.data.per_deal, ...risk.data.in_sets] : [] };
 }
 

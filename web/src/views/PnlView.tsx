@@ -48,7 +48,7 @@ export function PnlView() {
   const paper = state.paper.data ?? NO_PAPER;
   // a what-if's work - a read to now, an explain - only of a seat that may ask one: a seat held
   // from it opens on the last two marked days, and reads no window where fewer are marked
-  const toNow = heldBack(state, 'validate');
+  const toNow = heldBack(state, 'run');
   const opens = opensOn(days?.days ?? [], toNow !== null);
   const [from, to] = [start || opens?.start || '', end || opens?.end || ''];
   const hold = revalues(to, explain) ? toNow : null;

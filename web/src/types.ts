@@ -511,10 +511,12 @@ export type WorkRow = {
 export type SettlementState = { fields: string[]; collateral_columns: string[] };
 
 /** `GET /book/seat` - the seat a request's acts are filed under, per verb the nodes it holds it
- * at, each reaching every path under it and null where nothing narrows it, and `demands`, the verb
- * each act the record files demands under the map in force. */
+ * at, each reaching every path under it and null where nothing narrows it, `demands`, the verb
+ * each act the record files demands under the map in force, and `may`, per act and per node the
+ * service gates it at, null where the seat may and else the sentence the record refuses it with. */
 export type SeatGrants = {
   seat: string; verbs: Record<string, string[] | null>; demands: Record<string, string>;
+  may: Record<string, Record<string, string | null>>;
 };
 
 /** `GET /book/close/check` - whether a close on `date` is legal, and the diary rows it waits on. */
