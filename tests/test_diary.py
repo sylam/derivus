@@ -1555,6 +1555,26 @@ def test_a_close_is_declared_only_on_a_day_the_check_calls_legal(recorded, tmp_p
     assert not service.BOOK.diaries.entries, 'the box compiled a diary for a close it then refused'
 
 
+def test_a_close_refused_names_what_each_row_waits_on_and_the_seat_that_files_it(recorded,
+                                                                                  tmp_path):
+    """A refused close names what each outstanding row waits on in the sentence the worklist reads
+    a payment by (`service.waiting_on`) - a deal nobody can read by its reference, its type and the
+    engine's own reason, outstanding on every day - and the verb a seat holds to file what they
+    wait on, the record's map in force: `book`, which amends a deal into one that reads. It names
+    no tool and no leg a row does not have.
+
+    Killing mutation: the refusal reading each row's `leg` and `due_date`, which names an
+    unreadable deal "unreadable None on every day".
+    """
+    serving(tmp_path, [node(dict(FX_OPTION, Reference='NOVOL'))], factors=FACTORS)
+    head = at(recorded)
+    refused = CLIENT.post('/book/close', json={'date': '2020-01-01'})
+    said = refused.json()['detail']
+    assert refused.status_code == 422 and 'NOVOL (FXOptionDeal)' in said and 'FXVol' in said, said
+    assert 'A seat holding book files what they wait on' in said and 'None' not in said, said
+    assert 'close_check' not in said and at(recorded) == head
+
+
 def test_the_settlement_file_is_struck_on_the_market_the_record_designates(recorded, tmp_path):
     """THE EXPORT NAMES NO MARKET AND CANNOT. Which board a settlement file is struck on is the one
     the `tiers` policy DESIGNATES for the export, read by name off the record, so a caller pointing

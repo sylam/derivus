@@ -3236,21 +3236,23 @@ def book_marks(request: dict):
     book = book_name(document)
     market, closes, marks = pnl_marks(document)
     close = next((row for row in closes if row['lsn'] == market['lsn']), None)
+    closing = spine.demands()['official_close_declared']
     if close is None:
-        raise HTTPException(422, 'the market designated for {} is {!r}, and it stands on a '
-                                 'declaration that is not a close - a book is marked at a close, so '
-                                 'declare one (declare_close) and mark again'.format(
-                                     spine.PNL, market['name']))
+        raise HTTPException(422, 'the market designated for {} is {!r} and it stands on a '
+                                 'declaration that is not a close, so nothing is marked: a book is '
+                                 'marked at a close, which a seat holding {} declares on it before '
+                                 'the book is marked again'.format(spine.PNL, market['name'],
+                                                                   closing))
     day = spine.base_day(document)
     if marks and day < max(marks):
         raise HTTPException(422, 'the book was last marked for {} and stands at {} - marks run '
                                  'forward, a day already struck never moves, and a day behind the '
                                  'last one marked is not marked'.format(max(marks), day))
     if close['date'] != day:
-        raise HTTPException(422, 'the close standing on {!r} is for {} and the book stands at {} '
-                                 '- a day is marked on its own close, so declare the close for {} '
-                                 '(declare_close) and mark again'.format(
-                                     market['name'], close['date'], day, day))
+        raise HTTPException(422, 'the close standing on {!r} is for {} and the book stands at {}, '
+                                 'so nothing is marked: a day is marked on its own close, which a '
+                                 'seat holding {} declares for {} before the book is marked '
+                                 'again'.format(market['name'], close['date'], day, closing, day))
     # the marks close the business day where the book was READ, not where the run is attested:
     # a ticket booked while the run waits on the worker is the next day's
     head, since = spine.pin()['lsn'], max((row['lsn'] for row in marks.values()), default=0)
@@ -3357,9 +3359,10 @@ def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreemen
         (day for day in days if end_day is None or day < end_day), default=None)
     for day in [start_day] + ([] if end_day is None else [end_day]):
         if day not in marks:
-            raise HTTPException(422, (NO_MARKS + 'mark the book at a close (mark_book)').format(
+            raise HTTPException(422, (
+                NO_MARKS + 'a seat holding {} marks the book at a close').format(
                 day or end_day and 'a day before {}'.format(end_day) or 'any day',
-                market['name'], ', '.join(days) or 'none'))
+                market['name'], ', '.join(days) or 'none', spine.MARK))
     first = PnL.loaded(marks[start_day], spine.stored)
     last = (PnL.loaded(marks[end_day], spine.stored) if end_day is not None
             else live_marks(document, book, first))
@@ -3651,10 +3654,10 @@ def book_collateral(date: str = None, actor: str = None):
     market, closes, marks = pnl_marks(document)
     day = read_day(date) if date is not None else spine.base_day(document)
     if day not in marks:
-        raise HTTPException(422, (NO_MARKS + 'a call is read on a marked close, so mark the book '
-                                             'at it (mark_book)').format(
+        raise HTTPException(422, (NO_MARKS + 'a call is read on a marked close, and a seat holding '
+                                             '{} marks the book at one').format(
                                                  day, market['name'], ', '.join(sorted(marks))
-                                                 or 'none'))
+                                                 or 'none', spine.MARK))
     return collateral_calls(document, marks, day, closes, spine.sight(actor))
 
 
@@ -4118,11 +4121,9 @@ def book_worklist(actor: str = None):
                              lambda position, entry, at: entry['status'] == 'pending'))
     lists = {
         'pending': [found for found in shown if found['may'] is None],
-        'payments': [dict(row(entry['kind'], '{} {} pays {} {}'.format(
-            entry['reference'], entry['leg'],
-            'an undetermined amount' if entry['amount'] is None else entry['amount'],
-            entry['currency']), entry['key'], None, entry['due_date']), amount=entry['amount'],
-            currency=entry['currency'], agreement=entry['agreement'])
+        'payments': [dict(row(entry['kind'], waiting_on(entry), entry['key'], None,
+                              entry['due_date']), amount=entry['amount'],
+                         currency=entry['currency'], agreement=entry['agreement'])
             for entry in close_verdict(announced(document, hub_diary(document)['rows']),
                                        day)['outstanding']
             if entry['kind'] in SETTLES and see(entry['instrument'])],
@@ -4234,6 +4235,28 @@ def close_verdict(rows, day):
     return {'date': day, 'legal': not outstanding, 'due': len(due), 'outstanding': outstanding}
 
 
+#: The act that files the fact each kind of outstanding row waits on (`close_verdict`), whose verb
+#: a seat holds to clear it; a deal nobody can read is amended into one somebody can.
+CLEARED_BY = dict(dict.fromkeys(SETTLES, 'status_transition'), **{
+    Diary.FIXING: 'fixing_observed', Diary.EXPIRY: 'election', Diary.UNREADABLE: 'amendment'})
+
+
+def waiting_on(row):
+    """What the outstanding diary `row` waits on (`close_verdict`), as a desk reads it - the trade,
+    its leg and its day, and the fact nobody filed: the close's refusal and the worklist alike."""
+    if row['kind'] == Diary.UNREADABLE:
+        return '{} - unreadable, so outstanding on every day'.format(row['reason'])
+    trade = '{} {} on {}'.format(row['reference'], row['leg'], row['due_date'])
+    if row['kind'] == Diary.FIXING:
+        return '{} waits on the fixing of {}, which no declared source has printed'.format(
+            trade, row['index'])
+    if row['kind'] == Diary.EXPIRY:
+        return '{} expires on a choice nobody has elected'.format(trade)
+    return '{} pays {} {} and no settlement is filed against it'.format(
+        trade, 'an undetermined amount' if row['amount'] is None else row['amount'],
+        row['currency'])
+
+
 @app.get('/book/close/check', summary='Whether a close on this date is legal, and what it waits on')
 def book_close_check(date: str):
     """`?date=YYYY-MM-DD` - THE CATCH-UP RULE as a read: a close is legal on a day when every diary
@@ -4276,15 +4299,14 @@ def book_close(request: dict):
     day = spine.base_day(document) if request.get('date') is None else read_day(request['date'])
     verdict = close_verdict(announced(document, hub_diary(document)['rows']), day)
     if not verdict['legal']:
-        raise HTTPException(422, 'a close on {} is not legal here and nothing is declared - it '
-                                 'waits on {}. A close does not pass over a payment nobody '
-                                 'settled, a fixing nobody printed or an expiry nobody elected: '
-                                 'file those facts and declare again, or read the whole list with '
-                                 'close_check(date={!r})'.format(
-                                     day, ', '.join(
-                                         '{} {} on {}'.format(row['kind'], row['leg'],
-                                                              row['due_date'] or 'every day')
-                                         for row in verdict['outstanding'][:8]), day))
+        outstanding, demands = verdict['outstanding'], spine.demands()
+        raise HTTPException(422, 'a close on {} is not legal and nothing is declared: {}{}. A seat '
+                                 'holding {} files what they wait on, and the close is declared '
+                                 'again'.format(day, '; '.join(map(waiting_on, outstanding[:8])), (
+                                     '; and {} more'.format(len(outstanding) - 8)
+                                     if len(outstanding) > 8 else ''), ' or '.join(sorted({
+                                         demands[CLEARED_BY[row['kind']]]
+                                         for row in outstanding}))))
     declared = load(document).declare_close(market, actor=request.get('actor'), date=day)
     return {'recorded': {'lsn': declared['lsn']}, 'market': market, 'date': day,
             'values_hash': declared['values_hash'], 'supersedes_lsn': max(
@@ -4375,8 +4397,8 @@ def read_projection():
     except FileNotFoundError:
         return {'sets': {}}
     except ValueError as error:
-        raise HTTPException(422, '{} is not readable as an XVA projection: {}'.format(
-            xva_path(), error))
+        raise HTTPException(422, "the desk's XVA projection, {}, is not readable as one ({}), so "
+                                 'no XVA row is read from it'.format(XVA_FILE, error))
 
 
 def write_row(reference, row):

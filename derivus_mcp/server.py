@@ -1628,12 +1628,9 @@ def book_diary(due_before: str | None = None, actor: str | None = None) -> dict:
 def close_check(date: str) -> dict:
     """Whether a close on `date` is legal, and what it is waiting on - the catch-up rule as a read.
 
-    A close is legal when every diary entry due on or before that day has its fact. Outstanding is
-    exactly three things: a fixing no declared source has printed, a payment or a premium no
-    settlement was filed against, and an expiry whose terms leave a choice nobody has elected.
-    `legal: false`
-    comes with the rows - each one names the deal, the leg and the day - so what has to happen
-    before the close is a list rather than a verdict.
+    A close is legal when every diary entry due on or before that day has its fact. `legal: false`
+    comes with the `outstanding` rows - each one names the deal, the leg, the day and its `kind` -
+    so what has to happen before the close is a list rather than a verdict.
 
     THIS DECLARES NOTHING. Declaring the close is a separate act; this says whether the record is
     ready for one. 404 on a box that records nothing.
