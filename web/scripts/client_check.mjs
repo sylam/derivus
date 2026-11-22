@@ -374,6 +374,15 @@ check('a read refused for want of a marked close is a state of the desk, said as
       [['No market is designated for the P&L.',
         'No close stands on the market designated for the P&L.',
         'The book is not marked for the day asked.', null, null], true, false, false]);
+check('what a collateral number is read on is said one way on the strip, the column and a set\'s '
+      + 'cell: the close of its day, that no close is marked where that is why none is read, '
+      + 'and else that it is unread, in the place\'s own word',
+      'a close read said to be none, or no close marked said of a read that failed, which sends '
+      + 'a desk to declare a close that stands; or the place\'s own word for unread dropped',
+      [client.closeRead('2026-11-20', false), client.closeRead(undefined, true),
+       client.closeRead(undefined, false), client.closeRead(undefined, false, 'close unread'),
+       client.closeRead('2026-11-20', true, 'close unread')],
+      ['close of 2026-11-20', 'no close marked', 'unread', 'close unread', 'close of 2026-11-20']);
 
 const sent = (said) => [
   / on the Back Office, on the market the desk designates for its P&L\./.test(said),

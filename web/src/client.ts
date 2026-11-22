@@ -299,6 +299,11 @@ export function unmarked(refusal: string | null): { title: string; hint: string 
   return title ? { title, hint } : null;
 }
 
+/** What a collateral number is read on, in words: the close of `day`, that no close is marked
+ * where that is why none is read (`noClose`, off `unmarked`), and else that it is `unread`. */
+export const closeRead = (day: string | undefined, noClose: boolean, unread = 'unread'): string =>
+  (day ? `close of ${day}` : noClose ? 'no close marked' : unread);
+
 /** What a set's own terms say the bank holds, on a desk keeping no record: its opening balance -
  * at its declared convention where it states none - in its balance currency, else its agreement's,
  * else the market's base, with the market's spots in that currency; no call is worked without a

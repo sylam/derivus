@@ -2,9 +2,9 @@ import { useState, type ReactNode } from 'react';
 import { getBookCollateral, getXvaProfile } from '../api';
 import { EXPORTS, SET, fieldsOf, rowsByPath, saveCsv, toRows } from '../blotter';
 import {
-  LIMIT_USAGE, RUNS, WRONG, actionFirst, agreementsOf, bookedText, creditExport, creditLines,
-  exposureAfter, fundedAt, limitOf, openClient, paperText, runSum, statedHolding, summed, unmarked,
-  wrongWith, type CreditLine, type LimitRead, type Wrong,
+  LIMIT_USAGE, RUNS, WRONG, actionFirst, agreementsOf, bookedText, closeRead, creditExport,
+  creditLines, exposureAfter, fundedAt, limitOf, openClient, paperText, runSum, statedHolding,
+  summed, unmarked, wrongWith, type CreditLine, type LimitRead, type Wrong,
 } from '../client';
 import { EmptyState } from '../components/EmptyState';
 import { TimeSeriesChart } from '../components/TimeSeriesChart';
@@ -103,9 +103,8 @@ export function XvaView() {
     [kind, clients.flatMap((client) => client.wrong).filter((wrong) => wrong.kind === kind).length] as const)
     .filter(([, count]) => count);
   const close = unmarked(collateral.error);
-  const marked = collateral.data ? `close of ${collateral.data.date}`
-    : close ? 'no close marked' : null;
-  const reads = { currency, recording, marked, collateralError: collateral.error,
+  const marked = (unread?: string) => closeRead(collateral.data?.date, !!close, unread);
+  const reads = { currency, recording, noClose: !!close, collateralError: collateral.error,
                   riskError: risk.error, read: view.as_of };
 
   return (
@@ -114,7 +113,7 @@ export function XvaView() {
         <OnStrip
           computed={<>{RUNS}; the value to the desk
             {risk.data ? <> read {stampText(risk.data.as_of)}</> : ' unread'}
-            {recording && <>; collateral{collateral.data ? ` on the ${marked}` : `: ${marked ?? 'unread'}`}</>}</>}
+            {recording && <>; collateral{collateral.data ? ' on the ' : ': '}{marked()}</>}</>}
           currency={currency} lagging={lagsBook(xva.clock, clock)} loading={xva.loading}
         />
         {risk.error && (
@@ -173,7 +172,7 @@ export function XvaView() {
                 <th className="n">Trades<div className="sub">on · waiting on a second seat</div></th>
                 <th className="n">Value to the desk<div className="sub">{currency} now · + the client owes</div></th>
                 <th className="n">Collateral held<div className="sub">{recording
-                  ? `the call · ${marked ?? 'close unread'}` : "as each set's terms state"}</div></th>
+                  ? `the call · ${marked('close unread')}` : "as each set's terms state"}</div></th>
                 <th className="n">After collateral<div className="sub">{currency} · nought if owed</div></th>
                 <th className="n">Peak EE<div className="sub">run currency · its day</div></th>
                 <th className="n">Peak PFE<div className="sub">its percentile · its day</div></th>
@@ -202,7 +201,7 @@ export function XvaView() {
 
 /** What the rows read beside their own lines. */
 type Reads = {
-  currency: string; recording: boolean; marked: string | null; collateralError: string | null;
+  currency: string; recording: boolean; noClose: boolean; collateralError: string | null;
   riskError: string | null; read: string;
 };
 
@@ -326,8 +325,7 @@ function LineCells({ line, reads }: { line: CreditLine; reads: Reads }) {
                       : call.direction === 'post' ? `posts ${formatNumber(-call.call!, 'whole')}`
                         : 'no call'}</div></>
             ) : <span className="hint" title={reads.collateralError ?? call?.unknown
-              .map((row) => row.what).join('; ')}>{reads.marked === 'no close marked'
-                ? 'no close marked' : 'unread'}</span>}
+              .map((row) => row.what).join('; ')}>{closeRead(undefined, reads.noClose)}</span>}
       </td>
       <Amount value={exposureAfter(line, reads.currency)}
               absent={line.collateralised ? 'its collateral is unread' : 'its value is unread'} />
