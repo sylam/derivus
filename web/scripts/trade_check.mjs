@@ -193,6 +193,14 @@ check('the confirm says how much of what is held, who pays whom what on which da
        'Unwind 1 of the 1 short held, at 0 USD a unit: no cash moves, and nothing is left.',
        'Unwind 1 of the 2 short held, at 300 USD a unit: the desk pays Kestrel 300 USD on '
         + '2026-11-18, and 1 short is left.']);
+check("a mark is said as the desk's side, on a client's page, a trade's and an unwind's line: "
+        + 'worth something to the desk is in its favour, and worth nothing is flat',
+      "the sign read the client's way, which tells a desk owed money that it owes it; or a "
+        + "mark of nothing said to stand in the desk's favour",
+      [trade.markText(1250.5, 'USD'), trade.markText(-20213.34, 'USD'), trade.markText(0, null),
+       trade.favour(0), trade.favour(-1)],
+      ["1,250.50 USD, in the desk's favour", "-20,213.34 USD, in the client's favour", '0, flat',
+       'flat', "in the client's favour"]);
 const priced = (amount, currency = 'USD') => ({ amount, currency });
 check('an unwind\'s price is set against the desk\'s mark of the units unwound, in the mark\'s '
         + 'currency and favour: part of a position held beside another reads its share of the '
@@ -211,18 +219,19 @@ check('an unwind\'s price is set against the desk\'s mark of the units unwound, 
        trade.unwindAgainst(-2, 1, -600, -2, 'USD', priced(350)),
        trade.unwindAgainst(1, 0.25, 90000, 1.5, 'USD', priced(1300000, 'ZAR')),
        trade.unwindAgainst(1, 0, 90000, 1.5, 'USD', priced(70000)) ?? 'none'],
-      ['The desk marks the 0.25 unwound at 15,000 USD in its favour.',
-       'The desk marks the 0.25 unwound at 15,000 USD in its favour, so at this price it makes '
-        + '2,500 USD against its mark.',
-       'The desk marks the 0.25 unwound at 15,000 USD in its favour, so at this price it gives '
-        + 'up 2,500 USD against its mark.',
-       'The desk marks the 0.25 unwound at 15,000 USD in its favour, and this price is that mark.',
-       'The desk marks the 1 unwound at 300 USD in the client\'s favour, so at this price it '
+      ['The desk marks the 0.25 unwound at 15,000 USD, in the desk\'s favour.',
+       'The desk marks the 0.25 unwound at 15,000 USD, in the desk\'s favour, so at this price '
+        + 'it makes 2,500 USD against its mark.',
+       'The desk marks the 0.25 unwound at 15,000 USD, in the desk\'s favour, so at this price '
+        + 'it gives up 2,500 USD against its mark.',
+       'The desk marks the 0.25 unwound at 15,000 USD, in the desk\'s favour, and this price is '
+        + 'that mark.',
+       'The desk marks the 1 unwound at -300 USD, in the client\'s favour, so at this price it '
         + 'makes 50 USD against its mark.',
-       'The desk marks the 1 unwound at 300 USD in the client\'s favour, so at this price it '
+       'The desk marks the 1 unwound at -300 USD, in the client\'s favour, so at this price it '
         + 'gives up 50 USD against its mark.',
-       'The desk marks the 0.25 unwound at 15,000 USD in its favour: a price in ZAR is not set '
-        + 'against it.',
+       'The desk marks the 0.25 unwound at 15,000 USD, in the desk\'s favour: a price in ZAR is '
+        + 'not set against it.',
        'none']);
 const READ = { data: {}, error: null };
 check('a page reading no mark of a trade\'s own says why: the line holding the seat or the '

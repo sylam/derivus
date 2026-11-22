@@ -4,7 +4,7 @@ import {
   baseDateOf, cellText, quoted, rowsByPath, sizeOf, toRows, type BlotterRow, type Picked,
 } from '../blotter';
 import {
-  CLIENT, RUNS, agreementsOf, bookedSince, bookedText, fundedAt, heldUnder, limitOf, markText,
+  CLIENT, RUNS, agreementsOf, bookedSince, bookedText, fundedAt, heldUnder, limitOf,
   readiness, ready, termsReading, touching, type Held, type Line, type Term,
 } from '../client';
 import { EmptyState } from '../components/EmptyState';
@@ -19,7 +19,7 @@ import {
 import { pinnedAt } from '../spine';
 import { bookRisk, marketOf, opened, riskNow, standing, useApp, useRead } from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
-import { markOf, markShown, noMark, wholeRecord } from '../trade';
+import { markOf, markShown, markText, noMark, wholeRecord } from '../trade';
 import type {
   ActivityRow, BookRisk, BookXva, Market, Schema, SettlementState, XvaSet,
 } from '../types';

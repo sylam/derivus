@@ -63,6 +63,14 @@ export function markOf(marks: DealMark[], path: string): { own?: DealMark; insid
 export const markFor = (mark: number, units: number, net: number | undefined): number | undefined =>
   (units && net ? mark * (units / net) : undefined);
 
+/** In whose favour a mark of `value` to the desk stands. */
+export const favour = (value: number): string =>
+  (value > 0 ? "in the desk's favour" : value < 0 ? "in the client's favour" : 'flat');
+
+/** A mark as the desk says it: the amount in its currency, and in whose favour it stands. */
+export const markText = (value: number, currency: string | null): string =>
+  `${formatNumber(value, 'money')}${currency ? ` ${currency}` : ''}, ${favour(value)}`;
+
 /** The mark a row shows among the risk answer's rows: the deal's own at `path` (`markOf`), and for
  * one `position` of those the record holds there (`byPath`), what its own units are marked at. */
 export function markShown(marks: DealMark[], path: string, held: Map<string, Position[]>,
@@ -166,7 +174,8 @@ export function unwindOf(held: number, units: number, price: number):
 }
 
 /** What an unwind's price is set against, in a line: the desk's mark of the `units` unwound - the
- * deal's `mark` at them (`markFor`), in its `currency` and in whose favour it stands - and, once a
+ * deal's `mark` at them (`markFor`), in its `currency` and in whose favour it stands (`markText`) -
+ * and, once a
  * `price` is typed in that currency, what the desk makes at it over that mark - the cash it
  * receives less the worth it parts with - or gives up against it. Undefined where no units are. */
 export function unwindAgainst(held: number, units: number, mark: number, net: number | undefined,
@@ -175,8 +184,7 @@ export function unwindAgainst(held: number, units: number, mark: number, net: nu
   if (worth === undefined) return undefined;
   const money = (value: number) => `${formatNumber(Math.abs(value), 'money')} ${currency}`.trim();
   const makes = price && unwindOf(held, units, price.amount).receives - worth;
-  return `The desk marks the ${formatNumber(units)} unwound at ${money(worth)}${
-    worth > 0 ? ' in its favour' : worth < 0 ? " in the client's favour" : ''}${
+  return `The desk marks the ${formatNumber(units)} unwound at ${markText(worth, currency)}${
     makes === undefined ? '.' : price!.currency !== currency
       ? `: a price in ${price!.currency || 'no currency'} is not set against it.`
       : makes === 0 ? ', and this price is that mark.'

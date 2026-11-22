@@ -226,11 +226,6 @@ check('a position the record holds netted to nothing is a closed trade, beside o
       held([position('0/0', 0), position('0/2', 1), position(null, 0)]),
       [['F1', 0, 0, true], ['F2', null, null, true], ['F3', 1, 1, false], [null, null, 0, true]]);
 
-check("a mark is said as the desk's side: worth something to the desk is in its favour",
-      "the sign read the client's way, which tells a desk owed money that it owes it",
-      [client.markText(1250.5, 'USD'), client.markText(-20213.34, 'USD'), client.markText(0, null)],
-      ["1,250.50 USD, in the desk's favour", "-20,213.34 USD, in the client's favour", '0, flat']);
-
 // ---- what happened -----------------------------------------------------------------------------
 
 const row = (lsn, at, agreement, entity = null) => ({ lsn, record_time: at, agreement, entity,

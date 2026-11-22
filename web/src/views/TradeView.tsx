@@ -17,8 +17,8 @@ import {
 } from '../state';
 import { formatNumber, ungrouped } from '../tokens';
 import {
-  bookedBy, datesOf, historyOf, judgedAt, legsOf, markOf, movedTerms, noMark, tradeAt, tradeName,
-  tradeSize, unwindAgainst, unwindFill, unwindWords, wholeRecord, type Price,
+  bookedBy, datesOf, favour, historyOf, judgedAt, legsOf, markOf, movedTerms, noMark, tradeAt,
+  tradeName, tradeSize, unwindAgainst, unwindFill, unwindWords, wholeRecord, type Price,
 } from '../trade';
 import type { ActivityRow, QuoteGiven } from '../types';
 import { Back, DealEditor, Money, OnStrip, Side, Value } from '../components/Desk';
@@ -293,8 +293,7 @@ function Worth({ path, reference, legs, shut }: {
                  currency={currency} lagging={lagsBook(risk.clock, clockOf(state))}
                  loading={risk.loading} />
         <div className="stats">
-          {own && stat(own.value < 0 ? "worth to the desk, in the client's favour"
-            : "worth to the desk, in the desk's favour", own.value,
+          {own && stat(`worth to the desk, ${favour(own.value)}`, own.value,
                        'positive is worth that much to the desk')}
           {inside && stat(`the net of ${inside.reference}, which holds it`, inside.value,
                           'the netting set\'s value to the desk, this trade inside it')}

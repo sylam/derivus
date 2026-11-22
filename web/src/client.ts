@@ -206,12 +206,6 @@ export function heldUnder(path: string | null, rows: Map<string, BlotterRow>,
   ];
 }
 
-/** A mark as the desk says it: the amount in its currency, and in whose favour it stands. */
-export function markText(value: number, currency: string | null): string {
-  const favour = value > 0 ? "in the desk's favour" : value < 0 ? "in the client's favour" : 'flat';
-  return `${formatNumber(value, 'money')}${currency ? ` ${currency}` : ''}, ${favour}`;
-}
-
 // ---- what happened ----------------------------------------------------------------------------
 
 /** A client's history off the record's reads asked for it - by its entity, its declarations, and
