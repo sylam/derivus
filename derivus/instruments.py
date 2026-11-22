@@ -1156,11 +1156,13 @@ class NettingCollateralSet(Deal):
               F('Received_Threshold', 'CreditSupportList', default=ZERO_SUPPORT, convention=True,
                 row=Row([F('Credit Rating', 'Integer'), F('Threshold Amount', 'Float')]),
                 description='The level of the set\'s value above which the bank receives collateral, '
-                            'in the agreement currency: zero or positive'),
+                            'in the agreement currency: zero or positive, and one no value '
+                            'reaches, such as ten trillion, where the bank never receives'),
               F('Posted_Threshold', 'CreditSupportList', default=ZERO_SUPPORT, convention=True,
                 row=Row([F('Credit Rating', 'Integer'), F('Threshold Amount', 'Float')]),
                 description='The level of the set\'s value below which the bank posts collateral, '
-                            'in the agreement currency: zero or negative'),
+                            'in the agreement currency: zero or negative, and one no value '
+                            'reaches, such as minus ten trillion, where the bank never posts'),
               F('Minimum_Received', 'CreditSupportList', default=ZERO_SUPPORT, convention=True,
                 row=Row([F('Credit Rating', 'Integer'), F('Minimum Amount', 'Float')]),
                 description='Minimum transfer the bank receives, in the agreement currency'),
@@ -1334,6 +1336,10 @@ class NettingCollateralSet(Deal):
         'An amount the agreement specifies none of, its table left out, null or of no rows, is zero,',
         'as Paragraph 12 of the 1994 ISDA Credit Support Annex defines the Threshold, the Minimum',
         'Transfer Amount and the Independent Amount where Paragraph 13 specifies no amount.',
+        '',
+        'A one-way agreement, under which one party never posts, is a regular agreement whose',
+        'threshold on that side is a level no value of the set reaches: ten trillion is beyond any',
+        'book and far inside what the run\'s precision holds.',
         '',
         'We then have the following relationships:',
         '',
