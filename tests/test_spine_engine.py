@@ -5415,7 +5415,7 @@ def test_the_tick_and_the_verification_queue_under_the_seat_that_asked(recorded,
     service.EXECUTOR.queue.join()
     beat = CLIENT.get('/results/{}'.format(metronome.pending)).json()
     assert beat['status'] == 'done', beat
-    assert 'a routine tick never provisions' in beat['stats']['Bloomberg']['refused'][0]
+    assert beat['stats']['Bloomberg']['refused'] == [service.UNPROVISIONED.format('a routine tick')]
     assert verify_home(recorded)['events'] == head(recorded)
 
 
