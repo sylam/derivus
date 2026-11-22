@@ -241,7 +241,7 @@ function Signing({ row, trade, now, hold, execution, quote, onSaid }: {
         <dt>quoted</dt>
         <dd>{quoted()}</dd>
         <dt>paper</dt>
-        <dd>{row.agreement ? paperText(row.agreement, paper.agreements, schema) : ''}</dd>
+        <dd>{row.agreement ? paperText(row.agreement, paper.agreements) : ''}</dd>
       </dl>
       {showing && quote && <TicketCard pending={quote} />}
       {hold !== null ? hold && <div className="note">{hold}</div> : (

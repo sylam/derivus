@@ -209,10 +209,6 @@ export function sharedSections(types: Record<string, string[]>): string[] {
 /** The flag a netting set's collateral turns on. */
 export const COLLATERAL = 'Collateralized';
 
-/** Whether `values` declare a set whose collateral flag reads off, stated or at its convention. */
-export const uncollateralised = (fields: Section, values: Record<string, unknown>): boolean =>
-  COLLATERAL in fields && String(values[COLLATERAL] ?? fields[COLLATERAL].value) === 'False';
-
 /** The currency a netting set keeps its collateral balance in: Balance_Currency, else
  * Agreement_Currency, else blank. */
 export const setCurrency = (terms: Record<string, unknown>): string =>

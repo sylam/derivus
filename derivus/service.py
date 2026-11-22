@@ -3717,11 +3717,12 @@ def book_agreement_declared(request: dict):
 @app.get('/book/agreements', summary="The record's agreements, each with its terms")
 def book_agreements():
     """`{agreements, settlement_state}` - every agreement the record declares, with the entity, the
-    kind and the terms it was declared under, and what terms never state (`agreement_terms`): the
-    netting set's balance `fields` and the `collateral_columns` of every `Collateral_Assets`
-    table. 404 where no home is configured."""
+    kind and the terms it was declared under, whether a run collateralises them (`set_terms`), and
+    what terms never state (`agreement_terms`): the netting set's balance `fields` and the
+    `collateral_columns` of every `Collateral_Assets` table. 404 where no home is configured."""
     recorded()
-    return {'agreements': spine.agreements(), 'settlement_state': {
+    return {'agreements': [dict(row, collateralized=set_terms(row['terms'])[1])
+                           for row in spine.agreements()], 'settlement_state': {
         'fields': list(AGREEMENT_STATE), 'collateral_columns': list(HOLDING_AMOUNTS)}}
 
 

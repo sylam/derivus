@@ -8,11 +8,10 @@
 // the XVA verb never runs anything at all. A recalc is asked for through the MCP verbs, and this
 // module has no vocabulary for one on purpose.
 
-import { fieldsOf, levelOnAxis } from './blotter';
+import { levelOnAxis } from './blotter';
 import { clientName, positionName, under, type Entity, type Position } from './positions';
 import {
-  COLLATERAL, axisText, curveOf, formatNumber, isObject, label, tenorLabel, token, uncollateralised,
-  ungrouped,
+  axisText, curveOf, formatNumber, isObject, label, tenorLabel, token, ungrouped,
 } from './tokens';
 import type {
   BookRisk, BookXva, DealMark, DealNode, Descriptor, GreekRow, JobDoc, Market, RefusalCode,
@@ -429,31 +428,21 @@ export function peaks(held: XvaSet['peaks']): { ee?: Peak; pfe: (Peak & { quanti
   }) };
 }
 
-/** The sets under `nodes` whose declaration reads collateral on: what their exposure is net of. */
-function collateralised(nodes: DealNode[], schema: Schema | null): string[] {
-  return nodes.flatMap((node) => {
-    const deal = node.Instrument['.Deal'];
-    const fields = fieldsOf(schema, String(deal.Object)) ?? {};
-    const held = COLLATERAL in fields && !uncollateralised(fields, deal) ? [String(deal.Reference)]
-      : [];
-    return [...held, ...collateralised(node.Children ?? [], schema)];
-  });
-}
-
 export type TableReading = { currency: string; collateral: string[]; columns: [string, string][] };
 
 /** What a run's table is in: one filed under a currency the market holds a spot for -
  * `cashflows/ZAR` - in that currency, any other in the run's report currency; one over dates of a
- * run holding collateralised sets is net of what they hold, which a set over-collateralised reads
- * below nought; its exposure columns in words, and numbered columns over dates a path each. */
+ * run holding sets it collateralises (`collateralised`) is net of what they hold, which a set
+ * over-collateralised reads below nought; its exposure columns in words, and numbered columns over
+ * dates a path each. */
 export function tableReading(name: string, columns: unknown[], dated: boolean, doc: JobDoc,
-                             schema: Schema | null, market: Market | null): TableReading {
+                             collateralised: string[], market: Market | null): TableReading {
   const filed = name.includes('/') ? fileName(name) : '';
   const own = !!filed && `FxRate.${filed}` in (market?.['Price Factors'] ?? {});
   const paths = dated && columns.length > 0 && columns.every((column, at) => column === at);
   return {
     currency: own ? filed : currencyOf(doc),
-    collateral: dated && !own ? collateralised(doc.Calc.Deals.Deals.Children, schema) : [],
+    collateral: dated && !own ? collateralised : [],
     columns: paths ? [[`0–${columns.length - 1}`, 'one simulated path each']]
       : columns.map(String).flatMap((column) => EXPOSURE.flatMap(([rule, words]) => {
         const found = rule.exec(column);

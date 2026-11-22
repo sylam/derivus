@@ -14,7 +14,6 @@ import {
 import { standing, type Action } from './state';
 import {
   COLLATERAL, currencyOf, formatNumber, isBlank, label, onScreen, setCurrency, tenorLabel, token,
-  uncollateralised,
 } from './tokens';
 import { markOf } from './trade';
 import type {
@@ -33,13 +32,15 @@ export function openClient(dispatch: Dispatch<Action>, id: string) {
 
 /** A client's agreements: on a desk that records, the ones its record declares with the entity; on
  * one that does not, every row of the book (`rowsByPath`, the caller's) whose credit support names
- * it - a netting set's terms being its agreement. */
+ * it - a netting set's terms being its agreement - collateralised where the XVA read's row of that
+ * set (`sets`) says a run collateralises it. */
 export function agreementsOf(id: string, declared: Agreement[] | null,
-                             rows: Map<string, BlotterRow>): Agreement[] {
+                             rows: Map<string, BlotterRow>, sets: XvaSet[]): Agreement[] {
   if (declared) return declared.filter((row) => row.entity === id);
   return [...rows.values()]
     .filter((row) => token(row.deal.Credit_Support_Amounts, 'Counterparty') === id)
-    .map((row) => ({ agreement: row.reference, entity: id, kind: '', terms: row.deal }));
+    .map((row) => ({ agreement: row.reference, entity: id, kind: '', terms: row.deal,
+                     collateralized: !!sets.find((set) => set.deal_path === row.path)?.collateralized }));
 }
 
 // ---- is it ready to trade ----------------------------------------------------------------------
@@ -132,10 +133,10 @@ export type Term = {
   key: string; words: string; value: string; unit: string; convention: boolean; side?: string;
 };
 
-/** Whether the set is collateralised and whether its terms say so, the currency its collateral
- * amounts are in, its terms and those at their conventions apart. */
+/** Whether the terms state the collateral flag, the currency its collateral amounts are in, its
+ * terms and those at their conventions apart. */
 export type TermsReading = {
-  collateralised: boolean; stated: boolean; currency?: string; terms: Term[]; conventions: Term[];
+  stated: boolean; currency?: string; terms: Term[]; conventions: Term[];
 };
 
 /** The words a collateral term's declaration names the bank's side of it in. */
@@ -158,10 +159,11 @@ function term(key: string, field: Descriptor, value: unknown,
 }
 
 /** An agreement's terms in words, off its type's own sections - a container's terms each a term
- * of its own: a collateralised set's every collateral term first, at its convention or not, then
- * each other term stated, the rest at their conventions apart; a set whose collateral is off only
- * what it states, collateral it does not have meaning nothing. The flag itself is the reading's. */
-export function termsReading(terms: Record<string, unknown>, schema: Schema): TermsReading {
+ * of its own: a set the service reads collateralised has every collateral term first, at its
+ * convention or not, then each other term stated, the rest at their conventions apart; a set whose
+ * collateral is off only what it states, collateral it does not have meaning nothing. The flag
+ * itself is the agreement's. */
+export function termsReading({ terms, collateralized }: Agreement, schema: Schema): TermsReading {
   const { fields } = onScreen(fieldsOf(schema, String(terms.Object), true) ?? {}, terms);
   const currency = (description: string) =>
     currencyOf(description, Object.keys(fields), (key) => terms[key]);
@@ -170,15 +172,13 @@ export function termsReading(terms: Record<string, unknown>, schema: Schema): Te
       ? Object.entries(field.sub_fields).map(([inner, sub]) =>
         term(`${key}.${inner}`, sub, token(terms[key], inner), currency))
       : [term(key, field, terms[key], currency)]));
-  const off = uncollateralised(fields, terms);
   const moving = all.filter((row) => row.side);
   const rest = all.filter((row) => !row.side);
   return {
-    collateralised: !off, stated: !isBlank(terms[COLLATERAL]),
-    currency: moving.map((row) => row.unit).find(Boolean),
-    terms: off ? all.filter((row) => !row.convention)
+    stated: !isBlank(terms[COLLATERAL]), currency: moving.map((row) => row.unit).find(Boolean),
+    terms: !collateralized ? all.filter((row) => !row.convention)
       : [...moving, ...rest.filter((row) => !row.convention)],
-    conventions: off ? [] : rest.filter((row) => row.convention),
+    conventions: !collateralized ? [] : rest.filter((row) => row.convention),
   };
 }
 
@@ -229,7 +229,8 @@ export const bookedText = (count: number): string => `${plural(count, 'trade')} 
 // ---- every client as a credit officer reads it ------------------------------------------------
 
 /** One netting set a client trades under: where the book holds it, the paper it is under - its
- * agreement's kind, null where none is in force - and whether its terms collateralise, its last
+ * agreement's kind, null where none is in force - and whether a run collateralises it, its paper's
+ * verdict where it has one and else its row's, its last
  * run, its trades and those waiting on a second seat, its value to the desk now in the risk's
  * currency, its call on the marked close, and how many trades were booked under it since its run -
  * null where the record's positions are not read. */
@@ -250,7 +251,7 @@ export type CreditReads = {
 /** A client's lines: a set the book holds or held naming it, under its own agreement where one is
  * in force - its trades the file's at the units the record holds, or as the file writes them where
  * no agreement covers them - then every agreement nothing is booked under yet, worth nothing. */
-export function creditLines(id: string, reads: CreditReads, schema: Schema): CreditLine[] {
+export function creditLines(id: string, reads: CreditReads): CreditLine[] {
   const runs = reads.sets.filter((set) => set.counterparty === id);
   const line = (reference: string, run: XvaSet | null): CreditLine => {
     const signed = reads.agreements.find((row) => row.agreement === reference);
@@ -259,7 +260,7 @@ export function creditLines(id: string, reads: CreditReads, schema: Schema): Cre
     const path = run?.deal_path ?? null;
     return {
       reference, path, run, paper: signed ? signed.kind || 'its own terms' : null,
-      collateralised: signed ? termsReading(signed.terms, schema).collateralised : !!run?.collateralized,
+      collateralised: signed ? signed.collateralized : !!run?.collateralized,
       trades: heldUnder(path, reads.rows, held || null).filter((trade) => !trade.closed).length,
       pending: (held || []).filter((position) => position.pending !== 0).length,
       value: path === null ? (run ? null : 0) : markOf(reads.marks, path).own?.value ?? null,

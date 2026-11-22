@@ -82,7 +82,8 @@ export function PaperView() {
                     }}>amend</button>
                   )}
                 </summary>
-                <AgreementTerms schema={schema} terms={row.terms} unstated={paper.unstated} />
+                <AgreementTerms schema={schema} terms={row.terms} unstated={paper.unstated}
+                                bare={!row.collateralized} />
               </details>
             );
           })}

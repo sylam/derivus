@@ -87,12 +87,12 @@ export function XvaView() {
   const ids = new Set([...(paper?.entities ?? []).map((row) => row.entity),
                        ...view.sets.flatMap((set) => (set.counterparty ? [set.counterparty] : []))]);
   const clients: Client[] = actionFirst([...ids].map((id) => {
-    const agreements = agreementsOf(id, paper?.agreements ?? null, rows);
+    const agreements = agreementsOf(id, paper?.agreements ?? null, rows, view.sets);
     const lines = creditLines(id, {
       sets: view.sets, agreements, rows, positions: paper?.positions ?? null,
       marks: risk.marks, calls: recording ? collateral.data?.calls ?? null
         : agreements.map((row) => statedHolding(row.terms, fieldsOf(schema, SET) ?? {}, market)),
-    }, schema);
+    });
     const own = lines.filter((line) => !line.run?.note);
     const factor = factors[`${SURVIVAL}.${id}`];
     const curve = curveOf(token(factor, 'Curve'));
@@ -365,7 +365,7 @@ function Profiled({ line }: { line: CreditLine }) {
         <>
           <div className="tablenote">
             <span>amounts in <b>{run?.currency}</b>, the run's report currency</span>
-            {tableReading('exposure_profile', page.columns, true, state.doc!, state.schema,
+            {tableReading('exposure_profile', page.columns, true, state.doc!, [],
                           marketOf(state)).columns.map(([column, words]) => (
               <span key={column}><b>{column}</b> {words}</span>
             ))}

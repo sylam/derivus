@@ -663,7 +663,11 @@ beside the record's sentence for why this seat does not sign them, then the `pay
 clears it, with the day's close check and the close behind its verdict. The Paper workspace
 (`web/src/views/PaperView.tsx`) lists the entities and the agreements with their terms and
 declares both, an agreement's terms the netting set rendered off the `NettingCollateralSet`
-declaration `/schema` publishes, and opens on what a row of the strip names. No screen shows a
+declaration `/schema` publishes, and opens on what a row of the strip names. Whether a set is
+collateralised is the service's verdict, read as a run reads it, never the web's reading of the
+flag: `collateralized` on each agreement `GET /book/agreements` answers, on each row of
+`GET /book/xva` for a desk keeping no record, and the `collateralized_sets` a job's `/describe`
+names for a run's tables. No screen shows a
 set's own `Funding_Rate`, the term of its collateral adjustment: every view of a deal's fields
 leaves it out (`onScreen` in `web/src/tokens.ts`), a set stating it keeps it through an edit, and
 a client's readiness still asks the market for the curve it names. Each posts under the
@@ -671,7 +675,10 @@ acting seat and shows a refusal in the service's own words. **Held by** what the
 `test_pnl.py::test_the_worklist_names_what_waits_and_each_row_leaves_when_its_fact_lands`,
 `test_diary.py::test_a_close_is_declared_only_on_a_day_the_check_calls_legal` and
 `test_spine_engine.py::test_the_paper_is_declared_and_a_booking_names_the_agreement_it_sits_under`,
-`web/scripts/paper_check.mjs` and `web/scripts/client_check.mjs` for what no screen shows, and
+`::test_the_agreements_read_says_whether_a_run_collateralises_each`,
+`test_service.py::test_a_set_reads_collateralised_exactly_as_a_run_prices_it`,
+`web/scripts/paper_check.mjs`, `web/scripts/client_check.mjs` and `web/scripts/trade_check.mjs`
+for what no screen shows, and
 the web's type check; the rest of the rendering is **Not gated**.
 
 ## Policies {#policies}

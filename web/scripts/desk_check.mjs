@@ -290,21 +290,14 @@ check('an entity reads as its name with its id, and a file as its name off any s
       ['Kestrel Mining Ltd (KESTREL)', 'ALDERBY', 'KESTREL', 'xva.json', 'xva.json']);
 
 // --- what a run's table is in
-const SETS = { Instrument: { types: { NettingCollateralSet: ['Fields'], FXOptionDeal: ['Option'] },
-  sections: { Fields: { Collateralized: { widget: 'Dropdown', value: 'False' } }, Option: {} } } };
-const set = (reference, collateralized, children = []) => ({ Instrument: { '.Deal': {
-  Object: 'NettingCollateralSet', Reference: reference,
-  ...(collateralized === undefined ? {} : { Collateralized: collateralized }) } },
-  Children: children });
 const RATES = { 'Price Factors': { 'FxRate.ZAR': { Spot: 0.0576369 } } };
-const RAN = { Calc: { Calculation: { Currency: 'USD' }, Deals: { Deals: { Children: [
-  set('ISDA-KESTREL', undefined, [{ Instrument: { '.Deal': { Object: 'FXOptionDeal' } } }]),
-  set('ISDA-CSA-ALDERBY', 'True')] } } } };
+const RAN = { Calc: { Calculation: { Currency: 'USD' }, Deals: { Deals: { Children: [] } } } };
+// the sets the job's description says its run collateralises
+const SETS = ['ISDA-CSA-ALDERBY'];
 check('a table states its currency, what its exposure is net of, and its columns in words',
-      'every table read in the report currency, cashflows in rand among them; a set at its '
-      + 'convention read as holding collateral; the collateral note on a table over no dates, or '
-      + "on cashflows; a percentile column left as its code; or a simulation's numbered columns "
-      + 'left unsaid, or read as paths on a table over no dates',
+      'every table read in the report currency, cashflows in rand among them; the collateral note '
+      + "on a table over no dates, or on cashflows; a percentile column left as its code; or a "
+      + "simulation's numbered columns left unsaid, or read as paths on a table over no dates",
       [desk.tableReading('exposure_profile', ['EE', 'ENE', 'PFE_97.5'], true, RAN, SETS, RATES),
        desk.tableReading('cashflows/ZAR', [0, 1, 2], true, RAN, SETS, RATES),
        desk.tableReading('mtm', [0, 1], false, RAN, SETS, RATES)],

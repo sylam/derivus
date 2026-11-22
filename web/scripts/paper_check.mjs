@@ -1,5 +1,5 @@
 // Drives the rules the Paper tab reads an agreement by, where the eye cannot: the sections a type's
-// own terms are, when a set's collateral is off and what then reads, what paper never states, the
+// own terms are, what reads of a set the service says is uncollateralised, what paper never states, the
 // currency an amount's description names, the terms a restatement moves, where an agreement
 // stands in the book, and which parts of the paper a screen reads when the book moves.
 // Every check names the MUTATION it kills - the change that would still typecheck, still render,
@@ -39,14 +39,6 @@ check("a type's own terms leave out the one section every type shares, and only 
       tokens.sharedSections({ A: ['Admin', 'Pricing', 'A.Fields'],
                               B: ['Admin', 'Pricing', 'B.Fields'], C: ['C.Fields', 'Admin'] }),
       ['Admin']);
-
-check('a set reads uncollateralised where its flag is off, stated or left at its convention',
-      'the flag read only where stated, which shows an ISDA its thresholds; or a type declaring '
-      + 'no flag read as off, which strips a deal to what it states',
-      [tokens.uncollateralised(TERMS, ISDA), tokens.uncollateralised(TERMS, CSA),
-       tokens.uncollateralised(TERMS, { ...CSA, Collateralized: 'False' }),
-       tokens.uncollateralised({ Netted: TERMS.Netted }, {})],
-      [true, false, true, false]);
 
 const cut = tokens.statedOnly(TERMS, ISDA, [tokens.COLLATERAL]);
 check('an uncollateralised read keeps what the terms state and the flag, a container its stated '

@@ -325,21 +325,23 @@ check('a wait reads the service\'s own stamps - microseconds and an offset - and
        waited('2026-11-19T07:00:00Z', Date.parse('2026-11-19T06:58:00Z')), waited(null, 0)],
       ['1 minute', 'under a minute', '']);
 
+// each agreement as the service answers it: whether a run collateralises it is its verdict
 const PAPER = [
-  { agreement: 'ISDA-CSA', entity: 'A', kind: 'ISDA 2002 with CSA', terms: {
+  { agreement: 'ISDA-CSA', entity: 'A', kind: 'ISDA 2002 with CSA', collateralized: true, terms: {
     Collateralized: 'True', Agreement_Currency: 'USD', Balance_Currency: 'EUR' } },
-  { agreement: 'ISDA-K', entity: 'K', kind: 'ISDA 2002', terms: { Agreement_Currency: 'USD' } },
-  { agreement: 'ISDA-SAYS-CSA', entity: 'S', kind: 'ISDA 2002 with CSA', terms: {
-    Collateralized: 'False' } },
-  { agreement: 'CSA-USD', entity: 'U', kind: 'CSA', terms: {
+  { agreement: 'ISDA-K', entity: 'K', kind: 'ISDA 2002', collateralized: false,
+    terms: { Agreement_Currency: 'USD' } },
+  { agreement: 'ISDA-SAYS-CSA', entity: 'S', kind: 'ISDA 2002 with CSA', collateralized: false,
+    terms: { Collateralized: 'Yes' } },
+  { agreement: 'CSA-USD', entity: 'U', kind: 'CSA', collateralized: true, terms: {
     Collateralized: 'True', Agreement_Currency: 'USD' } },
 ];
-check('the paper says its agreement and kind, and collateral by its own terms - the flag at its '
-        + 'declared convention where unstated - in the currency its balance is kept in',
-      'an unstated flag read as on, the declared convention ignored; or collateral read off the '
-        + 'document\'s name, a set whose terms say no read as collateralised',
+check("the paper says its agreement and kind, and collateral as the service reads its terms, in "
+        + 'the currency its balance is kept in',
+      "the flag read again off the terms, collateralised unless it says 'False', which calls the "
+        + "set stating 'Yes' collateralised; or collateral read off the document's name",
       ['ISDA-CSA', 'ISDA-K', 'ISDA-SAYS-CSA', 'CSA-USD', 'ISDA-X'].map(
-        (set) => trade.paperText(set, PAPER, SCHEMA)),
+        (set) => trade.paperText(set, PAPER)),
       ['ISDA-CSA (ISDA 2002 with CSA), collateralised in EUR', 'ISDA-K (ISDA 2002), uncollateralised',
        'ISDA-SAYS-CSA (ISDA 2002 with CSA), uncollateralised', 'CSA-USD (CSA), collateralised in USD',
        'ISDA-X, which the record declares no agreement for']);

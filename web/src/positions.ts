@@ -49,8 +49,10 @@ export type Ticket = {
 };
 
 export type Entity = { entity: string; name: string; parent: string | null };
+/** `collateralized` is the service's reading of the terms, as a run reads them. */
 export type Agreement = {
   agreement: string; entity: string; kind: string; terms: Record<string, unknown>;
+  collateralized: boolean;
 };
 
 /** What the grouped views read: the positions standing, the paper they sit under with what that

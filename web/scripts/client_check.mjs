@@ -35,11 +35,10 @@ const SCHEMA = { Instrument: {
     },
   },
 } };
-const read = (terms) => {
-  const reading = client.termsReading(terms, SCHEMA);
+const read = (terms, collateralized) => {
+  const reading = client.termsReading({ terms, collateralized }, SCHEMA);
   const rows = (list) => list.map((term) => [term.words, term.value, term.unit, term.convention]);
-  return [reading.collateralised, reading.stated, reading.currency ?? null,
-          rows(reading.terms), rows(reading.conventions)];
+  return [reading.stated, reading.currency ?? null, rows(reading.terms), rows(reading.conventions)];
 };
 const CSA = { Object: SET, Reference: 'CSA-1', Collateralized: 'True', Agreement_Currency: 'EUR',
               Liquidation_Period: 10, Credit_Support_Amounts: {
@@ -52,8 +51,8 @@ check("a collateralised set reads every collateral term first, at its convention
       + "credit support list's last row read, 500,000 for the 250,000 a run reads; the unit read "
       + "as its phrase, 'the agreement currency' for EUR; or a term at its convention listed with "
       + 'the stated ones',
-      read(CSA),
-      [true, true, 'EUR',
+      read(CSA, true),
+      [true, 'EUR',
        [[THRESHOLD, '0', 'EUR', true], ['Minimum transfer the bank posts', '250,000', 'EUR', false],
         ['Agreement currency', 'EUR', '', false], ['Liquidation period', '10', 'calendar days', false],
         ['Counterparty', 'ALDER', '', false]],
@@ -62,17 +61,25 @@ check("a collateralised set reads every collateral term first, at its convention
 check('a set whose collateral is off reads only what it states, and says the flag is its convention',
       'the collateral terms of an uncollateralised set shown at their conventions, a threshold it '
       + 'does not have; or the flag read as stated where the terms say nothing',
-      read({ Object: SET, Agreement_Currency: 'USD', Credit_Support_Amounts: { Counterparty: 'KES' } }),
-      [false, false, 'USD',
+      read({ Object: SET, Agreement_Currency: 'USD', Credit_Support_Amounts: { Counterparty: 'KES' } },
+           false),
+      [false, 'USD',
        [['Agreement currency', 'USD', '', false], ['Counterparty', 'KES', '', false]], []]);
+
+check('a set reads as the service says a run collateralises it, whatever its flag spells: a set '
+      + 'stating "Yes" the service reads uncollateralised reads only what it states',
+      'the reading deciding off the flag again, collateralised unless it says "False", which shows '
+      + 'the set thresholds no run holds it to',
+      read({ ...CSA, Collateralized: 'Yes' }, false)[2].map(([words]) => words),
+      ['Agreement currency', 'Liquidation period', 'Counterparty', 'Minimum transfer the bank posts']);
 
 check('a collateralised set reads as collateralised and no more: its reading names no way its '
       + 'collateral moves',
       "a direction read off the sides the type's collateral terms name, which calls every "
       + 'collateralised set two-way: the type declares both sides for every set, and says '
       + 'nothing of this one',
-      Object.keys(client.termsReading(CSA, SCHEMA)).sort(),
-      ['collateralised', 'conventions', 'currency', 'stated', 'terms']);
+      Object.keys(client.termsReading({ terms: CSA, collateralized: true }, SCHEMA)).sort(),
+      ['conventions', 'currency', 'stated', 'terms']);
 
 // ---- which agreements, and is it ready -----------------------------------------------------------
 
@@ -91,12 +98,15 @@ const PAPER = [
   { agreement: 'ISDA-OFF', entity: 'OFF', kind: 'ISDA 2002', terms: { Object: SET } },
 ];
 check("a client's agreements are those legal declares with it, and on a desk keeping no record the "
-      + 'netting sets naming it wherever they sit in the book',
+      + 'netting sets naming it wherever they sit in the book, collateralised as its XVA row says',
       "another entity's agreement taken; the walk kept to the top level, which loses a set nested "
-      + 'under a book node; or a set read off its type name rather than the credit support it states',
-      [client.agreementsOf('ALD', PAPER, ROWS).map((row) => row.agreement),
-       client.agreementsOf('ALD', null, ROWS).map((row) => [row.agreement, row.entity])],
-      [['ISDA-NEW'], [['CSA-ALD', 'ALD']]]);
+      + 'under a book node; a set read off its type name rather than the credit support it states; '
+      + "or another set's row read for its collateral",
+      [client.agreementsOf('ALD', PAPER, ROWS, []).map((row) => row.agreement),
+       client.agreementsOf('ALD', null, ROWS, [{ deal_path: '0', collateralized: false },
+                                               { deal_path: '1/0', collateralized: true }])
+         .map((row) => [row.agreement, row.entity, row.collateralized])],
+      [['ISDA-NEW'], [['CSA-ALD', 'ALD', true]]]);
 
 const ENTITIES = [{ entity: 'KES', name: 'Kestrel', parent: null },
                   { entity: 'ALD', name: 'Alderby', parent: 'KES' },
@@ -106,7 +116,7 @@ const RECONCILE = { terms_mismatch: [{ agreement: 'ISDA-OFF', deal_path: '2', fi
 // the market as far as a client's readiness reads it: its credit curve, where one is stated
 const curved = (id, curve) => (curve ? { [`SurvivalProb.${id}`]: curve } : {});
 const lines = (id, entities, curve) => client.readiness(
-  id, entities, client.agreementsOf(id, entities && PAPER, ROWS), DOC, RECONCILE, curved(id, curve),
+  id, entities, client.agreementsOf(id, entities && PAPER, ROWS, []), DOC, RECONCILE, curved(id, curve),
   SCHEMA).map((line) => [line.tone, line.fix ?? null]);
 check('a client is ready where nothing stops a booking: an agreement not yet in the book, or a set '
       + 'off its paper, books all the same; no agreement, no entity or no credit curve does not',
@@ -117,7 +127,7 @@ check('a client is ready where nothing stops a booking: an agreement not yet in 
       [lines('KES', ENTITIES, {}), lines('ALD', ENTITIES, undefined), lines('MAR', ENTITIES, {}),
        lines('OFF', ENTITIES, {}), lines('NOBODY', ENTITIES, {}), lines('KES', null, {}),
        ['KES', 'ALD', 'MAR'].map((id) => client.ready(client.readiness(
-         id, ENTITIES, client.agreementsOf(id, PAPER, ROWS), DOC, null,
+         id, ENTITIES, client.agreementsOf(id, PAPER, ROWS, []), DOC, null,
          curved(id, id === 'ALD' ? null : {}), SCHEMA)))],
       [[['ok', null], ['ok', null], ['ok', null]],
        [['ok', null], ['note', null], ['todo', 'curve']],
@@ -128,7 +138,7 @@ check('a client is ready where nothing stops a booking: an agreement not yet in 
        [true, false, false]]);
 
 const curveless = (id, entities) => client.readiness(
-  id, entities, client.agreementsOf(id, entities && PAPER, ROWS), DOC, null, {}, SCHEMA).at(-1).text;
+  id, entities, client.agreementsOf(id, entities && PAPER, ROWS, []), DOC, null, {}, SCHEMA).at(-1).text;
 check("a client with no credit curve reads its first trade refused where the book holds no set "
       + 'naming it, and a trade still booking where the book already prices one without a curve',
       'the refusal said of a set the book already holds, where the service books all the same - it '
@@ -165,8 +175,8 @@ check('an agreement lacks each factor its terms name that the market does not ho
        client.lacked({ Object: SET }, declared, {})],
       [['DividendRate.ACME', 'FxRate.CHF', 'FxRate.SEK'], [], []]);
 
-const worded = (terms) => {
-  const reading = client.termsReading(terms, DECLARED);
+const worded = (terms, collateralized = false) => {
+  const reading = client.termsReading({ terms, collateralized }, DECLARED);
   return [...reading.terms, ...reading.conventions].map((term) => term.key);
 };
 check("a set's own funding curve is no term a client's page reads, stated or at its convention, "
@@ -174,7 +184,7 @@ check("a set's own funding curve is no term a client's page reads, stated or at 
       'the term read off the declaration whole, which words the curve of an adjustment no screen '
       + "shows; or the field cut from what readiness reads too, which calls ready a client whose "
       + 'paper names a curve the market lacks',
-      [worded(NAMING), worded({ ...CSA }).includes('Funding_Rate'),
+      [worded(NAMING), worded({ ...CSA }, true).includes('Funding_Rate'),
        client.lacked({ Object: SET, Funding_Rate: 'USD-FUND' }, declared, {})],
       [['Agreement_Currency', 'Credit_Support_Amounts.Counterparty',
         'Collateral_Assets.Cash_Collateral', 'Collateral_Assets.Equity_Collateral'], false,
@@ -278,12 +288,15 @@ const run = (reference, deal_path, extra = {}) => ({
   cva: 10, fva: 1, currency: 'USD', as_of: '2026-11-19T22:27:28.743+02:00', result_id: reference,
   error: null, recalc: null, ...extra });
 const RUNS = [run('ISDA-KES', '0'),
-              run('CSA-KES', '1/0', { status: 'never run', as_of: null }),
+              run('CSA-KES', '1/0', { status: 'never run', as_of: null, collateralized: true }),
               run('KES-OLD', '2', { status: 'failed', cva: null, fva: null,
                                      error: 'Cannot find SurvivalProb.KES' }),
               run('KES-GONE', null, { note: 'left the book', status: 'failed', cva: null, error: 'boom' }), run('OFF-1', '3', { counterparty: 'OFF' })];
-const KES_PAPER = [PAPER[0], { agreement: 'CSA-KES', entity: 'KES', kind: 'ISDA 2002 with CSA', terms: CSA_KES },
-                   { agreement: 'ISDA-NEW-KES', entity: 'KES', kind: 'ISDA 2002', terms: { Object: SET } }];
+const KES_PAPER = [{ ...PAPER[0], collateralized: false },
+                   { agreement: 'CSA-KES', entity: 'KES', kind: 'ISDA 2002 with CSA', terms: CSA_KES,
+                     collateralized: true },
+                   { agreement: 'ISDA-NEW-KES', entity: 'KES', kind: 'ISDA 2002', terms: { Object: SET },
+                     collateralized: false }];
 const CREDIT = {
   sets: RUNS, rows: CREDIT_ROWS, agreements: KES_PAPER,
   positions: [position('0/0', 1, { tickets: [ticket('t1', '2026-11-19T20:27:20Z'),
@@ -297,7 +310,7 @@ const CREDIT = {
 };
 const lined = (lines) => lines.map((line) => [line.reference, line.paper, line.collateralised,
   line.trades, line.pending, line.value, line.call?.agreement ?? null]);
-const PLAIN = { ...CREDIT, agreements: client.agreementsOf('KES', null, CREDIT_ROWS),
+const PLAIN = { ...CREDIT, agreements: client.agreementsOf('KES', null, CREDIT_ROWS, RUNS),
                 positions: null, calls: null };
 check("a client's lines are every set naming it, under its own agreement where one is in force, then "
       + 'each agreement nothing is booked under, worth nothing; on a desk keeping no record each set '
@@ -306,7 +319,7 @@ check("a client's lines are every set naming it, under its own agreement where o
       + "marks only inside its top-level node given that node's value; a set no agreement covers "
       + 'read through the record, which counts its trades as none; an agreement nothing is booked '
       + "under read as unvalued, which blanks the client's total; or another client's set taken",
-      [lined(client.creditLines('KES', CREDIT, SCHEMA)), lined(client.creditLines('KES', PLAIN, SCHEMA))],
+      [lined(client.creditLines('KES', CREDIT)), lined(client.creditLines('KES', PLAIN))],
       [[['ISDA-KES', 'ISDA 2002', false, 2, 1, 1000, null],
         ['CSA-KES', 'ISDA 2002 with CSA', true, 1, 0, null, 'CSA-KES'],
         ['KES-OLD', null, false, 1, 0, -200, null],
@@ -320,8 +333,8 @@ check("a client's lines are every set naming it, under its own agreement where o
 check("a run set's line counts the trades booked under it since its run off the record's positions; "
         + 'a set with no run counts none, and a desk keeping no record nothing',
       "a set's count read off another set's tickets, or a desk keeping no record given a count",
-      [client.creditLines('KES', CREDIT, SCHEMA).map((line) => [line.reference, line.booked]),
-       client.creditLines('KES', PLAIN, SCHEMA).map((line) => line.booked)],
+      [client.creditLines('KES', CREDIT).map((line) => [line.reference, line.booked]),
+       client.creditLines('KES', PLAIN).map((line) => line.booked)],
       [[['ISDA-KES', 1], ['CSA-KES', 0], ['KES-OLD', 0], ['KES-GONE', 0], ['ISDA-NEW-KES', null]],
        [null, null, null, null]]);
 
@@ -482,7 +495,7 @@ check('a credit charge reads each limit its set draws on as the usage without th
         '1 of its 2 sets has no run that is done, so no headroom is stated.'],
        'over its limit with or without the trade', 'the trade would take it over its limit']);
 
-const KES_LINES = client.creditLines('KES', CREDIT, SCHEMA);
+const KES_LINES = client.creditLines('KES', CREDIT);
 check("a client's sums are over every one of its book's sets or none - an unread set blanks it, and "
       + 'adjustments in two currencies, or a set that left the book, are never added',
       "an unread set's value skipped, which says a client owes less than it does; two currencies "
@@ -507,7 +520,7 @@ check("what is wrong under a client's sets, worst first: a failed run, trades no
       "the flags in the sets' order rather than the kinds'; a set that left the book flagged; a "
       + 'never-run set with nothing on flagged; or a set on a desk keeping no record called unpapered',
       [client.wrongWith(KES_LINES).map((wrong) => [wrong.kind, wrong.reference]),
-       client.wrongWith(client.creditLines('KES', PLAIN, SCHEMA)).map((wrong) => [wrong.kind, wrong.reference])],
+       client.wrongWith(client.creditLines('KES', PLAIN)).map((wrong) => [wrong.kind, wrong.reference])],
       [[['failed', 'KES-OLD'], ['unpapered', 'KES-OLD'], ['pending', 'ISDA-KES'], ['unrun', 'CSA-KES']],
        [['failed', 'KES-OLD'], ['unrun', 'CSA-KES']]]);
 

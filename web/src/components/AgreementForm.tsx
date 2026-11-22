@@ -2,11 +2,11 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { declareAgreement, failure } from '../api';
-import { SET, fieldsOf } from '../blotter';
+import { SET } from '../blotter';
 import { entityText } from '../desk';
 import type { Agreement, Entity } from '../positions';
 import { heldBack, useApp } from '../state';
-import { COLLATERAL, onPaper, statedOnly, termsMoved, uncollateralised } from '../tokens';
+import { COLLATERAL, onPaper, statedOnly, termsMoved } from '../tokens';
 import type { Schema, SettlementState } from '../types';
 import { Gated } from './Desk';
 import { DealPanels } from './FieldView';
@@ -14,12 +14,13 @@ import { DealPanels } from './FieldView';
 /** Declaration outcome: where it landed or the service's refusal sentence. */
 export type Said = { refused: boolean; text: string } | null;
 
-/** Agreement terms via DealPanels, omitting settlement state and inert collateral fields. */
-export function AgreementTerms({ schema, terms, unstated, onChange }: {
+/** Agreement terms via DealPanels, omitting settlement state, and read back from a set the service
+ * reads uncollateralised (`bare`) only what they state, collateral it does not have meaning
+ * nothing. */
+export function AgreementTerms({ schema, terms, unstated, onChange, bare = false }: {
   schema: Schema; terms: Record<string, unknown>; unstated: SettlementState;
-  onChange?: (terms: Record<string, unknown>) => void;
+  onChange?: (terms: Record<string, unknown>) => void; bare?: boolean;
 }) {
-  const bare = !onChange && uncollateralised(fieldsOf(schema, SET) ?? {}, terms);
   return (
     <DealPanels deal={terms} schema={schema} own tables={!!onChange}
                 cut={(fields) => onPaper(bare ? statedOnly(fields, terms, [COLLATERAL]) : fields,

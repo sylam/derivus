@@ -1146,6 +1146,26 @@ def test_the_agreements_read_names_what_paper_never_states(recorded):
             'detail'], (field, refused.text)
 
 
+def test_the_agreements_read_says_whether_a_run_collateralises_each(recorded):
+    """Each agreement the paper read answers says whether a run collateralises its terms, read as
+    a run reads them: one stating `'True'` does, one stating it blank stands at its convention and
+    does not, so a screen renders the service's verdict rather than reading the flag again.
+
+    Killing mutation: the verdict read as anything but `'False'`, which calls the blank one
+    collateralised.
+    """
+    terms = netting_set(CLIENT_SET, 'LEI-A')['Instrument']['.Deal']
+    assert CLIENT.post('/book/entities', content=dump({'entity': 'LEI-A', 'name': 'Client A'}),
+                       headers=JSON).status_code == 200
+    for agreement, said in (('CSA-A', 'True'), ('ISDA-A', '')):
+        assert CLIENT.post('/book/agreements', content=dump({
+            'agreement': agreement, 'entity': 'LEI-A', 'kind': 'ISDA 2002',
+            'terms': dict(terms, Reference=agreement, Collateralized=said)}),
+            headers=JSON).status_code == 200
+    assert {row['agreement']: row['collateralized'] for row in CLIENT.get(
+        '/book/agreements').json()['agreements']} == {'CSA-A': True, 'ISDA-A': False}
+
+
 def test_the_paper_is_declared_and_a_booking_names_the_agreement_it_sits_under(recorded, desk):
     """Legal's half and the desk's, through the service.
 

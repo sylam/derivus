@@ -32,7 +32,7 @@ from .bootstrappers import (bootstrap_dependents, bootstrap_order, bootstrap_pre
                             bootstrap_writers, construct_bootstrapper, family_class,
                             market_prices_for, FAMILIES)
 from .calculation import calculation_class
-from .instruments import construct_instrument, deal_node, Deal
+from .instruments import construct_instrument, deal_node, Deal, NettingCollateralSet
 from .stochasticprocess import construct_calibration_config, construct_process, process_class
 
 Timestamp = pd.Timestamp
@@ -974,7 +974,7 @@ class Config(object):
     def describe(self):
         """What the engine made of this job without running it: the book counted by the `Object` a
         deal was constructed from, the price factors it reaches on both sides of the want-list, and
-        the `Calculation` block as loaded.
+        the `Calculation` block as loaded, and the netting sets a run collateralises, by reference.
 
         A node whose `Object` names no deal type is absent from the counts - `construct_instrument`
         logged it and returned the bare `{'Object': name}`, no `Deal`; `validate` is where it is
@@ -983,6 +983,10 @@ class Config(object):
         return {'deals': dict(Counter(
                     instrument.field['Object'] for instrument in self.walk_deals()
                     if isinstance(instrument, Deal))),
+                'collateralized_sets': [
+                    instrument.field['Reference'] for instrument in self.walk_deals()
+                    if isinstance(instrument, NettingCollateralSet)
+                    and instrument.closeout_window() is not None],
                 'factors': self.factor_universe(),
                 'calculation': self.deals['Calculation']}
 

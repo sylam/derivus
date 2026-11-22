@@ -55,10 +55,13 @@ export function ClientView() {
     return <EmptyState {...offBook('a page for each counterparty the book trades with')} />;
   }
   if (!schema || !doc) return null;
-  const unanswered = recording && unread(paper);
+  // a desk keeping no record reads whether a set is collateralised off its XVA row
+  const unanswered = recording ? unread(paper)
+    : !xva.data && (xva.error ?? 'Reading the projection…');
   if (unanswered) {
-    return <EmptyState title={unanswered}
-                       hint="The entities legal declares, their agreements and the positions under them." />;
+    return <EmptyState title={unanswered} hint={recording
+      ? 'The entities legal declares, their agreements and the positions under them.'
+      : 'The netting sets each counterparty is named by, and the last run of each.'} />;
   }
   const held = recording ? paper.data : null;
   const reads: Reads = {
@@ -73,7 +76,7 @@ export function ClientView() {
   const ids = new Set([...creditCounterparties(reads.entities, doc, {}),
                        ...creditCounterparties(null, doc, {}), state.selection.picks[CLIENT] ?? '']);
   const pages = [...ids].filter(Boolean).sort().map((id) => {
-    const own = agreementsOf(id, reads.agreements, rows);
+    const own = agreementsOf(id, reads.agreements, rows, xva.data?.sets ?? []);
     const lines = readiness(id, reads.entities, own, doc, state.record.reconcile,
                             market?.['Price Factors'], schema);
     return { id, lines, own };
@@ -202,7 +205,7 @@ function AgreementCard({ agreement, schema, amend }: {
   agreement: Agreement; schema: Schema; amend?: () => void;
 }) {
   const { state, dispatch } = useApp();
-  const read = termsReading(agreement.terms, schema);
+  const read = termsReading(agreement, schema);
   const { path, moved } = standing(state.doc, state.record.reconcile, agreement);
   return (
     <div className="agreement">
@@ -220,9 +223,9 @@ function AgreementCard({ agreement, schema, amend }: {
         {amend && <button className="ghost" onClick={amend}>amend</button>}
       </div>
       <div className="csa">
-        {read.collateralised ? 'Collateralised' : 'Not collateralised'}
+        {agreement.collateralized ? 'Collateralised' : 'Not collateralised'}
         {!read.stated && <span className="hint"> (its convention)</span>}
-        {read.collateralised && read.currency && `, every collateral amount in ${read.currency}`}.
+        {agreement.collateralized && read.currency && `, every collateral amount in ${read.currency}`}.
       </div>
       <Terms terms={read.terms} />
       {read.conventions.length > 0 && (

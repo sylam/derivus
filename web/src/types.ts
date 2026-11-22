@@ -226,8 +226,10 @@ export type TablePage = {
   data: unknown[];
 };
 
+/** `collateralized_sets` are the netting sets a run of the job collateralises, by reference. */
 export type DescribeResult = {
   deals: Record<string, number>;
+  collateralized_sets: string[];
   factors: { resolved: string[]; missing: string[] };
   calculation: Record<string, unknown>;
   cost?: { class: number; estimate: number; basis: string };

@@ -3,6 +3,7 @@ import {
   failure, getCalculations, getTable, postExecute, runCalculation, saveCalculation,
   tableCsv,
 } from '../api';
+import { rowsByPath, toRows } from '../blotter';
 import { DescriptorPanel } from '../components/FieldView';
 import { DataTable } from '../components/DataTable';
 import { Navigator, type Page } from '../components/Navigator';
@@ -315,8 +316,12 @@ function Results({ doc }: { doc: JobDoc }) {
   const tables = run.summary?.tables ?? {};
   const listed = Object.keys(tables).filter((name) => !isScalar(tables[name])).sort();
   const whole = run.table ? tables[run.table] : undefined;
+  // the sets the book's description says a run collateralises, of those this run priced
+  const priced = new Set([...rowsByPath(toRows(doc.Calc.Deals.Deals.Children, [], undefined))
+    .values()].map((row) => row.reference));
   const reading = run.page && tableReading(run.page.name, whole?.columns ?? run.page.columns,
-    isDateIndexed(run.page.index), doc, state.schema, marketOf(state));
+    isDateIndexed(run.page.index), doc,
+    (state.describe?.collateralized_sets ?? []).filter((set) => priced.has(set)), marketOf(state));
   // every key the service publishes appears: a number is a tile, a dict a card, anything else a
   // line. Four verbs answer ENTIRELY under a dict key, and Results empty beside it
   const stats = Object.entries(run.summary?.stats ?? {});
