@@ -537,6 +537,18 @@ TICK_NS, COARSE_TICK_NS = 16_000_000, 2_000_000_000
 READS = 3
 
 
+def write_file(path, content):
+    """`content` - text, else bytes - written at `path` atomically: to a temporary beside it, then
+    moved over it, so a reader meets the old file or the new one and never half of either. Text is
+    utf-8 with its newlines as written. Every file the desk writes is written here; answers `path`.
+    """
+    temporary = path + '.tmp'
+    with open(temporary, 'wb') as handle:
+        handle.write(content.encode('utf-8') if isinstance(content, str) else content)
+    os.replace(temporary, path)
+    return path
+
+
 class Book:
     """One live job document on disk - the FILE is the source of truth.
 
@@ -705,10 +717,7 @@ class Book:
             # taken of its params and deals, so nothing written here can move a plan
             document[SPINE_PIN] = spine.pin()
         text = json.dumps(document, indent=sniff_indent(self._cache[3]))
-        temporary = self.path + '.tmp'
-        with open(temporary, 'w', encoding='utf-8', newline='') as handle:
-            handle.write(text)
-        os.replace(temporary, self.path)
+        write_file(self.path, text)
         # no stamp: the next read takes this text's stamp off the file, and a write after it
         self._cache, self._named = (None, 0, content_hash(text), text), self.facts(document)
         self._verdict = (self._cache[2], validated) if validated is not None else (None, None)
@@ -4356,8 +4365,8 @@ def read_projection():
 
 
 def write_row(reference, row):
-    """One set's row into the projection, atomically - the book writer's discipline, under one
-    lock: read, replace that row, write a temp, `os.replace`.
+    """One set's row into the projection under one lock: read, replace that row, write it back
+    (`write_file`).
 
     A MOSAIC on purpose. Only the named row moves, every other row keeps the `as_of` of the run
     that produced it, and a partial recalc is therefore a partial WRITE rather than a whole file
@@ -4367,12 +4376,8 @@ def write_row(reference, row):
     with XVA_LOCK:
         projection = read_projection()
         projection.setdefault('sets', {})[reference] = row
-        text = json.dumps(projection, indent=2)
         os.makedirs(dv_home(), exist_ok=True)
-        temporary = xva_path() + '.tmp'
-        with open(temporary, 'w', encoding='utf-8', newline='') as handle:
-            handle.write(text)
-        os.replace(temporary, xva_path())
+        write_file(xva_path(), json.dumps(projection, indent=2))
     return row
 
 
@@ -6221,16 +6226,11 @@ def keep_seed():
 
 
 def write_desk_file(name, document):
-    """One of the desk's own JSON files written atomically - write-temp-then-replace, the `Book`
-    discipline - at `name` under `DV_HOME`, its folder created on first use. Answers where it
-    landed."""
+    """One of the desk's own JSON documents at `name` under `DV_HOME` (`write_file`), its folder
+    created on first use. Answers where it landed."""
     path = os.path.join(dv_home(), name)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    temporary = path + '.tmp'
-    with open(temporary, 'w', encoding='utf-8', newline='\n') as handle:
-        json.dump(document, handle, indent=1)
-    os.replace(temporary, path)
-    return path
+    return write_file(path, json.dumps(document, indent=1))
 
 
 @app.post('/book/securities', summary="Set one entry of the desk's ticker vocabulary")
@@ -7757,16 +7757,13 @@ class StructureJob:
         if pinned is not None:
             # the values vector is kept once per market under the hash beside it, not on every
             # quote struck on that market: the acceptance files it, and not a second reading
-            vector = os.path.join(directory, pinned['values_hash'] + VALUES_SUFFIX)
-            with open(vector + '.tmp', 'wb') as handle:
-                handle.write(pinned.pop('values'))
-            os.replace(vector + '.tmp', vector)
+            write_file(os.path.join(directory, pinned['values_hash'] + VALUES_SUFFIX),
+                       pinned.pop('values'))
             # what the client asked and where it books: the acceptance files them under the
             # ACCEPTOR's seat, so the file is where they survive
             record['request'], record['portfolio'] = self.request, self.portfolio
             record['pinned'] = outcome['pinned'] = pinned
-        with open(path, 'w', encoding='utf-8', newline='') as handle:
-            json.dump(as_json(record), handle, indent=2)
+        write_file(path, json.dumps(as_json(record), indent=2))
         return None, {'Results': {}, 'Stats': {'Quote': as_json(outcome)}}
 
 
@@ -7846,8 +7843,7 @@ def pending_written(path, pending, **facts):
     acceptance with the same numbers, the record coalescing a repeat onto the LSN it already has.
     """
     pending.update(facts)
-    with open(path, 'w', encoding='utf-8', newline='') as handle:
-        json.dump(as_json(pending), handle, indent=2)
+    write_file(path, json.dumps(as_json(pending), indent=2))
 
 
 def booked_already(pending, quote_id):
@@ -8134,8 +8130,7 @@ def blank_book():
 def open_book(path):
     """The live book at `path`, created blank first when nothing is there yet."""
     if not os.path.isfile(path):
-        with open(path, 'w', encoding='utf-8', newline='') as handle:
-            json.dump(blank_book(), handle, indent=2)
+        write_file(path, json.dumps(blank_book(), indent=2))
     return Book(path)
 
 
