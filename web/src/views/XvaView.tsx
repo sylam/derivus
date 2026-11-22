@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { getBookCollateral, getXvaProfile } from '../api';
+import { getBookCollateral, getMarkedDays, getXvaProfile } from '../api';
 import { EXPORTS, SET, fieldsOf, rowsByPath, saveCsv, toRows } from '../blotter';
 import {
   LIMIT_USAGE, RUNS, WRONG, actionFirst, actsOf, actsText, agreementsOf, bookedText, closeRead,
@@ -12,7 +12,7 @@ import {
   NO_BOOK, PLUS, SURVIVAL, ageOf, currencyOf, entityText, lagsBook, offBook, peaks, plural,
   replayRows, spreads, stampText, tableReading, valuationDay, xvaTotals, type Peak,
 } from '../desk';
-import { bookRisk, clockOf, marketOf, nothingWrong, useApp, useRead } from '../state';
+import { bookRisk, clockOf, marketOf, nothingWrong, spineOf, useApp, useRead } from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
 import { Amount, LimitLine, Money, OnStrip } from '../components/Desk';
 
@@ -44,7 +44,13 @@ export function XvaView() {
   const clock = clockOf(state);
   const [opened, setOpened] = useState<string | null>(null);
   const risk = bookRisk(state);
-  const collateral = useRead(live && recording ? getBookCollateral : null, [clock, state.seat]);
+  // a collateral call is read on the book's day marked: what is missing is known before asking
+  const spine = spineOf(state);
+  const marks = useRead(spine && !unmarked(spine) ? getMarkedDays : null, [clock]);
+  const close = unmarked(spine, marks.data, valuationDay(doc));
+  const collateral = useRead(marks.data && !close ? getBookCollateral : null,
+                             [clock, state.seat, close?.title, !!marks.data]);
+  const refused = marks.error ?? collateral.error;
 
   if (!live) return <EmptyState {...offBook("the last credit run of each of the desk's sets")} />;
   if (xva.status === 404) return <EmptyState {...NO_BOOK} />;
@@ -99,9 +105,8 @@ export function XvaView() {
     };
   }));
   const acting = clients.filter((client) => actsOf(client).length);
-  const close = unmarked(collateral.error);
   const marked = (unread?: string) => closeRead(collateral.data?.date, !!close, unread);
-  const reads = { currency, recording, noClose: !!close, collateralError: collateral.error,
+  const reads = { currency, recording, noClose: !!close, collateralError: refused,
                   riskError: risk.error, read: view.as_of };
 
   return (
@@ -117,9 +122,8 @@ export function XvaView() {
           <div className={risk.tone}>
             The value to the desk is not read{risk.joiner}{risk.error}</div>
         )}
-        {collateral.error && (close
-          ? <div className="note">The collateral is not read. {close.title} {close.hint}</div>
-          : <div className="error-box">The collateral is not read: {collateral.error}</div>)}
+        {close && <div className="note">The collateral is not read. {close.title} {close.hint}</div>}
+        {refused && <div className="error-box">The collateral is not read: {refused}</div>}
         <div className={`blotterbar wrongs${acting.length ? ' act' : ''}`}>
           {acting.length ? (
             <span className="hint">

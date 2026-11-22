@@ -19,8 +19,9 @@ import {
 import { markOf } from './trade';
 import type {
   ActivityRow, CollateralCall, CreditLimit, DealMark, Descriptor, Funding, JobDoc, Market,
-  Reconcile, Schema, XvaSet,
+  Reconcile, Schema, SpineBlock, XvaSet,
 } from './types';
+import type { MarkedDays } from './pnl';
 
 /** The screen a client's page is, and the store's pick of which client it shows. */
 export const CLIENT = 'client';
@@ -279,22 +280,26 @@ export const declaredOn = (verb?: string): string =>
   `A close is declared${verb ? ` by a seat holding ${verb}` : ''} on the Back Office, on the `
   + 'market the desk designates for its P&L. The book is then marked at it through the chat';
 
-/** How each refusal of a read on a marked close starts, with what it says is missing and who puts
- * it right: no market designated for the P&L, none declared under that name, no marks for a day. */
-const UNMARKED = [
-  ['this record designates no market', 'No market is designated for the P&L.',
-    'A close is marked on the market the desk designates for its P&L. A seat holding admin '
-    + 'designates it.'],
-  ['no market is declared', 'No close stands on the market designated for the P&L.',
-    `${declaredOn()}.`],
-  ['no marks stand', 'The book is not marked for the day asked.',
+/** Why no close stands to read, with who puts it right: no market designated for the P&L, none
+ * declared under that name, no marks for the day asked. */
+const UNMARKED = {
+  undesignated: ['No market is designated for the P&L.', 'A close is marked on the market the desk '
+    + 'designates for its P&L. A seat holding admin designates it.'],
+  undeclared: ['No close stands on the market designated for the P&L.', `${declaredOn()}.`],
+  unmarked: ['The book is not marked for the day asked.',
     'The book is marked at a close through the chat.'],
-];
+};
 
-/** What a read on a marked close - the P&L's days, a collateral call - says in its place where its
- * refusal is that no close stands to read: a state of the desk, not an error. Null for any other. */
-export function unmarked(refusal: string | null): { title: string; hint: string } | null {
-  const [, title, hint] = UNMARKED.find(([starts]) => refusal?.startsWith(starts)) ?? [];
+/** What a read on a marked close - the P&L's days, a collateral call - says in its place where no
+ * close stands to read, a state of the desk known before asking: off the record's `close`, that no
+ * market is designated for the P&L or no close declared on it, and off the days `marked` where they
+ * are read, that `day` has no marks. Null where the read may be asked, and on a desk keeping no
+ * record. */
+export function unmarked(spine: SpineBlock | null, marked?: MarkedDays | null, day?: string):
+  { title: string; hint: string } | null {
+  const [title, hint] = !spine ? [] : spine.close.market === null ? UNMARKED.undesignated
+    : !spine.close.stands ? UNMARKED.undeclared
+      : marked && !marked.days.some((row) => row.day === day) ? UNMARKED.unmarked : [];
   return title ? { title, hint } : null;
 }
 

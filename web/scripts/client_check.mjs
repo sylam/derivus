@@ -354,26 +354,30 @@ check("on a desk keeping no record a set holds what its terms state - its openin
        stated({ Balance_Currency: 'ZAR', Agreement_Currency: 'EUR', Opening_Balance: 10000 }), stated({})],
       [['EUR', 400, 0.8, null, 500], ['ZAR', 10000, 20, null, 500], ['USD', 0, 1, null, 1000]]);
 
+const closed = (market, stands) => ({ lsn: 4, events_behind: 0, positions_behind: 0, paper: 1,
+                                      close: { market, stands } });
+const MARKED = { market: 'official', days: [{ day: '2026-11-17', lsn: 9 }] };
 const UNMARKED = [
-  "this record designates no market for 'pnl', so there is no market to price it on: a seat "
-  + 'holding admin designates one on the tiers policy ({"designations": {"pnl": "official"}})',
-  "no market is declared under the name 'official' in this record",
-  "no marks stand for 2026-11-16 on 'official' - the days marked are none",
-  'No seat is set, and this desk files every act under the seat that asks', null,
-].map(client.unmarked);
-check('a read refused for want of a marked close is a state of the desk, said as what is missing '
-      + 'and who puts it right - no market designated for the P&L, which a seat holding admin '
-      + 'designates, none declared under its name, no marks for the day - and any other refusal not',
-      "a record that never declared its close read as an error, the service's refusal and its "
-      + "policy document in a red box; a seat's refusal read as no close marked; the admin's "
-      + 'part said of a close nobody declared; or a state said in the words of the machine',
+  client.unmarked(closed(null, false), MARKED, '2026-11-17'),
+  client.unmarked(closed('official', false), MARKED, '2026-11-17'),
+  client.unmarked(closed('official', true), MARKED, '2026-11-16'),
+  client.unmarked(closed('official', true), MARKED, '2026-11-17'),
+  client.unmarked(closed('official', true)), client.unmarked(null)];
+check('a close not there to read is a state of the desk known before asking, said as what is '
+      + 'missing and who puts it right - off the record, no market designated for the P&L, which a '
+      + 'seat holding admin designates, or none declared on it; off the days marked, none for the '
+      + 'day asked - and a read that may be asked, or a desk keeping no record, says nothing',
+      "a record that never designated a market or declared its close asked anyway, its refusal in a "
+      + "red box; a close declared read as none; a day marked read as unmarked, or the day's marks "
+      + "judged before they are read; the admin's part said of a close nobody declared; or a "
+      + 'state said in the words of the machine',
       [UNMARKED.map((state) => state?.title ?? null), /A seat holding admin designates it/.test(
         UNMARKED[0]?.hint), UNMARKED.slice(1).some((state) => /admin/.test(state?.hint ?? '')),
        UNMARKED.some((state) => /designations|tiers|policy|mark_book|\{/.test(
          `${state?.title}${state?.hint}`))],
       [['No market is designated for the P&L.',
         'No close stands on the market designated for the P&L.',
-        'The book is not marked for the day asked.', null, null], true, false, false]);
+        'The book is not marked for the day asked.', null, null, null], true, false, false]);
 check('what a collateral number is read on is said one way on the strip, the column and a set\'s '
       + 'cell: the close of its day, that no close is marked where that is why none is read, '
       + 'and else that it is unread, in the place\'s own word',

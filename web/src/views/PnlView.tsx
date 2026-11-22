@@ -44,7 +44,9 @@ export function PnlView() {
   current.current = etag;
   const [again, setAgain] = useState(0);
 
-  const marked = useRead(recording ? getMarkedDays : null, [recording]);
+  // no market designated, or no close declared on it, is known before anything is asked
+  const closed = unmarked(spineOf(state));
+  const marked = useRead(recording && !closed ? getMarkedDays : null, [recording, closed?.title]);
   const days = marked.data;
   const paper = state.paper.data ?? NO_PAPER;
   // a what-if's work - a read to now, an explain - only of a seat that may ask one: a seat held
@@ -64,7 +66,7 @@ export function PnlView() {
   const { loading } = read;
   const error = marked.error ?? read.error;
 
-  const none = noPnl(recording, state.source?.kind === 'book') ?? unmarked(marked.error);
+  const none = noPnl(recording, state.source?.kind === 'book') ?? closed;
   if (none) return <EmptyState {...none} />;
   if (days && !days.days.length) {
     // the verb the declaration demands under the map in force, where the seat's grants are read
