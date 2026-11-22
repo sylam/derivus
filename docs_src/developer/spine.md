@@ -308,8 +308,10 @@ install line: it names the act, by the tool that performs it where there is one.
 command line, a flag, a variable or a folder of the home, or printing a path on the service's own
 disk (`SERVER_PATHS`), is listed with its reason
 (`OPERATOR_SECOND`): the fault is the deployment's and the desk is told first, or no seat at a
-desk meets it. **Held by**
-`test_service.py::test_no_sentence_a_desk_reads_names_a_route_and_an_operators_part_is_listed`.
+desk meets it. The words are one list, `tests/fixtures/operator_words.json`, which the web's gate
+reads too, and no string or markup text a screen can show says any of them. **Held by**
+`test_service.py::test_no_sentence_a_desk_reads_names_a_route_and_an_operators_part_is_listed`,
+`web/scripts/words_check.mjs`.
 
 `verbs` is the map in force, the verb each act demands. A declaration is stored with the
 vocabulary's verb for every act it does not move, governance staying `admin`, so the map in force

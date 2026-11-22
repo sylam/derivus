@@ -405,8 +405,14 @@ SPOKEN = ('derivus/service.py', 'derivus/spine.py', 'derivus/structures.py',
           'derivus_spine/log.py', 'derivus_spine/capability.py', 'derivus_spine/tiers.py',
           'derivus_spine/policy.py', 'derivus_spine/verbs.py')
 
+#: An operator's words, the one list both wording gates read (`web/scripts/words_check.mjs`): what
+#: only an operator acts on, and what no reader at a desk acts on at all.
+with open(os.path.join(os.path.dirname(__file__), 'fixtures', 'operator_words.json'),
+          encoding='utf-8') as handle:
+    OPERATOR_WORDS = json.load(handle)
+
 #: What only an operator can act on: a command line, a flag, a variable, a folder of the home.
-OPERATORS_PART = re.compile(r'DV_[A-Za-z]|--[a-z]|\bblobs/')
+OPERATORS_PART = re.compile('|'.join(OPERATOR_WORDS['operator'].values()))
 
 #: The calls answering a path on the service's own disk, which a sentence printing one names.
 SERVER_PATHS = ('dv_home', 'quote_dir', 'dirname', 'abspath')
@@ -466,11 +472,13 @@ def test_no_sentence_a_desk_reads_names_a_route_and_an_operators_part_is_listed(
     install line, which no reader at a desk can act on. One naming an operator's part - a command
     line, a flag, a variable, a folder of the home (`OPERATORS_PART`), or printing a path on the
     service's own disk (`SERVER_PATHS`) - is on `OPERATOR_SECOND` by a phrase of its own with its
-    reason, and every phrase there still excuses a sentence.
+    reason, and every phrase there still excuses a sentence. The words are the list the web's
+    wording gate reads too (`OPERATOR_WORDS`).
 
     Killing mutations: `GET /book/dependencies` put back into the candidate walk's refusal;
-    `DV_Spine grant --file` put into the missing-grant sentence (`log.UNGRANTED`), on no list; and
-    the folder `quote_dir()` answers printed again by the unknown-quote sentence.
+    `DV_Spine grant --file` put into the missing-grant sentence (`log.UNGRANTED`), on no list; the
+    folder `quote_dir()` answers printed again by the unknown-quote sentence; and a word a desk
+    reads added to the list, which this gate and the web's both refuse.
     """
     from derivus_spine import log, tiers
 
@@ -500,8 +508,9 @@ def test_no_sentence_a_desk_reads_names_a_route_and_an_operators_part_is_listed(
     assert any('there is no charge to tighten' in words for words in read)
 
     roots = {route.path.split('/')[1] for route in service.app.routes} - {''}
-    route = re.compile(r'\b(?:GET|POST|PUT|PATCH|DELETE) /|/(?:{})\b|\?\w+=|pip install'.format(
-        '|'.join(sorted(map(re.escape, roots)))))
+    # a path of this service and a query string are read here alone: the web's strings are requests
+    route = re.compile('|'.join([*OPERATOR_WORDS['never'].values(), r'\?\w+=', r'/(?:{})\b'.format(
+        '|'.join(sorted(map(re.escape, roots))))]))
     assert [site for site in said if route.search(site[2])] == []
 
     excused = {site: [phrase for phrase in OPERATOR_SECOND if phrase in site[2]]

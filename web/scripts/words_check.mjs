@@ -11,13 +11,12 @@ import { check, done } from './check.mjs';
 
 const SRC = fileURLToPath(new URL('../src/', import.meta.url));
 
-/** What no screen says, each by what it is. */
-const OPERATOR = [
-  ['a command-line flag', /(?<![\w-])--[a-z][\w-]*/g],
-  ['an environment variable', /\bDV_[A-Z]\w*/g],
-  ['a route', /\b(GET|POST|PUT|PATCH|DELETE) \/\S*/g],
-  ['an install', /\bpip install\b/g],
-];
+/** What no screen says, each by what it is: an operator's words, the one list the service's
+ * wording gate reads too (`tests/test_service.py`), an operator's part and the rest alike. */
+const WORDS = JSON.parse(readFileSync(fileURLToPath(
+  new URL('../../tests/fixtures/operator_words.json', import.meta.url)), 'utf8'));
+const OPERATOR = Object.entries({ ...WORDS.operator, ...WORDS.never })
+  .map(([what, shape]) => [what, new RegExp(shape, 'g')]);
 
 /** The properties the stylesheet declares, which a style names with two dashes as a flag is. */
 const STYLED = new Set(readFileSync(`${SRC}app.css`, 'utf8').match(/--[a-z][\w-]*(?=\s*:)/g));
@@ -49,11 +48,12 @@ function said(file) {
 const files = readdirSync(SRC, { recursive: true }).map((name) => name.replaceAll('\\', '/'))
   .filter((name) => /\.tsx?$/.test(name) && !name.endsWith('.d.ts'));
 
-check('no string or markup text a screen can show names a command-line flag, an environment '
-      + 'variable, a route or an install, in any source file',
+check("no string or markup text a screen can show names any of an operator's words - a "
+      + 'command-line flag, an environment variable, a folder of the home, a route or an install - '
+      + 'in any source file',
       "a flag put back into a hint ('start the service with --book'); a route put into one "
-      + "('POST /book/open refused'); or the walk reading no markup text, which lets either "
-      + 'stand between two tags',
+      + "('POST /book/open refused'); the walk reading no markup text, which lets either stand "
+      + 'between two tags; or a word a screen says added to the list, which both gates refuse',
       [files.length > 30, files.flatMap(said)], [true, []]);
 
 done();

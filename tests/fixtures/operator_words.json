@@ -1,0 +1,11 @@
+{
+  "operator": {
+    "a command-line flag": "(?<![\\w-])--[a-z][\\w-]*",
+    "an environment variable": "\\bDV_[A-Za-z]\\w*",
+    "a folder of the home": "\\bblobs/"
+  },
+  "never": {
+    "a route": "\\b(?:GET|POST|PUT|PATCH|DELETE) /\\S*",
+    "an install": "\\bpip install\\b"
+  }
+}
