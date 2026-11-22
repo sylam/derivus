@@ -6515,8 +6515,9 @@ def limits_view():
     return {entry['entity']: entry for entry in CLIENT.get('/book/xva').json()['limits']}
 
 
-#: The entities each limit of the group desk covers: the parent's own and the child under it.
-COVERED = {'CPTY_A': ['CPTY_A', 'CPTY_B'], 'CPTY_B': ['CPTY_B']}
+#: The entities each limit of the group desk covers: the parent's own and the child under it, and
+#: an entity with no set its own.
+COVERED = {'CPTY_A': ['CPTY_A', 'CPTY_B'], 'CPTY_B': ['CPTY_B'], 'CPTY_C': ['CPTY_C']}
 
 
 def held_to(entity, limit, **stated):
@@ -6539,7 +6540,7 @@ def test_usage_against_a_limit_is_the_peak_exposure_of_the_entity_s_sets_and_of_
     Each entry names the entities it covers under `clients`: the parent's both, the child's itself.
 
     NOT GUESSED AT. Before any run each entry sums no set, counts every set unrun and states no
-    headroom. NS_A and NS_B run: the child's usage is NS_B's peak beside one set unrun, still
+    usage, no breach and no headroom. NS_A and NS_B run: the child's usage is NS_B's peak beside one set unrun, still
     with no headroom. SUMMED. NS_C run, the child's usage is NS_B's peak plus NS_C's to the bit
     and its headroom 50,000 less it; the parent's is the three peaks' sum (`math.fsum`), the
     child's sets counting in it and the parent's set never in the child's. RESTATED, NOTHING RUN.
@@ -6550,7 +6551,8 @@ def test_usage_against_a_limit_is_the_peak_exposure_of_the_entity_s_sets_and_of_
 
     Killing mutations: `draws_on` reading every set whatever its counterparty, where the child's
     usage carries the parent's NS_A; the limit's own entity alone drawing on it (`credit_limits`),
-    where the parent's usage is NS_A's; headroom stated with a set unrun; the limit's currency
+    where the parent's usage is NS_A's; headroom stated with a set unrun; a usage stated where
+    every set is unrun (`limit_usage`), where both read 0.0 not breached; the limit's currency
     not read (`limit_usage`), where the euro limit states the dollar usage; the floor dropped,
     where the rewritten row takes 1,000 off NS_B's peak; `clients` dropped from the entry
     (`limit_usage`), where no entry says whose sets it sums.
@@ -6561,8 +6563,7 @@ def test_usage_against_a_limit_is_the_peak_exposure_of_the_entity_s_sets_and_of_
     assert limits_view() == {}
     assert policy_posted('limits', {'CPTY_A': parent, 'CPTY_B': child}).status_code == 200
     assert limits_view() == {
-        'CPTY_A': held_to('CPTY_A', parent, usage=0.0, unrun=3, breached=False),
-        'CPTY_B': held_to('CPTY_B', child, usage=0.0, unrun=2, breached=False)}
+        'CPTY_A': held_to('CPTY_A', parent, unrun=3), 'CPTY_B': held_to('CPTY_B', child, unrun=2)}
 
     recalc(['NS_A', 'NS_B'])
     a, b = pfe('NS_A'), pfe('NS_B')
@@ -6594,6 +6595,19 @@ def test_usage_against_a_limit_is_the_peak_exposure_of_the_entity_s_sets_and_of_
     path.write_text(json.dumps(filed, indent=2))
     assert limits_view()['CPTY_B'] == held_to(
         'CPTY_B', usd(25_000.0), usage=b, sets=2, breached=False, headroom=25_000.0 - b)
+
+
+def test_a_limit_on_an_entity_with_no_set_uses_nothing(group_hub):
+    """An entity the book carries no set against has nothing to measure and nothing unrun: its
+    limit of 10,000 dollars reads a usage of 0.0, not breached, the whole limit its headroom.
+
+    Killing mutation: no usage stated wherever no set has a peak (`limit_usage` reading `not
+    peaks` alone), where the entry states no usage.
+    """
+    entity_declared('CPTY_C')
+    assert policy_posted('limits', {'CPTY_C': usd(10_000.0)}).status_code == 200
+    assert limits_view() == {'CPTY_C': held_to('CPTY_C', usd(10_000.0), usage=0.0,
+                                               headroom=10_000.0, breached=False)}
 
 
 def test_the_limits_are_kept_under_the_poll_s_key_and_a_restated_one_is_read_at_once(group_hub):

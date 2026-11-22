@@ -1586,7 +1586,8 @@ def xva_view(reference: str | None = None) -> dict:
     `usage` the rows' peak `PFE` add up to over the entity's sets and those of every entity under
     it, and the `headroom` left, in the limit's currency. `sets` is how many it sums and `unrun`
     how many have no finished run: where any has none the usage is a floor and `headroom` is null,
-    so say which sets want a recalc rather than quote a headroom. `breached` is usage above the
+    and where all have none `usage` and `breached` are null too, so say which sets want a recalc
+    rather than quote a headroom. `breached` is usage above the
     limit; nothing is blocked. Where `not_comparable` is set, read its sentence out and state no
     usage.
     """

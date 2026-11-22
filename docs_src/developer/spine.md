@@ -764,7 +764,9 @@ agreement's terms write as its entity. The rules:
 - A peak below nothing counts as nothing: a set that owes the desk nothing takes none of another
   set's exposure away.
 - A set with no run that is done is not guessed at. `sets` counts the sets summed and `unrun` the
-  rest, and `headroom`, the limit less the usage, is stated only where `unrun` is nothing.
+  rest, and `headroom`, the limit less the usage, is stated only where `unrun` is nothing. Where
+  every set is unrun nothing is measured: `usage` and `breached` are null too. An entity with no
+  set at all uses 0.0.
 - A limit in another currency than the rows' is not converted, the position a tier's size check
   takes of a notional: the entry states no usage and `not_comparable` says so naming both.
 - `breached` is usage above the limit. Nothing is blocked and nothing runs.
@@ -782,6 +784,7 @@ or another row moves runs again. A set drawing on no limit, and every desk keepi
 named and answered as it was. No tier reads a limit: a breach is reported and
 [the approval it needs](#open) is not built. **Held by**
 `test_spine_engine.py::test_usage_against_a_limit_is_the_peak_exposure_of_the_entity_s_sets_and_of_those_under_it`,
+`::test_a_limit_on_an_entity_with_no_set_uses_nothing`,
 `::test_the_limits_are_kept_under_the_poll_s_key_and_a_restated_one_is_read_at_once`,
 `::test_a_credit_charge_holds_each_limit_its_set_draws_on_against_the_usage_with_the_trade`,
 `test_service.py::test_a_desk_that_keeps_no_record_declares_no_credit_limit_and_claims_none`.

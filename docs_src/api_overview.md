@@ -403,7 +403,8 @@ then answers `limits` beside its rows, one entry per limited entity:
 `{entity, name, limit, clients, usage, headroom, sets, unrun, breached, not_comparable}`. `usage` is
 the sum of the peak PFE of every netting set the book carries against the entity or an entity
 under it, `clients` those entities, the limit's own among them, `sets` how many it sums and `unrun`
-how many have no finished run, where `headroom` is null. A limit in another currency than the
+how many have no finished run, where `headroom` is null; where every set is unrun `usage` and
+`breached` are null too, and an entity with no set uses 0.0. A limit in another currency than the
 rows' is not converted: `usage`, `headroom` and `breached` are null and `not_comparable` says why.
 An increment whose set draws on a limit answers the entries under `stats.Increment.limits`, each
 at the usage with the trade beside `usage_without` and `breached_without`, the usage without it

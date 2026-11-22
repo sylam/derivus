@@ -4705,9 +4705,10 @@ def limit_usage(limit, draws):
     `usage` is the sum of the peaks, each floored at nothing: exposure nets inside a netting set
     and adds across sets, so a set that owes the desk nothing takes none of another's away. `sets`
     counts the sets summed and `unrun` those with no peak, which are not guessed at: `headroom`,
-    the limit less the usage, is stated only where there is none. `breached` is usage above the
-    limit. A peak in another currency than the limit's is not converted: the entry states no
-    usage, and `not_comparable` says so naming both."""
+    the limit less the usage, is stated only where there is none. Where every set is unrun nothing
+    is measured and no usage or breach is stated; an entity with no set uses nothing. `breached` is
+    usage above the limit. A peak in another currency than the limit's is not converted: the entry
+    states no usage, and `not_comparable` says so naming both."""
     stated = limit['limit']
     peaks = [max(peak, 0.0) for _, peak, _ in draws if peak is not None]
     entry = dict(limit, sets=len(peaks), unrun=len(draws) - len(peaks), usage=None,
@@ -4717,6 +4718,8 @@ def limit_usage(limit, draws):
     if other:
         return dict(entry, not_comparable=NOT_COMPARABLE.format(
             stated['currency'], ', '.join(other)))
+    if draws and not peaks:
+        return entry
     usage = math.fsum(peaks)
     return dict(entry, usage=usage, breached=usage > stated['amount'],
                 headroom=None if entry['unrun'] else stated['amount'] - usage)
