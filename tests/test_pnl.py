@@ -700,15 +700,17 @@ OFF, ON, ABROAD = (cashflow(name, amount, END) for name, amount in (
 def test_a_settlement_moving_another_amount_is_a_break_and_the_p_l_books_the_diary_s(recorded,
                                                                                     desk):
     """A PAYMENT THE DIARY DETERMINES IS BOOKED AT ITS AMOUNT. One cashflow's 100,000 settled at
-    100,250 is one break, `{key, instrument, determined 100,000, settled 100,250, difference 250,
-    reference, value_date}`, the payment booked at 100,000 x 18.0 and the window complete; one
-    settled at its own 60,000 is none, and one whose 40,000 rand moved as 40,000 dollars is a break
-    with no difference. The breaks are their portfolio's and not the other's, and the settlement
-    restated at 100,000 the next day breaks nothing there, the struck day unmoved.
+    100,250 is one break, `{key, instrument, determined 100,000, currency ZAR, settled 100,250,
+    asset ZAR, difference 250, reference, value_date}`, the payment booked at 100,000 x 18.0 and the
+    window complete; one settled at its own 60,000 is none, and one whose 40,000 rand moved as
+    40,000 dollars is a break with no difference. The breaks are their portfolio's and not the
+    other's, and the settlement restated at 100,000 the next day breaks nothing there, the struck
+    day unmoved.
 
     Killing mutations: the comparison dropped, which lists no break; the currency never compared,
-    which lists none for the dollars; and every filed movement compared, the restatement's
-    taken-back filing included, which breaks the day it was corrected.
+    which lists none for the dollars; the two currencies left off a break, which reads 40,000
+    against 40,000 with no word of what each is in; and every filed movement compared, the
+    restatement's taken-back filing included, which breaks the day it was corrected.
     """
     designated(recorded, fixings=False)
     booked(OFF, 1.0, 'EXEC-K', BOOK + '/Rates', 1_800_000.0)
@@ -728,11 +730,11 @@ def test_a_settlement_moving_another_amount_is_a_break_and_the_p_l_books_the_dia
     assert first['complete'] is True and first['unknown'] == [], first['unknown']
     assert sorted(first['breaks'], key=lambda entry: entry['determined']) == [
         {'key': abroad, 'instrument': instrument_of('CF-M'), 'determined': 40_000.0,
-         'settled': 40_000.0, 'difference': None, 'reference': 'PAY-' + abroad[:4],
-         'value_date': '2024-07-01'},
+         'currency': 'ZAR', 'settled': 40_000.0, 'asset': 'USD', 'difference': None,
+         'reference': 'PAY-' + abroad[:4], 'value_date': '2024-07-01'},
         {'key': key, 'instrument': instrument_of('CF-K'), 'determined': 100_000.0,
-         'settled': 100_250.0, 'difference': 250.0, 'reference': 'PAY-' + key[:4],
-         'value_date': '2024-07-01'}]
+         'currency': 'ZAR', 'settled': 100_250.0, 'asset': 'ZAR', 'difference': 250.0,
+         'reference': 'PAY-' + key[:4], 'value_date': '2024-07-01'}]
     assert keyed(first)[(instrument_of('CF-K'), BOOK + '/Rates')]['payments'] == pytest.approx(
         100_000.0 * 18.0), 'booked at what the diary determines'
     assert [between('2024-06-28', '2024-07-01', portfolio=BOOK + part)['breaks']
@@ -1108,8 +1110,8 @@ def test_a_settlement_eight_business_days_late_is_matched_to_the_row_it_settles(
         closed_and_marked()
 
     short = [{'key': key, 'instrument': instrument_of('CFL-NEW'), 'determined': 100_000.0,
-              'settled': 99_000.0, 'difference': -1_000.0, 'reference': 'PAY-W',
-              'value_date': '2024-07-12'}]
+              'currency': 'ZAR', 'settled': 99_000.0, 'asset': 'ZAR', 'difference': -1_000.0,
+              'reference': 'PAY-W', 'value_date': '2024-07-12'}]
     for window in (('2024-07-11', '2024-07-12'), ('2024-07-10', '2024-07-12')):
         answer = between(*window)
         assert answer['complete'] is True and answer['unknown'] == [], (window, answer['unknown'])

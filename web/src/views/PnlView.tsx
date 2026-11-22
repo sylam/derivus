@@ -1,11 +1,11 @@
 import { useRef, useState } from 'react';
 import { getMarkedDays, getPnl } from '../api';
 import { declaredOn, unmarked } from '../client';
-import { Amount, Gated, Stat } from '../components/Desk';
+import { Amount, Gated, Money, Stat } from '../components/Desk';
 import { EmptyState } from '../components/EmptyState';
 import {
-  behind, explained, factorLabel, FIGURES, noPnl, noWindow, opensOn, pnlQuery, pnlRead,
-  residualShare, type Pnl,
+  behind, breakPosition, explained, factorLabel, FIGURES, noPnl, noWindow, opensOn, pnlQuery,
+  pnlRead, residualShare, type Pnl,
 } from '../pnl';
 import {
   grantsRead, noPositions, pnlHeld, readAs, runHeld, spineOf, useApp, useRead,
@@ -182,6 +182,40 @@ export function PnlView() {
             </tbody>
           </table>
         </div>
+        )}
+
+        {answer.breaks.length > 0 && (
+          <>
+            <h3>Breaks</h3>
+            <div className="hint">
+              Settlements that moved another amount than the payment they settle determines: the
+              P&L books the determined one.
+            </div>
+            <div className="tablewrap">
+              <table className="data desk">
+                <thead>
+                  <tr>
+                    <th>Settlement</th><th>Position</th><th>Value date</th><th>Determined</th>
+                    <th>Settled</th><th>Difference</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {answer.breaks.map((entry) => (
+                    <tr key={`${entry.key}:${entry.reference}`}>
+                      <td>{entry.reference}</td>
+                      <td title={entry.instrument}>{breakPosition(answer.rows, entry)}</td>
+                      <td>{entry.value_date}</td>
+                      <td className="n"><Money value={entry.determined} currency={entry.currency} /></td>
+                      <td className="n"><Money value={entry.settled} currency={entry.asset} /></td>
+                      <td className="n">{entry.difference === null
+                        ? <span className="hint">in another currency</span>
+                        : <Money value={entry.difference} currency={entry.currency} />}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
 
         {answer.explain && <Explained explain={answer.explain} currency={currency} />}

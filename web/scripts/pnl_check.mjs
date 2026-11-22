@@ -118,4 +118,14 @@ check('only a window ending now falls behind the book, and only once the book ha
        pnl.behind('', undefined, 'e2')],
       [false, true, false, false]);
 
+const ROWS = [{ instrument: 'a'.repeat(64), reference: 'CF-A' },
+              { instrument: 'c'.repeat(64), reference: 'CF-C' }];
+check("a break names the position its payment is of, by that position's reference, else by the "
+      + 'address it was filed against',
+      "the first row's name on every break, which files a break against a position it is not of; "
+      + 'or the address shown where the answer carries the position, which no desk can read',
+      [pnl.breakPosition(ROWS, { instrument: 'c'.repeat(64) }),
+       pnl.breakPosition(ROWS, { instrument: 'd'.repeat(64) })],
+      ['CF-C', `${'d'.repeat(12)}…`]);
+
 done();

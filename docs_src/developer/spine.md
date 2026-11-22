@@ -1111,7 +1111,9 @@ unknown, never zero. **Held by**
 - the close is the end of the day, so a value is quantity times unit mark less what the unit paid
   that day, the engine valuing a payment into its due day's marks;
 - a payment is the diary's amount times what the position held at the end of its due day, and a
-  settlement of another amount is a break, never an unknown;
+  settlement of another amount is a break, never an unknown: listed under `breaks` with what was
+  determined in its `currency` and what settled in its `asset`, which the P&L screen shows
+  beneath the positions;
 - a filing counts in the window it was filed in, as the record stood that day, converted at that
   day's close, so a struck day never moves and every figure but the new-deal split is additive;
 - a settlement against a payment the window's diary has dropped is matched in the latest earlier
@@ -1124,7 +1126,9 @@ residual. **Held by**
 `test_pnl.py::test_the_book_makes_its_marks_move_plus_its_cash_and_a_month_is_its_days`,
 `::test_a_payment_on_a_marked_day_is_that_day_s_cash_and_out_of_its_marks`,
 `::test_money_nobody_can_place_is_named`,
-`::test_a_settlement_eight_business_days_late_is_matched_to_the_row_it_settles`.
+`::test_a_settlement_eight_business_days_late_is_matched_to_the_row_it_settles`,
+`::test_a_settlement_moving_another_amount_is_a_break_and_the_p_l_books_the_diary_s`,
+`web/scripts/pnl_check.mjs`.
 
 ## Collateral {#collateral}
 

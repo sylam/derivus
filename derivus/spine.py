@@ -2457,8 +2457,9 @@ class PnL:
 
         A PAYMENT THE DIARY DETERMINES IS BOOKED AT ITS AMOUNT: a settlement filed against it that
         moved another, beyond the `pnl` tolerance or in another currency, is a BREAK -
-        `{key, instrument, determined, settled, difference, reference, value_date}` under `breaks` -
-        and never an unknown.
+        `{key, instrument, determined, currency, settled, asset, difference, reference,
+        value_date}` under `breaks`, the payment determined in its `currency` and settled in the
+        movement's `asset` - and never an unknown.
 
         A MOVEMENT COUNTS IN THE WINDOW IT WAS FILED IN, and a payment the diary determines in the
         one it falls due in, each read as the record stood at the end of that business day: its
@@ -2529,7 +2530,8 @@ class PnL:
                                 record['tolerances']):
                             breaks.append({
                                 'key': subject, 'instrument': instrument, 'determined': due,
-                                'settled': movement['amount'],
+                                'currency': row['currency'], 'settled': movement['amount'],
+                                'asset': movement['asset'],
                                 'difference': movement['amount'] - due if same else None,
                                 'reference': movement['reference'],
                                 'value_date': movement['effective_time'][:10]})

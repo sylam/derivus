@@ -3,7 +3,7 @@
 // and in total, and the explain of what the held positions made: the carry, the market per risk
 // factor, and the residual left over.
 
-import { unrecorded } from './positions';
+import { positionName, unrecorded } from './positions';
 
 /** What the P&L page says in the P&L's place where no record is kept, null on a desk that
  * records: a P&L runs between marked closes, and where the `live` book's worth is read instead. */
@@ -47,11 +47,18 @@ export type Explain = {
 
 export type Marks = { day: string; lsn: number; live?: boolean };
 
+/** A settlement that moved another amount than the payment it settles determines, the P&L
+ * booking the determined one: each in its own currency, the difference null across two. */
+export type Break = {
+  key: string; instrument: string; determined: number; currency: string; settled: number;
+  asset: string; difference: number | null; reference: string; value_date: string;
+};
+
 /** A total is null where any row's figure is - a sum over what nobody knows is no sum. */
 export type Pnl = {
   currency: string | null; start: Marks; end: Marks; rows: PnlRow[];
   total: Record<string, number | null>; complete: boolean; unknown: Unknown[];
-  realised_method: string; explain?: Explain;
+  breaks: Break[]; realised_method: string; explain?: Explain;
 };
 
 /** The marked days a window can run between, on the market the desk designated for P&L. */
@@ -68,6 +75,11 @@ export const FIGURES: { key: keyof PnlRow; label: string }[] = [
   { key: 'realised', label: 'Realised' },
   { key: 'unrealised', label: 'Unrealised' },
 ];
+
+/** The position a break's payment is of, as `positionName` names it off the answer's `rows`. */
+export const breakPosition = (rows: PnlRow[], entry: Break): string =>
+  positionName(rows.find((row) => row.instrument === entry.instrument)
+    ?? { instrument: entry.instrument, reference: null });
 
 /** A risk factor as a reader knows it: the quote and the block it sits in, or the factor and its
  * coordinates - a spot carrying none. */
