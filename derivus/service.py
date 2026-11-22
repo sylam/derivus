@@ -2534,10 +2534,11 @@ def answered(rows, lsn=None):
     return answers
 
 
-def announced(document, rows):
-    """The book's own diary `rows` with the premiums its fills move beside them (`spine.premiums`),
-    in the diary's order and each as the record answers it (`answered`) - none where no home is
-    configured."""
+def announced(document, rows=None):
+    """The book's own diary `rows` - the hub's (`hub_diary`) where none are handed in - with the
+    premiums its fills move beside them (`spine.premiums`), in the diary's order and each as the
+    record answers it (`answered`) - none where no home is configured."""
+    rows = hub_diary(document)['rows'] if rows is None else rows
     return answered(spine.ordered(rows + spine.premiums(
         book_name(document), structures.reporting_currency(document, market_of)))
         if spine.configured() else rows)
@@ -3310,8 +3311,7 @@ NO_MARKS = 'no marks stand for {} on {!r} - the days marked are {}; '
 #: The P&L reads that value the book on the request thread, each admitted as a what-if is, by
 #: what `/book/pnl` is asked: a read to now marks the book as it stands, and an explain values it
 #: three times more.
-PNL_RUNS = {'pnl_to_now': lambda end, explain: end is None,
-            'pnl_explain': lambda end, explain: explain}
+PNL_RUNS = ('pnl_to_now', 'pnl_explain')
 
 
 @app.get('/book/pnl', summary="The desk's P&L between two marked closes, or since the last")
@@ -3347,7 +3347,7 @@ def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreemen
     """
     document, _ = recording().read()
     book = book_name(document)
-    if any(runs(end, explain) for runs in PNL_RUNS.values()):
+    if end is None or explain:
         spine.admit(spine.CURIOSITY, actor, book)
     if portfolio is not None and not spine.under(portfolio, book):
         raise HTTPException(422, 'portfolio {!r} is not under book {!r} - a portfolio is a path '
@@ -3488,7 +3488,7 @@ def held_job(market, terms, quantities):
     return job
 
 
-def sensed(job, reading=Context):
+def sensed(job, reading):
     """`(valued, note)` - `job` valued with first-order sensitivities, in the quotes its factors
     are built from where they refit (`quote_run`): its value, `{block, quote, value, level}`
     per quote, the factors those stand for, and `{factor, tenor?, value, level}` per factor.
@@ -3501,7 +3501,7 @@ def sensed(job, reading=Context):
             'quoted': quoted, 'greeks': [] if gradient is None else greek_rows(gradient)}, note
 
 
-def carried(job, day, reading=Context):
+def carried(job, day, reading):
     """What `job` is worth rolled onto `day` at its own quotes, as `POST /book/date` rolls a book;
     refused in the bootstrap's own words where that complains. `reading` makes the contexts it
     loads on (`spine.reading`)."""
@@ -4124,7 +4124,7 @@ def book_worklist(actor: str = None):
         'payments': [dict(row(entry['kind'], waiting_on(entry), entry['key'], None,
                               entry['due_date']), amount=entry['amount'],
                          currency=entry['currency'], agreement=entry['agreement'])
-            for entry in close_verdict(announced(document, hub_diary(document)['rows']),
+            for entry in close_verdict(announced(document),
                                        day)['outstanding']
             if entry['kind'] in SETTLES and see(entry['instrument'])],
         'unconfirmed': ticketed(demands[confirmed], 'unconfirmed', 'is not confirmed', confirming,
@@ -4267,7 +4267,7 @@ def book_close_check(date: str):
     """
     day = read_day(date)
     document, _ = recording().read()
-    return close_verdict(announced(document, hub_diary(document)['rows']), day)
+    return close_verdict(announced(document), day)
 
 
 @app.post('/book/close', summary='Declare the official close - behind the check\'s own verdict')
@@ -4297,7 +4297,7 @@ def book_close(request: dict):
     market = (spine.designation(spine.PNL) or OFFICIAL_MARKET if request.get('market') is None
               else request['market'])
     day = spine.base_day(document) if request.get('date') is None else read_day(request['date'])
-    verdict = close_verdict(announced(document, hub_diary(document)['rows']), day)
+    verdict = close_verdict(announced(document), day)
     if not verdict['legal']:
         outstanding, demands = verdict['outstanding'], spine.demands()
         raise HTTPException(422, 'a close on {} is not legal and nothing is declared: {}{}. A seat '
@@ -4349,7 +4349,7 @@ def book_settlements(request: dict):
                                  'the book will ever make would instruct the whole book')
     day = read_day(request['due_before'])
     market = spine.designated_market(spine.SETTLEMENT_EXPORT)
-    rows = announced(document, hub_diary(document)['rows'])
+    rows = announced(document)
     try:
         exported = export_settlements(rows, market['values_hash'], day)
     except ValueError as error:
@@ -4428,7 +4428,7 @@ def set_terms(deal):
     every run reads, where only 'True' collateralises a set.
     """
     support = deal.get('Credit_Support_Amounts') or {}
-    return support.get('Counterparty') or '', deal.get('Collateralized', 'False') == 'True'
+    return support.get('Counterparty') or '', deal.get('Collateralized') == 'True'
 
 
 def xva_document(document, node, counterparty):
@@ -4711,11 +4711,11 @@ class IncrementJob:
                  for calc, _ in runs]
         if drawn[0] != drawn[1]:
             raise ValueError(
-                'the run with the candidate beside its mirror simulates {} dates on {} and the run '
-                'with the candidate {} on {}: '
-                'the two runs draw different paths, so their difference is Monte Carlo noise and '
-                'not the trade'.format(len(drawn[1][0]), drawn[1][2], len(drawn[0][0]),
-                                       drawn[0][2]))
+                'the run with the candidate beside its mirror simulates {} dates and values on {} '
+                'over {} and the run with the candidate {} and {} over {}: the two runs draw '
+                'different paths, so their difference is Monte Carlo noise and not the '
+                'trade'.format(len(drawn[1][0]), len(drawn[1][1]), drawn[1][2], len(drawn[0][0]),
+                               len(drawn[0][1]), drawn[0][2]))
         results, stats = [out['Results'] for _, out in runs], runs[0][1]['Stats']
         answer = dict(self.terms, paths={
             'seed': stats['Random_Seed'], 'dates': len(drawn[0][0]), 'factors': drawn[0][2],
