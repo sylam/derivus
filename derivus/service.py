@@ -4296,17 +4296,22 @@ def xva_document(document, node, counterparty):
     return run
 
 
+def peak_of(values, days):
+    """`(peak, day)` - the largest of an exposure column's `values` and the one of `days` it first
+    falls on."""
+    peak = max(values)
+    return peak, days[values.index(peak)]
+
+
 def exposure(profile):
     """`{peaks, profile}` off a run's `exposure_profile` table in wire form: the largest number of
-    its `EE` and of each `PFE_` column with the day it first falls on, and the table itself as
-    `{columns, index, data}`, every day `YYYY-MM-DD`."""
+    its `EE` and of each `PFE_` column with the day it first falls on (`peak_of`), and the table
+    itself as `{columns, index, data}`, every day `YYYY-MM-DD`."""
     frame = profile['.DataFrame']
     days = [plain(label) for label in frame['index']]
-    peaks = {}
-    for at, column in enumerate(frame['columns']):
-        if column == 'EE' or column.startswith('PFE_'):
-            values = [row[at] for row in frame['data']]
-            peaks[column] = {'value': max(values), 'day': days[values.index(max(values))]}
+    peaks = {column: dict(zip(('value', 'day'), peak_of([row[at] for row in frame['data']], days)))
+             for at, column in enumerate(frame['columns'])
+             if column == 'EE' or column.startswith('PFE_')}
     return {'peaks': peaks, 'profile': dict(frame, index=days)}
 
 
@@ -4536,8 +4541,9 @@ class IncrementJob:
                             'increment': numbers[0] - numbers[1]}
         profiles = [result['exposure_profile'] for result in results]
         for column in profiles[0].columns.drop('ENE'):
-            peaks = [{'peak': float(profile[column].max()),
-                      'day': profile[column].idxmax().strftime('%Y-%m-%d')} for profile in profiles]
+            peaks = [dict(zip(('peak', 'day'), peak_of(
+                profile[column].tolist(), profile.index.strftime('%Y-%m-%d'))))
+                for profile in profiles]
             answer[column] = {'with': peaks[0], 'without': peaks[1],
                               'increment': peaks[0]['peak'] - peaks[1]['peak']}
         if self.limits:
