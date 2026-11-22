@@ -872,4 +872,24 @@ check("a credit limit's line draws a negative figure in the loss colour, as a ti
         .match(/<b[^>]*>/g),
       ['<b>', '<b class="neg">']);
 
+// a trade's cells, as each table draws them off its size and its levels
+const picked = (key, value) => ({ key, value, title: key });
+const SIZED = { side: picked('Buy_Sell', 'Pay'), amount: picked('Amount', 1e6),
+               of: picked('Currency', 'USD') };
+const LEVELS = { on: picked('Pair', 'USDZAR'), sense: 'Call', strike: picked('Strike', 18.25) };
+const cells = (props) => [...draw('TradeCells', { object: 'X', schema: null, ...props })
+  .matchAll(/<td([^>]*)>(.*?)<\/td>/g)].map(([, attributes, inner]) =>
+  `${/class="([^"]*)"/.exec(attributes)?.[1] ?? ''}|${inner.replace(/ title="[^"]*"/g, '')}`);
+check("a trade's cells read its side, what it is on, its amount then the currency it is in, its "
+      + 'levels and terms; a paying side reads as a sale, a closed trade shows no side or amount, '
+      + 'and a level the recipe solved is marked',
+      "the currency drawn ahead of the amount, as the blotter once drew it; a side read as a sale "
+      + "only where it says Sell, which draws a payer as buying; a closed trade's side and amount "
+      + 'still drawn; or the solved level unmarked',
+      [cells({ size: SIZED, read: LEVELS }), cells({ size: SIZED, read: LEVELS, closed: true }).slice(0, 3),
+       cells({ size: SIZED, read: LEVELS, solved: 'strike' })[4]],
+      [['|<span class="side sell">Pay</span>', '|USDZAR Call', 'n|1,000,000', '|USD', 'n|18.25',
+        'n|', 'terms|'],
+       ['|', '|USDZAR Call', 'n|'], 'n solved|18.25']);
+
 done();

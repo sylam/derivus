@@ -375,13 +375,17 @@ const EXPORTED = blotter.flatten(blotter.heldRows(blotter.toRows([
   node({ Object: 'NettingCollateralSet', Reference: 'ISDA-1' }, [node(OPTION), node(FORWARD)])],
   ['NettingCollateralSet'], '2026-11-16'), new Map([['0/0', [{ ...POSITION, deal_paths: ['0/0'] }]]])),
   new Set()).map((row) => blotter.exported(row, MARKET, SCHEMA));
-check('a row exports a value per column the table shows, every number the one behind its cell',
+check('a row exports a value per column the table shows, every number the one behind its cell, '
+      + 'the amount then the currency it is in',
       'the cell\'s text exported - `cellText` for `rawOf` - which writes 1,000,000 and 18.25 as '
-      + 'text a spreadsheet cannot add; the amount as written under a halved position; or a column '
-      + 'dropped, which shifts every value after it under the wrong head',
-      [EXPORTED.map((row) => row.length === blotter.HEADS.length), EXPORTED[1]],
-      [[true, true, true], ['USDZAR, CALL "A"', 'FXOptionDeal', 'Sell', 'USDZAR Call', 'USD', 1e6,
-                            18.25, null, null, '2027-05-16', null, 181]]);
+      + 'text a spreadsheet cannot add; the amount as written under a halved position; a column '
+      + 'dropped, which shifts every value after it under the wrong head; or the currency written '
+      + 'ahead of the amount, under the Amount head',
+      [EXPORTED.map((row) => row.length === blotter.HEADS.length),
+       blotter.HEADS.slice(4, 6), EXPORTED[1]],
+      [[true, true, true], ['Amount', 'Ccy'], ['USDZAR, CALL "A"', 'FXOptionDeal', 'Sell',
+                                              'USDZAR Call', 1e6, 'USD', 18.25, null, null,
+                                              '2027-05-16', null, 181]]);
 check('a CSV field holding a comma, a quote or a line break is quoted, a number written as itself',
       'the quoting dropped, which splits a reference with a comma across two columns; or a number '
       + 'run through a format, which rounds 0.30000000000000004 or groups 1000000',

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import {
-  EXPORTS, HEADS, MARKED, RECORD_HEADS, WINDOWS, baseDateOf, cellText, exported, filterRows,
+  EXPORTS, HEADS, MARKED, RECORD_HEADS, WINDOWS, baseDateOf, exported, filterRows,
   flatten, groupedRows, heldRows, holdsTrades, inWindow, keptRows, markPath, nameOf, quoted,
   rollingCount, rowsByPath, saveCsv, sizeOf, sortRows, toRows, type BlotterRow,
 } from '../blotter';
@@ -13,7 +13,7 @@ import { actingSeat, marketOf, openTrade, riskNow, spineOf, unread, useApp } fro
 import { formatNumber } from '../tokens';
 import { markShown } from '../trade';
 import type { Market, Schema } from '../types';
-import { Amount, SIDE, Side, Value } from '../components/Desk';
+import { Amount, SIDE, TradeCells } from '../components/Desk';
 
 /** The desk blotter: one row per booked deal over the live book, the tree flattened with
  * containers still holding their legs, sorted by days-to-roll so "who rolls off this week" is one
@@ -251,16 +251,7 @@ function Row(props: {
           {shut && !!props.held?.length && <span className="badge">closed</span>}
         </td>
         <td className="type" title={row.object}>{row.object}</td>
-        <td><Side side={size.side} /></td>
-        <td title={read.on?.title ?? read.on?.key}>
-          {read.on ? cellText(read.on.value) : ''}{read.sense && <span> {read.sense}</span>}
-        </td>
-        <td title={size.of?.key}>{size.of ? cellText(size.of.value) ?? '' : ''}</td>
-        <Value picked={size.amount} object={row.object} schema={schema} kind="money" />
-        <Value picked={read.strike} object={row.object} schema={schema} />
-        <Value picked={read.barrier} object={row.object} schema={schema} />
-        {/* a wrapped line never opens on the separator */}
-        <td className="terms" title={read.terms?.title}>{read.terms?.parts.join('\u00a0· ')}</td>
+        <TradeCells size={size} read={read} object={row.object} schema={schema} />
         {/* a container carrying no dates of its own shows the roll it INHERITS, marked, so the
             days beside it are never a number with nothing behind it */}
         <td className="date">

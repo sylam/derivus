@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { askCharge } from '../api';
-import { cellText, dateOf } from '../blotter';
+import { dateOf } from '../blotter';
 import { fundedAt, limitRead } from '../client';
 import { instantMs, lagsBook, stampText } from '../desk';
 import { NO_PAPER } from '../positions';
@@ -14,7 +14,7 @@ import { clockOf, runHeld, useApp, useQueued } from '../state';
 import { formatNumber } from '../tokens';
 import { tradeAt } from '../trade';
 import type { ChargeAsk, Increment, PendingQuote, Schema } from '../types';
-import { Gated, LimitLine, Money, Waiting } from './Desk';
+import { Gated, LimitLine, Money, TradeCells, Waiting } from './Desk';
 import { DealPanels, FieldView } from './FieldView';
 
 /** Quote ticket card: client, solved terms, net, market axis levels, spread, margin and window. */
@@ -194,18 +194,13 @@ export function CreditCharge({ ask }: { ask: ChargeAsk }) {
   );
 }
 
+/** Whose side a quoted leg states. */
+const CLIENT_SIDE = "the client's side of the leg, as quoted: the desk books its mirror";
+
 /** Expandable table of quoted legs in the client's frame with solved levels highlighted. */
 function TicketLegs({ legs, currency }: { legs: TicketLeg[]; currency: string }) {
   const { state } = useApp();
   const [opened, setOpened] = useState<string | null>(null);
-  const level = (leg: TicketLeg, which: 'strike' | 'barrier') => {
-    const picked = leg.read[which];
-    return (
-      <td className={`n${leg.solved === which ? ' solved' : ''}`} title={picked?.title}>
-        {picked ? cellText(picked.value) : ''}
-      </td>
-    );
-  };
   const midTip = 'what the leg is worth to the client at mid; '
     + 'the net adds the spread and the margin';
   return (
@@ -220,7 +215,7 @@ function TicketLegs({ legs, currency }: { legs: TicketLeg[]; currency: string })
         </thead>
         <tbody>
           {legs.map((leg) => (
-            <TicketLegRow key={leg.leg.reference} leg={leg} level={level}
+            <TicketLegRow key={leg.leg.reference} leg={leg}
                           opened={opened === leg.leg.reference} schema={state.schema}
                           onOpen={() => setOpened(opened === leg.leg.reference ? null
                             : leg.leg.reference)} />
@@ -231,27 +226,15 @@ function TicketLegs({ legs, currency }: { legs: TicketLeg[]; currency: string })
   );
 }
 
-function TicketLegRow({ leg, level, opened, schema, onOpen }: {
-  leg: TicketLeg; level: (leg: TicketLeg, which: 'strike' | 'barrier') => JSX.Element;
-  opened: boolean; schema: Schema | null; onOpen: () => void;
+function TicketLegRow({ leg, opened, schema, onOpen }: {
+  leg: TicketLeg; opened: boolean; schema: Schema | null; onOpen: () => void;
 }) {
-  const side = String(leg.size.side?.value ?? '');
   return (
     <>
       <tr onClick={onOpen}>
         <td className="ref">{leg.leg.role}</td>
-        <td>
-          {side && <span className={`side ${side === 'Sell' ? 'sell' : 'buy'}`}>{side}</span>}
-        </td>
-        <td title={leg.read.on?.title}>
-          {leg.read.on ? cellText(leg.read.on.value) : ''}{leg.read.sense && ` ${leg.read.sense}`}
-        </td>
-        <td className="n">{typeof leg.size.amount?.value === 'number'
-          ? formatNumber(leg.size.amount.value, 'money') : ''}</td>
-        <td>{leg.size.of ? cellText(leg.size.of.value) : ''}</td>
-        {level(leg, 'strike')}
-        {level(leg, 'barrier')}
-        <td className="terms" title={leg.read.terms?.title}>{leg.read.terms?.parts.join(' · ')}</td>
+        <TradeCells size={leg.size} read={leg.read} object={leg.row.object} schema={schema}
+                    solved={leg.solved} whose={CLIENT_SIDE} />
         <td className="n">{formatNumber(leg.leg.premium, 'money')}</td>
         <td className="opener"><span>{opened ? '×' : '⋯'}</span></td>
       </tr>

@@ -2,7 +2,9 @@
 
 import { useState, type ReactNode } from 'react';
 import { amendDeal } from '../api';
-import { cellText, describe, quoted, toRows, type Picked } from '../blotter';
+import {
+  cellText, describe, quoted, toRows, type Picked, type Quoted, type Size,
+} from '../blotter';
 import { LIMIT_USAGE, type LimitRead } from '../client';
 import { marketSource, stampText, valuationDay } from '../desk';
 import { byPath } from '../positions';
@@ -28,28 +30,56 @@ export function Back() {
 export const SIDE = 'the desk\'s side of the trade, as the desk booked it: '
   + 'Sell is the desk selling, whatever the client calls the same trade';
 
-/** Buy or sell chip in the desk's frame, whatever field name the family uses. */
-export function Side({ side }: { side?: Picked }) {
+/** Buy or sell chip, whatever field name the family uses: in the desk's frame, else in the one
+ * `whose` says. */
+export function Side({ side, whose = SIDE }: { side?: Picked; whose?: string }) {
   const text = side ? cellText(side.value) : undefined;
   if (!text) return null;
   const short = ['Sell', 'Pay', 'Payer', 'Lender'].includes(text) ? 'sell' : 'buy';
   return (
-    <span className={`side ${short}`} title={`${SIDE} (${side!.title ?? side!.key})`}>{text}</span>
+    <span className={`side ${short}`} title={`${whose} (${side!.title ?? side!.key})`}>{text}</span>
   );
 }
 
-/** One picked numeric or scalar column cell; complex shapes show an expander hint. */
-export function Value({ picked, object, schema, kind }: {
-  picked?: Picked; object: string; schema: Schema | null; kind?: Kind;
+/** One picked numeric or scalar column cell, marked where a recipe `solved` it; complex shapes
+ * show an expander hint. */
+export function Value({ picked, object, schema, kind, solved = false }: {
+  picked?: Picked; object: string; schema: Schema | null; kind?: Kind; solved?: boolean;
 }) {
-  if (!picked) return <td className="n" />;
+  const className = solved ? 'n solved' : 'n';
+  if (!picked) return <td className={className} />;
   const text = cellText(picked.value, kind);
   const exact = typeof picked.value === 'number' ? `: ${picked.value}` : '';
   const title = picked.title ?? describe(schema, object, picked.key) + exact;
   if (text === undefined) {
-    return <td className="n"><span className="hint" title={title}>{'{…}'}</span></td>;
+    return <td className={className}><span className="hint" title={title}>{'{…}'}</span></td>;
   }
-  return <td className="n" title={title}>{text}</td>;
+  return <td className={className} title={title}>{text}</td>;
+}
+
+/** A trade's cells as every table reads them: its side (`whose` frame), what it is on with its
+ * sense, its amount then the currency it is in, its strike and barrier on the market's axis - a
+ * level the recipe `solved` marked - and its terms; a closed trade's side and amount blank. */
+export function TradeCells({ size, read, object, schema, closed = false, solved, whose }: {
+  size: Size; read: Quoted; object: string; schema: Schema | null; closed?: boolean;
+  solved?: 'strike' | 'barrier'; whose?: string;
+}) {
+  const level = (which: 'strike' | 'barrier') => (
+    <Value picked={read[which]} object={object} schema={schema} solved={solved === which} />);
+  return (
+    <>
+      <td>{!closed && <Side side={size.side} whose={whose} />}</td>
+      <td title={read.on?.title ?? read.on?.key}>
+        {read.on ? cellText(read.on.value) : ''}{read.sense && ` ${read.sense}`}</td>
+      {closed ? <td className="n" />
+        : <Value picked={size.amount} object={object} schema={schema} kind="money" />}
+      <td title={size.of?.key}>{size.of ? cellText(size.of.value) ?? '' : ''}</td>
+      {level('strike')}
+      {level('barrier')}
+      {/* a wrapped line never opens on the separator */}
+      <td className="terms" title={read.terms?.title}>{read.terms?.parts.join(' · ')}</td>
+    </>
+  );
 }
 
 /** Formatted money figure: always amount followed by currency. */

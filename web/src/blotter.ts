@@ -625,7 +625,7 @@ export function flatten(rows: BlotterRow[], collapsed: Set<string>): BlotterRow[
 
 /** The blotter's columns in the order the table shows them, then the record's five and the mark
  * a desk that records reads beside them. */
-export const HEADS = ['Reference', 'Type', 'Desk side', 'On', 'Ccy', 'Amount', 'Strike', 'Barrier',
+export const HEADS = ['Reference', 'Type', 'Desk side', 'On', 'Amount', 'Ccy', 'Strike', 'Barrier',
   'Terms', 'Expiry', 'Next date', 'Days'];
 export const MARKED = 'Mark';
 export const RECORD_HEADS = ['Qty', 'Portfolio', 'Client', 'Status', 'Booked by', MARKED];
@@ -642,7 +642,7 @@ export function exported(row: BlotterRow, market: Market | null, schema: Schema 
   const size = sizeOf(row.deal, row.object, schema, row.units);
   const read = quoted(row, market, schema);
   return [row.reference, row.object, size.side?.value,
-    [read.on?.value, read.sense].filter(Boolean).join(' '), size.of?.value, size.amount?.value,
+    [read.on?.value, read.sense].filter(Boolean).join(' '), size.amount?.value, size.of?.value,
     read.strike?.value, read.barrier?.value, read.terms?.parts.join(' · '), row.expiry,
     row.next !== row.expiry ? row.next : undefined, row.days].map(rawOf);
 }

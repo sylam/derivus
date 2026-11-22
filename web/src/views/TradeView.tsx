@@ -21,7 +21,8 @@ import {
   tradeAt, tradeName, tradeSize, unwindAgainst, unwindFill, unwindWords, wholeRecord, type Price,
 } from '../trade';
 import type { QuoteGiven } from '../types';
-import { Back, DealEditor, Gated, OnStrip, Side, Stat, Value } from '../components/Desk';
+import { Back, DealEditor, Gated, OnStrip, Stat, TradeCells } from '../components/Desk';
+import { RecordRow } from '../components/Record';
 import { CreditCharge, TicketCard } from '../components/TicketCard';
 
 /** One trade's rows on the record, newest first, asked for by its path where the desk keeps one
@@ -143,17 +144,7 @@ function Terms({ row, set, units, quote }: {
                 return (
                   <tr key={leg.path}>
                     {row.children.length > 0 && <td className="ref">{nameOf(leg)}</td>}
-                    <td><Side side={size.side} /></td>
-                    <td title={levels.on?.title ?? levels.on?.key}>
-                      {levels.on ? cellText(levels.on.value) : ''}
-                      {levels.sense && ` ${levels.sense}`}
-                    </td>
-                    <Value picked={size.amount} object={leg.object} schema={schema} kind="money" />
-                    <td title={size.of?.key}>{size.of ? cellText(size.of.value) ?? '' : ''}</td>
-                    <Value picked={levels.strike} object={leg.object} schema={schema} />
-                    <Value picked={levels.barrier} object={leg.object} schema={schema} />
-                    <td className="terms" title={levels.terms?.title}>
-                      {levels.terms?.parts.join(' · ')}</td>
+                    <TradeCells size={size} read={levels} object={leg.object} schema={schema} />
                     <td className="date">{leg.expiry ?? ''}</td>
                   </tr>
                 );
@@ -330,26 +321,19 @@ function History({ recording, history, deal }: {
             <table className="data desk">
               <tbody>
                 {history.data.map((row) => (
-                  <tr key={row.lsn}>
-                    <td className="n mono">{row.lsn}</td>
-                    <td>{stampText(row.record_time)}</td>
-                    <td>{row.by}</td>
-                    <td className="prose">{row.summary}
-                      {row.changed && (
-                        <dl className="signfacts moved">
-                          {movedTerms(row.changed, deal, schema).map((moved) => (
-                            <Fragment key={moved.field}>
-                              <dt title={moved.field}>{moved.words}</dt>
-                              <dd><FieldView value={moved.was} descriptor={moved.declared} />
-                                {' → '}
-                                <FieldView value={moved.became} descriptor={moved.declared} />
-                                {moved.unit && <span className="hint"> {moved.unit}</span>}</dd>
-                            </Fragment>
-                          ))}
-                        </dl>
-                      )}
-                    </td>
-                  </tr>
+                  <RecordRow key={row.lsn} row={row} under={row.changed && (
+                    <dl className="signfacts moved">
+                      {movedTerms(row.changed, deal, schema).map((moved) => (
+                        <Fragment key={moved.field}>
+                          <dt title={moved.field}>{moved.words}</dt>
+                          <dd><FieldView value={moved.was} descriptor={moved.declared} />
+                            {' → '}
+                            <FieldView value={moved.became} descriptor={moved.declared} />
+                            {moved.unit && <span className="hint"> {moved.unit}</span>}</dd>
+                        </Fragment>
+                      ))}
+                    </dl>
+                  )} />
                 ))}
                 {!history.data.length && (
                   <tr><td className="hint">

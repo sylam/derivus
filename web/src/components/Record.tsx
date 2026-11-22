@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { SEAT, TOKEN, failure, getBookReconcile, getWorklist, stored } from '../api';
 import { stampText } from '../desk';
 import { positionId } from '../positions';
@@ -7,7 +7,7 @@ import {
   worklistLine,
 } from '../spine';
 import { noneShown, opened, spineOf, unread, useApp } from '../state';
-import type { Reconcile } from '../types';
+import type { ActivityRow, Reconcile } from '../types';
 
 /** Where the book FILE stands against the record, in the app frame beside the book's own header.
  *
@@ -170,7 +170,7 @@ function Divergences({ reconcile }: { reconcile: Reconcile }) {
  * happened; expanded it is the sequence. A seat shown no row is told so, not that none is recorded.
  */
 export function ActivityStrip() {
-  const { state, dispatch } = useApp();
+  const { state } = useApp();
   const [open, setOpen] = useState(false);
   if (spineOf(state) === null) return null;
 
@@ -195,30 +195,29 @@ export function ActivityStrip() {
         <div className="rows">
           <table className="data">
             <tbody>
-              {rows.map((row) => {
-                const opens = row.deal_path ?? row.agreement ?? row.entity;
-                return (
-                  <tr key={row.lsn} className={opens ? 'pick' : ''}
-                      title={opens ? `open ${opens}` : undefined}
-                      onClick={() => opened(dispatch, state.doc, row.deal_path,
-                                          row.agreement ?? row.entity)}>
-                    <td className="n mono">{row.lsn}</td>
-                    {/* the writer's own clock, in UTC; the title is when the fact is TRUE, which
-                        is null where the fact carries no truth-time of its own */}
-                    <td title={row.effective_time ? stampText(row.effective_time)
-                      : 'no truth-time of its own'}>
-                      {stampText(row.record_time)}
-                    </td>
-                    <td>{row.by}</td>
-                    <td>{row.summary}</td>
-                    <td>{row.book ?? ''}</td>
-                  </tr>
-                );
-              })}
+              {rows.map((row) => <RecordRow key={row.lsn} row={row} />)}
             </tbody>
           </table>
         </div>
       )}
     </div>
+  );
+}
+
+/** One row of the record as every screen lists it: its position, when it was filed - when the
+ * fact is true on the hover - who did it and the service's sentence, with what `under` adds; a row
+ * naming a deal, an agreement or an entity opens it. */
+export function RecordRow({ row, under }: { row: ActivityRow; under?: ReactNode }) {
+  const { state, dispatch } = useApp();
+  const opens = row.deal_path ?? row.agreement ?? row.entity;
+  return (
+    <tr className={opens ? 'pick' : ''} title={opens ? `open ${opens}` : undefined}
+        onClick={() => opened(dispatch, state.doc, row.deal_path, row.agreement ?? row.entity)}>
+      <td className="n mono">{row.lsn}</td>
+      <td title={row.effective_time ? stampText(row.effective_time) : 'no truth-time of its own'}>
+        {stampText(row.record_time)}</td>
+      <td>{row.by}</td>
+      <td className="prose">{row.summary}{under}</td>
+    </tr>
   );
 }

@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { getBookActivity, type About } from '../api';
-import {
-  baseDateOf, cellText, quoted, rowsByPath, sizeOf, toRows, type BlotterRow, type Picked,
-} from '../blotter';
+import { baseDateOf, quoted, rowsByPath, sizeOf, toRows, type BlotterRow } from '../blotter';
 import {
   CLIENT, RUNS, agreementsOf, fundedAt, heldUnder, readiness, ready, termsReading, touching,
   type Held, type Line, type Term,
@@ -24,7 +22,8 @@ import { markOf, markShown, markText, noMark, wholeRecord } from '../trade';
 import type { ActivityRow, Market, Schema, SettlementState } from '../types';
 import { AgreementForm } from '../components/AgreementForm';
 import { CreditCard, HeldCurve } from '../components/CreditCard';
-import { Amount, Back, Side, Value } from '../components/Desk';
+import { Amount, Back, TradeCells } from '../components/Desk';
+import { RecordRow } from '../components/Record';
 import { CreditTable, useCredit } from './XvaView';
 
 /** What the page reads beside the store: on a desk that keeps one the record's paper, and the
@@ -347,24 +346,15 @@ function TradeRow({ trade, market, schema, recording, mark }: {
       </tr>
     );
   }
-  const size = sizeOf(row.deal, row.object, schema, row.units);
-  const read = quoted(row, market, schema);
-  const cell = (picked?: Picked) => (picked ? cellText(picked.value) ?? '' : '');
-  const value = (picked?: Picked, kind?: 'money') =>
-    <Value picked={picked} object={row.object} schema={schema} kind={kind} />;
   return (
     <tr className={closed ? 'muted' : position?.pending ? 'pending' : undefined}
         onClick={() => opened(dispatch, state.doc, row.path)} title="open the trade's page">
       <td className="ref" title={row.reference}>{row.reference}
         {closed && <span className="badge">closed</span>}</td>
       <td className="type" title={row.object}>{row.object}</td>
-      <td>{!closed && <Side side={size.side} />}</td>
-      <td title={read.on?.title}>{cell(read.on)}{read.sense && ` ${read.sense}`}</td>
-      {closed ? <td className="n" /> : value(size.amount, 'money')}
-      <td>{cell(size.of)}</td>
-      {value(read.strike)}
-      {value(read.barrier)}
-      <td className="terms" title={read.terms?.title}>{read.terms?.parts.join(' · ')}</td>
+      <TradeCells size={sizeOf(row.deal, row.object, schema, row.units)}
+                  read={quoted(row, market, schema)} object={row.object} schema={schema}
+                  closed={closed} />
       <td className="date">{row.expiry ?? ''}</td>
       {recording && (
         <>
@@ -402,7 +392,6 @@ function XvaRows({ id }: { id: string }) {
 function Happened({ history }: {
   history: { data: ActivityRow[] | null; error: string | null } | null;
 }) {
-  const { state, dispatch } = useApp();
   if (!history?.data) {
     return (
       <section className="card">
@@ -419,15 +408,7 @@ function Happened({ history }: {
       <h3>What happened ({rows.length})</h3>
       <table className="data desk">
         <tbody>
-          {rows.map((row) => (
-            <tr key={row.lsn} className="pick"
-                onClick={() => opened(dispatch, state.doc, row.deal_path, row.agreement ?? row.entity)}>
-              <td className="n mono">{row.lsn}</td>
-              <td>{stampText(row.record_time)}</td>
-              <td>{row.by}</td>
-              <td className="prose">{row.summary}</td>
-            </tr>
-          ))}
+          {rows.map((row) => <RecordRow key={row.lsn} row={row} />)}
         </tbody>
       </table>
     </section>
