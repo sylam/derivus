@@ -9,45 +9,14 @@ import { blockHint, heldBack, marketOf, spineOf, useApp, useRead, written } from
 import { curveOf, formatNumber, isObject } from '../tokens';
 import type { Market, Schema } from '../types';
 
-/** `ModelParams.search` ported (config.py): a `Price Models` block keyed exactly wins; else the
- * first matching Model Configuration filter row; else the type's default; else static. */
-function resolveProcess(
-  schema: Schema, factorName: string, block: Record<string, unknown>,
-  priceModels: Record<string, unknown>, modelConfig: unknown,
-): { title: string; process?: string; values?: Record<string, unknown> } {
-  const [type, ...rest] = factorName.split('.');
-  const name = rest.join('.');
-  for (const process of schema.Process_factor_map[type] ?? []) {
-    const keyed = priceModels[`${process}.${name}`];
-    if (isObject(keyed)) return { title: `${process} (Price Models)`, process, values: keyed };
-  }
-  const params = isObject(modelConfig) ? modelConfig['.ModelParams'] : undefined;
-  if (isObject(params)) {
-    const pfType = type + (block.Sub_Type === 'BasisSpread' ? 'BasisSpread' : '');
-    const filters = (params.modelfilters as Record<string, [[string, string], string][]>)?.[pfType];
-    const candidate: Record<string, string> = { ...Object.fromEntries(
-      Object.entries(block).map(([k, v]) => [k.toLowerCase(), String(v)])), id: name };
-    for (const [[attribute, value], model] of filters ?? []) {
-      if (candidate[attribute.toLowerCase()] === value) {
-        return { title: `${model} (Model Configuration filter - no Price Models block)`, process: model };
-      }
-    }
-    const fallback = (params.modeldefaults as Record<string, string>)?.[pfType];
-    if (fallback) {
-      return { title: `${fallback} (Model Configuration default - no Price Models block)`, process: fallback };
-    }
-  }
-  return { title: 'static - no process' };
-}
-
 /** One price factor of the market the book prices on, marked whose it is: its declared fields,
  * VALUES editable over the live book - the bind='value' declaration is the whole predicate, so
  * structure stays read-only exactly where the engine refuses it anyway, and an edit to a file's
  * factor lands on the block - and the process that simulates it. A value a desk quotes otherwise
  * says beside it how the desk reads it. */
-function FactorBlock({ schema, name, block, priceModels, modelConfig, live, market }: {
+function FactorBlock({ schema, name, block, priceModels, process, live, market }: {
   schema: Schema; name: string; block: Record<string, unknown>;
-  priceModels: Record<string, unknown>; modelConfig: unknown; live: boolean; market: Market;
+  priceModels: Record<string, unknown>; process?: string | null; live: boolean; market: Market;
 }) {
   const { dispatch } = useApp();
   const type = factorFamily(name);
@@ -63,8 +32,8 @@ function FactorBlock({ schema, name, block, priceModels, modelConfig, live, mark
         editable={(_, descriptor) => descriptor.bind === 'value'}
         beside={(key) => fields?.[key]?.bind === 'value'
           && <ReadAs name={name} value={block[key]} block={block} market={market} />} />
-      <ProcessPanel schema={schema} factorName={name} block={block}
-                    priceModels={priceModels} modelConfig={modelConfig} />
+      <ProcessPanel schema={schema} factorName={name} process={process}
+                    priceModels={priceModels} />
       {(schema.Interpolation_factor_map[type] ?? []).length > 0 && (
         <div className="pager">
           interpolation methods: {schema.Interpolation_factor_map[type].join(', ')}
@@ -76,7 +45,7 @@ function FactorBlock({ schema, name, block, priceModels, modelConfig, live, mark
 
 export function MarketDataView() {
   const { state } = useApp();
-  const { doc, schema } = state;
+  const { doc, schema, describe } = state;
   const market = marketOf(state);
   if (!doc || !schema || !market) return null;
 
@@ -112,8 +81,8 @@ export function MarketDataView() {
           hint: blockHint(doc, ['Price Factors', name]),
           content: isObject(block) ? (
             <FactorBlock schema={schema} name={name} block={block} priceModels={priceModels}
-                         modelConfig={market['Model Configuration']} live={live && !hold}
-                         market={market} />
+                         process={describe && (describe.processes[name] ?? null)}
+                         live={live && !hold} market={market} />
           ) : <DescriptorPanel title={name} values={{ value: block }} />,
         };
       })} />
@@ -213,18 +182,14 @@ function ReadAs({ name, value, block, market }: {
   );
 }
 
-function ProcessPanel(props: {
-  schema: Schema; factorName: string; block: Record<string, unknown>;
-  priceModels: Record<string, unknown>; modelConfig: unknown;
+/** The process the engine simulates a factor with, as `/describe` answers it, beside its `Price
+ * Models` block; a factor it answers none for is static, and nothing shows before it answers. */
+function ProcessPanel({ schema, factorName, process, priceModels }: {
+  schema: Schema; factorName: string; process?: string | null; priceModels: Record<string, unknown>;
 }) {
-  const { schema, factorName, block, priceModels, modelConfig } = props;
-  const resolved = resolveProcess(schema, factorName, block, priceModels, modelConfig);
-  if (!resolved.process) return <div className="pager">{resolved.title}</div>;
-  return (
-    <DescriptorPanel
-      title={resolved.title}
-      fields={schema.Process.types[resolved.process]}
-      values={resolved.values ?? {}}
-    />
-  );
+  if (process === undefined) return null;
+  if (!process) return <div className="pager">static - no process</div>;
+  const values = priceModels[`${process}.${factorName.split('.').slice(1).join('.')}`];
+  return <DescriptorPanel title={process} fields={schema.Process.types[process]}
+                          values={isObject(values) ? values : {}} />;
 }

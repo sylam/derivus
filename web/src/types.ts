@@ -231,6 +231,8 @@ export type DescribeResult = {
   deals: Record<string, number>;
   collateralized_sets: string[];
   factors: { resolved: string[]; missing: string[] };
+  /** Each price factor the engine simulates, by the process it simulates it with. */
+  processes: Record<string, string>;
   calculation: Record<string, unknown>;
   cost?: { class: number; estimate: number; basis: string };
 };

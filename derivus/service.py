@@ -812,12 +812,25 @@ def validate(job: dict):
 @app.post('/describe', summary='What the engine parsed, and what running it would cost')
 def describe(job: dict):
     """What the engine made of this job without running any of it - `cx.describe()` verbatim - plus
-    the dispatcher's own reading under `cost`. Nothing here writes, so describing a job and then
-    executing it reports exactly what executing it alone reports.
+    the dispatcher's own reading under `cost` and each price factor's process under `processes`
+    (`factor_processes`). Nothing here writes, so describing a job and then executing it reports
+    exactly what executing it alone reports.
     """
     context = context_for(job)
-    return dict(as_json(context.describe()),
-                cost=cost(context.current_cfg.deals['Calculation']))
+    config = context.current_cfg
+    return dict(as_json(context.describe()), cost=cost(config.deals['Calculation']),
+                processes=factor_processes(config))
+
+
+def factor_processes(config):
+    """`{price factor: process}` for every factor of `config`'s market the engine simulates,
+    resolved as a run resolves it (`find_models`): the `Model Configuration` rule or default names
+    a process, and its `Price Models` block, or the factor it implies off, parameterises it. Any
+    other factor - the base currency's own rate among them - is static and absent."""
+    factors = [utils.Factor(kind, tuple(name)) for kind, *name in map(
+        utils.check_rate_name, config.params['Price Factors'])]
+    return {utils.check_tuple_name(factor): model.type
+            for model, factor in config.find_models(factors)[0].items()}
 
 
 @app.post('/prepare', summary='Parse a job and name it by its plan')

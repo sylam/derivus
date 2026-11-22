@@ -342,7 +342,8 @@ One vocabulary, two bindings. Everything above is the in-process binding; `deriv
 same verbs over HTTP. The pass-through reading holds for `/validate` — build a
 `Context` from the posted job, call `validate()`, serialise what comes back — while `/schema` and
 `/schema/job` serve the declarations and the job skeleton as data; it does not hold for the rest:
-`/describe` adds its own cost estimate, `/execute` its lanes, queue and attestation, and the book,
+`/describe` adds its own cost estimate and each price factor's process as a run resolves it
+(`processes`), `/execute` its lanes, queue and attestation, and the book,
 projection and queue verbs are a layer of logic and state that exists only here (the plan cache, the
 compute executor's priority queue and result store, the risk cache, `DV_HOME/xva.json`, the
 Bloomberg job, the metronome tick). A browser SPA, an MCP binding, a marimo notebook and an Excel

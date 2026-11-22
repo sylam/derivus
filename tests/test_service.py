@@ -4867,6 +4867,29 @@ def test_describe_is_the_parse_and_it_never_runs_anything():
     assert mtm(from_document)['CF1'] == pytest.approx(AMOUNT * SPOT * np.exp(-RATE * 2.0), rel=1e-9)
 
 
+def test_describe_names_the_process_each_factor_is_simulated_with_as_a_run_resolves_it():
+    """THE PROCESS IS THE ENGINE'S ANSWER, which the Market Data screen reads rather than resolving
+    one itself. `Model Configuration` routes every rate and every FX rate; the rand's spot carries
+    its `Price Models` block and is simulated on it, the rand curve is routed to a process with no
+    block and is static, and the dollar - the base currency - is static whatever block stands for
+    it, a block no run reads.
+
+    Killing mutations: the process read off `Model Configuration` alone, which names the rand
+    curve's unparameterised process and the base currency's; a `Price Models` block taken as the
+    process wherever one is keyed, which names the dollar's.
+    """
+    document = job(sections={
+        'Price Models': {'GBMAssetPriceModel.ZAR': {'Vol': VOL, 'Drift': 0.0},
+                         'GBMAssetPriceModel.USD': {'Vol': VOL, 'Drift': 0.0}},
+        'Model Configuration': {'.ModelParams': {'modelfilters': {}, 'modeldefaults': {
+            'FxRate': 'GBMAssetPriceModel',
+            'InterestRate': 'HullWhite1FactorInterestRateModel'}}}})
+
+    described = CLIENT.post('/describe', content=dump(document), headers=JSON).json()
+
+    assert described['processes'] == {'FxRate.ZAR': 'GBMAssetPriceModel'}
+
+
 def test_the_cost_estimate_counts_paths_by_grid_points():
     """The class orders the queue; the estimate is the size beside it and must move with all three
     fields. A base valuation carries none of them - the case the `or 1` exists for."""
