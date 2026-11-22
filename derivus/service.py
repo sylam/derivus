@@ -835,11 +835,20 @@ def factor_processes(config):
     """`{price factor: process}` for every factor of `config`'s market the engine simulates,
     resolved as a run resolves it (`find_models`): the `Model Configuration` rule or default names
     a process, and its `Price Models` block, or the factor it implies off, parameterises it. Any
-    other factor - the base currency's own rate among them - is static and absent."""
+    other factor - the base currency's own rate among them - is static and absent.
+
+    A read files nothing: what `find_models` logs on this thread for a factor left static is
+    dropped at the root logger, every other thread's records passing."""
     factors = [utils.Factor(kind, tuple(name)) for kind, *name in map(
         utils.check_rate_name, config.params['Price Factors'])]
-    return {utils.check_tuple_name(factor): model.type
-            for model, factor in config.find_models(factors)[0].items()}
+    thread = threading.get_ident()
+    unheard = lambda record: record.thread != thread
+    logging.getLogger().addFilter(unheard)
+    try:
+        models = config.find_models(factors)[0]
+    finally:
+        logging.getLogger().removeFilter(unheard)
+    return {utils.check_tuple_name(factor): model.type for model, factor in models.items()}
 
 
 @app.post('/prepare', summary='Parse a job and name it by its plan')

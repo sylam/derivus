@@ -4910,16 +4910,18 @@ def test_describe_is_the_parse_and_it_never_runs_anything():
     assert mtm(from_document)['CF1'] == pytest.approx(AMOUNT * SPOT * np.exp(-RATE * 2.0), rel=1e-9)
 
 
-def test_describe_names_the_process_each_factor_is_simulated_with_as_a_run_resolves_it():
+def test_describe_names_the_process_each_factor_is_simulated_with_as_a_run_resolves_it(caplog):
     """THE PROCESS IS THE ENGINE'S ANSWER, which the Market Data screen reads rather than resolving
     one itself. `Model Configuration` routes every rate and every FX rate; the rand's spot carries
     its `Price Models` block and is simulated on it, the rand curve is routed to a process with no
     block and is static, and the dollar - the base currency - is static whatever block stands for
-    it, a block no run reads.
+    it, a block no run reads. The describe is a read and files none of the errors a run logs for
+    the unparameterised process.
 
     Killing mutations: the process read off `Model Configuration` alone, which names the rand
     curve's unparameterised process and the base currency's; a `Price Models` block taken as the
-    process wherever one is keyed, which names the dollar's.
+    process wherever one is keyed, which names the dollar's; `factor_processes` adding no filter,
+    so the describe logs each curve's `Risk Factor ... missing in Price Models section`.
     """
     document = job(sections={
         'Price Models': {'GBMAssetPriceModel.ZAR': {'Vol': VOL, 'Drift': 0.0},
@@ -4928,9 +4930,11 @@ def test_describe_names_the_process_each_factor_is_simulated_with_as_a_run_resol
             'FxRate': 'GBMAssetPriceModel',
             'InterestRate': 'HullWhite1FactorInterestRateModel'}}}})
 
-    described = CLIENT.post('/describe', content=dump(document), headers=JSON).json()
+    with caplog.at_level(logging.WARNING):
+        described = CLIENT.post('/describe', content=dump(document), headers=JSON).json()
 
     assert described['processes'] == {'FxRate.ZAR': 'GBMAssetPriceModel'}
+    assert [record.getMessage() for record in caplog.records] == []
 
 
 def test_describe_names_the_scheme_each_interpolated_type_takes_where_no_rule_names_one():
