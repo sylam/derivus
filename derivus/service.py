@@ -4298,15 +4298,19 @@ def peak_of(values, days):
     return peak, days[values.index(peak)]
 
 
+def peaked(column):
+    """Whether an exposure profile's `column` has a peak (`peak_of`): `EE` and each `PFE_`."""
+    return column == 'EE' or column.startswith('PFE_')
+
+
 def exposure(profile):
     """`{peaks, profile}` off a run's `exposure_profile` table in wire form: the largest number of
-    its `EE` and of each `PFE_` column with the day it first falls on (`peak_of`), and the table
-    itself as `{columns, index, data}`, every day `YYYY-MM-DD`."""
+    each `peaked` column with the day it first falls on (`peak_of`), and the table itself as
+    `{columns, index, data}`, every day `YYYY-MM-DD`."""
     frame = profile['.DataFrame']
     days = [plain(label) for label in frame['index']]
     peaks = {column: dict(zip(('value', 'day'), peak_of([row[at] for row in frame['data']], days)))
-             for at, column in enumerate(frame['columns'])
-             if column == 'EE' or column.startswith('PFE_')}
+             for at, column in enumerate(frame['columns']) if peaked(column)}
     return {'peaks': peaks, 'profile': dict(frame, index=days)}
 
 
@@ -4536,7 +4540,7 @@ class IncrementJob:
             answer[name] = {'with': numbers[0], 'without': numbers[1],
                             'increment': numbers[0] - numbers[1]}
         profiles = [result['exposure_profile'] for result in results]
-        for column in profiles[0].columns.drop('ENE'):
+        for column in filter(peaked, profiles[0].columns):
             peaks = [dict(zip(('peak', 'day'), peak_of(
                 profile[column].tolist(), profile.index.strftime('%Y-%m-%d'))))
                 for profile in profiles]
