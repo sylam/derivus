@@ -6743,7 +6743,6 @@ def test_the_market_is_the_marking_seats_on_a_recorded_desk(recorded, book, tmp_
     patched; `actor` read as a curve convention, which refuses the marking seat's own curve; and
     the sentence naming `DV_Spine grant --file` for its remedy, a command no seat at a desk runs.
     """
-    from derivus import spine
     from derivus_spine import SpineLog
     from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 
