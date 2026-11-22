@@ -7275,17 +7275,20 @@ class SolveJob:
     """A solve as ONE unit of queued work: the loop runs on the worker like any pricing, so it
     cannot interleave with other jobs, and its answer files under a result_id like any run. The
     loop itself is `derivus.solve_deal_field`, each iterate taking the calendar off one load of the
-    book (`Context.reading`) - this only packages what came back, with the solved coordinates
-    riding the run's own Stats."""
+    book (`Context.reading`) - this only packages what came back, with the solved coordinates and
+    the `deal` asked, the field set and its margin recorded (`structures.margined`), riding the
+    run's own Stats."""
 
-    def __init__(self, document, deal_path, solve, margin=None):
+    def __init__(self, document, deal_path, solve, deal, margin=None):
         self.document, self.deal_path, self.solve = document, deal_path, solve
-        self.margin = margin
+        self.deal, self.margin = deal, margin
 
     def run_job(self):
         solved, evaluations, residual, out = solve_deal_field(
             self.document, self.deal_path, reading=load(self.document).reading, **self.solve)
-        answer = dict(self.solve, value=solved, evaluations=evaluations, residual=residual)
+        answer = dict(self.solve, value=solved, evaluations=evaluations, residual=residual,
+                      deal=structures.margined(dict(self.deal, **{self.solve['field']: solved}),
+                                               self.margin))
         if self.margin:
             # the target as it was asked for, beside the number it was solved against
             answer['margin'] = self.margin
@@ -7354,7 +7357,8 @@ def book_solve(request: dict):
     # a solve is base valuations under the hood, so light to jump a draining recalc
     return queued(Job(content_hash({'book': etag, 'solve': solve, 'deal': request['deal'],
                                     'calculation': document['Calc']['Calculation']}),
-                      SolveJob(document, deal_path, solve, margin), {}, spine.CURIOSITY,
+                      SolveJob(document, deal_path, solve, request['deal'], margin), {},
+                      spine.CURIOSITY,
                       actor=request.get('actor'), book=book_name(document)))
 
 

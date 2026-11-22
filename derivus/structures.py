@@ -1612,14 +1612,19 @@ def compose(reference, legs, margin=None):
     The children sit INSIDE the deal here, because a quote is filed, hashed and read back whole.
     The deal TREE holds a container's children one level out - see `book_node`.
 
-    A `margin` is RECORDED on the container as `Sales_Margin` in `Sales_Margin_Currency`, in the
-    currency it was declared in rather than the one it was converted to - what was agreed is what
-    the ticket says. The charge is already inside the solved coordinate, so this changes no value;
-    a quote with no margin composes the block it always did.
+    A `margin` is RECORDED on the container (`margined`). The charge is already inside the solved
+    coordinate, so this changes no value; a quote with no margin composes the block it always did.
     """
-    deal = {'Object': 'StructuredDeal', 'Reference': reference,
-            'Currency': legs[0].deal['Currency'], 'Net_Cashflows': 'Yes',
-            'Children': [{'Instrument': {'.Deal': dict(leg.deal)}} for leg in legs]}
+    return margined({'Object': 'StructuredDeal', 'Reference': reference,
+                     'Currency': legs[0].deal['Currency'], 'Net_Cashflows': 'Yes',
+                     'Children': [{'Instrument': {'.Deal': dict(leg.deal)}} for leg in legs]},
+                    margin)
+
+
+def margined(deal, margin):
+    """`deal` recording the sales `margin` charged on it as `Sales_Margin` in
+    `Sales_Margin_Currency`, in the currency it was declared in rather than the one it was
+    converted to - what was agreed is what the ticket says; no margin leaves it as it was."""
     if margin:
         deal.update(Sales_Margin=margin['amount'], Sales_Margin_Currency=margin['currency'])
     return deal

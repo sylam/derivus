@@ -233,10 +233,13 @@ what its trade does to each limit its set draws on. Neither tool adds a call for
 ### Solves run in the service
 
 `solve_deal` runs the root find server-side (brentq inside `bounds`, else a secant, exact in two
-pricings for an affine field) and answers a `solved_deal` ready to book, so no pricing loop runs
-through the conversation. A money `target` is crossed at the book's spots and recorded as
-`Sales_Margin`. **Held by** `test_a_margin_target_is_money_and_the_deal_records_what_was_charged`,
-`test_service.py::test_a_solve_brackets_a_nonlinear_strike`.
+pricings for an affine field) and the service answers the deal ready to book under
+`stats.Solved.deal`, so no pricing loop runs through the conversation and nothing is composed in the
+binding. A money `target` is crossed at the book's spots and recorded as `Sales_Margin` by the rule
+a quote's composed deal records it by (`structures.margined`). **Held by**
+`test_a_margin_target_is_money_and_the_deal_records_what_was_charged`,
+`test_service.py::test_a_solve_takes_its_target_as_money_in_a_currency_the_book_carries`,
+`::test_a_solve_brackets_a_nonlinear_strike`.
 
 ### Structures are declared
 

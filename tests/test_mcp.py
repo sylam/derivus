@@ -922,20 +922,21 @@ def test_a_margin_target_is_money_and_the_deal_records_what_was_charged(book):
     the ticket, at PLUS the margin. What comes back records the charge as agreed, and books with
     it: the field is on every deal, a margin being a property of the ticket.
 
-    Killing mutation: the solved value left off `solved_deal`, which books the trial amount.
+    Killing mutation: the solved value left off the solved deal, which books the trial amount.
     """
     outcome = asyncio.run(mcp_server.solve_deal(
         json.loads(dump(dict(BOOKED, Reference='SLV2'))), 'Amount',
         target={'amount': 50_000.0, 'currency': 'ZAR'}))
+    solved = outcome['stats']['Solved']
 
-    assert outcome['status'] == 'done' and abs(outcome['solved']['residual']) <= 0.01
-    assert outcome['solved_deal']['Amount'] == outcome['solved']['value']
-    assert outcome['solved']['margin'] == {'amount': 50_000.0, 'currency': 'ZAR',
-                                           'pricing_currency': 'USD', 'value': 50_000.0 * SPOT}
-    assert outcome['solved_deal']['Sales_Margin'] == 50_000.0
-    assert outcome['solved_deal']['Sales_Margin_Currency'] == 'ZAR'
+    assert outcome['status'] == 'done' and abs(solved['residual']) <= 0.01
+    assert solved['deal']['Amount'] == solved['value']
+    assert solved['margin'] == {'amount': 50_000.0, 'currency': 'ZAR',
+                                'pricing_currency': 'USD', 'value': 50_000.0 * SPOT}
+    assert solved['deal']['Sales_Margin'] == 50_000.0
+    assert solved['deal']['Sales_Margin_Currency'] == 'ZAR'
 
-    assert mcp_server.book_deal(outcome['solved_deal'])['written'] is True
+    assert mcp_server.book_deal(solved['deal'])['written'] is True
     run = asyncio.run(mcp_server.execute_book())
     assert mcp_server.deal_values(run['result_id'])['SLV2'] == pytest.approx(
         50_000.0 * SPOT, abs=0.01)
@@ -961,9 +962,9 @@ def test_the_practical_loop_quotes_to_a_booked_structure(tmp_path):
         option = json.loads(dump(FX_OPTION))
         outcome = asyncio.run(mcp_server.solve_deal(option, 'Strike_Price', target=500_000.0,
                                                     bounds=[12.0, 30.0]))
-        assert outcome['status'] == 'done' and abs(outcome['solved']['residual']) <= 0.01
+        assert outcome['status'] == 'done' and abs(outcome['stats']['Solved']['residual']) <= 0.01
 
-        booked = mcp_server.book_deal(outcome['solved_deal'])
+        booked = mcp_server.book_deal(outcome['stats']['Solved']['deal'])
         run = asyncio.run(mcp_server.execute_book())
         assert booked['written'] is True
         assert mcp_server.deal_values(run['result_id'])['OPT1'] == pytest.approx(

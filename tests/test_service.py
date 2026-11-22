@@ -5595,7 +5595,11 @@ def test_a_solve_takes_its_target_as_money_in_a_currency_the_book_carries(quotin
     amount in one the book carries a rate for; this book reports dollars and the ask is in rand, so
     the verb crosses it at the book's own spot and solves against THAT. The deal being solved is
     the one the desk books, so it marks at PLUS the margin - the opposite side from the client
-    paper a structure quote hands back, and the same number."""
+    paper a structure quote hands back, and the same number. The answer is the deal as asked with
+    the strike solved, recording the margin as agreed, which is the deal that books.
+
+    Killing mutations: the solved deal left as asked, which books the trial strike; or recorded
+    without its margin, which books a ticket that never says what was charged."""
     submitted = CLIENT.post('/book/solve', content=dump({
         'deal': FX_OPTION, 'field': 'Strike_Price', 'target': MARGIN,
         'bounds': [12.0, 30.0]}), headers=JSON).json()
@@ -5609,6 +5613,8 @@ def test_a_solve_takes_its_target_as_money_in_a_currency_the_book_carries(quotin
     assert solved['margin'] == {'amount': 50_000.0, 'currency': 'ZAR',
                                 'pricing_currency': 'USD', 'value': solved['target']}
     assert mtm(submitted['result_id'])['OPT1'] == pytest.approx(50_000.0 * SPOT, abs=0.01)
+    assert solved['deal'] == dict(json.loads(dump(FX_OPTION)), Strike_Price=solved['value'],
+                                  Sales_Margin=50_000.0, Sales_Margin_Currency='ZAR')
 
 
 #: A calibrated spot-model factor for the rand, as `/book/model` writes one: the ladder

@@ -1244,13 +1244,13 @@ async def solve_deal(deal: dict, field: str, target: float | dict = 0.0,
     'currency': 'ZAR'}` - which is how a sales margin is actually agreed: an amount in a currency,
     crossed to the reporting one at the book's own spots, refusing by name a currency the book
     carries no rate for. This deal is the one the desk BOOKS, so a margin target marks it at plus
-    the margin, and `solved_deal` comes back carrying `Sales_Margin` and `Sales_Margin_Currency` -
-    the record of what was charged, which prices nothing and books with the trade.
+    the margin, and the solved deal comes back carrying `Sales_Margin` and `Sales_Margin_Currency`
+    - the record of what was charged, which prices nothing and books with the trade.
 
     Prefer this over hand-iterating `price_candidate`: the root find runs server-side against the
     book's market data (brentq inside `bounds`, else a secant from the field's current value -
-    exact in two pricings for an amount) and nothing large enters the conversation. The answer
-    carries `solved` (the field's value, the pricing count, the residual) and `solved_deal` - the
+    exact in two pricings for an amount) and nothing large enters the conversation. The answer's
+    `stats.Solved` carries the field's `value`, the pricing count, the `residual` and `deal` - the
     deal with the field set, which `book_deal` books as-is.
 
     The engine's FX convention is REPORTING units per one unit of the currency (`FxRate.ZAR`
@@ -1261,16 +1261,7 @@ async def solve_deal(deal: dict, field: str, target: float | dict = 0.0,
     request = dict({'deal': deal, 'field': field, 'target': target}, **_stated(
         bounds=bounds, calculation_overrides=calculation_overrides or None, actor=actor))
     submitted = await asyncio.to_thread(service().call, 'POST', '/book/solve', json=request)
-    outcome = await _await_result(submitted['result_id'], wait_seconds, ctx)
-    solved = outcome.get('stats', {}).pop('Solved', None) if 'stats' in outcome else None
-    if solved is not None:
-        outcome['solved'] = solved
-        outcome['solved_deal'] = dict(deal, **{field: solved['value']})
-        if solved.get('margin'):
-            outcome['solved_deal'].update(
-                Sales_Margin=solved['margin']['amount'],
-                Sales_Margin_Currency=solved['margin']['currency'])
-    return outcome
+    return await _await_result(submitted['result_id'], wait_seconds, ctx)
 
 
 @MCP.tool()
