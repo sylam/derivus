@@ -54,7 +54,7 @@ export function Value({ picked, object, schema, kind }: {
 
 /** Formatted money figure: always amount followed by currency. */
 export function Money({ value, currency, kind = 'money' }: {
-  value: number; currency?: string | null; kind?: 'whole' | 'money';
+  value: number; currency?: string | null; kind?: Kind;
 }) {
   return (
     <>{formatNumber(value, kind)}{currency && <> <span className="unit">{currency}</span></>}</>
@@ -81,7 +81,7 @@ export function LimitLine({ read, whose }: { read: LimitRead; whose?: string }) 
 /** Table cell for an optional amount (whole units by default), a negative one in the loss
  * colour; null shows a dash under the hover `absent`, and nothing where none is given. */
 export function Amount({ value, currency, absent, kind = 'whole' }: {
-  value: number | null; currency?: string | null; absent?: string; kind?: 'whole' | 'money';
+  value: number | null; currency?: string | null; absent?: string; kind?: Kind;
 }) {
   return (
     <td className={`n${value !== null && value < 0 ? ' neg' : ''}`}

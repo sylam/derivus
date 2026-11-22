@@ -824,5 +824,15 @@ check("a control the seat is held from is said in its button's place, its label 
       [draw('Gated', { label: 'run', hold: HOLD }, 'Run'),
        draw('Gated', { label: 'run', hold: null }, 'Run'), draw('Gated', { label: 'run', hold: null })],
       [`<span class="hint">run</span><span>${HOLD}</span>`, 'Run', '']);
+check("an amount's cell draws a negative in the loss colour, the exact value on its hover, the "
+      + 'currency after the amount; one not known is a dash under what is missing, and an empty '
+      + 'cell where that is not said',
+      'a gain drawn as a loss or a loss as a gain, on the P&L, the risk and the XVA table alike; '
+      + 'the rounded figure left without its exact value; or a zero drawn for an amount not known',
+      [draw('Amount', { value: -1250.5, kind: 'money' }), draw('Amount', { value: 3, currency: 'USD' }),
+       draw('Amount', { value: null, absent: 'a set is unread' }), draw('Amount', { value: null })],
+      ['<td class="n neg" title="-1250.5">-1,250.50</td>',
+       '<td class="n" title="3">3 <span class="unit">USD</span></td>',
+       '<td class="n"><span class="hint" title="a set is unread">—</span></td>', '<td class="n"></td>']);
 
 done();

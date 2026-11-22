@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { getMarkedDays, getPnl } from '../api';
 import { declaredOn, unmarked } from '../client';
-import { Gated } from '../components/Desk';
+import { Amount, Gated } from '../components/Desk';
 import { EmptyState } from '../components/EmptyState';
 import {
   behind, explained, factorLabel, FIGURES, noPnl, noWindow, opensOn, pnlQuery, pnlRead,
@@ -14,14 +14,10 @@ import { formatNumber, type Kind } from '../tokens';
 import { entityText } from '../desk';
 import { NO_PAPER } from '../positions';
 
-/** A figure as a cell: a number signed in colour, and a dash for what nobody can know. */
+/** A figure as a cell: a number signed in colour (`Amount`), and a dash for what nobody can know. */
 function Figure({ value, kind = 'money' }: { value: number | null | undefined; kind?: Kind }) {
-  if (value === null || value === undefined) return <td className="n">—</td>;
-  return (
-    <td className={`n${value < 0 ? ' neg' : ''}`} title={String(value)}>
-      {formatNumber(value, kind)}
-    </td>
-  );
+  return value === null || value === undefined ? <td className="n">—</td>
+    : <Amount value={value} kind={kind} />;
 }
 
 /** The desk's P&L between two marked days, or from the last marks to the book as it stands - per

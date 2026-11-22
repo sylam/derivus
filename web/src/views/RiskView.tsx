@@ -12,7 +12,7 @@ import { bookRisk, clockOf, marketOf, openTrade, useApp } from '../state';
 import { axisText, formatNumber } from '../tokens';
 import { tradeAt } from '../trade';
 import type { BookRisk, GreekRow } from '../types';
-import { OnStrip } from '../components/Desk';
+import { Amount, OnStrip } from '../components/Desk';
 
 /** The consolidated risk: the book's own mark and its whole-book gradient, counterparty-blind.
  *
@@ -304,9 +304,7 @@ function LadderCard({ ladder, unit }: { ladder: Ladder; unit: string }) {
           })}
           <tr className="total">
             <td>{summed ? 'parallel, every node' : 'parallel, every tenor'}</td>
-            <td className={`n${ladder.total < 0 ? ' neg' : ''}`}>
-              {formatNumber(ladder.total, 'money')}
-            </td>
+            <Amount value={ladder.total} kind="money" />
             {summed && <td />}
           </tr>
         </tbody>
@@ -432,9 +430,7 @@ function Marks({ risk, currency }: { risk: BookRisk; currency: string }) {
                     )}
                   </td>
                   {recording && <td><PendingCell held={held} /></td>}
-                  <td className={`n${row.value < 0 ? ' neg' : ''}`} title={String(row.value)}>
-                    {formatNumber(row.value, 'money')}
-                  </td>
+                  <Amount value={row.value} kind="money" />
                 </tr>
               );
             })}
@@ -445,9 +441,7 @@ function Marks({ risk, currency }: { risk: BookRisk; currency: string }) {
               <td>Book</td>
               <td />
               {recording && <><td /><td /></>}
-              <td className={`n${total < 0 ? ' neg' : ''}`} title={String(total)}>
-                {formatNumber(total, 'money')}
-              </td>
+              <Amount value={total} kind="money" />
             </tr>
           </tbody>
         </table>
