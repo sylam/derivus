@@ -113,7 +113,7 @@ function Tickets({ worklist }: { worklist: Worklist }) {
   const given = (row: WorkRow) => (desk.data && row.deal_path
     ? quoteAt(desk.data.quotes, row.deal_path, row.reference) : undefined);
   const quotes = useQuotes([...new Set([...worklist.pending, ...elsewhere]
-    .flatMap((row) => given(row)?.quote_id ?? []))]);
+    .flatMap((row) => given(row)?.quote_id ?? []))], desk.data?.quotes);
   const signing = (row: WorkRow, hold: string | null) => {
     const at = row.deal_path ? tradeAt(children, row.deal_path) : undefined;
     const quote = given(row);

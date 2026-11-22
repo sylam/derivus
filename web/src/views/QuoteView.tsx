@@ -78,7 +78,7 @@ export function QuoteView() {
     dispatch({ type: 'PICK', screen: 'quote', id });
   };
   const ticket = (id: string) => (
-    <Ticket id={id} from={links.find((entry) => entry.id === id)?.from}
+    <Ticket id={id} rows={rows} from={links.find((entry) => entry.id === id)?.from}
             requotes={links.filter((entry) => entry.from === id).map((entry) => entry.id)}
             onMade={open} />
   );
@@ -94,9 +94,9 @@ export function QuoteView() {
         ...opened.filter((id) => !rows.some((row) => row.quote_id === id))
           .map((id) => ({ id, label: short(id), hint: 'opened by id', content: ticket(id) })),
         ...rows.map((row) => ({
-          id: row.quote_id, label: `${salesName(schema, row.structure)} · ${
-            row.netting_set ?? 'root'}`,
-          hint: stands(row), content: ticket(row.quote_id),
+          id: row.quote_id, label: row.unreadable ? short(row.quote_id)
+            : `${salesName(schema, row.structure)} · ${row.netting_set ?? 'root'}`,
+          hint: row.unreadable ? 'cannot be read' : stands(row), content: ticket(row.quote_id),
         })),
       ]}
     />
@@ -165,7 +165,11 @@ function QuoteList({ listed, stands }: {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => (
+                {rows.map((row) => row.unreadable ? (
+                  <tr key={row.quote_id} title={`quote ${row.quote_id}`}>
+                    <td colSpan={7} className="refusal">{row.unreadable}</td>
+                  </tr>
+                ) : (
                   <tr key={row.quote_id} className="pick" title={`quote ${row.quote_id}`}
                       onClick={() => dispatch({ type: 'PICK', screen: 'quote', id: row.quote_id })}>
                     <td>{stampText(row.quoted_at)}</td>
@@ -319,14 +323,15 @@ function QuoteForm({ draft: initial = EMPTY, from, onQuoted }: {
 
 /** One quote as the card a salesperson reads to the client, and what can be done with it here:
  * the sheet, the acceptance, a re-quote. */
-function Ticket({ id, from, requotes, onMade }: {
-  id: string; from?: string; requotes: string[]; onMade: (id: string, from?: string) => void;
+function Ticket({ id, rows, from, requotes, onMade }: {
+  id: string; rows: QuoteGiven[]; from?: string; requotes: string[];
+  onMade: (id: string, from?: string) => void;
 }) {
   const { state, dispatch } = useApp();
   const [changing, setChanging] = useState(false);
   const [verdict, setVerdict] = useState<Verdict | null>(null);
   const quoting = useQuoting((made) => onMade(made, id));
-  const read = useQuotes([id]);
+  const read = useQuotes([id], rows);
   const pending = read.data?.[id];
   const pick = (other: string) => dispatch({ type: 'PICK', screen: 'quote', id: other });
 

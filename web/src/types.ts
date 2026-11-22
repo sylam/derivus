@@ -171,10 +171,13 @@ export type ChargeAsk = { quote_id: string } | { deal_path: string; reference?: 
 
 /** One row of `GET /book/quotes`, newest first: what was quoted, for whom, its net, who quoted it
  * and when, where it stands at the read, and - once the acceptance wrote them - `accepted` and
- * where it was `booked`, beside the `reference` of the trade it booked. */
+ * where it was `booked`, beside the `reference` of the trade it booked. A file that will not read
+ * is its id and why, `unreadable`, alone. */
 export type QuoteGiven = Pick<Quote, 'quote_id' | 'structure' | 'variation' | 'netting_set' | 'net'
-  | 'currency'> & Pick<PendingQuote, 'quoted_at' | 'quoted_by' | 'accepted'> & Standing & {
+  | 'currency'> & Pick<PendingQuote, 'quoted_at' | 'quoted_by' | 'portfolio' | 'accepted'>
+  & Standing & {
   booked?: { lsn: number | null; deal_path: string; reference?: string | null } | null;
+  unreadable?: string;
 };
 
 /** What `POST /book/quote` answers short of a 422 - and a booking, a restrike or an unwind through

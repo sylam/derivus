@@ -357,6 +357,19 @@ check('a trade\'s quote is the one whose booking names its reference, wherever t
        quote.quoteAt(LISTED, '3', 'COLLAR-C')],
       ['q1', 'q2', undefined, 'q5', undefined]);
 
+const RELISTED = LISTED.map((row) => (row.quote_id === 'q2' ? { ...row, stands: 'booked' } : row));
+const ACCEPTED = LISTED.map((row) => (row.quote_id === 'q3' ? given({
+  quote_id: 'q3', accepted: { lsn: 43, ticket: 't' } }) : { ...row }));
+check('a pending trade is read again where its own row on the desk\'s list moves, and on no other '
+        + 'move: the list read again with nothing of its own changed, or another quote booked, '
+        + 'reads it no more',
+      'the read held against the whole list, which reads every open ticket again each time any '
+        + 'quote moves; or against its id alone, which never shows its acceptance',
+      [quote.pendingKey(['q3'], LISTED) === quote.pendingKey(['q3'], LISTED.map((row) => ({ ...row }))),
+       quote.pendingKey(['q3'], LISTED) === quote.pendingKey(['q3'], RELISTED),
+       quote.pendingKey(['q3'], LISTED) === quote.pendingKey(['q3'], ACCEPTED)],
+      [true, true, false]);
+
 const QUOTED_BOOK = [
   { Instrument: { '.Deal': { Object: 'NettingCollateralSet', Reference: 'ISDA-K' } }, Children: [
     { Instrument: { '.Deal': { Object: 'FXOptionDeal', Reference: 'CALL' } } }] },

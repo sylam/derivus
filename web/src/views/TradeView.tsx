@@ -168,7 +168,7 @@ function Origin({ recording, held, quote }: {
 }) {
   const { state } = useApp();
   const [showing, setShowing] = useState(false);
-  const read = useQuotes(showing && quote ? [quote.quote_id] : []);
+  const read = useQuotes(showing && quote ? [quote.quote_id] : [], quote ? [quote] : []);
   const pending = quote && read.data?.[quote.quote_id];
   // the trade's first fill: the earliest of those its positions name as booking each
   const [booked] = held.map((position) => position.booked).sort((a, b) => a.lsn - b.lsn);

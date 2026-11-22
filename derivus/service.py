@@ -589,6 +589,8 @@ class Book:
         self.markets = utils.LRUCache(4)
         # what a poll was last answered, by the read and its `poll_key`
         self.polls = utils.LRUCache(8)
+        # each pending quote file's row of `/book/quotes` by its path, with the stamp it was read at
+        self.quotes = {}
 
     @staticmethod
     def text(path):
@@ -7409,9 +7411,14 @@ def book_quote_pending(quote_id):
     that books it, `quoted_at` and any pins - the two hashes and the board's age, the values vector
     itself kept apart under its hash (`pinned_values`). It stays after the approval, being the
     audit trail of why the book carries what it carries, so this reads a quote given and a quote
-    booked alike."""
+    booked alike. A file that will not read is refused by name."""
     with open(pending_quote(quote_id), encoding='utf-8') as handle:
-        return json.load(handle)
+        try:
+            return json.load(handle)
+        except ValueError as error:
+            raise HTTPException(422, 'quote {} cannot be read - the file it was filed in is not '
+                                     'whole ({}) - so it can be neither shown nor accepted: '
+                                     'quote again'.format(quote_id, error))
 
 
 def quotes_shown(actor):
@@ -7456,28 +7463,41 @@ def book_quotes(actor: str = None):
     """`{as_of, firm_seconds, policy_refused, quotes}` (`quote_read`) - one row per pending file
     under `DV_HOME/tmp`, newest first: its `quote_id`, the `structure` and the `variation` it was
     dealt as, the client's `netting_set`, the `net` in its `currency`, `quoted_at` and
-    `quoted_by`, `accepted` and `booked` as the acceptance wrote them, both null while it is only
-    quoted, `booked` also naming the `reference` of the deal it booked, which a path a node ahead
-    of it moves does not - and where it stands at this read, `stands` and `firm_until`
-    (`standing`). `actor` is the seat reading, which is shown the quotes `quotes_shown` shows it."""
-    read, directory, shown, rows = quote_read(), quote_dir(), quotes_shown(actor), []
-    for name in os.listdir(directory) if os.path.isdir(directory) else ():
-        if name.endswith('.json'):
-            pending = book_quote_pending(name[:-len('.json')])
-            if not shown(pending):
-                continue
-            quoted, booked = pending.get('quote') or {}, pending.get('booked')
-            rows.append(dict(
-                quote_id=name[:-len('.json')],
-                **{key: quoted.get(key) for key in ('structure', 'variation', 'netting_set', 'net',
-                                                    'currency')},
-                **{key: pending.get(key) for key in ('quoted_at', 'quoted_by', 'accepted')},
-                booked=booked and dict(booked, reference=pending['deal']['Reference']),
-                **standing(pending, read)))
+    `quoted_by`, the `portfolio` it books at, `accepted` and `booked` as the acceptance wrote them,
+    both null while it is only quoted, `booked` also naming the `reference` of the deal it booked,
+    which a path a node ahead of it moves does not - and where it stands at this read, `stands` and
+    `firm_until` (`standing`). A file that will not read is its `quote_id` and the sentence why,
+    `unreadable`. `actor` is the seat reading, which is shown the quotes `quotes_shown` shows it."""
+    live, read, directory, shown = live_book(), quote_read(), quote_dir(), quotes_shown(actor)
+    paths = [os.path.join(directory, name) for name in (
+        os.listdir(directory) if os.path.isdir(directory) else ()) if name.endswith('.json')]
+    live.quotes = {path: quote_row(path, live.quotes.get(path)) for path in paths}
+    rows = [row if 'unreadable' in row else dict(row, **standing(row, read))
+            for _, row in live.quotes.values() if shown(row)]
     # newest first by the instant given, an unstamped one last: a stamp carries its own offset
-    aged = [(quote_age(row['quoted_at'], read['as_of']), row) for row in rows]
+    aged = [(quote_age(row.get('quoted_at'), read['as_of']), row) for row in rows]
     return dict(read, quotes=[row for _, row in sorted(aged, key=lambda pair: (pair[0] is None,
                                                                                pair[0] or 0.0))])
+
+
+def quote_row(path, kept):
+    """`(stamp, row)` of the pending file at `path` for `/book/quotes`: `kept` where the file's
+    stamp has not moved since it was read (`settled`), so a read with nothing moved opens nothing;
+    else the file read again, or its id and why it will not read."""
+    stamp, quote_id = settled(path), os.path.basename(path)[:-len('.json')]
+    if stamp and kept and kept[0] == stamp:
+        return kept
+    try:
+        pending = book_quote_pending(quote_id)
+    except HTTPException as refused:
+        return stamp, {'quote_id': quote_id, 'unreadable': refused.detail}
+    quoted, booked = pending.get('quote') or {}, pending.get('booked')
+    return stamp, dict(
+        quote_id=quote_id,
+        **{key: quoted.get(key) for key in ('structure', 'variation', 'netting_set', 'net',
+                                            'currency')},
+        **{key: pending.get(key) for key in ('quoted_at', 'quoted_by', 'portfolio', 'accepted')},
+        booked=booked and dict(booked, reference=pending['deal']['Reference']))
 
 
 @app.get('/book/quote/{quote_id}/sheet', summary='The quote sheet, as the .xlsx a client is sent')

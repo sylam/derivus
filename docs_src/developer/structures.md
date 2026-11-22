@@ -449,8 +449,13 @@ acceptance also checks the plan and the board's age and reports the market's mov
 `firm_until` or `lapsed` - measured by `firmness`, the helper the acceptance refuses by, to the
 read's own `as_of`, beside the window (`firm_seconds`) or the policy's refusal (`policy_refused`).
 A client renders them and flips a firm quote to lapsed between reads once the time from `as_of` to
-`firm_until` has passed, comparing no service stamp to its own clock. **Held by**
+`firm_until` has passed, comparing no service stamp to its own clock. The list keeps each file's row
+on the served book until the file's stamp moves (`quote_row`), so a read with nothing moved opens
+nothing, and a file that will not read is its id and the sentence why on its own row, the read of it
+refusing in the same words. A client reads a pending trade again only where its row on the list
+moves (`pendingKey`), an acceptance being the one act that writes the file. **Held by**
 `test_service.py::test_a_quote_read_says_where_each_quote_stands_by_the_window_the_acceptance_refuses_by`,
+`::test_a_quote_file_that_will_not_read_is_named_on_its_row_and_a_moved_one_is_read_again`,
 `web/scripts/quote_check.mjs`.
 
 **Composition.** `compose` puts the legs inside the deal block under `Children`, because a quote is

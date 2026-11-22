@@ -350,6 +350,11 @@ export const landedAt = (nodes: DealNode[], booked: NonNullable<QuoteGiven['book
   string | undefined => tradesOf(toRows(nodes, [], undefined))
   .find((row) => tied(booked, row.path, row.reference))?.path;
 
+/** What a read of the pending trades `ids` name is held against: their own rows on the desk's
+ * list, which show the acceptance - the one act that writes a pending file - and nothing else. */
+export const pendingKey = (ids: string[], rows: QuoteGiven[]): string =>
+  JSON.stringify([ids, rows.filter((row) => ids.includes(row.quote_id))]);
+
 /** A re-quote made here and the quote it re-quotes, which the service does not link. */
 export type Kept = { id: string; from: string };
 

@@ -9065,8 +9065,9 @@ def test_the_desks_quotes_are_listed_newest_first_with_where_each_stands(quoting
         filed = CLIENT.get('/book/quote/{}'.format(quote['quote_id'])).json()
         return {'quote_id': quote['quote_id'], 'structure': 'ZeroCostCollar', 'variation': 'floor',
                 'netting_set': quote['netting_set'], 'net': quote['net'], 'currency': 'USD',
-                'quoted_at': filed['quoted_at'], 'quoted_by': seat, 'accepted': None,
-                'booked': landed, 'stands': 'booked' if landed else 'quoted', 'firm_until': None}
+                'quoted_at': filed['quoted_at'], 'quoted_by': seat, 'portfolio': None,
+                'accepted': None, 'booked': landed, 'stands': 'booked' if landed else 'quoted',
+                'firm_until': None}
 
     def listed():
         read = CLIENT.get('/book/quotes').json()
@@ -9106,6 +9107,32 @@ def test_the_desks_quotes_are_listed_by_the_instant_each_was_given(quoting, tmp_
                                                          newline='\n')
     assert [row['quote_id'] for row in CLIENT.get('/book/quotes').json()['quotes']] == [
         given['quote_id'], 'winter', 'summer', 'unstamped']
+
+
+def test_a_quote_file_that_will_not_read_is_named_on_its_row_and_a_moved_one_is_read_again(
+        quoting, tmp_path):
+    """The desk's quotes are read off the files under its tmp, each row kept until its file's stamp
+    moves. A truncated file is named on its own row - the other quotes still listed, and the read of
+    it refused by name in the same words - never a 500 to every seat; and a quote accepted after it
+    was listed reads booked on the next list.
+
+    Killing mutations: a file that will not read let through to the list, which refuses every
+    seat's whole list for one file; and a kept row answered whatever its file's stamp now says,
+    which lists the accepted quote as only quoted still.
+    """
+    given = quote_of('ZeroCostCollar', COLLAR)
+    (tmp_path / 'tmp' / 'broken.json').write_text('{"quote": {"structure"', newline='\n')
+    listed = CLIENT.get('/book/quotes')
+    assert listed.status_code == 200, listed.text
+    rows = {row['quote_id']: row for row in listed.json()['quotes']}
+    broken = CLIENT.get('/book/quote/broken')
+    assert broken.status_code == 422 and 'quote again' in broken.json()['detail']
+    assert rows['broken'] == {'quote_id': 'broken', 'unreadable': broken.json()['detail']}
+    assert rows[given['quote_id']]['stands'] == 'quoted'
+
+    assert CLIENT.post('/book/quote', json={'quote_id': given['quote_id']}).json()['written']
+    assert {row['quote_id']: row.get('stands') for row in CLIENT.get('/book/quotes').json()[
+        'quotes']} == {given['quote_id']: 'booked', 'broken': None}
 
 
 def test_a_quote_for_a_client_the_book_never_opened_refuses_at_the_ask(quoting_client, tmp_path):

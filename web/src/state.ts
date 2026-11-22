@@ -10,14 +10,14 @@ import {
 import { rowsByPath, toRows } from './blotter';
 import { bookClock, lagsBook } from './desk';
 import { NO_PAPER, type Grouping, type Paper } from './positions';
-import { firmFor, ranAs } from './quote';
+import { firmFor, pendingKey, ranAs } from './quote';
 import { pinnedAt, readRecord, reconciledRecord, type RecordHeld } from './spine';
 import { isObject } from './tokens';
 import { tradeAt } from './trade';
 import type {
   ActivityPage, BookMarket, BookResponse, BookRisk, BookXva, DescribeResult, JobDoc,
-  Market, PathsAnswer, Reconcile, RefusalCode, ResultSummary, Schema, SeatGrants, SpineBlock,
-  Standing, TablePage, ValidateResult, Worklist,
+  Market, PathsAnswer, QuoteGiven, Reconcile, RefusalCode, ResultSummary, Schema, SeatGrants,
+  SpineBlock, Standing, TablePage, ValidateResult, Worklist,
 } from './types';
 
 /** `opened` names the job file the served book was opened from, where it was opened from one. */
@@ -669,9 +669,9 @@ export function useStanding(rows: (Standing & { quote_id: string })[], asOf: str
     (lapsed.includes(row.quote_id) ? 'lapsed' : row.stands);
 }
 
-/** The pending trade each quote id names, read again where the book or the record moves. */
-export function useQuotes(ids: string[]) {
-  const { state } = useApp();
+/** The pending trade each quote id names, read again where its row on the desk's list `rows`
+ * moves (`pendingKey`). */
+export function useQuotes(ids: string[], rows: QuoteGiven[] = []) {
   return useRead(ids.length ? async () => Object.fromEntries(await Promise.all(ids.map(
-    async (id) => [id, await getQuote(id)] as const))) : null, [ids.join(' '), clockOf(state)]);
+    async (id) => [id, await getQuote(id)] as const))) : null, [pendingKey(ids, rows)]);
 }
