@@ -2312,22 +2312,18 @@ POSITION_EVENTS = ('fill', 'amendment')
 
 
 def record_positions(book):
-    """The positions of `book` AT THE RECORD'S HEAD per INSTRUMENT AND AGREEMENT - what the book
-    prices a node at - each amendment chain collapsed onto its HEAD.
+    """The positions of `book` AT THE RECORD'S HEAD per INSTRUMENT AND AGREEMENT, keyed exactly as
+    the book prices a node (`spine.nets`).
 
     The record keys a position where it sits, instrument by agreement by portfolio, and the file
     prices the node of those terms under that agreement's set, so the two meet there: the rows of
-    one summed over its portfolios. A deal whose terms were restruck is the deal the file now
-    holds, so the chain's signed quantity is answered under the instrument it was amended INTO -
-    which reconciles clean whichever end of the link the quantity is carried on.
+    one summed over its portfolios. Terms a restrike moved stand at nothing, as a position closed
+    out does, so a node of them prices at nothing and is no disagreement.
     """
-    rows = spine.positions_of(book, folds=folds())
-    moved = dict((row['instrument'], row['amended_to']) for row in rows if row['amended_to'])
     heads = {}
-    for row in rows:
-        instrument = amended_head(moved, row['instrument'])
-        head = heads.setdefault((instrument, row['agreement']), {
-            'instrument': instrument, 'netting_set': row['agreement'], 'quantity': 0.0,
+    for row in spine.positions_of(book, folds=folds()):
+        head = heads.setdefault((row['instrument'], row['agreement']), {
+            'instrument': row['instrument'], 'netting_set': row['agreement'], 'quantity': 0.0,
             'counterparty': row['counterparty'], 'last_lsn': 0})
         head['quantity'] += row['quantity']
         head['last_lsn'] = max(head['last_lsn'], row['last_lsn'])

@@ -4478,6 +4478,39 @@ def test_another_book_on_the_record_is_none_of_this_books_drift(recorded, bookin
     assert (answer['events_behind'], answer['positions_behind']) == (2, 1)
 
 
+def test_terms_a_restrike_moved_reconcile_as_the_book_prices_them(recorded, booking):
+    """THE RECONCILE KEYS WHAT THE BOOK PRICES. A trade booked and restruck stands on the terms it
+    became, the terms it left at nothing. Its old terms written back over it by hand are a node the
+    record holds at nothing, which the book prices at nothing as it prices a trade closed out: the
+    risk marks nothing, and reconcile names the restruck terms the file lost and not that node,
+    which does not price as written. A fill filed on the old terms after the restrike is a position
+    no node carries and nothing prices: named.
+
+    Killing mutation: each amendment chain collapsed onto its head, which names the old node as one
+    that prices as written while the risk prices it at nothing, and reads the fill on the old terms
+    as the restruck trade's.
+    """
+    booked = book_one('MOVED')
+    assert booked['written'] is True
+    old = deal_at(json.loads(booking.read_text()), booked['deal_path'])
+    assert restruck(booked['deal_path'], Amount=300_000.0)['written'] is True
+    new = deal_at(json.loads(booking.read_text()), booked['deal_path'])
+    was, became = (spine.instrument_address(node) for node in (old, new))
+
+    rewritten(booking, lambda node: node.update(Children=[old]))
+    answer = CLIENT.get('/book/reconcile').json()
+    assert [row['instrument'] for row in answer['in_record_not_in_file']] == [became]
+    assert answer['in_file_not_in_record'] == []
+    assert CLIENT.get('/book/risk').json()['mtm'] == 0.0
+
+    rewritten(booking, lambda node: node.update(Children=[new]))
+    spine.book(service.instrument_of(old), 1.0, 'CPTY_A', CLIENT_SET, 'EXEC-LATE',
+               book_name='spine-desk')
+    answer = CLIENT.get('/book/reconcile').json()
+    assert [row['instrument'] for row in answer['in_record_not_in_file']] == [was]
+    assert answer['in_file_not_in_record'] == []
+
+
 def test_a_partial_unwind_leaves_the_file_and_the_record_agreeing(recorded, booking):
     """THEY MEET WHERE THE BOOK PRICES. A trade unwound by half against the node that books it is
     one node in the file and two fills on the record, the node priced at the net the record holds,

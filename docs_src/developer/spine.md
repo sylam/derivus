@@ -567,13 +567,16 @@ names (`spine.positions_of`, the reader the compile and the marks read too) - an
 is none of its drift, nor of its `positions_behind` - and compares the two where the book
 prices: a position is its instrument under its agreement, priced at the record's net on the first
 node of those terms under that agreement's set, so how many nodes carry it is no disagreement and a
-partial unwind filed against its node is none. It names a position no node carries, a node no
+partial unwind filed against its node is none, nor a node of terms a restrike moved, which stand at
+nothing as a position closed out does (`service.record_positions` keys what `spine.nets` keys).
+It names a position no node carries, a node no
 position carries - each by its set, the trade's reference (off the record's copy of the terms
 where the file lost them) and the client's name - and paper that is not its declared terms; a
 reading, never a refusal. **Held by**
 `test_spine_engine.py::test_the_pin_cannot_move_the_plan_hash`,
 `::test_a_fill_the_file_never_took_is_what_reconcile_is_for`,
 `::test_another_book_on_the_record_is_none_of_this_books_drift`,
+`::test_terms_a_restrike_moved_reconcile_as_the_book_prices_them`,
 `::test_a_partial_unwind_leaves_the_file_and_the_record_agreeing`,
 `test_service.py::test_a_booking_into_one_set_leaves_another_set_s_xva_run_where_it_was`.
 
