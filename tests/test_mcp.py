@@ -792,6 +792,11 @@ def test_the_file_the_book_names_is_declared_and_listed_through_the_binding(file
         mcp_server.declare_file('risk-neutral', 'curve', str(market))
 
 
+def valued(result_id):
+    """`deal_values`' deals by reference, for a book whose references are its own."""
+    return {deal['reference']: deal['value'] for deal in mcp_server.deal_values(result_id)['deals']}
+
+
 def test_booking_a_deal_prices_it(book):
     """The whole flow a plain-language booking rides: read the book, price a candidate with the
     file standing still, book the deal, run the book, read the deal's value off the result - held
@@ -805,7 +810,7 @@ def test_booking_a_deal_prices_it(book):
     trial = asyncio.run(mcp_server.price_candidate(
         deal=json.loads(dump(dict(BOOKED, Reference='TRIAL')))))
     assert trial['status'] == 'done' and book.read_bytes() == before
-    assert mcp_server.deal_values(trial['result_id'])['TRIAL'] == pytest.approx(
+    assert valued(trial['result_id'])['TRIAL'] == pytest.approx(
         BOOKED['Amount'] * SPOT * np.exp(-RATE * 2.0), rel=1e-3)
 
     outcome = mcp_server.book_deal(json.loads(dump(BOOKED)))
@@ -814,8 +819,24 @@ def test_booking_a_deal_prices_it(book):
 
     run = asyncio.run(mcp_server.price_candidate())
     assert run['status'] == 'done'
-    values = mcp_server.deal_values(run['result_id'])
+    values = valued(run['result_id'])
     assert values['CF2'] == pytest.approx(BOOKED['Amount'] * SPOT * np.exp(-RATE * 2.0), rel=1e-3)
+
+
+def test_deal_values_answer_the_total_and_every_deal_in_book_order(book):
+    """Two deals sharing a reference are two deals: `deal_values` answers the book's total, its
+    root row, and each deal under it in book order - the book's own cash flow and one booked under
+    its reference, each its amount x spot x e^(-2r), two years out, and the total their sum.
+
+    Killing mutation: the deals answered keyed by reference, which keeps the second and loses the
+    first.
+    """
+    assert mcp_server.book_deal(json.loads(dump(dict(BOOKED, Reference='CF1'))))['written'] is True
+    answer = mcp_server.deal_values(asyncio.run(mcp_server.price_candidate())['result_id'])
+    worth = [amount * SPOT * np.exp(-RATE * 2.0) for amount in (AMOUNT, BOOKED['Amount'])]
+    assert [deal['reference'] for deal in answer['deals']] == ['CF1', 'CF1']
+    assert [deal['value'] for deal in answer['deals']] == pytest.approx(worth, rel=1e-3)
+    assert answer['total'] == pytest.approx(sum(worth), rel=1e-3)
 
 
 def test_the_increment_tool_answers_the_services_own_increment(tmp_path, monkeypatch):
@@ -949,7 +970,7 @@ def test_a_margin_target_is_money_and_the_deal_records_what_was_charged(book):
 
     assert mcp_server.book_deal(solved['deal'])['written'] is True
     run = asyncio.run(mcp_server.price_candidate())
-    assert mcp_server.deal_values(run['result_id'])['SLV2'] == pytest.approx(
+    assert valued(run['result_id'])['SLV2'] == pytest.approx(
         50_000.0 * SPOT, abs=0.01)
 
 
@@ -978,14 +999,14 @@ def test_the_practical_loop_quotes_to_a_booked_structure(tmp_path):
         booked = mcp_server.book_deal(outcome['deal'])
         run = asyncio.run(mcp_server.price_candidate())
         assert booked['written'] is True
-        assert mcp_server.deal_values(run['result_id'])['OPT1'] == pytest.approx(
+        assert valued(run['result_id'])['OPT1'] == pytest.approx(
             500_000.0, abs=0.01)
 
         # and a values tick moves the mark - the market is live, not a snapshot baked at load
         patched = mcp_server.patch_market_values({'FxRate.ZAR': {'Spot': SPOT * 1.02}})
         moved = asyncio.run(mcp_server.price_candidate())
         assert patched['written'] is True
-        assert mcp_server.deal_values(moved['result_id'])['OPT1'] > 550_000.0
+        assert valued(moved['result_id'])['OPT1'] > 550_000.0
     finally:
         service.BOOK = None
 
@@ -1077,7 +1098,7 @@ def test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar(tmp_path,
         assert len(node['children']) == 2, 'the structure booked without its legs'
 
         run = asyncio.run(mcp_server.price_candidate())
-        assert mcp_server.deal_values(run['result_id'])[
+        assert valued(run['result_id'])[
             node['deal']['Reference']] == pytest.approx(quote['net'], abs=1.0)
         assert os.path.isfile(pending), 'the pending trade is an audit trail, not a scratch file'
 
@@ -1612,7 +1633,7 @@ def test_an_amendment_changes_the_value_it_names(book):
     assert mcp_server.read_deal('0')['deal']['Amount'] == 500_000.0
 
     run = asyncio.run(mcp_server.price_candidate())
-    assert mcp_server.deal_values(run['result_id'])['CF1'] == pytest.approx(
+    assert valued(run['result_id'])['CF1'] == pytest.approx(
         500_000.0 * SPOT * np.exp(-RATE * 2.0), rel=1e-3)
 
     before = book.read_bytes()

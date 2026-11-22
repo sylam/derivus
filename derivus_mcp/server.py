@@ -2141,10 +2141,11 @@ def fetch_table(result_id: str, table: str, offset: int = 0, limit: int = 50) ->
 
 @MCP.tool(annotations=READ_ONLY)
 def deal_values(result_id: str) -> dict:
-    """`{reference: value}` off a finished base valuation's `mtm` table - the question after every
-    booking and every what-if. The SHAPE is checked before anything is fetched: a Monte Carlo's
-    mtm is a scenario cube and is refused unfetched. Row 0's `Total` is the whole book; a run that
-    failed answers its own error."""
+    """`{total, deals}` off a finished base valuation's `mtm` table - the question after every
+    booking and every what-if: `total` the whole book, the table's root row, and `deals` each node
+    under it as `{reference, value}` in book order, a reference being no deal's identity. The SHAPE
+    is checked before anything is fetched: a Monte Carlo's mtm is a scenario cube and is refused
+    unfetched. A run that failed answers its own error."""
     raw = _raw_result(result_id)
     if raw.get('status') == 'error':
         raise ToolError('run {} failed: {}'.format(result_id, raw.get('error')))
@@ -2158,7 +2159,9 @@ def deal_values(result_id: str) -> dict:
     page = service().call('GET', '/results/{}/mtm?offset=0&limit={}'.format(
         result_id, shape['rows']))
     reference, value = page['columns'].index('Reference'), page['columns'].index('Value')
-    return {row[reference] if row[reference] else 'Total': row[value] for row in page['data']}
+    root, *nodes = page['data']
+    return {'total': root[value],
+            'deals': [{'reference': row[reference], 'value': row[value]} for row in nodes]}
 
 
 # --------------------------------------------------------------------------- prompts

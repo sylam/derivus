@@ -79,7 +79,7 @@ structure takes it as `name`. **Held by**
 | `approve_ticket`, `reject_ticket` | `POST /book/approve`, `/book/reject`: a second seat's verdict on a ticket, named by it or by an accepted quote's id |
 | `worklist` | `GET /book/worklist`: what waits on the seat asking |
 | `describe_seat` | `GET /book/seat`: the nodes the seat asking holds each verb at, and the verb each act demands under the map in force |
-| `poll_result`, `fetch_table`, `deal_values` | `GET /results/{id}[/{table}]`: status and shapes, or the outcome a `stat` names; one capped page; `{reference: value}` |
+| `poll_result`, `fetch_table`, `deal_values` | `GET /results/{id}[/{table}]`: status and shapes, or the outcome a `stat` names; one capped page; the book's `total` and its `deals` in book order, each `{reference, value}` |
 | `update_market_quotes`, `patch_market_values`, `retire_market_overrides` | `POST /book/market`: quote blocks ticked and bootstrapped; values patched; the block's own entries retired, the file's standing again |
 | `configure_book` | `POST /book/configure`: one bootstrap dial, the market re-bootstrapped |
 | `describe_curve`, `configure_curve` | `GET`/`POST /book/curve`: curves as definitions; a curve authored from its rows |
