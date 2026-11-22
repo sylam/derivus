@@ -40,17 +40,11 @@ type Client = {
  */
 export function XvaView() {
   const { state } = useApp();
-  const { xva, source, doc, schema } = state;
+  const { xva, source, doc } = state;
   const live = source?.kind === 'book';
   const recording = state.record.spine !== null;
   const clock = clockOf(state);
-  const [opened, setOpened] = useState<string | null>(null);
-  const risk = bookRisk(state);
-  // a collateral call is read on the book's day marked: what is missing is known before asking
-  const spine = spineOf(state);
-  const close = unmarked(spine, true);
-  const collateral = useRead(spine && !close ? getBookCollateral : null,
-                             [clock, state.seat, close?.title]);
+  const credit = useCredit();
 
   if (!live) return <EmptyState {...offBook("the last credit run of each of the desk's sets")} />;
   if (xva.status === 404) return <EmptyState {...NO_BOOK} />;
@@ -68,7 +62,7 @@ export function XvaView() {
       </div>
     );
   }
-  if (!xva.data || !doc || !schema || (recording && !state.paper.data)) {
+  if (!doc || !credit) {
     return (
       <EmptyState
         title={(recording && unread(state.paper))
@@ -78,36 +72,10 @@ export function XvaView() {
     );
   }
 
-  const view = xva.data;
-  const currency = risk.data?.currency ?? currencyOf(doc);
-  const paper = recording ? state.paper.data : null;
-  const market = marketOf(state);
-  const factors = market?.['Price Factors'] ?? {};
-  const rows = rowsByPath(toRows(doc.Calc.Deals.Deals.Children, [], undefined));
-  const ids = new Set([...(paper?.entities ?? []).map((row) => row.entity),
-                       ...view.sets.flatMap((set) => (set.counterparty ? [set.counterparty] : []))]);
-  const clients: Client[] = actionFirst([...ids].map((id) => {
-    const agreements = agreementsOf(id, paper?.agreements ?? null, rows, view.sets);
-    const lines = creditLines(id, {
-      sets: view.sets, agreements, rows, positions: paper?.positions ?? null,
-      marks: risk.marks, calls: recording ? collateral.data?.calls ?? null
-        : agreements.map((row) => statedHolding(row.terms, fieldsOf(schema, SET) ?? {}, market)),
-    });
-    const own = lines.filter((line) => !line.run?.note);
-    const factor = factors[`${SURVIVAL}.${id}`];
-    const curve = curveOf(token(factor, 'Curve'));
-    const [first] = curve ? spreads(curve.data, Number(token(factor, 'Recovery_Rate'))) : [];
-    return {
-      id, name: entityText(paper?.entities ?? null, id), lines, wrong: wrongWith(lines),
-      spread: first && [first[0], first[1]], value: summed(own.map((line) => line.value)),
-      after: summed(own.map((line) => exposureAfter(line, currency))),
-      limit: limitOf(id, view.limits),
-    };
-  }));
+  const { view, risk, collateral, close, marked, reads } = credit;
+  const { currency } = reads;
+  const clients = actionFirst(credit.ids.map(credit.client));
   const acting = clients.filter((client) => actsOf(client).length);
-  const marked = (unread?: string) => closeRead(collateral.data?.date, !!close, unread);
-  const reads = { currency, recording, noClose: !!close, collateralError: collateral.error,
-                  riskError: risk.error, read: view.as_of };
 
   return (
     <div className="main">
@@ -164,48 +132,107 @@ export function XvaView() {
           {view.limits.length > 0 && <div>{LIMIT_USAGE}</div>}
         </div>
 
-        <div className="tablewrap">
-          <table className="data desk xva credit">
-            <thead>
-              <tr>
-                <th>Client<div className="sub">its sets beneath it</div></th>
-                <th className="n">Spread<div className="sub">bp, its curve's first tenor</div></th>
-                <th>Paper<div className="sub">by the agreement's terms</div></th>
-                <th className="n">Trades<div className="sub">on · waiting on a second seat</div></th>
-                <th className="n">Value to the desk<div className="sub">{currency} now · + the client owes</div></th>
-                <th className="n">Collateral held<div className="sub">{recording
-                  ? `the call · ${marked('close unread')}` : "as each set's terms state"}</div></th>
-                <th className="n">After collateral<div className="sub">{currency} · nought if owed</div></th>
-                <th className="n">Peak EE<div className="sub">run currency · its day</div></th>
-                <th className="n">Peak PFE<div className="sub">its percentile · its day</div></th>
-                <th className="n">CVA<div className="sub">{PLUS.CVA}</div></th>
-                <th className="n">FVA<div className="sub">{PLUS.FVA}</div></th>
-                <th>Run<div className="sub">its age</div></th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {clients.map((client) => (
-                <ClientRows key={client.id} client={client} reads={reads} opened={opened}
-                            onOpen={(set) => setOpened(opened === set ? null : set)} />
-              ))}
-              {clients.length === 0 && (
-                <tr><td colSpan={13} className="hint">no client is declared and no netting set
-                  names one: there is no credit to read.</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+        <CreditTable clients={clients} reads={reads} />
       </div>
     </div>
   );
 }
 
-/** What the rows read beside their own lines. */
+/** What the rows read beside their own lines: what the collateral column is read on (`heldOn`). */
 type Reads = {
   currency: string; recording: boolean; noClose: boolean; collateralError: string | null;
-  riskError: string | null; read: string;
+  riskError: string | null; read: string; heldOn: string;
 };
+
+/** The credit table's reads - the projection, the risk's marks, the book's rows and, on a desk
+ * that records, its paper and the calls on the close marked for the book's day - the clients it
+ * reads (`ids`: the paper's entities, then each a set names) and one client as its rows read it.
+ * Null until the projection, the book and the paper are read. */
+export function useCredit() {
+  const { state } = useApp();
+  const { xva, doc, schema } = state;
+  const recording = state.record.spine !== null;
+  const risk = bookRisk(state);
+  // a collateral call is read on the book's day marked: what is missing is known before asking
+  const spine = spineOf(state);
+  const close = unmarked(spine, true);
+  const collateral = useRead(spine && !close ? getBookCollateral : null,
+                             [clockOf(state), state.seat, close?.title]);
+  const paper = recording ? state.paper.data : null;
+  if (!xva.data || !doc || !schema || (recording && !paper)) return null;
+
+  const view = xva.data;
+  const currency = risk.data?.currency ?? currencyOf(doc);
+  const market = marketOf(state);
+  const factors = market?.['Price Factors'] ?? {};
+  const rows = rowsByPath(toRows(doc.Calc.Deals.Deals.Children, [], undefined));
+  const client = (id: string): Client => {
+    const agreements = agreementsOf(id, paper?.agreements ?? null, rows, view.sets);
+    const lines = creditLines(id, {
+      sets: view.sets, agreements, rows, positions: paper?.positions ?? null,
+      marks: risk.marks, calls: recording ? collateral.data?.calls ?? null
+        : agreements.map((row) => statedHolding(row.terms, fieldsOf(schema, SET) ?? {}, market)),
+    });
+    const own = lines.filter((line) => !line.run?.note);
+    const factor = factors[`${SURVIVAL}.${id}`];
+    const curve = curveOf(token(factor, 'Curve'));
+    const [first] = curve ? spreads(curve.data, Number(token(factor, 'Recovery_Rate'))) : [];
+    return {
+      id, name: entityText(paper?.entities ?? null, id), lines, wrong: wrongWith(lines),
+      spread: first && [first[0], first[1]], value: summed(own.map((line) => line.value)),
+      after: summed(own.map((line) => exposureAfter(line, currency))),
+      limit: limitOf(id, view.limits),
+    };
+  };
+  const marked = (unread?: string) => closeRead(collateral.data?.date, !!close, unread);
+  return {
+    view, risk, collateral, close, marked, client,
+    ids: [...new Set([...(paper?.entities ?? []).map((row) => row.entity),
+                      ...view.sets.flatMap((set) => (set.counterparty ? [set.counterparty] : []))])],
+    reads: { currency, recording, noClose: !!close, collateralError: collateral.error,
+             riskError: risk.error, read: view.as_of,
+             heldOn: recording ? `the call · ${marked('close unread')}` : "as each set's terms state" },
+  };
+}
+
+/** The credit table: a row per client, a client trading under several netting sets each beneath it,
+ * and a set's row opening its profile. */
+export function CreditTable({ clients, reads }: { clients: Client[]; reads: Reads }) {
+  const [opened, setOpened] = useState<string | null>(null);
+  return (
+    <div className="tablewrap">
+      <table className="data desk xva credit">
+        <thead>
+          <tr>
+            <th>Client<div className="sub">its sets beneath it</div></th>
+            <th className="n">Spread<div className="sub">bp, its curve's first tenor</div></th>
+            <th>Paper<div className="sub">by the agreement's terms</div></th>
+            <th className="n">Trades<div className="sub">on · waiting on a second seat</div></th>
+            <th className="n">Value to the desk<div className="sub">{reads.currency} now · + the client owes</div></th>
+            <th className="n">Collateral held<div className="sub">{reads.heldOn}</div></th>
+            <th className="n">After collateral<div className="sub">{reads.currency} · nought if owed</div></th>
+            <th className="n">Peak EE<div className="sub">run currency · its day</div></th>
+            <th className="n">Peak PFE<div className="sub">its percentile · its day</div></th>
+            <th className="n">CVA<div className="sub">{PLUS.CVA}</div></th>
+            <th className="n">FVA<div className="sub">{PLUS.FVA}</div></th>
+            <th>Run<div className="sub">its age</div></th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {clients.map((client) => (
+            <ClientRows key={client.id} client={client} reads={reads} opened={opened}
+                        onOpen={(set) => setOpened(opened === set ? null : set)} />
+          ))}
+          {clients.length === 0 && (
+            <tr><td colSpan={13} className="hint">no client is declared and no netting set
+              names one: there is no credit to read.</td></tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 const amount = (value: number | null) => (value === null ? '—' : formatNumber(value, 'whole'));
 

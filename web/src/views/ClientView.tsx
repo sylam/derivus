@@ -4,14 +4,13 @@ import {
   baseDateOf, cellText, quoted, rowsByPath, sizeOf, toRows, type BlotterRow, type Picked,
 } from '../blotter';
 import {
-  CLIENT, RUNS, agreementsOf, bookedSince, bookedText, fundedAt, heldUnder, limitOf,
-  readiness, ready, termsReading, touching, type Held, type Line, type Term,
+  CLIENT, RUNS, agreementsOf, fundedAt, heldUnder, readiness, ready, termsReading, touching,
+  type Held, type Line, type Term,
 } from '../client';
 import { EmptyState } from '../components/EmptyState';
 import { Navigator } from '../components/Navigator';
 import {
-  PLUS, SURVIVAL, ageOf, creditCounterparties, entityText, lastRunChip, offBook, plural,
-  spreads, stampText, valuationDay,
+  SURVIVAL, creditCounterparties, entityText, offBook, plural, spreads, stampText, valuationDay,
 } from '../desk';
 import {
   positionName, statusText, type Agreement, type Entity, type Position,
@@ -22,20 +21,17 @@ import {
 } from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
 import { markOf, markShown, markText, noMark, wholeRecord } from '../trade';
-import type {
-  ActivityRow, BookXva, Market, Schema, SettlementState, XvaSet,
-} from '../types';
+import type { ActivityRow, Market, Schema, SettlementState } from '../types';
 import { AgreementForm } from '../components/AgreementForm';
 import { CreditCard, SpreadTable } from '../components/CreditCard';
-import { Amount, Back, LimitLine, Money, Side, Value } from '../components/Desk';
+import { Amount, Back, Side, Value } from '../components/Desk';
+import { CreditTable, useCredit } from './XvaView';
 
-/** What the page reads beside the store: on a desk that keeps one the record's paper, the XVA
- * projection, and the consolidated risk for the marks. */
+/** What the page reads beside the store: on a desk that keeps one the record's paper, and the
+ * consolidated risk for the marks. */
 type Reads = {
   entities: Entity[] | null; agreements: Agreement[] | null; positions: Position[] | null;
-  unstated: SettlementState | null;
-  xva: { data: BookXva | null; error: string | null };
-  risk: ReturnType<typeof bookRisk>;
+  unstated: SettlementState | null; risk: ReturnType<typeof bookRisk>;
 };
 
 /** One page per client: whether it is ready to trade, its agreements in a credit officer's words,
@@ -66,7 +62,7 @@ export function ClientView() {
   const held = recording ? paper.data : null;
   const reads: Reads = {
     entities: held?.entities ?? null, agreements: held?.agreements ?? null,
-    unstated: held?.unstated ?? null, positions: held?.positions ?? null, xva, risk,
+    unstated: held?.unstated ?? null, positions: held?.positions ?? null, risk,
   };
   const market = marketOf(state);
   const factors = market?.['Price Factors'] ?? {};
@@ -191,7 +187,7 @@ function ClientPage({ id, lines, own, reads, rows, factor, market, schema }: {
       </div>
 
       <OnBook own={own} reads={reads} rows={rows} market={market} schema={schema} />
-      <XvaRows id={id} xva={reads.xva} positions={reads.positions} />
+      <XvaRows id={id} />
       <Happened history={entities && history} />
     </div>
   );
@@ -391,71 +387,22 @@ function TradeRow({ trade, market, schema, recording, mark }: {
   );
 }
 
-/** The client's XVA rows - each the last run of a set naming it - with when each ran and, on a
- * desk that records, the trades booked under the set since off the record's `positions`. */
-function XvaRows({ id, xva, positions }: {
-  id: string; xva: Reads['xva']; positions: Position[] | null;
-}) {
-  const sets = (xva.data?.sets ?? []).filter((set) => set.counterparty === id);
-  const limit = xva.data && limitOf(id, xva.data.limits);
+/** The client's credit rows as the XVA table reads them (`useCredit`): each set's last run, its
+ * value, collateral and peaks, and what is wrong under it. */
+function XvaRows({ id }: { id: string }) {
+  const { state } = useApp();
+  const credit = useCredit();
   return (
     <section className="card">
       <h3>XVA</h3>
-      {xva.error && <div className="error-box">{xva.error}</div>}
-      {!xva.data && !xva.error && <div className="hint">Reading the projection…</div>}
-      {limit && <LimitLine read={limit} />}
-      {xva.data && !sets.length && (
-        <div className="note">No netting set names {id} in the book, and the projection holds no
-          row for one: there is no XVA to read.</div>
-      )}
-      {sets.length > 0 && (
-        <table className="data desk xva">
-          <thead>
-            <tr>
-              <th>Netting set</th><th>CSA</th>
-              <th className="n">CVA<div className="sub">{PLUS.CVA}</div></th>
-              <th className="n">FVA<div className="sub">{PLUS.FVA}</div></th>
-              <th>Run</th><th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sets.map((set) => (
-              <XvaRow key={set.reference} set={set} read={xva.data!.as_of}
-                      booked={positions && bookedSince(set, positions)} />
-            ))}
-          </tbody>
-        </table>
-      )}
-      {sets.length > 0 && (
-        <div className="note">In this table {RUNS}. {fundedAt(xva.data!.funding)}</div>
+      {state.xva.error && <div className="error-box">{state.xva.error}</div>}
+      {!credit ? !state.xva.error && <div className="hint">Reading the projection…</div> : (
+        <>
+          <CreditTable clients={[credit.client(id)]} reads={credit.reads} />
+          <div className="note">In this table {RUNS}. {fundedAt(credit.view.funding)}</div>
+        </>
       )}
     </section>
-  );
-}
-
-function XvaRow({ set, read, booked }: { set: XvaSet; read: string; booked: number | null }) {
-  const age = ageOf(set.as_of, read);
-  const chip = lastRunChip(set);
-  const money = (value: number | null) => (value === null ? <span className="hint">—</span>
-    : <Money value={value} currency={set.currency} />);
-  return (
-    <>
-      <tr className={set.note ? 'muted' : undefined}>
-        <td><b>{set.reference}</b>{set.note && <span className="badge" title={set.note}>left the book</span>}</td>
-        <td><span className={`chip${set.collateralized ? ' on' : ''}`}>
-          {set.collateralized ? 'CSA' : 'no CSA'}</span></td>
-        <td className="n">{money(set.cva)}</td>
-        <td className="n">{money(set.fva)}</td>
-        <td className={`age ${booked ? 'stale' : age.tone}`} title={age.title}>
-          {set.as_of ? `${stampText(set.as_of)} · ${age.text}` : age.text}
-          {!!booked && <div>{bookedText(booked)}</div>}</td>
-        <td><span className={`chip ${chip.tone}`} title={chip.title}>{chip.text}</span>
-          {set.recalc && <span className="chip running">{set.recalc.status}</span>}</td>
-      </tr>
-      {set.status === 'failed' && set.error && (
-        <tr className="detail"><td colSpan={6}><div className="error-box">{set.error}</div></td></tr>
-      )}
-    </>
   );
 }
 

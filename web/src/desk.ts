@@ -655,25 +655,6 @@ export function isOrphan(set: XvaSet): boolean {
   return set.note !== null;
 }
 
-export type Chip = { text: string; tone: string; title: string };
-
-export function lastRunChip(set: XvaSet): Chip {
-  switch (set.status) {
-    case 'done':
-      return { text: 'done', tone: 'done', title: 'the last recalc of this set completed' };
-    case 'failed':
-      return { text: 'failed', tone: 'error', title: set.error ?? 'the last recalc failed' };
-    case 'never run':
-      return {
-        text: 'never run', tone: '',
-        title: 'the book carries this set, but no recalc has ever produced a row for it',
-      };
-    default:
-      // a status this view has never heard of is still shown, as itself
-      return { text: set.status, tone: '', title: set.status };
-  }
-}
-
 /** One currency's sums: the CVA over the book's own sets that have RUN in it - never an orphan,
  * whose exposure has left the book, nor a set with no number - and the FVA over the rows that CARRY
  * one, counted apart since a row filed before the column existed reads null there. `currency` is
