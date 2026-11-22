@@ -2035,16 +2035,18 @@ def quote_run(run, reading=Context):
     instead, and why. `reading` makes the contexts it loads on (`spine.reading`).
 
     THE REFIT IS THE MARKET'S, NOT THE BOOK'S: kept on the live book (`Book.calibrations`) by the
-    hash of the market, the files it names and the blocks refitted, a later run over that market -
-    a booking, a second reader - values its own deals on it, one at a time from a zero gradient."""
+    hash of all a fit reads - the market, the calendar its benchmarks roll on, the files they name
+    and the day a market stating no date reads as (`stamp`) - and the blocks refitted, a later run
+    over that market - a booking, a second reader - values its own deals on it, one at a time from
+    a zero gradient."""
     loaded = load(run, reading())
     prices = loaded.current_cfg.params['Market Prices']
     universe = set(loaded.current_cfg.factor_universe()['resolved']) if prices else set()
     blocks = sorted(quote_blocks(loaded.current_cfg.params, universe))
     if not blocks:
         return utils.run_whole(loaded.run_job)[1], [], [], None
-    key = content_hash({'market': stamp(run, 'MergeMarketData', reading=reading),
-                        'blocks': blocks})
+    key = content_hash({'market': stamp(run, 'MergeMarketData', 'CalendDataFile', today=True,
+                                        reading=reading), 'blocks': blocks})
     kept = BOOK and BOOK.calibrations.get(key)
     if kept:
         context, note, lock = kept

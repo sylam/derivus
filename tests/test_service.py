@@ -1148,6 +1148,51 @@ def test_the_risk_is_kept_under_today_beside_all_it_reads(book):
     assert CLIENT.get('/book/risk').json()['etag'] == hand
 
 
+def test_a_calendar_rewritten_on_disk_refits_the_quotes_the_risk_is_read_in(book, tmp_path):
+    """The quote-space refit reads the calendar the book names, so it is kept under that file's
+    bytes beside the market's: the rand curve set up from its rows, its deposit and FRA paying on
+    a calendar the book names, and that calendar rewritten with a holiday on each of their dates,
+    the served book's risk is the one a book served afresh reads - the deposit's derivative moves
+    from about 3,031 to 2,995 per unit of its quote.
+
+    Killing mutation: the refit kept under the market alone, which reads the old calendar's fit.
+    """
+    assert set_up_curve().status_code == 200
+    calendar = tmp_path / 'calendars.xml'
+
+    def written(days):
+        calendar.write_text('<Calendars>\n  <Calendar Location="Testland" Weekends="Saturday and '
+                            'Sunday" Holidays="{}"/>\n</Calendars>\n'.format(
+                                ', '.join(day + '|H' for day in days)))
+
+    def risk():
+        answer = CLIENT.get('/book/risk')
+        assert answer.status_code == 200, answer.text
+        return answer.json()
+
+    document = json.loads(book.read_text())
+    points = document['Calc']['MergeMarketData']['ExplicitMarketData']['Market Prices'][
+        CURVE_BLOCK]['instrument']['Points']
+    dated = {'DepositDeal': 'Payment_Calendars', 'FRADeal': 'Calendars'}
+    for point in points:
+        if point['DealType'] in dated:
+            point['Deal'][dated[point['DealType']]] = 'Testland'
+    written([])
+    document['Calc']['CalendDataFile'] = str(calendar)
+    book.write_text(json.dumps(document, indent=4), newline='\n')
+    assert CLIENT.post('/book/market', json={'bootstrap': 'Yes'}).json()['written'] is True
+    before = risk()
+
+    written(sorted({value['.Timestamp'][:10] for point in points if point['DealType'] in dated
+                    for value in point['Deal'].values()
+                    if isinstance(value, dict) and '.Timestamp' in value} - {str(BASE.date())}))
+    served = risk()
+    service.BOOK = service.Book(str(book))
+    fresh = risk()
+    assert served['quotes'] == fresh['quotes'] != before['quotes']
+    assert served['mtm'] == fresh['mtm'] != before['mtm']
+
+
 def test_a_saved_calculation_is_judged_as_a_run_reads_its_wire_tags(tmp_path, monkeypatch):
     """A saved block is judged as a run decodes it: a `Base_Date` posted as `{".Timestamp": ...}`,
     the form `/book` answers it in, is a date, while a tag naming nothing is refused by name.
