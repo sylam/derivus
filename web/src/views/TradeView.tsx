@@ -21,7 +21,7 @@ import {
   tradeName, tradeSize, unwindAgainst, unwindFill, unwindWords, wholeRecord, type Price,
 } from '../trade';
 import type { QuoteGiven } from '../types';
-import { Back, DealEditor, OnStrip, Side, Stat, Value } from '../components/Desk';
+import { Back, DealEditor, Gated, OnStrip, Side, Stat, Value } from '../components/Desk';
 import { CreditCharge, TicketCard } from '../components/TicketCard';
 
 /** One trade's rows on the record, newest first, asked for by its path where the desk keeps one
@@ -403,12 +403,12 @@ function Actions({ row, held, recording }: {
         ) : open.length ? open.map((position) => {
           const key = `${position.agreement}/${position.portfolio}`;
           const kept = heldBack(state, 'fill', judgedAt([position]));
-          return kept ? <div key={key} className="note">{kept}</div>
-            : <Unwind key={key} row={row} position={position} net={netOf(held)}
-                      onVerdict={setVerdict} />;
-        }) : hold ? <div className="note">{hold}</div> : (
-          <div className="note">{unread(state.paper) ?? `${held.length
-            ? 'Closed: the record holds none of it' : noneShown(state)}, so there is nothing to unwind.`}</div>
+          return <Gated key={key} hold={kept}><Unwind row={row} position={position}
+            net={netOf(held)} onVerdict={setVerdict} /></Gated>;
+        }) : (
+          <Gated hold={hold}><div className="note">{unread(state.paper) ?? `${held.length
+            ? 'Closed: the record holds none of it' : noneShown(state)}, so there is nothing to unwind.`}
+          </div></Gated>
         )}
         {verdict && (verdict.booked ? (
           <>

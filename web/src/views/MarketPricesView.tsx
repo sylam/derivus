@@ -154,7 +154,7 @@ export function MarketPricesView() {
 
   return (
     <Navigator
-      screen="prices" head={hold ? <div className="note">{hold}</div> : <BloombergTick />}
+      screen="prices" head={<Gated hold={hold}><BloombergTick /></Gated>}
       empty="this book quotes nothing"
       pages={Object.keys(blocks).sort().map((name) => {
         const [family, ...rest] = name.split('.');

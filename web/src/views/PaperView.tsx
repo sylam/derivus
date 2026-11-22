@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { declareEntity, failure } from '../api';
 import { entityText } from '../desk';
 import { openClient } from '../client';
+import { Gated } from '../components/Desk';
 import { EmptyState } from '../components/EmptyState';
 import { type Agreement, type Entity, NO_PAPER, noPaper } from '../positions';
 import { heldBack, opened, spineOf, standing, useApp } from '../state';
@@ -112,8 +113,8 @@ function EntityForm({ entities }: { entities: Entity[] }) {
     }
   }
 
-  return hold ? <div className="note">{hold}</div> : (
-    <div className="statusrow">
+  return (
+    <Gated hold={hold}><div className="statusrow">
       {(['entity', 'name'] as const).map((field) => (
         <input key={field} placeholder={field} value={entity[field]}
                onChange={(event) => setEntity({ ...entity, [field]: event.target.value })} />
@@ -127,6 +128,6 @@ function EntityForm({ entities }: { entities: Entity[] }) {
       </select>
       <button className="ghost" onClick={declare}>declare the entity</button>
       {said && <span className={said.refused ? 'refusal' : 'hint'}>{said.text}</span>}
-    </div>
+    </div></Gated>
   );
 }

@@ -114,12 +114,14 @@ export function Amount({ value, currency, absent, title, kind = 'whole' }: {
   );
 }
 
-/** A control in its button's place: where the seat is held from it (`hold`), its `label` and the
- * line holding it; else the control, where one is given. */
+/** A control in its place: where the seat is held from it (`hold`), its `label` and the line holding
+ * it in its button's place, or with no label the line in a note in place of a whole form; else the
+ * control, where one is given. */
 export function Gated({ label, hold, children }: {
-  label: string; hold: string | null; children?: ReactNode;
+  label?: string; hold: string | null; children?: ReactNode;
 }) {
-  return hold ? <><span className="hint">{label}</span><span>{hold}</span></> : <>{children}</>;
+  return !hold ? <>{children}</> : label === undefined ? <div className="note">{hold}</div>
+    : <><span className="hint">{label}</span><span>{hold}</span></>;
 }
 
 /** A queued job's wait, and what ended it where that was a refusal (`useQueued`). */

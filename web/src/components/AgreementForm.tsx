@@ -8,6 +8,7 @@ import type { Agreement, Entity } from '../positions';
 import { heldBack, useApp } from '../state';
 import { COLLATERAL, onPaper, statedOnly, termsMoved, uncollateralised } from '../tokens';
 import type { Schema, SettlementState } from '../types';
+import { Gated } from './Desk';
 import { DealPanels } from './FieldView';
 
 /** Declaration outcome: where it landed or the service's refusal sentence. */
@@ -58,7 +59,7 @@ export function AgreementForm({ schema, entities, agreements, unstated, from }: 
   return (
     <section className="card" ref={card}>
       <h3>{held ? `Restate ${held.agreement}` : 'Declare an agreement'}</h3>
-      {hold ? <div className="note">{hold}</div> : <>
+      <Gated hold={hold}>
       <div className="statusrow">
         <input placeholder="agreement" value={named.agreement}
                onChange={(event) => setNamed({ ...named, agreement: event.target.value })} />
@@ -90,7 +91,7 @@ export function AgreementForm({ schema, entities, agreements, unstated, from }: 
           from each collateral settlement the Back Office files.</div>
       )}
       <AgreementTerms schema={schema} terms={terms} unstated={unstated} onChange={setTerms} />
-      </>}
+      </Gated>
     </section>
   );
 }

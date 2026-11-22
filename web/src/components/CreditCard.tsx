@@ -7,6 +7,7 @@ import {
 } from '../desk';
 import { actingSeat, heldBack, useApp, written } from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
+import { Gated } from './Desk';
 import { Whose } from './Whose';
 
 /** Prefix identifying a credit page id in the Curves navigator. */
@@ -108,7 +109,7 @@ export function CreditCard({ id, title, factor, base, convention, recording }: {
       </section>
       <section className="card credit">
         <h3>{curve ? 'Restate the curve' : 'State the curve'}</h3>
-        {hold ? <div className="note">{hold}</div> : <>
+        <Gated hold={hold}>
         {!id && (
           <div className="statusrow">
             <input placeholder={recording ? 'an entity the record declares' : 'counterparty'}
@@ -174,7 +175,7 @@ export function CreditCard({ id, title, factor, base, convention, recording }: {
           {said?.at === 'done' && <span className="chip done">{said.text}</span>}
           {refusal('act')}{id && refusal('counterparty')}
         </div>
-        </>}
+        </Gated>
       </section>
     </>
   );

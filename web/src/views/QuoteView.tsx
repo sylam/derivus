@@ -457,8 +457,7 @@ function Acceptance({ id, pending, verdict, quoting, onVerdict, onRequote }: {
             <span>The client's price stands on the record at position {pending.accepted.lsn}; this
               desk's tiers did not book it, and quoting again does not change that.</span>
           </div>
-        ) : hold ? <div className="note">{hold}</div>
-        : asking ? (
+        ) : <Gated hold={hold}>{asking ? (
           <div className="banner">
             Book the {salesName(state.schema, quote.structure)} for{' '}
             <b>{clientText(quote.netting_set, paper.entities, paper.agreements)}</b> at net{' '}
@@ -477,7 +476,7 @@ function Acceptance({ id, pending, verdict, quoting, onVerdict, onRequote }: {
                 : 'This desk keeps no record: the acceptance writes the trade into the book file.'}
             </span>
           </div>
-        )}
+        )}</Gated>}
         {verdict?.words.filter(Boolean).map((words) => (
           <div key={words} className={verdict.booked ? 'note' : 'error-box'}>{words}</div>
         ))}

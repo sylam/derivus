@@ -831,13 +831,16 @@ check("a run's peaks are its row's: the expected exposure's and each PFE column'
 // --- the primitives of `components/Desk.tsx`, as the markup they draw
 const draw = await drawer('Desk');
 check("a control the seat is held from is said in its button's place, its label then the line "
-      + 'holding it; the control where nothing holds it, and nothing where none is given',
+      + 'holding it, and a whole form with no label in a note; the control where nothing holds '
+      + 'it, and nothing where none is given',
       'the control drawn under a hold, which offers a seat a button whose press files a denial; '
-      + 'the line holding it dropped, which names a control and not why it is missing; or the '
-      + 'label said where nothing holds',
+      + 'the line holding it dropped, which names a control and not why it is missing; the '
+      + 'label said where nothing holds; or a held form said as a bare line beside the page',
       [draw('Gated', { label: 'run', hold: HOLD }, 'Run'),
-       draw('Gated', { label: 'run', hold: null }, 'Run'), draw('Gated', { label: 'run', hold: null })],
-      [`<span class="hint">run</span><span>${HOLD}</span>`, 'Run', '']);
+       draw('Gated', { label: 'run', hold: null }, 'Run'), draw('Gated', { label: 'run', hold: null }),
+       draw('Gated', { hold: HOLD }, 'Form'), draw('Gated', { hold: null }, 'Form')],
+      [`<span class="hint">run</span><span>${HOLD}</span>`, 'Run', '', `<div class="note">${HOLD}</div>`,
+       'Form']);
 check("an amount's cell draws a negative in the loss colour, the exact value on its hover unless its "
       + 'title says what the figure is, the currency after the amount; one not known is a dash '
       + 'under what is missing, and an empty cell where that is not said',
