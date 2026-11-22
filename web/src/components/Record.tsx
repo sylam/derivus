@@ -113,20 +113,24 @@ export function WorklistBanner() {
 }
 
 /** Who this browser acts as where the service checks no token: the seat a write is filed under
- * and a read narrowed to, kept in this browser and in the store, so every read waiting on it asks
- * again. A stored sign-in token names the seat instead. */
+ * and a read narrowed to, kept in this browser and in the store once committed - on leaving the
+ * box or Enter - so every read waiting on it asks again once, not at each letter. A stored sign-in
+ * token names the seat instead. */
 export function SeatControl() {
   const { state, dispatch } = useApp();
+  const [seat, setSeat] = useState(state.seat);
   if (stored(TOKEN)) return <span className="hint">signed in</span>;
+  const commit = () => {
+    if (seat === state.seat) return;
+    try {
+      localStorage.setItem(SEAT, seat);
+    } catch { /* storage blocked: the seat lasts the page */ }
+    dispatch({ type: 'SEAT', seat });
+  };
   return (
-    <input className="seat" placeholder="seat" value={state.seat}
-           title="the seat this desk acts as"
-           onChange={(event) => {
-             try {
-               localStorage.setItem(SEAT, event.target.value);
-             } catch { /* storage blocked: the seat lasts the page */ }
-             dispatch({ type: 'SEAT', seat: event.target.value });
-           }} />
+    <input className="seat" placeholder="seat" value={seat} title="the seat this desk acts as"
+           onChange={(event) => setSeat(event.target.value)} onBlur={commit}
+           onKeyDown={(event) => { if (event.key === 'Enter') commit(); }} />
   );
 }
 
