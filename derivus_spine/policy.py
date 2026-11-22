@@ -105,28 +105,37 @@ OFFICIAL_RUNS = ('CreditMonteCarlo',)
 LIMITS_SECTION = 'limits'
 
 
+def _section(document, where, policy, section, key, value):
+    """`(entries, refuse)` - the one section of a single-section `policy` document, checked, and
+    the refusal its parser goes on with: the document a JSON object closed at `section`, the
+    section an object of `key` -> `value`, empty where the policy states nothing."""
+    def refuse(sentence):
+        raise MalformedEvent('{}: {}'.format(where, sentence))
+
+    if not isinstance(document, dict):
+        refuse('a {} policy is {}, not a JSON object - it is {{"{}": {{{}: {}}}}}'.format(
+            policy, type(document).__name__, section, key, value))
+    surplus = sorted(set(document) - {section})
+    if surplus:
+        refuse('a {} policy carries {} beyond {} - the document is closed at the field level; '
+               'drop the key or version the document shape'.format(
+                   policy, ', '.join(surplus), section))
+    entries = document.get(section)
+    if not isinstance(entries, dict):
+        refuse('{} is {}, not an object of {} -> {} - a policy stating nothing says so with an '
+               'empty object, so that silence is never mistaken for absence'.format(
+                   section, type(entries).__name__, key, value))
+    return entries, refuse
+
+
 def parse_tolerance(document, where):
     """Check `document` as a tolerance policy and return it parsed. `where` names it in refusals.
 
     One section, every entry an absolute epsilon on one result class: `{"tolerances": {"mtm": 1e-9,
     "cva": 1e-6}}`. Anything else raises `MalformedEvent`.
     """
-    def refuse(sentence):
-        raise MalformedEvent('{}: {}'.format(where, sentence))
-
-    if not isinstance(document, dict):
-        refuse('a tolerance policy is {}, not a JSON object - it is {{"{}": {{class: epsilon}}}}'
-               .format(type(document).__name__, TOLERANCE_SECTION))
-    surplus = sorted(set(document) - {TOLERANCE_SECTION})
-    if surplus:
-        refuse('a tolerance policy carries {} beyond {} - the document is closed at the field '
-               'level; drop the key or version the document shape'.format(
-                   ', '.join(surplus), TOLERANCE_SECTION))
-    entries = document.get(TOLERANCE_SECTION)
-    if not isinstance(entries, dict):
-        refuse('{} is {}, not an object of result class -> epsilon - a policy that tolerates '
-               'nothing says so with an empty object, so that silence is never mistaken for '
-               'absence'.format(TOLERANCE_SECTION, type(entries).__name__))
+    entries, refuse = _section(document, where, TOLERANCE_POLICY, TOLERANCE_SECTION,
+                               'result class', 'epsilon')
     for name, epsilon in sorted(entries.items()):
         if not is_text(name):
             refuse('{} is keyed by {!r}, and a class that names nothing is not a class'.format(
@@ -185,22 +194,8 @@ def parse_fixings(document, where):
     `{"sources": {"FxRate.ZAR": ["ECB", "BFIX"]}}`. The order IS the authority - the first named
     source holding a print is the fixing in force - so it is a list and never a set.
     """
-    def refuse(sentence):
-        raise MalformedEvent('{}: {}'.format(where, sentence))
-
-    if not isinstance(document, dict):
-        refuse('a fixings policy is {}, not a JSON object - it is {{"{}": {{index: [source, ...]}}}}'
-               .format(type(document).__name__, FIXINGS_SECTION))
-    surplus = sorted(set(document) - {FIXINGS_SECTION})
-    if surplus:
-        refuse('a fixings policy carries {} beyond {} - the document is closed at the field level; '
-               'drop the key or version the document shape'.format(
-                   ', '.join(surplus), FIXINGS_SECTION))
-    entries = document.get(FIXINGS_SECTION)
-    if not isinstance(entries, dict):
-        refuse('{} is {}, not an object of index -> source order - a policy naming no index says so '
-               'with an empty object, so that silence is never mistaken for absence'.format(
-                   FIXINGS_SECTION, type(entries).__name__))
+    entries, refuse = _section(document, where, FIXINGS_POLICY, FIXINGS_SECTION,
+                               'index', '[source, ...]')
     for index, order in sorted(entries.items()):
         if not is_text(index):
             refuse('{} is keyed by {!r}, and an index that names nothing is not an index'.format(
@@ -386,22 +381,8 @@ def parse_calculation(document, where):
     and where a run reads it - and a type no official run reads (`OFFICIAL_RUNS`) is refused by
     name.
     """
-    def refuse(sentence):
-        raise MalformedEvent('{}: {}'.format(where, sentence))
-
-    if not isinstance(document, dict):
-        refuse('a calculation policy is {}, not a JSON object - it is {{"{}": {{type: block}}}}'
-               .format(type(document).__name__, CALCULATION_SECTION))
-    surplus = sorted(set(document) - {CALCULATION_SECTION})
-    if surplus:
-        refuse('a calculation policy carries {} beyond {} - the document is closed at the field '
-               'level; drop the key or version the document shape'.format(
-                   ', '.join(surplus), CALCULATION_SECTION))
-    entries = document.get(CALCULATION_SECTION)
-    if not isinstance(entries, dict):
-        refuse('{} is {}, not an object of calculation type -> block - a policy stating nothing '
-               'says so with an empty object, so that silence is never mistaken for absence'.format(
-                   CALCULATION_SECTION, type(entries).__name__))
+    entries, refuse = _section(document, where, CALCULATION_POLICY, CALCULATION_SECTION,
+                               'calculation type', 'block')
     for name, block in sorted(entries.items()):
         if name not in OFFICIAL_RUNS:
             refuse('{} states a block for {!r}, which no official run reads - the runs that read '
@@ -421,22 +402,8 @@ def parse_limits(document, where):
     "currency": "USD"}}}`. The SHAPE alone is checked - whether the record holds the entity is the
     declaring verb's to judge, a parser being handed no log.
     """
-    def refuse(sentence):
-        raise MalformedEvent('{}: {}'.format(where, sentence))
-
-    if not isinstance(document, dict):
-        refuse('a limits policy is {}, not a JSON object - it is {{"{}": {{entity: limit}}}}'
-               .format(type(document).__name__, LIMITS_SECTION))
-    surplus = sorted(set(document) - {LIMITS_SECTION})
-    if surplus:
-        refuse('a limits policy carries {} beyond {} - the document is closed at the field level; '
-               'drop the key or version the document shape'.format(
-                   ', '.join(surplus), LIMITS_SECTION))
-    entries = document.get(LIMITS_SECTION)
-    if not isinstance(entries, dict):
-        refuse('{} is {}, not an object of legal entity -> limit - a policy limiting nobody says '
-               'so with an empty object, so that silence is never mistaken for absence'.format(
-                   LIMITS_SECTION, type(entries).__name__))
+    entries, refuse = _section(document, where, LIMITS_POLICY, LIMITS_SECTION,
+                               'legal entity', 'limit')
     for entity, limit in sorted(entries.items()):
         _cap(limit, 'the limit on {!r} is'.format(entity), refuse, 'limit', zero=False)
     return {LIMITS_SECTION: {entity: dict(limit) for entity, limit in entries.items()}}
