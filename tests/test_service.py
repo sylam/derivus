@@ -7243,12 +7243,22 @@ def test_a_trade_beside_its_mirror_is_worth_nothing_on_every_path(tmp_path, monk
     every cell of its exposure cube, and its CVA, FVA and every exposure peak read 0.0 exactly.
     The increment into that set is the call's own numbers, to the bit.
 
-    Killing mutation: the mirror left out of the 'without' run, which reads the call's own numbers.
+    FLAT AT ITS PEAK, THE FIRST DAY. A profile that is nothing on every day reaches its peak on
+    each of them, and the day reported is the first: on the charge's 'without' run, and on the
+    XVA row of NS_F, a set the book carries holding a call beside the same call sold.
+
+    Killing mutations: the mirror left out of the 'without' run, which reads the call's own
+    numbers; the last day a peak is reached answered (`peak_of`), where both read the day the
+    profile ends.
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path))
-    xva_book(tmp_path, [netting_set('NS_E', 'CPTY_A', [])])
+    pair = [dict(VANILLA, Reference='OPT_L'), dict(VANILLA, Reference='OPT_S', Buy_Sell='Sell')]
+    xva_book(tmp_path, [netting_set('NS_E', 'CPTY_A', []), netting_set('NS_F', 'CPTY_A', pair)])
     try:
         result_id, result = increment(deal=SHORT_CALL, parent_reference='NS_E')
+        recalc(['NS_F'])
+        flat = xva_rows()['NS_F']
+        days = CLIENT.get('/book/xva/NS_F/profile').json()['profile']['index']
     finally:
         service.BOOK = None
     assert result['status'] == 'done', result.get('error')
@@ -7258,6 +7268,13 @@ def test_a_trade_beside_its_mirror_is_worth_nothing_on_every_path(tmp_path, monk
         with_, without = (row['peak'] if isinstance(row, dict) else row
                           for row in (answer[name]['with'], answer[name]['without']))
         assert without == 0.0 and answer[name]['increment'] == with_ > 0.0, name
+
+    charged = [label['.Timestamp'] for label in fetch(
+        result_id, 'without/exposure_profile')['index']]
+    assert len(charged) > 1 and {answer[name]['without']['day'] for name in ('EE', 'PFE_95')} == {
+        charged[0]}
+    assert len(days) > 1 and (flat['status'], flat['peaks']) == ('done', dict.fromkeys(
+        ('EE', 'PFE_95'), {'value': 0.0, 'day': days[0]}))
 
 
 @pytest.fixture
