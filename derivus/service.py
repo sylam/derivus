@@ -3444,7 +3444,7 @@ def carried(job, day, reading=Context):
     refused in the bootstrap's own words where that complains. `reading` makes the contexts it
     loads on (`spine.reading`)."""
     rolled = deepcopy(job)
-    write, outcome = date_edit(rolled, read_stamp(day), reading)
+    write, outcome = curve_edit(rolled, {}, read_stamp(day), stated=True, reading=reading)
     if not write:
         raise ValueError('the start would not roll onto {}: {}'.format(
             day, '; '.join(outcome['refused'])))
@@ -4930,8 +4930,9 @@ def market_edit(document, quotes, patch, bootstrap=None, authored=(), reading=Co
     A RETIRED ENTRY IS THE FILE'S AGAIN: each path of `retire` names an entry the explicit block
     states, its section first and every key below it, and the entry is deleted, a section left
     stating nothing with it, so the market reads the file's entry where the file carries one and
-    the bootstrap covers the whole market. The block's system date retired is `date_edit` back to
-    the file's day first, the calculation's date with it and every curve block re-authored there.
+    the bootstrap covers the whole market. The block's system date retired is stated back to the
+    file's day first (`curve_edit`), the calculation's date with it and every curve block
+    re-authored there.
 
     `patch` is the `Price Factors` half of `patch_market` here and nothing else: a quote IS a
     patchable value to the engine, but on the live book it moves through `quotes`, which
@@ -4955,7 +4956,8 @@ def market_edit(document, quotes, patch, bootstrap=None, authored=(), reading=Co
     outcome = {'installed': [], 'updated': []}
     if dated and 'Base_Date' not in market.get('System Parameters', {}):
         # the book carries its date twice and the date verb moves both: here to the file's day
-        write, outcome = date_edit(document, book_base_date(document), reading)
+        write, outcome = curve_edit(document, {}, book_base_date(document), stated=True,
+                                    reading=reading)
         if not write:
             return write, outcome
     standing = market_of(document, reading())['Market Prices'] if quotes else {}
@@ -5444,7 +5446,8 @@ def authored_curve(document, request):
         raise ValueError(str(error))
 
 
-def curve_edit(document, curves, base_date, quotes={}, patch={}, reading=Context):
+def curve_edit(document, curves, base_date, quotes={}, patch={}, held=(), stated=False,
+               reading=Context):
     """Curve blocks installed as ONE edit closure for `Book.mutate`, then the whole market
     bootstrapped through `market_edit` where the book declares a `Bootstrapper Configuration` - a
     book declaring none moves its dates and blocks and solves nothing.
@@ -5456,11 +5459,25 @@ def curve_edit(document, curves, base_date, quotes={}, patch={}, reading=Context
     bootstrap, and `patch` the values half riding it - the book's own spots, on a tick.
 
     `base_date` is the day the blocks handed in were authored on, stamped onto the book before they
-    land, so the curves and the calculation are dated together or not at all. `reading` makes the
-    contexts it loads on (`spine.reading`).
+    land, so the curves and the calculation are dated together or not at all: where it moves the
+    book, or is `stated` by a desk, every other block is re-authored on it from its own rows and
+    conventions (`curve_quotes`), one it cannot read named under `held_out` beside `held`, what the
+    caller held out itself. A SNAP NEVER ROLLS A BOOK BACK: a date behind the book's refuses by
+    name, a book rolling while the terminal priced the rows being the one window where it could,
+    and only a `stated` date goes anywhere. `reading` makes the contexts it loads on
+    (`spine.reading`).
     """
     from derivus_bloomberg.ir_curve import reauthor
 
+    standing = book_base_date(document)
+    if base_date < standing and not stated:
+        raise ValueError(
+            'the book rolled to {} while the terminal priced these rows, which are authored as of '
+            '{} - a curve is never dated behind its own book and a snap never rolls one back, so '
+            'post it again'.format(standing.isoformat(), base_date.isoformat()))
+    rolled, rolled_held = ({}, []) if base_date == standing and not stated else curve_quotes(
+        None, document, base_date, reading)[:2]
+    curves, held = dict(rolled, **curves), list(dict.fromkeys([*held, *rolled_held]))
     stamp_base_date(document, base_date)
     market, loaded = document['Calc']['MergeMarketData']['ExplicitMarketData'], market_of(
         document, reading())
@@ -5475,8 +5492,14 @@ def curve_edit(document, curves, base_date, quotes={}, patch={}, reading=Context
                           reading=reading)[1]
     write = outcome['written']
     return write, (dict(outcome, base_date=base_date.isoformat(), reauthored=reauthored,
-                        rewrote=rewrote(before, market.get('Price Factors', {}))) if write
-                   else outcome)
+                        rewrote=rewrote(before, market.get('Price Factors', {})), held_out=held)
+                   if write else outcome)
+
+
+def held_rows(name, rows):
+    """The rows of `name` the screen did not believe, each named with its security and verdict."""
+    return ['{} {} ({}): {}'.format(name, row.label, row.security, row.verdict) for row in rows
+            if row.verdict]
 
 
 def curve_quotes(source, document, base_date=None, reading=Context):
@@ -5513,8 +5536,7 @@ def curve_quotes(source, document, base_date=None, reading=Context):
             rows = ir_curve.block_rows(instrument)
             if source is not None:
                 rows = ir_curve.price_rows(source, rows, dated, conventions)
-                held += ['{} {} ({}): {}'.format(name, row.label, row.security, row.verdict)
-                         for row in rows if row.verdict]
+                held += held_rows(name, rows)
             read[name] = (curve, instrument, conventions, ir_curve.hold_out(rows))
         except (BloombergFXError, KeyError) as error:
             # a block authored before the conventions rode beside the quotes declares no
@@ -5578,16 +5600,7 @@ def book_curve(request: dict):
             if 'interpolation' in request:
                 interpolation_rule(document, CURVE_BOOTSTRAPPER, request['curve'],
                                    request['interpolation'] or '')
-            dated = book_base_date(document)
-            if as_of < dated:
-                raise ValueError(
-                    'the book rolled to {} while the terminal priced these rows, which are '
-                    'authored as of {} - a curve is never dated behind its own book and a snap '
-                    'never rolls one back, so post it again'.format(
-                        dated.isoformat(), as_of.isoformat()))
-            rolled, held = ({}, []) if as_of == dated else curve_quotes(None, document, as_of)[:2]
-            write, outcome = curve_edit(document, {**rolled, name: block}, as_of)
-            return write, (dict(outcome, held_out=held) if write else outcome)
+            return curve_edit(document, {name: block}, as_of)
 
         written = live.mutate(edit)
     except (ValueError, KeyError) as error:
@@ -5786,17 +5799,6 @@ def book_market_view(stamp: str = None):
                          'market': None if stamp == current else market_of(document, stamp=current)})
 
 
-def date_edit(document, base_date, reading=Context):
-    """The book's calculation date moved as ONE edit closure for `Book.mutate`: both stamps set,
-    every curve block re-authored on the new date from its own rows and conventions with no
-    terminal asked, and the market re-bootstrapped through `curve_edit` where the book declares a
-    bootstrapper - so a bootstrap that complains writes NOTHING and the date does not move
-    either. `reading` makes the contexts it loads on (`spine.reading`)."""
-    curves, held, _ = curve_quotes(None, document, base_date, reading)
-    write, outcome = curve_edit(document, curves, base_date, reading=reading)
-    return write, (dict(outcome, held_out=held) if write else outcome)
-
-
 @app.post('/book/date', summary="Set the book's calculation date - curves re-rolled, re-solved")
 def book_date(request: dict):
     """`{base_date}` - an ISO day, or the wire `{'.Timestamp': ...}` the book answers with.
@@ -5818,7 +5820,8 @@ def book_date(request: dict):
     live = live_book()
     try:
         base_date = read_stamp(request['base_date'])
-        written = live.mutate(lambda document, etag: date_edit(document, base_date))
+        written = live.mutate(lambda document, etag: curve_edit(
+            document, {}, base_date, stated=True))
     except (ValueError, KeyError) as error:
         raise HTTPException(422, str(error))
     if not written['written']:
@@ -5826,20 +5829,15 @@ def book_date(request: dict):
     return written
 
 
-def spot_routes(mapped, document):
-    """`({PAIR: security}, the currencies with no route)` - the verified pair that prices each
-    `FxRate.<ccy>.Spot` the book carries against the base. A currency the map verified no pair for
-    keeps the spot it had and is named; a cross is never triangulated through a third."""
+def spot_routes(mapped, base, currencies):
+    """`({PAIR: security}, the currencies with no route)` - the verified pair that prices each of
+    `currencies` against `base`. A currency the map verified no pair for keeps the spot it had and
+    is named; a cross is never triangulated through a third."""
     from derivus_bloomberg import security_map
     from derivus_bloomberg.errors import BloombergConfigurationError
 
-    market = market_of(document)
-    base = market['System Parameters']['Base_Currency']
     routes, unrouted = {}, []
-    for name in sorted(market.get('Price Factors', {})):
-        currency = name.split('.', 1)[1] if name.startswith('FxRate.') else base
-        if currency == base:
-            continue
+    for currency in sorted(set(currencies) - {base}):
         try:
             pair, security = security_map.fx_spot_route(mapped, currency, base)
         except BloombergConfigurationError as error:
@@ -5849,17 +5847,37 @@ def spot_routes(mapped, document):
     return routes, unrouted
 
 
-def book_spots(source, routes, document):
-    """The values patch that moves the book's own spots: one request for every route at once,
-    crossed onto the engine's axis. The prints have already been screened for freshness with the
-    surfaces' - a spot is the number every deal in the book reprices off."""
-    from derivus_bloomberg import security_map
+def fetch_quotes(source, definitions, routes, base, note):
+    """`(quote blocks, the spots as a values patch, refusals)` off ONE session: the surface each
+    of `definitions` names, and the spot of every pair `routes` names in one request, crossed onto
+    the engine's axis against `base`.
 
-    base = structures.base_currency(market_of(document))
-    values = security_map.fetch_fx_spot(source, routes.values())
-    return {'FxRate.{}'.format(currency): {'Spot': spot} for currency, spot in
-            structures.crossed_spots(base, {pair: values[security]
-                                            for pair, security in routes.items()}).items()}
+    EVERY QUOTE IS CHECKED FOR FRESHNESS BEFORE ANY IS FETCHED, so the refusals name every dead
+    security rather than the first one found and nothing is fetched at all when one is there - a
+    dead series keeps answering with a plausible number.
+    """
+    from derivus_bloomberg import fetch_fx_vol, security_map, to_market_prices_block
+
+    late = {}
+    for index, definition in enumerate(definitions, 1):
+        note('checking {} {}/{}'.format(definition.pair, index, len(definitions)), index - 1,
+             len(definitions))
+        late.update(security_map.stale(source, sorted(
+            {quote.security for quote in definition.securities.values()})))
+    if routes:
+        late.update(security_map.stale(source, sorted(routes.values())))
+    if late:
+        return {}, {}, ['{} is stale - {}'.format(name, why) for name, why in sorted(late.items())]
+    quotes = {}
+    for index, definition in enumerate(definitions, 1):
+        note('fetching {} {}/{}'.format(definition.pair, index, len(definitions)), index - 1,
+             len(definitions))
+        snapshot = fetch_fx_vol(source, definition)
+        quotes['FXVolPrices.' + snapshot.surface_name] = as_json(to_market_prices_block(snapshot))
+    values = security_map.fetch_fx_spot(source, routes.values()) if routes else {}
+    return quotes, {'FxRate.{}'.format(currency): {'Spot': spot} for currency, spot in
+                    structures.crossed_spots(base, {pair: values[security] for pair, security
+                                                    in routes.items()}).items()}, []
 
 
 def refusal(error):
@@ -5871,46 +5889,33 @@ def refusal(error):
 
 #: What one trip to the terminal came back with: the quote blocks, the re-authored curve blocks,
 #: the spots as a values patch, the rows and blocks it could not read, the currencies it could not
-#: route, the day the prints were snapped, and the late securities that stopped it.
+#: route, the day the prints were snapped, and the refusals of the late securities that stopped it.
 Snapped = namedtuple('Snapped', 'quotes curves spots held unrouted as_of late')
 
 
-def market_fetch(source, mapped, document, pairs, surface={}, note=None, as_of=None):
-    """The desk's market off ONE session: every named surface, every `InterestRatePrices` block the
-    book carries re-valued off its own rows, and every routed spot re-crossed - as `Snapped`.
+def market_fetch(source, mapped, document, pairs, note, surface={}, as_of=None):
+    """The market the book carries off ONE session: every named surface, every routed spot
+    re-crossed (`fetch_quotes`) and every `InterestRatePrices` block re-valued off its own rows
+    (`curve_quotes`) - as `Snapped`.
 
-    THE ONE FETCH BOTH JOBS TAKE. A tick IS this; a set-up whose prints would roll the book's date
-    takes it for the market the book already carries, so a book never holds two days of quotes
-    under one date and there is no second spelling of the trip to drift. `as_of` is the day the
-    rest of that set-up's trip snapped, which the curve blocks are authored on at the earliest.
-
-    Every quote is checked for freshness before any is fetched, so `late` names every dead security
-    rather than the first one found and nothing is fetched at all when one is there.
+    A tick IS this; a set-up whose prints would roll the book's date takes it for the market the
+    book already carries, so a book never holds two days of quotes under one date. `as_of` is the
+    day the rest of that set-up's trip snapped, which the curve blocks are authored on at the
+    earliest.
     """
-    from derivus_bloomberg import fetch_fx_vol, security_map, to_market_prices_block
+    from derivus_bloomberg import security_map
 
-    note = note or (lambda *said, **fields: None)
-    definitions, late = [], {}
-    for index, pair in enumerate(pairs, 1):
-        note('checking {} {}/{}'.format(pair, index, len(pairs)), index - 1, len(pairs))
-        definitions.append(security_map.fx_vol_definition(mapped, pair, **surface))
-        late.update(security_map.stale(source, sorted(
-            {quote.security for quote in definitions[-1].securities.values()})))
-    routes, unrouted = spot_routes(mapped, document)
-    if routes:
-        late.update(security_map.stale(source, sorted(routes.values())))
+    market = market_of(document)
+    base = structures.base_currency(market)
+    routes, unrouted = spot_routes(mapped, base, [name.split('.', 1)[1] for name in market.get(
+        'Price Factors', {}) if name.startswith('FxRate.')])
+    quotes, spots, late = fetch_quotes(source, [security_map.fx_vol_definition(
+        mapped, pair, **surface) for pair in pairs], routes, base, note)
     if late:
-        return Snapped({}, {}, {}, [], unrouted, book_base_date(document), late)
-    quotes = {}
-    for index, definition in enumerate(definitions, 1):
-        note('fetching {} {}/{}'.format(definition.pair, index, len(pairs)), index - 1, len(pairs))
-        snapshot = fetch_fx_vol(source, definition)
-        quotes['FXVolPrices.' + snapshot.surface_name] = as_json(
-            to_market_prices_block(snapshot))
+        return Snapped({}, {}, {}, [], unrouted, None, late)
     note('valuing the curve rows', len(pairs), len(pairs))
     curves, held, as_of = curve_quotes(source, document, as_of)
-    return Snapped(quotes, curves, book_spots(source, routes, document) if routes else {},
-                   held, unrouted, as_of, {})
+    return Snapped(quotes, curves, spots, held, unrouted, as_of, [])
 
 
 class BloombergJob:
@@ -5965,23 +5970,22 @@ class BloombergJob:
                 map_document, created = discover.provision(
                     session, datetime.date.today(), on_batch=on_batch)
                 pairs = self.scope.get('pairs') or sorted(map_document['blocks']['fx_vol'])
-                snapped = market_fetch(session, map_document, document, pairs, surface, self.note)
+                snapped = market_fetch(session, map_document, document, pairs, self.note, surface)
             if snapped.late:
-                return self.outcome(started, unrouted=snapped.unrouted, refused=[
-                    '{} is stale - {}'.format(name, why)
-                    for name, why in sorted(snapped.late.items())])
+                return self.outcome(started, unrouted=snapped.unrouted, refused=snapped.late)
 
             self.note('installing and bootstrapping', len(pairs), len(pairs))
             try:
                 written = self.book.mutate(lambda document, etag: curve_edit(
-                    document, snapped.curves, snapped.as_of, snapped.quotes, snapped.spots))
+                    document, snapped.curves, snapped.as_of, snapped.quotes, snapped.spots,
+                    snapped.held))
             except (ValueError, KeyError) as error:
                 # what `/book/market` turns into a 422, turned into the refusal a JOB lands as -
                 # the metronome's failed-beat handling reads `refused` off these Stats, where
                 # raising would reach it as an unhandled job error
                 return self.outcome(started, refused=[refusal(error)])
             return self.outcome(
-                started, provisioned=created, held_out=snapped.held, unrouted=snapped.unrouted,
+                started, provisioned=created, unrouted=snapped.unrouted,
                 spots={name: fields['Spot'] for name, fields in snapped.spots.items()}, **written)
         except BloombergFXError as error:
             # a name the terminal would not answer for is a named REFUSAL, never a job error: the
@@ -6398,7 +6402,7 @@ def supply_of(factor, base_currency, seed, mapped):
     both read through the SCOPING a verification is asked in, so neither count can drift from what
     `POST /book/securities/verify` would probe.
     """
-    from derivus_bloomberg import discover
+    from derivus_bloomberg import discover, security_map
 
     kind, _, named = factor.partition('.')
     block = SUPPLY_BLOCKS.get(kind)
@@ -6413,7 +6417,7 @@ def supply_of(factor, base_currency, seed, mapped):
                      'FxRate block'.format(named)
     else:
         spellings = ([named.replace('.', '')] if block == 'fx_vol' else
-                     [named + base_currency, base_currency + named])
+                     security_map.spot_pairs(named, base_currency))
         key = next((pair for pair in spellings if pair in
                     ((seed.get(block) or {}).get('pairs') or [])), None)
         missing = 'the seed spells no {} pair for {}'.format(block, ' or '.join(spellings))
@@ -6751,14 +6755,13 @@ class SetupJob:
     def run_job(self):
         import datetime
 
-        from derivus_bloomberg import (discover, fetch_fx_vol, ir_curve, security_map,
-                                       to_market_prices_block)
-        from derivus_bloomberg.errors import BloombergConfigurationError, BloombergFXError
+        from derivus_bloomberg import discover, ir_curve, security_map
+        from derivus_bloomberg.errors import BloombergFXError
         from derivus_bloomberg.session import BloombergSession
 
         started, today = time.perf_counter(), datetime.date.today()
         document, _ = self.book.read()
-        dated = book_base_date(document)
+        dated, base = book_base_date(document), structures.base_currency(market_of(document))
         discovered, not_supplied = {'added': {}, 'revived': {}}, []
         seed, (mapped, _) = desk_seed(), desk_map()
         try:
@@ -6766,7 +6769,7 @@ class SetupJob:
             wanted, factors, not_supplied = self.want(document, seed, mapped)
             if not wanted:
                 return self.outcome(started, not_supplied=not_supplied)
-            quotes, strips, routes, definitions, held = {}, {}, {}, {}, []
+            strips, routes, definitions = {}, {}, []
             with BloombergSession(timeout_ms=30000) as session:
                 for step, ((block, key), _) in enumerate(sorted(wanted.items())):
                     self.note('discovering {} {}'.format(block, key), step, len(wanted))
@@ -6785,37 +6788,20 @@ class SetupJob:
                     self.note('reading {} {}'.format(block, key), step, len(wanted))
                     try:
                         if block == 'fx_vol':
-                            definitions[key] = security_map.fx_vol_definition(mapped, key)
+                            definitions.append(security_map.fx_vol_definition(mapped, key))
                         elif block == 'fx_spot':
-                            entry = (mapped['blocks'].get('fx_spot') or {}).get(key)
-                            if entry is None:
-                                raise BloombergConfigurationError(
-                                    'the map verified no spot for {} - verify it with '
-                                    'verify_securities'.format(key))
-                            routes[key] = entry['security']
+                            pair, security = security_map.fx_spot_route(
+                                mapped, row['factor'].split('.', 1)[1], base)
+                            routes[pair] = security
                         else:
                             strips[key] = ir_curve.curve_conventions(seed, key)
                     except BloombergFXError as error:
                         not_supplied.append({'factor': row['factor'], 'reason': str(error)})
-                # THE FRESHNESS CHECK COMES FIRST, as it does on the tick: one late print refuses
-                # the whole trip by name, so a market is never half-installed off a dead series
-                late = {}
-                for key, definition in sorted(definitions.items()):
-                    self.note('checking {}'.format(key))
-                    late.update(security_map.stale(session, sorted(
-                        {quote.security for quote in definition.securities.values()})))
-                if routes:
-                    late.update(security_map.stale(session, sorted(routes.values())))
+                # the same trip the tick takes, so one late print refuses the whole of it by name
+                quotes, spots, late = fetch_quotes(session, definitions, routes, base, self.note)
                 if late:
-                    return self.outcome(
-                        started, not_supplied=not_supplied, discovered=discovered,
-                        refused=['{} is stale - {}'.format(name, why)
-                                 for name, why in sorted(late.items())])
-                for step, (key, definition) in enumerate(sorted(definitions.items())):
-                    self.note('fetching {}'.format(key), step, len(wanted))
-                    snapshot = fetch_fx_vol(session, definition)
-                    quotes['FXVolPrices.' + snapshot.surface_name] = as_json(
-                        to_market_prices_block(snapshot))
+                    return self.outcome(started, not_supplied=not_supplied, discovered=discovered,
+                                        refused=late)
                 curves = {}
                 for curve, conventions in sorted(strips.items()):
                     self.note('valuing the {} strip'.format(curve))
@@ -6823,22 +6809,19 @@ class SetupJob:
                     # ahead of its market behaves here exactly as it does under a tick
                     curves[curve] = (conventions, seeded_strip(
                         session, seed, curve, conventions, dated))
-                values = security_map.fetch_fx_spot(session, routes.values()) if routes else {}
                 as_of = snap_date([row for _, rows in curves.values() for row in rows], dated)
                 # WHEN THE PRINTS MOVE THE DATE the market the book already carries is re-priced in
                 # this same session and lands in the same write, so it never holds two days at once
                 rolled = market_fetch(session, mapped, document, standing_pairs(document),
-                                      note=self.note, as_of=as_of) if as_of > dated else None
+                                      self.note, as_of=as_of) if as_of > dated else None
             if rolled is not None and rolled.late:
-                return self.outcome(
-                    started, not_supplied=not_supplied, discovered=discovered,
-                    refused=['{} is stale - {}'.format(name, why)
-                             for name, why in sorted(rolled.late.items())])
-            held += ['{} {} ({}): {}'.format(curve, row.label, row.security, row.verdict)
-                     for curve, (_, rows) in sorted(curves.items()) for row in rows if row.verdict]
-            return self.install(started, document, seed, dated, factors, quotes, curves,
-                                {pair: values[name] for pair, name in routes.items()},
-                                discovered, not_supplied, held, rolled)
+                return self.outcome(started, not_supplied=not_supplied, discovered=discovered,
+                                    refused=rolled.late)
+            held = [line for curve, (_, rows) in sorted(curves.items())
+                    for line in held_rows(curve, rows)]
+            return self.install(started, document, seed, dated, as_of if rolled is None else
+                                rolled.as_of, factors, quotes, curves, spots, discovered,
+                                not_supplied, held, rolled)
         except BloombergFXError as error:
             # a print the terminal would not answer for is a named REFUSAL, never a job error -
             # `Metronome.cause` and a polling model both read `refused` off these Stats
@@ -6847,13 +6830,13 @@ class SetupJob:
         finally:
             PROGRESS.pop(self.result_id, None)
 
-    def install(self, started, document, seed, dated, factors, quotes, strips, crosses,
+    def install(self, started, document, seed, dated, as_of, factors, quotes, strips, spots,
                 discovered, not_supplied, held, rolled=None):
         """Everything fetched, landed in ONE atomic write: each new currency's `FxRate` block on
-        the engine's axis, each new `InterestRatePrices` block authored on the day the write is
-        dated - the latest print the whole trip came back with, a roll's own among them - the
-        surface's quote block, the entries that solve them, and - where the prints rolled the date -
-        the market the book already carried, re-priced in the same session.
+        the engine's axis, each new `InterestRatePrices` block authored on `as_of`, the day the
+        write is dated - the latest print the whole trip came back with, a roll's own among them -
+        the surface's quote block, the entries that solve them, and - where the prints rolled the
+        date - the market the book already carried, re-priced in the same session.
 
         NOTHING LANDS THAT WOULD DEPEND ON A BLOCK THE WRITE WILL NOT CARRY: a curve that cannot be
         authored is `not_supplied` with the screen's own account of it, a new currency's spot and
@@ -6867,9 +6850,7 @@ class SetupJob:
         carried = market_of(document)
         base = carried['System Parameters']['Base_Currency']
         rates = seed['rates']
-        as_of = snap_date([row for _, rows in strips.values() for row in rows],
-                          dated if rolled is None else max(dated, rolled.as_of))
-        discounts = {rates[curve].get('currency', curve): curve for curve in sorted(strips)}
+        discounts ={rates[curve].get('currency', curve): curve for curve in sorted(strips)}
         named = {ir_curve.market_price_name(curve): rates[curve].get('currency', curve)
                  for curve in sorted(strips)}
         curves = {}
@@ -6883,8 +6864,6 @@ class SetupJob:
             except BloombergFXError as error:
                 not_supplied.append({'factor': 'InterestRate.' + curve,
                                      'reason': unsupplied_curve(curve, rows, dated, error)})
-        spots = {'FxRate.{}'.format(currency): {'Spot': spot} for currency, spot
-                 in structures.crossed_spots(base, crosses).items()} if crosses else {}
         not_supplied += held_with(not_supplied, spots, quotes, curves, discounts, named,
                                   carried.get('Price Factors', {}))
         own, repriced = dict(curves), []
@@ -6899,12 +6878,6 @@ class SetupJob:
 
         def edit(document, etag):
             market = document['Calc']['MergeMarketData']['ExplicitMarketData']
-            standing = book_base_date(document)
-            if as_of < standing:
-                raise ValueError(
-                    'the book rolled to {} while the terminal priced these rows, which are '
-                    'authored as of {} - a curve is never dated behind its own book, so post the '
-                    'set-up again'.format(standing.isoformat(), as_of.isoformat()))
             for name, value in sorted(spots.items()):
                 currency = name.split('.', 1)[1]
                 if name in factors:
@@ -6914,28 +6887,24 @@ class SetupJob:
             for entry in ([CURVE_BOOTSTRAPPER] if curves else []) + (
                     [VOL_BOOTSTRAPPER] if quotes else []):
                 bootstrapper_entry(document, entry, {})
-            # every standing block is re-rolled onto the new day off its own rows, and the ones the
-            # roll re-priced overlay it - a block the terminal would not answer for is still dated
-            # with the book rather than left behind it
-            standing_blocks = {} if as_of == standing else curve_quotes(None, document, as_of)[0]
             write, outcome = curve_edit(
-                document, dict(standing_blocks, **curves), as_of, quotes,
-                {name: value for name, value in spots.items() if name not in factors})
+                document, curves, as_of, quotes,
+                {name: value for name, value in spots.items() if name not in factors}, held)
             if not write:
                 return write, outcome
             return True, dict(outcome, installed=sorted(
                 set(factors) & set(market.get('Price Factors', {}))))
 
+        answer = {'installed': [], 'refused': [], 'held_out': held}
         try:
-            answer = dict({'installed': [], 'refused': []}, **self.book.mutate(edit))
+            answer.update(self.book.mutate(edit))
         except (ValueError, KeyError) as error:
             # what `/book/market` turns into a 422, turned into the refusal a queued JOB lands as
-            answer = {'written': False, 'installed': [], 'refused': [refusal(error)]}
-        return self.outcome(started, discovered=discovered, held_out=held,
-                            not_supplied=not_supplied,
-                            check=self.check(base, seed, answer, own, held, repriced), **answer)
+            answer.update(written=False, refused=[refusal(error)])
+        return self.outcome(started, discovered=discovered, not_supplied=not_supplied,
+                            check=self.check(base, seed, answer, own, repriced), **answer)
 
-    def check(self, base_currency, seed, answer, curves, held, repriced=()):
+    def check(self, base_currency, seed, answer, curves, repriced=()):
         """What a trader should look at after a set-up: a curve on the conventions the packaged
         questionnaire ships rather than ones this desk declared, the benchmarks the screen held
         out, every standing block the roll re-priced, and a surface the book's base currency is
@@ -6950,7 +6919,7 @@ class SetupJob:
                 'screen'.format(curve) for curve in named if seed['rates'][curve].get('conventions')
                 == (shipped.get(curve) or {}).get('conventions')]
         rows += ['{} benchmark rows were held out - the Securities screen names the print behind '
-                 'each'.format(len(held))] if held else []
+                 'each'.format(len(answer['held_out']))] if answer['held_out'] else []
         # the roll re-prices the market the book already carried, and a block whose quotes moved
         # under a desk's feet is the first thing that desk should read back
         rows += ['{} was re-priced onto {} with this set-up'.format(name, answer['base_date'])
@@ -7097,7 +7066,7 @@ def spot_model_edit(document, pair, family):
     except (ValueError, KeyError) as error:
         # what `/book/market` makes a 422 of, made into the refusal a queued job lands as - a
         # message under this run's own Stats, never an exception out of the worker
-        written, outcome = False, {'written': False, 'refused': [str(error)]}
+        written, outcome = False, {'written': False, 'refused': [refusal(error)]}
     finally:
         if borrowed:
             market['Bootstrapper Configuration'].pop(entry, None)
@@ -7665,14 +7634,11 @@ def live_spot_crosses(base_currency, currencies, host=None, port=None):
             return None, NO_LIVE_SPOT.format(
                 'this desk has no security map, and a quote never provisions one - '
                 'tick_market_from_bloomberg verifies its securities on a Bloomberg terminal')
-        map_document = security_map.load(path)
-        pairs = {}
-        for currency in currencies:
-            pair, security = security_map.fx_spot_route(map_document, currency, base_currency)
-            if pair is not None:
-                pairs[pair] = security
+        pairs, unrouted = spot_routes(security_map.load(path), base_currency, currencies)
     except Exception as error:
         return None, NO_LIVE_SPOT.format(error)
+    if unrouted:
+        return None, NO_LIVE_SPOT.format(unrouted[0])
     if not pairs:
         return None, NO_LIVE_SPOT.format(
             'nothing to fetch - the pair is quoted in {} against itself'.format(base_currency))

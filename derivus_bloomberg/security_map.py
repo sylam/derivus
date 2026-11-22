@@ -183,23 +183,28 @@ def fx_vol_definition(document, pair, expiries=None, pillars=(0.25,), quote_sens
         pillars=tuple(pillars), securities=securities, quote_sensitivity=quote_sensitivity)
 
 
+def spot_pairs(currency, base_currency):
+    """Both spellings a market pair pricing `currency` against `base_currency` could carry -
+    `USDZAR` for ZAR against a USD base, `EURUSD` for EUR against it."""
+    return currency + base_currency, base_currency + currency
+
+
 def fx_spot_route(document, currency, base_currency):
     """`(pair, security)` - the verified market pair whose cross prices one unit of `currency` in
     `base_currency` units, or `(None, None)` where the currency IS the base and prices itself.
 
-    Both spellings a market pair could carry are tried - `USDZAR` for ZAR against a USD base,
-    `EURUSD` for EUR against it. Triangulating through a third currency is a market VIEW rather
+    Both `spot_pairs` are tried. Triangulating through a third currency is a market VIEW rather
     than a lookup, so an unverified pair refuses by name and the caller keeps the spot it had.
     """
     if currency == base_currency:
         return None, None
     block = document.get('blocks', {}).get('fx_spot', {})
-    for pair in (currency + base_currency, base_currency + currency):
+    for pair in spot_pairs(currency, base_currency):
         if pair in block:
             return pair, block[pair]['security']
     raise BloombergConfigurationError(
-        'the map verified no spot for {} against {} - neither {} nor {}'.format(
-            currency, base_currency, currency + base_currency, base_currency + currency))
+        'the map verified no spot for {} against {} - neither {}'.format(
+            currency, base_currency, ' nor '.join(spot_pairs(currency, base_currency))))
 
 
 def fetch_fx_spot(source, securities):

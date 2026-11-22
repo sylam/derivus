@@ -2713,15 +2713,16 @@ def canned_map():
                                              'quotes': quotes}}}}
 
 
-def bloomberg_seams(monkeypatch, provision=None, stale=None, refdata={}):
+def bloomberg_seams(monkeypatch, provision=None, stale=None, refdata={}, answering=None):
     """Every seam between the verb and the terminal replaced, the session by a canned terminal
-    answering `refdata`. The lazy imports inside `BloombergJob.run_job` are what lets a patch reach
-    the job: each name is bound off the package when the WORKER runs. Returns the terminal,
-    `fetched` on it the definitions the fetch was handed."""
+    answering `refdata` (`answering()` run as each request lands). The lazy imports inside
+    `BloombergJob.run_job` are what lets a patch reach the job: each name is bound off the package
+    when the WORKER runs. Returns the terminal, `fetched` on it the definitions the fetch was
+    handed."""
     import derivus_bloomberg
     from derivus_bloomberg import discover, security_map
 
-    terminal = canned_terminal(monkeypatch, refdata)
+    terminal = canned_terminal(monkeypatch, refdata, answering)
     terminal.fetched = []
 
     def fetch_fx_vol(source, definition):
@@ -2951,11 +2952,11 @@ def curve_map():
     return dict(canned_map(), blocks={'fx_vol': {}})
 
 
-def curve_tick(monkeypatch, refdata):
+def curve_tick(monkeypatch, refdata, answering=None):
     """A tick against a terminal answering `refdata`: the result, its outcome and every security
     the terminal was asked about."""
-    terminal = bloomberg_seams(monkeypatch, refdata=refdata, provision=lambda source, as_of,
-                               on_batch=None: (curve_map(), False))
+    terminal = bloomberg_seams(monkeypatch, refdata=refdata, answering=answering,
+                               provision=lambda source, as_of, on_batch=None: (curve_map(), False))
     return ticked() + (terminal.asked,)
 
 
@@ -3204,13 +3205,15 @@ def test_a_curve_set_up_off_a_later_print_rolls_the_book_and_every_other_curve(
     assert read['curves']['InterestRatePrices.USD']['snapped'] == '2024-06-28'
 
 
+@pytest.mark.parametrize('verb', ['curve', 'tick'])
 def test_a_tick_landing_while_the_terminal_priced_the_rows_refuses_rather_than_rolling_back(
-        curve_desk, monkeypatch):
+        curve_desk, monkeypatch, verb):
     """A SNAP NEVER ROLLS A BOOK BACK, and the terminal round trip is the one window where it
-    could: the verb reads the book, spends minutes pricing its rows, and writes against a book a
-    tick may have rolled since. Rather than stamping the day it read, the write refuses BY NAME
-    with both days in it and touches nothing - a curve dated behind its own book has a front
-    whose accrual already started, which is no benchmark at all.
+    could: the curve verb or the tick reads the book, spends minutes pricing its rows, and writes
+    against a book a tick may have rolled since. Rather than stamping the day it read, the write
+    refuses BY NAME with both days in it and touches nothing - a curve dated behind its own book
+    has a front whose accrual already started, which is no benchmark at all. One rule, in the
+    edit both write through (`curve_edit`).
 
     The seam is the terminal itself: this one rolls the book forward as the request lands, which
     is a tick landing mid-trip with nothing threaded.
@@ -3226,15 +3229,20 @@ def test_a_tick_landing_while_the_terminal_priced_the_rows_refuses_rather_than_r
         document['Calc']['Calculation']['Base_Date'] = stamp
         curve_desk.write_text(json.dumps(document, indent=2), newline='\n')
 
-    canned_terminal(monkeypatch, canned(
-        {row['security']: row['quote'] for row in CURVE_ROWS}, stamp='2024-07-05'), tick)
+    prints = canned({row['security']: row['quote'] for row in CURVE_ROWS}, stamp='2024-07-05')
     points = curve_block(curve_desk)['Points']
-    answer = set_up_curve(rows=[{'tenor': row['tenor'], 'security': row['security']}
-                                for row in CURVE_ROWS])
-    detail = answer.json()['detail']
+    if verb == 'curve':
+        canned_terminal(monkeypatch, prints, tick)
+        answer = set_up_curve(rows=[{'tenor': row['tenor'], 'security': row['security']}
+                                    for row in CURVE_ROWS])
+        assert answer.status_code == 422, answer.json()
+        detail = answer.json()['detail']
+    else:
+        result, outcome, _ = curve_tick(monkeypatch, prints, tick)
+        assert result['status'] == 'done' and outcome['written'] is False, outcome
+        detail = '; '.join(outcome['refused'])
     document = json.loads(curve_desk.read_text())
 
-    assert answer.status_code == 422, answer.json()
     assert '2024-08-01' in detail and '2024-07-05' in detail and 'post it again' in detail
     # the book stands where the TICK left it, the refused set-up having written nothing
     assert document['Calc']['Calculation']['Base_Date'] == {'.Timestamp': '2024-08-01'}
@@ -4293,7 +4301,7 @@ def test_a_surface_is_held_with_the_leg_it_cannot_stand_on(desk_setup, tmp_path,
     assert outcome['written'] is False and outcome['installed'] == [], outcome
     assert outcome['refused'] == [], 'a want that cannot be supplied is not a refused write'
     assert sorted(reasons) == ['FXVol.EUR.ZAR', 'FxRate.EUR', 'InterestRate.EUR']
-    assert 'the map verified no spot for EURUSD' in reasons['FxRate.EUR']
+    assert 'the map verified no spot for EUR against USD' in reasons['FxRate.EUR']
     assert reasons['InterestRate.EUR'] == 'held with FxRate.EUR'
     assert reasons['FXVol.EUR.ZAR'] == 'held with FxRate.EUR'
     assert 'InterestRatePrices.EUR' not in market.get('Market Prices', {})
