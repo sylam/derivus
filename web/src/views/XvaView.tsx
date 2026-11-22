@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { getBookCollateral, getMarkedDays, getXvaProfile } from '../api';
+import { getBookCollateral, getXvaProfile } from '../api';
 import { EXPORTS, SET, fieldsOf, rowsByPath, saveCsv, toRows } from '../blotter';
 import {
   LIMIT_USAGE, RUNS, WRONG, actionFirst, actsOf, actsText, agreementsOf, bookedText, closeRead,
@@ -48,11 +48,9 @@ export function XvaView() {
   const risk = bookRisk(state);
   // a collateral call is read on the book's day marked: what is missing is known before asking
   const spine = spineOf(state);
-  const marks = useRead(spine && !unmarked(spine) ? getMarkedDays : null, [clock]);
-  const close = unmarked(spine, marks.data, valuationDay(doc));
-  const collateral = useRead(marks.data && !close ? getBookCollateral : null,
-                             [clock, state.seat, close?.title, !!marks.data]);
-  const refused = marks.error ?? collateral.error;
+  const close = unmarked(spine, true);
+  const collateral = useRead(spine && !close ? getBookCollateral : null,
+                             [clock, state.seat, close?.title]);
 
   if (!live) return <EmptyState {...offBook("the last credit run of each of the desk's sets")} />;
   if (xva.status === 404) return <EmptyState {...NO_BOOK} />;
@@ -108,7 +106,7 @@ export function XvaView() {
   }));
   const acting = clients.filter((client) => actsOf(client).length);
   const marked = (unread?: string) => closeRead(collateral.data?.date, !!close, unread);
-  const reads = { currency, recording, noClose: !!close, collateralError: refused,
+  const reads = { currency, recording, noClose: !!close, collateralError: collateral.error,
                   riskError: risk.error, read: view.as_of };
 
   return (
@@ -125,7 +123,8 @@ export function XvaView() {
             The value to the desk is not read{risk.joiner}{risk.error}</div>
         )}
         {close && <div className="note">The collateral is not read. {close.title} {close.hint}</div>}
-        {refused && <div className="error-box">The collateral is not read: {refused}</div>}
+        {collateral.error && (
+          <div className="error-box">The collateral is not read: {collateral.error}</div>)}
         <div className={`blotterbar wrongs${acting.length ? ' act' : ''}`}>
           {acting.length ? (
             <span className="hint">

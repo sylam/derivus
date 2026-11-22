@@ -21,7 +21,6 @@ import type {
   ActivityRow, CollateralCall, CreditLimit, DealMark, Descriptor, Funding, JobDoc, Market,
   Reconcile, Schema, SpineBlock, XvaSet,
 } from './types';
-import type { MarkedDays } from './pnl';
 
 /** The screen a client's page is, and the store's pick of which client it shows. */
 export const CLIENT = 'client';
@@ -290,16 +289,15 @@ const UNMARKED = {
     'The book is marked at a close through the chat.'],
 };
 
-/** What a read on a marked close - the P&L's days, a collateral call - says in its place where no
- * close stands to read, a state of the desk known before asking: off the record's `close`, that no
- * market is designated for the P&L or no close declared on it, and off the days `marked` where they
- * are read, that `day` has no marks. Null where the read may be asked, and on a desk keeping no
- * record. */
-export function unmarked(spine: SpineBlock | null, marked?: MarkedDays | null, day?: string):
-  { title: string; hint: string } | null {
+/** What a read on a marked close - the P&L's days, a collateral call on the book's own day - says
+ * in its place where no close stands to read, a state of the desk known before asking off the
+ * record's `close`: that no market is designated for the P&L, no close declared on it, or, for a
+ * read of the book's `day`, no marks for it. Null where the read may be asked, and on a desk
+ * keeping no record. */
+export function unmarked(spine: SpineBlock | null, day = false): { title: string; hint: string } | null {
   const [title, hint] = !spine ? [] : spine.close.market === null ? UNMARKED.undesignated
     : !spine.close.stands ? UNMARKED.undeclared
-      : marked && !marked.days.some((row) => row.day === day) ? UNMARKED.unmarked : [];
+      : day && !spine.close.marked ? UNMARKED.unmarked : [];
   return title ? { title, hint } : null;
 }
 

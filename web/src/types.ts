@@ -398,15 +398,15 @@ export type XvaProfile = {
  * record has moved since - in events, and in the fills and amendments among them. Null throughout
  * on a file nothing has pinned, which is a file with nothing to compare. `paper` is the LSN of the
  * last entity or agreement declaration standing, which moves when the paper does and only then.
- * `close` is the market the record designates for the P&L, null where it designates none, and
- * whether a close is declared on it. */
+ * `close` is the market the record designates for the P&L, null where it designates none, whether
+ * a close is declared on it, and whether marks stand on it for the book's own day. */
 export type SpineBlock = {
   lsn: number | null;
   head: string | null;
   events_behind: number | null;
   positions_behind: number | null;
   paper: number;
-  close: { market: string | null; stands: boolean };
+  close: { market: string | null; stands: boolean; marked: boolean };
 };
 
 /** `GET /book/status`. It carries the desk's whole orientation; this client renders the rest off
