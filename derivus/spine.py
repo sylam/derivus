@@ -1530,7 +1530,7 @@ def attestations():
 def closes(market):
     """Every official close declared on `market`, superseded ones included, in the order they were
     filed: the position, the values it stands on, and the day it is FOR - the one it states, else
-    the day it is true on."""
+    the day it is true on. None, the market where nothing is designated, has none, unwalked."""
     def walk(log):
         found = []
         for frame in log.frames():
@@ -1542,7 +1542,7 @@ def closes(market):
                                       frame['effective_time'] or frame['record_time'])[:10]})
         return found
 
-    return folded(walk)
+    return [] if market is None else folded(walk)
 
 
 def fills(after=None, until=None):

@@ -2399,7 +2399,7 @@ def spine_block(document):
     pinned, market = pin_of(document), spine.designation(spine.PNL)
     block = {'lsn': None, 'head': None, 'events_behind': None, 'positions_behind': None,
              'paper': spine.papered(), 'close': {
-                 'market': market, 'stands': market is not None and bool(spine.closes(market))}}
+                 'market': market, 'stands': bool(spine.closes(market))}}
     return block if pinned is None else dict(block, **pinned, **behind(pinned))
 
 
@@ -3912,7 +3912,7 @@ def book_worklist(actor: str = None):
     clients = client_names()
     confirmed_rows = {row['subject']: row for row in spine.lifecycle()['confirmations']}
     market = spine.designation(spine.PNL)
-    closes = [] if market is None else spine.closes(market)
+    closes = spine.closes(market)
     marks = book_marks_on(book, closes)
     see = sighted(document, sight, demands['status_transition'], rows)
 
