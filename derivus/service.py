@@ -3670,6 +3670,27 @@ def book_agreements():
         'fields': list(AGREEMENT_STATE), 'collateral_columns': list(HOLDING_AMOUNTS)}}
 
 
+def policy_declared(declare, request, section):
+    """`{recorded, blob}` - `request`'s `section` declared as a policy by the seam's verb
+    `declare`, under its `actor`. What the record or the verb's judge refuses is a 422 in the
+    refusal's own words, with nothing filed. 404 where no home is configured."""
+    recorded()
+    try:
+        filed = declare(request.get(section), actor_name=request.get('actor'))
+    except ValueError as refused:
+        raise HTTPException(422, str(refused))
+    return {'recorded': {'lsn': filed['lsn']}, 'blob': filed['blob']}
+
+
+def policy_read(name, section):
+    """`{section, blob, lsn}` - the policy `name` in force (`spine.policy_in_force`): what its
+    `section` declares, the address the document is stored under and the position of its
+    declaration, each null where none is declared. 404 where no home is configured."""
+    recorded()
+    blob, document, lsn = spine.policy_in_force(name)
+    return dict(document or {section: None}, blob=blob, lsn=lsn)
+
+
 @app.post('/book/calculations', summary="Declare what the desk's official runs run at")
 def book_calculations_declared(request: dict):
     """`{calculations, actor}` - declare the `calculation` policy: per calculation type the block
@@ -3687,13 +3708,7 @@ def book_calculations_declared(request: dict):
     the record; the last declaration stands, and one stating no type states nothing. 404 where no
     home is configured.
     """
-    recorded()
-    try:
-        filed = spine.declare_calculations(request.get('calculations'),
-                                           actor_name=request.get('actor'))
-    except ValueError as refused:
-        raise HTTPException(422, str(refused))
-    return {'recorded': {'lsn': filed['lsn']}, 'blob': filed['blob']}
+    return policy_declared(spine.declare_calculations, request, 'calculations')
 
 
 @app.get('/book/calculations', summary="What the desk's official runs run at, as declared")
@@ -3701,9 +3716,7 @@ def book_calculations():
     """`{calculations, blob, lsn}` - the `calculation` policy in force: the block each calculation
     type's official run runs at, the address the document is stored under and the position of its
     declaration, each null where none is declared. 404 where no home is configured."""
-    recorded()
-    blob, document, lsn = spine.policy_in_force('calculation')
-    return dict(document or {'calculations': None}, blob=blob, lsn=lsn)
+    return policy_read('calculation', 'calculations')
 
 
 @app.post('/book/limits', summary='Declare the credit limit each legal entity is held to')
@@ -3717,9 +3730,7 @@ def book_limits_declared(request: dict):
     enforced by the record; the last declaration stands whole, and one naming no entity limits
     nobody. 404 where no home is configured.
     """
-    recorded()
-    filed = spine.declare_limits(request.get('limits'), actor_name=request.get('actor'))
-    return {'recorded': {'lsn': filed['lsn']}, 'blob': filed['blob']}
+    return policy_declared(spine.declare_limits, request, 'limits')
 
 
 @app.get('/book/limits', summary='The credit limit each legal entity is held to, as declared')
@@ -3727,9 +3738,7 @@ def book_limits():
     """`{limits, blob, lsn}` - the `limits` policy in force: the credit limit each legal entity's
     exposure is held against, the address the document is stored under and the position of its
     declaration, each null where none is declared. 404 where no home is configured."""
-    recorded()
-    blob, document, lsn = spine.policy_in_force('limits')
-    return dict(document or {'limits': None}, blob=blob, lsn=lsn)
+    return policy_read('limits', 'limits')
 
 
 @app.get('/spine/frames', summary="The record's frames, verbatim - what a replica pulls")

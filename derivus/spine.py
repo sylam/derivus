@@ -1303,40 +1303,48 @@ def declare_agreement(agreement, entity, kind, terms, actor_name=None, effective
                                        canonical(terms), effective_time=effective_time)
 
 
-def declare_calculations(calculations, actor_name=None, effective_time=None):
-    """Declare the `calculation` policy, `{calculation type: block}`: what each type's official run
-    runs at. The record checks the document's shape, then each block is judged against its own
-    type's declarations (`judge_calculation`, the type token no field of it), before anything
-    appends. `admin` scope, which the writer enforces."""
+def declare_policy(name, section, stated, judge, actor_name=None, effective_time=None):
+    """Declare the policy `name`, `{section: stated}`. The record checks the document's shape, then
+    `judge(stated)` refuses what a shape cannot say, before anything appends. `admin` scope, which
+    the writer enforces."""
     policy = package().policy
     with translating():
-        raw = policy.canonical_policy(policy.CALCULATION_POLICY,
-                                      {policy.CALCULATION_SECTION: calculations})
-    for name, block in calculations.items():
-        judge_calculation({'Object': name}, block, ())
+        raw = policy.canonical_policy(name, {section: stated})
+    judge(stated)
     with writing() as log:
-        return policy.declare_bytes(log, actor(actor_name, log), policy.CALCULATION_POLICY, raw,
-                                    effective_time)
+        return policy.declare_bytes(log, actor(actor_name, log), name, raw, effective_time)
+
+
+def declare_calculations(calculations, actor_name=None, effective_time=None):
+    """Declare the `calculation` policy, `{calculation type: block}`: what each type's official run
+    runs at, each block judged against its own type's declarations (`judge_calculation`, the type
+    token no field of it)."""
+    def judge(stated):
+        for name, block in stated.items():
+            judge_calculation({'Object': name}, block, ())
+
+    policy = package().policy
+    return declare_policy(policy.CALCULATION_POLICY, policy.CALCULATION_SECTION, calculations,
+                          judge, actor_name, effective_time)
 
 
 def declare_limits(limits, actor_name=None, effective_time=None):
     """Declare the `limits` policy, `{legal entity: {amount, currency}}`: the credit limit each
-    entity's exposure is held against. The record checks the document's shape, then an entity it
-    does not hold is refused by name before anything appends, a limit on one being a rule nothing
-    enforces. `admin` scope, which the writer enforces."""
+    entity's exposure is held against, an entity the record does not hold refused by name, a limit
+    on one being a rule nothing enforces."""
+    def judge(stated):
+        held = {row['entity'] for row in entities()}
+        if set(stated) - held:
+            raise SpineRefused(
+                'a limit is declared on {}, and that is no legal entity the record declares - it '
+                'declares {}: a limit on an entity nobody declared is a rule nothing enforces, so '
+                'declare the entity first'.format(
+                    ', '.join(map(repr, sorted(set(stated) - held))),
+                    ', '.join(sorted(held)) or 'none'))
+
     policy = package().policy
-    with translating():
-        raw = policy.canonical_policy(policy.LIMITS_POLICY, {policy.LIMITS_SECTION: limits})
-    held = {row['entity'] for row in entities()}
-    if set(limits) - held:
-        raise SpineRefused(
-            'a limit is declared on {}, and that is no legal entity the record declares - it '
-            'declares {}: a limit on an entity nobody declared is a rule nothing enforces, so '
-            'declare the entity first'.format(', '.join(map(repr, sorted(set(limits) - held))),
-                                              ', '.join(sorted(held)) or 'none'))
-    with writing() as log:
-        return policy.declare_bytes(log, actor(actor_name, log), policy.LIMITS_POLICY, raw,
-                                    effective_time)
+    return declare_policy(policy.LIMITS_POLICY, policy.LIMITS_SECTION, limits, judge, actor_name,
+                          effective_time)
 
 
 def limits():
