@@ -7273,7 +7273,7 @@ def test_a_trade_beside_its_mirror_is_worth_nothing_on_every_path(tmp_path, monk
     answer, cube = result['stats']['Increment'], fetch(result_id, 'without/mtm')
     assert {cell for row in cube['data'] for cell in row} == {0.0}
     for name in ('cva', 'fva', 'EE', 'PFE_95'):
-        with_, without = (row['peak'] if isinstance(row, dict) else row
+        with_, without = (row['value'] if isinstance(row, dict) else row
                           for row in (answer[name]['with'], answer[name]['without']))
         assert without == 0.0 and answer[name]['increment'] == with_ > 0.0, name
 
@@ -7483,7 +7483,7 @@ def test_each_type_a_desk_quotes_is_its_mirrors_exact_opposite_on_every_path(cre
         answer, cube = result['stats']['Increment'], fetch(result_id, 'without/mtm')['data']
         assert {cell for row in cube for cell in row} == {0.0}, name
         for number in ('cva', 'fva', 'EE', 'PFE_95'):
-            with_, without = (row['peak'] if isinstance(row, dict) else row
+            with_, without = (row['value'] if isinstance(row, dict) else row
                               for row in (answer[number]['with'], answer[number]['without']))
             assert without == 0.0 and answer[number]['increment'] == with_, (name, number)
             assert np.isfinite(with_), (name, number)

@@ -6673,7 +6673,7 @@ def test_a_credit_charge_holds_each_limit_its_set_draws_on_against_the_usage_wit
 
     def charged(reference='NS_B'):
         answer = answered(deal=SHORT_CALL, parent_reference=reference)
-        return answer, answer['PFE_95']['with']['peak'], answer['PFE_95']['without']['peak']
+        return answer, answer['PFE_95']['with']['value'], answer['PFE_95']['without']['value']
 
     first, w, wo = charged()
     assert wo < 40_000.0 < w, (wo, w)

@@ -746,7 +746,8 @@ async def xva_increment(deal: dict | None = None, parent_reference: str | None =
     the difference is the trade's and not the set's Monte Carlo noise; asked of the projection's
     last row instead, that noise can be as large as the trade. The paths remove the set's noise;
     the trade's own Monte Carlo error falls only with more paths. Each of `cva`, `fva`, `EE` and every `PFE_` column comes back `with`, `without` and
-    `increment`, a peak with the day it falls, in the `currency` named; `paths` says what both
+    `increment`, each side of a column its peak and the day it falls, `{value, day}`, in the
+    `currency` named; `paths` says what both
     runs drew. Nothing is booked or recorded. A trade under no netting set, or one the booking
     would refuse, is refused by name; a set whose counterparty has no credit curve fails in the
     engine's words, as `recalc_xva` does. `calculation_overrides` merges into the run's credit

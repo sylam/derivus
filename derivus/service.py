@@ -4292,10 +4292,10 @@ def xva_document(document, node, counterparty):
 
 
 def peak_of(values, days):
-    """`(peak, day)` - the largest of an exposure column's `values` and the one of `days` it first
-    falls on."""
+    """`{value, day}` - the largest of an exposure column's `values` and the one of `days` it
+    first falls on."""
     peak = max(values)
-    return peak, days[values.index(peak)]
+    return {'value': peak, 'day': days[values.index(peak)]}
 
 
 def peaked(column):
@@ -4309,7 +4309,7 @@ def exposure(profile):
     `{columns, index, data}`, every day `YYYY-MM-DD`."""
     frame = profile['.DataFrame']
     days = [plain(label) for label in frame['index']]
-    peaks = {column: dict(zip(('value', 'day'), peak_of([row[at] for row in frame['data']], days)))
+    peaks = {column: peak_of([row[at] for row in frame['data']], days)
              for at, column in enumerate(frame['columns']) if peaked(column)}
     return {'peaks': peaks, 'profile': dict(frame, index=days)}
 
@@ -4506,7 +4506,7 @@ class IncrementJob:
     two runs are compared on what they compiled to and a pair that differs fails naming both.
 
     THE ANSWER IS WITH LESS WITHOUT, in the run's report currency, under `stats.Increment`: CVA,
-    FVA and the peak of the expected exposure and of each PFE column with the day it falls, beside
+    FVA and the peak of the expected exposure and of each PFE column, `{value, day}`, beside
     the paths both runs drew. Each run's own results stay under `with` and `without`.
 
     AND WHAT IT DOES TO A CREDIT LIMIT, where the set draws on one (`limits_against`): `limits`
@@ -4541,14 +4541,13 @@ class IncrementJob:
                             'increment': numbers[0] - numbers[1]}
         profiles = [result['exposure_profile'] for result in results]
         for column in filter(peaked, profiles[0].columns):
-            peaks = [dict(zip(('peak', 'day'), peak_of(
-                profile[column].tolist(), profile.index.strftime('%Y-%m-%d'))))
-                for profile in profiles]
+            peaks = [peak_of(profile[column].tolist(), profile.index.strftime('%Y-%m-%d'))
+                     for profile in profiles]
             answer[column] = {'with': peaks[0], 'without': peaks[1],
-                              'increment': peaks[0]['peak'] - peaks[1]['peak']}
+                              'increment': peaks[0]['value'] - peaks[1]['value']}
         if self.limits:
             column = pfe_column(profiles[0].columns)
-            mine = [(self.terms['netting_set'], column and answer[column][run]['peak'],
+            mine = [(self.terms['netting_set'], column and answer[column][run]['value'],
                      self.terms['currency']) for run in ('with', 'without')]
             answer['limits'] = [
                 dict(limit_usage(limit, others + [mine[0]]), usage_without=without['usage'],

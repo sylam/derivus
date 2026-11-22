@@ -370,7 +370,8 @@ the rows it names, and staleness is data rather than a failure. What ONE trade d
 XVA is the what-if's question instead - `POST /book/price` with `xva_increment: true` and a
 candidate, a `quote_id`, or the `deal_path` of a trade the book already holds, which splices
 nothing - answered under `stats.Increment` as with, without and the increment
-for the CVA, the FVA and the peak of each exposure column: the set's credit Monte Carlo run twice
+for the CVA, the FVA and the peak of each exposure column, each side `{value, day}` as on a row's
+`peaks`: the set's credit Monte Carlo run twice
 on the same paths, with the trade and with the trade beside its mirror, held short as the record
 holds a short - a pair worth nothing on every path.
 Against the set's row the difference would carry the set's own Monte Carlo noise, a trade dated
