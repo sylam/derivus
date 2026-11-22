@@ -5225,11 +5225,13 @@ def test_the_consolidated_risk_and_the_explain_ask_the_queue_s_question(recorded
     reads both - the risk off the cache, the explain valuing the position the marks held - and a
     request naming no seat under a document is refused by name. A P&L read to now marks the book
     as it stands on this thread too, so it is asked the same question; one to a marked end is not.
+    The seat's `may` says each before it is asked: `run`, `pnl_explain` and `pnl_to_now` at the
+    book read the sentence each read is refused with, and null once the seat holds `validate`.
 
     Killing mutations: the admission asked after the cache is read, which serves the stranger the
-    answer the desk's read warmed; the explain's admission dropped, which lets an explain to a
-    marked end past it for a seat holding nothing; and the read to now admitted, which marks the
-    book for one.
+    answer the desk's read warmed; the explain's row dropped from the P&L runs, which lets an
+    explain to a marked end past the admission for a seat holding nothing; and the read to now
+    admitted, which marks the book for one.
     """
     with_client(desk)
     declare(recorded, policy.TIERS_POLICY, tiers({'name': 'auto'},
@@ -5262,9 +5264,12 @@ def test_the_consolidated_risk_and_the_explain_ask_the_queue_s_question(recorded
     assert warm.status_code == 200, warm.text
     assert service.BOOK.polls.get(('risk',) + service.poll_key(service.BOOK)) == warm.json(), (
         'the poll kept nothing a stranger could be served')
-    for again in (risk(actor=STRANGER), explained(actor=STRANGER, end='2024-06-28'),
-                  CLIENT.get('/book/pnl', params=dict(actor=STRANGER))):
-        assert again.status_code == 422 and STRANGER in again.json()['detail'], again.text
+    runs = ('run', 'pnl_explain', 'pnl_to_now')
+    may = CLIENT.get('/book/seat', params={'actor': STRANGER}).json()['may']
+    for name, again in zip(runs, (risk(actor=STRANGER), explained(actor=STRANGER, end='2024-06-28'),
+                                  CLIENT.get('/book/pnl', params=dict(actor=STRANGER)))):
+        assert again.status_code == 422 and again.json()['detail'] == may[name]['spine-desk'] + (
+            log.RECORDED.format(before + 1)), (name, again.text)
     assert facts(recorded, 'capability_denied') == denials, 'a repeated refusal is a second fact'
     for unnamed in (risk(), explained(), CLIENT.get('/book/pnl')):
         assert unnamed.status_code == 422 and 'no actor for this act' in unnamed.json()['detail']
@@ -5272,6 +5277,8 @@ def test_the_consolidated_risk_and_the_explain_ask_the_queue_s_question(recorded
     entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate')]
             + [(STRANGER, 'validate', 'spine-desk')])
     assert risk(actor=STRANGER).json() == warm.json()
+    may = CLIENT.get('/book/seat', params={'actor': STRANGER}).json()['may']
+    assert [may[name]['spine-desk'] for name in runs] == [None] * 3
     told = explained(actor=STRANGER)
     assert told.status_code == 200, told.text
     assert told.json()['rows'] and told.json()['explain']['carry'] is not None, told.json()

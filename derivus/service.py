@@ -3214,6 +3214,12 @@ def marked_instruments(book, since, head=None):
 #: the days marked. Each read adds what to do.
 NO_MARKS = 'no marks stand for {} on {!r} - the days marked are {}; '
 
+#: The P&L reads that value the book on the request thread, each admitted as a what-if is, by
+#: what `/book/pnl` is asked: a read to now marks the book as it stands, and an explain values it
+#: three times more.
+PNL_RUNS = {'pnl_to_now': lambda end, explain: end is None,
+            'pnl_explain': lambda end, explain: explain}
+
 
 @app.get('/book/pnl', summary="The desk's P&L between two marked closes, or since the last")
 def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreement: str = None,
@@ -3248,9 +3254,7 @@ def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreemen
     """
     document, _ = recording().read()
     book = book_name(document)
-    if explain or end is None:
-        # a read to now marks the book as it stands and the explain values it three times more,
-        # on this thread: both are a what-if's work and ask its question first
+    if any(runs(end, explain) for runs in PNL_RUNS.values()):
         spine.admit(spine.CURIOSITY, actor, book)
     if portfolio is not None and not spine.under(portfolio, book):
         raise HTTPException(422, 'portfolio {!r} is not under book {!r} - a portfolio is a path '
@@ -4036,8 +4040,10 @@ def book_worklist(actor: str = None):
 
 
 #: The runs the queue admits that a seat's `may` answers for, by the lane `spine.admit` judges each
-#: in: a what-if on the book - its risk, a calculation, a quote, a credit charge - and the marks job.
-RUNS = {'run': spine.CURIOSITY, 'standing': spine.STANDING}
+#: in: a what-if on the book - its risk, a calculation, a quote, a credit charge - the marks job,
+#: and each P&L read that is a run (`PNL_RUNS`).
+RUNS = dict({'run': spine.CURIOSITY, 'standing': spine.STANDING},
+            **dict.fromkeys(PNL_RUNS, spine.CURIOSITY))
 
 
 @app.get('/book/seat', summary='What the seat asking may do, and at which nodes')
