@@ -685,15 +685,19 @@ check('a what-if is admitted to a seat holding validate at the book, above it or
 const READ = { data: { mtm: 5 }, error: null, loading: false, clock: 'c' };
 const REFUSED = { data: null, error: 'the book will not price', loading: false, clock: null };
 const HOLD = 'Needs validate: sales-1 holds it nowhere.';
+const AS_HELD = { held: true, tone: 'note', joiner: '. ' };
+const AS_READ = { held: false, tone: 'error-box', joiner: ': ' };
 check("a read the seat may not ask shows what holds it in the read's place, nothing read before "
-      + "it, and says it is held; one it may ask stands as read, its refusal the service's own",
+      + "it, and says it is held, a notice after a full stop; one it may ask stands as read, its "
+      + "refusal the service's own, an error after a colon",
       'the answer in hand kept under the hold, which shows a seat the numbers the seat before it '
-      + "read; the service's refusal kept over the hold; the hold not said to be one, which "
-      + 'leaves it in the red box; or a read the seat may ask blanked, or said to be held',
+      + "read; the service's refusal kept over the hold; the hold not said to be one, or its "
+      + 'tone or joiner turned, which leaves it in the red box or runs a refusal on after a '
+      + 'full stop; or a read the seat may ask blanked, or said to be held',
       [state.readAs(HOLD, READ), state.readAs(HOLD, REFUSED), state.readAs(null, READ),
        state.readAs(null, REFUSED)],
-      [{ ...READ, data: null, error: HOLD, held: true }, { ...REFUSED, error: HOLD, held: true },
-       { ...READ, held: false }, { ...REFUSED, held: false }]);
+      [{ ...READ, data: null, error: HOLD, ...AS_HELD }, { ...REFUSED, error: HOLD, ...AS_HELD },
+       { ...READ, ...AS_READ }, { ...REFUSED, ...AS_READ }]);
 const risked = (grants, extra) =>
   state.bookRisk({ ...seated(grants, 'sales-1', extra), risk: READ });
 check('the risk is a what-if the queue admits: held from a seat holding validate nowhere, and '
@@ -703,7 +707,7 @@ check('the risk is a what-if the queue admits: held from a seat holding validate
       [risked({}), risked({ validate: ['HARBOURLINE/fx'] }),
        risked({ book: ['HARBOURLINE'], mark: ['HARBOURLINE'] }).held,
        risked({}, { record: { spine: null } }).held],
-      [{ ...READ, data: null, error: HOLD, held: true }, { ...READ, held: false }, true, false]);
+      [{ ...READ, data: null, error: HOLD, ...AS_HELD }, { ...READ, ...AS_READ }, true, false]);
 const booked = (etag, grants) => seated(grants, 'sales-1', { source: { kind: 'book', etag } });
 const priced = (etag, grants = { validate: ['HARBOURLINE'] }) => state.riskNow({
   ...booked(etag, grants), risk: { ...READ, clock: state.clockOf(booked('e1', {})) } });

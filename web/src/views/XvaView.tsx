@@ -118,8 +118,8 @@ export function XvaView() {
           currency={currency} lagging={lagsBook(xva.clock, clock)} loading={xva.loading}
         />
         {risk.error && (
-          <div className={risk.held ? 'note' : 'error-box'}>
-            The value to the desk is not read{risk.held ? '. ' : ': '}{risk.error}</div>
+          <div className={risk.tone}>
+            The value to the desk is not read{risk.joiner}{risk.error}</div>
         )}
         {collateral.error && (close
           ? <div className="note">The collateral is not read. {close.title} {close.hint}</div>

@@ -50,7 +50,7 @@ export function RiskView() {
     return (
       <div className="main">
         <div className="panel">
-          <div className={risk.held ? 'note' : 'error-box'}>{risk.error}</div>
+          <div className={risk.tone}>{risk.error}</div>
           <div className="hint">
             {risk.held ? 'The risk is read as soon as the seat may ask it.'
               : unpriced(risk.error, source.opened) ?? 'The consolidated risk could not be read.'}

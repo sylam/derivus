@@ -84,7 +84,7 @@ export function PnlView() {
     const held = read.held && !marked.error;
     return error ? (
       <div className="main"><div className="panel">
-        <div className={held ? 'note' : 'error-box'}>
+        <div className={marked.error ? 'error-box' : read.tone}>
           {held && !opens ? noWindow(error, days?.days ?? []) : error}</div>
       </div></div>
     ) : <EmptyState title="Reading the P&L…" hint="The marks of both days, the trades and the cash between them." />;

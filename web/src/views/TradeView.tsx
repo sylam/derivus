@@ -274,7 +274,7 @@ function Worth({ path, reference, legs, shut }: {
         reading of the live book.</div>;
     }
     if (risk.error) {
-      return <div className={risk.held ? 'note' : 'error-box'}>{risk.error}</div>;
+      return <div className={risk.tone}>{risk.error}</div>;
     }
     if (!risk.data) return <div className="hint">{noMark(risk)}</div>;
     const { own, inside } = markOf([...risk.data.per_deal, ...risk.data.in_sets], path);
