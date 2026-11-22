@@ -762,7 +762,7 @@ def compiled_job(document, lsn=None, strict=True, runs=None, folds=None, market=
     except ValueError:
         return document
     with (contextlib.nullcontext() if READ.get() is not None else one_read(folds, market)):
-        held = _nets(lsn, book_name(document))
+        held = nets(positions_of(book_name(document), lsn))
         papers = _papers(document, lsn)
         balances = {} if runs is False else _balances(document, papers, lsn, folds)
         if (runs or document['Calc']['Calculation'].get('Object')) == BaseValuation.__name__:
@@ -807,16 +807,14 @@ def book_name(document):
     return named if isinstance(named, str) and named else None
 
 
-def _nets(lsn=None, book=None, rows=None):
-    """`{(instrument, agreement): net}` - every position `book` holds at `lsn`, summed over its
-    portfolios, the agreement being the set the file materialises it under; of `rows`, the
-    positions standing, where they are already read."""
-    nets = {}
-    for row in positions(lsn) if rows is None else rows:
-        if row.get('book') == book:
-            key = (row['instrument'], row['agreement'])
-            nets[key] = nets.get(key, 0.0) + row['quantity']
-    return nets
+def nets(rows):
+    """`{(instrument, agreement): net}` - the positions `rows` summed over their portfolios, the
+    agreement being the set the file materialises each under."""
+    summed = {}
+    for row in rows:
+        key = (row['instrument'], row['agreement'])
+        summed[key] = summed.get(key, 0.0) + row['quantity']
+    return summed
 
 
 def _balances(document, papers, lsn=None, folds=None):
@@ -1377,6 +1375,17 @@ def positions(lsn=None):
     """Every position the record holds at `lsn`, keyed instrument by agreement by portfolio: the net
     quantity in units of the instrument, the clips behind it and the amendment that moved it."""
     return _rows('positions', lsn)
+
+
+def positions_of(book, lsn=None, folds=None):
+    """The `positions` rows of the book `book` at `lsn`, read off the fold ADVANCED in `folds`:
+    what one book file prices, a fill filed under another book or under none being none of its."""
+    def fold(log):
+        named = package().projections.PROJECTORS['positions']
+        return deepcopy([row for row in named.rows(_state(log, named, lsn, folds))
+                         if row['book'] == book])
+
+    return folded(fold)
 
 
 def entities(lsn=None):

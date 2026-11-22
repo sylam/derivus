@@ -562,7 +562,9 @@ under `premiums` at the fill, and a premium settlement is no payment it reads. *
 
 The book file keeps its content and gains `Spine: {lsn, head, hydrated_at}`, a sibling of `Calc`,
 so the pin cannot move a plan. A booking appends first and writes the file second. `GET
-/book/reconcile` folds at the head, where a lost write lives, and compares the two where the book
+/book/reconcile` folds at the head, where a lost write lives, the positions of the book the file
+names (`spine.positions_of`, the reader the compile and the marks read too) - another book's fill
+is none of its drift, nor of its `positions_behind` - and compares the two where the book
 prices: a position is its instrument under its agreement, priced at the record's net on the first
 node of those terms under that agreement's set, so how many nodes carry it is no disagreement and a
 partial unwind filed against its node is none. It names a position no node carries, a node no
@@ -571,6 +573,7 @@ where the file lost them) and the client's name - and paper that is not its decl
 reading, never a refusal. **Held by**
 `test_spine_engine.py::test_the_pin_cannot_move_the_plan_hash`,
 `::test_a_fill_the_file_never_took_is_what_reconcile_is_for`,
+`::test_another_book_on_the_record_is_none_of_this_books_drift`,
 `::test_a_partial_unwind_leaves_the_file_and_the_record_agreeing`,
 `test_service.py::test_a_booking_into_one_set_leaves_another_set_s_xva_run_where_it_was`.
 

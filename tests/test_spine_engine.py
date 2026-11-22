@@ -4434,7 +4434,7 @@ def test_a_fill_the_file_never_took_is_what_reconcile_is_for(recorded, booking):
     assert CLIENT.get('/book/reconcile').json()['in_record_not_in_file'] == []
 
     lost = spine.book(json.loads(dump(dict(CASHFLOW, Reference='LOST', Amount=500_000.0))),
-                      500_000.0, 'CPTY_A', CLIENT_SET, 'EXEC-LOST')
+                      500_000.0, 'CPTY_A', CLIENT_SET, 'EXEC-LOST', book_name='spine-desk')
     answer = CLIENT.get('/book/reconcile').json()
     assert [row['instrument'] for row in answer['in_record_not_in_file']] == [
         lost['body']['instrument'] if 'body' in lost else answer[
@@ -4449,6 +4449,33 @@ def test_a_fill_the_file_never_took_is_what_reconcile_is_for(recorded, booking):
     after = CLIENT.get('/book/reconcile').json()
     assert (after['events_behind'], after['positions_behind']) == (2, 1)
     assert len(after['in_record_not_in_file']) == 1, 'a policy moved a position'
+
+
+def test_another_book_on_the_record_is_none_of_this_books_drift(recorded, booking):
+    """Two books on one record: a fill filed in another book is none of the served book's
+    positions, so reconcile names nothing and `positions_behind`, on the reconcile and the status
+    alike, counts none of it - while this book's own fill the file never took is named and counted
+    as ever.
+
+    Killing mutations: the reconcile reading the record's positions with no book, which names the
+    other book's trade as lost; `positions_behind` counting every book's fills, which reads 1 on a
+    file that has drifted by nothing.
+    """
+    def fill(reference, book):
+        return spine.book(json.loads(dump(dict(CASHFLOW, Reference=reference, Amount=1.0))), 1.0,
+                          'CPTY_A', CLIENT_SET, 'EXEC-' + reference, book_name=book)
+
+    assert book_one('MINE')['written'] is True
+    fill('THEIRS', 'another-book')
+    answer = CLIENT.get('/book/reconcile').json()
+    assert (answer['in_record_not_in_file'], answer['in_file_not_in_record']) == ([], [])
+    assert (answer['events_behind'], answer['positions_behind']) == (1, 0)
+    assert CLIENT.get('/book/status').json()['spine']['positions_behind'] == 0
+
+    fill('LOST', 'spine-desk')
+    answer = CLIENT.get('/book/reconcile').json()
+    assert [row['reference'] for row in answer['in_record_not_in_file']] == ['LOST']
+    assert (answer['events_behind'], answer['positions_behind']) == (2, 1)
 
 
 def test_a_partial_unwind_leaves_the_file_and_the_record_agreeing(recorded, booking):
@@ -4712,7 +4739,7 @@ def test_the_banner_reads_clean_then_behind_then_drifted(recorded, booking):
 
     for reference, amount in (('AHEAD_ONE', 100_000.0), ('AHEAD_TWO', 200_000.0)):
         spine.book(json.loads(dump(dict(CASHFLOW, Reference=reference, Amount=amount))),
-                   amount, 'CPTY_A', CLIENT_SET, 'EXEC-' + reference)
+                   amount, 'CPTY_A', CLIENT_SET, 'EXEC-' + reference, book_name='spine-desk')
     declare(recorded, policy.FIXINGS_POLICY, {'sources': {'FxRate.ZAR': ['ECB']}})
     pinned = CLIENT.get('/book/status').json()['spine']
     assert (pinned['events_behind'], pinned['positions_behind']) == (3, 2)

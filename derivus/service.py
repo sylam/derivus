@@ -1274,8 +1274,8 @@ def held_structure(document, deal_path):
         if node['Instrument']['.Deal'].get('Object') == 'NettingCollateralSet':
             continue
         if held is None:
-            held = {row['instrument'] for row in spine.positions()
-                    if row['quantity'] and row.get('book') == book_name(document)}
+            held = {row['instrument'] for row in spine.positions_of(
+                book_name(document), folds=folds()) if row['quantity']}
         if spine.instrument_address(node) in held:
             return '/'.join(segments[:depth])
     return None
@@ -2153,10 +2153,9 @@ def marked_positions(document, risk):
     home is configured."""
     if not spine.configured():
         return []
-    book = book_name(document)
-    rows = [row for row in spine.standing(folds=folds()) if row['quantity'] and row['book'] == book]
-    nets, held = spine._nets(book=book, rows=rows), held_at(document, {
-        row['instrument'] for row in rows})
+    rows = [row for row in spine.positions_of(book_name(document), folds=folds())
+            if row['quantity']]
+    nets, held = spine.nets(rows), held_at(document, {row['instrument'] for row in rows})
     marks = {row['deal_path']: row['value'] for row in risk['per_deal'] + risk['in_sets']}
     answer = []
     for row in rows:
@@ -2312,9 +2311,9 @@ def held_at(document, known):
 POSITION_EVENTS = ('fill', 'amendment')
 
 
-def record_positions(lsn=None):
-    """The record's positions at `lsn`, or AT THE HEAD where none is named, per INSTRUMENT AND
-    AGREEMENT - what the book prices a node at - each amendment chain collapsed onto its HEAD.
+def record_positions(book):
+    """The positions of `book` AT THE RECORD'S HEAD per INSTRUMENT AND AGREEMENT - what the book
+    prices a node at - each amendment chain collapsed onto its HEAD.
 
     The record keys a position where it sits, instrument by agreement by portfolio, and the file
     prices the node of those terms under that agreement's set, so the two meet there: the rows of
@@ -2322,7 +2321,7 @@ def record_positions(lsn=None):
     holds, so the chain's signed quantity is answered under the instrument it was amended INTO -
     which reconciles clean whichever end of the link the quantity is carried on.
     """
-    rows = spine.positions(lsn)
+    rows = spine.positions_of(book, folds=folds())
     moved = dict((row['instrument'], row['amended_to']) for row in rows if row['amended_to'])
     heads = {}
     for row in rows:
@@ -2363,7 +2362,7 @@ def reconciled(document):
     one failure this verb exists to name, and it lives entirely past the pin; folding there would
     make it invisible by construction.
     """
-    record = record_positions()
+    record = record_positions(book_name(document))
     held = held_at(document, {address for address, _ in record})
     lost = [row for key, row in sorted(record.items()) if row['quantity'] and key not in held]
     names, clients = named_trades(document, {row['instrument'] for row in lost}), client_names()
@@ -2448,18 +2447,20 @@ def restrike(was, became):
     return changed, ': ' + ', '.join(map(said, changed))
 
 
-def behind(pinned):
+def behind(pinned, book):
     """How far the record has moved since the file was written: every event, and the FILLS AND
-    AMENDMENTS among them, which are the only ones a position can be made of.
+    AMENDMENTS of `book` among them, which are the only ones its positions can be made of.
 
-    Two numbers because one will not do: a policy, a fixing or an attestation moves `events_behind`
-    and changes no position, so it is not a signal that the file has drifted.
+    Two numbers because one will not do: a policy, a fixing, an attestation or another book's trade
+    moves `events_behind` and changes no position of this one, so it is not a signal that the file
+    has drifted.
     """
     def counted(log):
         head = log.head()[0]
         return {'events_behind': head - pinned['lsn'],
                 'positions_behind': sum(1 for frame in log.frames(start_lsn=pinned['lsn'] + 1)
-                                        if frame['event_type'] in POSITION_EVENTS)}
+                                        if frame['event_type'] in POSITION_EVENTS
+                                        and frame['book'] == book)}
 
     return spine.folded(counted)
 
@@ -2491,7 +2492,7 @@ def spine_block(document):
              'paper': spine.papered(), 'close': {
                  'market': market, 'stands': bool(closes), 'marked': bool(closes) and (
                      spine.base_day(document) in book_marks_on(book_name(document), closes))}}
-    return block if pinned is None else dict(block, **pinned, **behind(pinned))
+    return block if pinned is None else dict(block, **pinned, **behind(pinned, book_name(document)))
 
 
 def answered(rows, lsn=None):
@@ -2707,9 +2708,10 @@ def book_reconcile(actor: str = None):
 
     A READING and never a refusal: the desk books what it books and the record says where the copy
     has drifted - a hand edit, or a booking whose file write failed after the event landed, becomes
-    visible instead of silent, the fold being taken AT THE HEAD. `events_behind` counts every event
-    since the file was written and `positions_behind` the fills and amendments among them, which
-    are the only ones that can move a row here. `actor` is the seat reading, which sees the rows
+    visible instead of silent, the fold being taken AT THE HEAD over the positions of the book the
+    file names. `events_behind` counts every event since the file was written and
+    `positions_behind` the book's fills and amendments among them, which are the only ones that can
+    move a row here. `actor` is the seat reading, which sees the rows
     of the instruments held at the nodes it acts at (`sighted`). 404 where no home is configured.
     A file nothing has pinned - written before its record, or landed by another system - answers
     its three counts null and its lists all the same, a deal nobody booked being what a take-on
@@ -2720,8 +2722,8 @@ def book_reconcile(actor: str = None):
     see = sighted(document, spine.sight(actor))
     return dict({name: [row for row in rows if see(row.get('instrument'))]
                  for name, rows in reconciled(document).items()},
-                **(dict(lsn=pinned['lsn'], **behind(pinned)) if pinned else dict.fromkeys(
-                    ('lsn', 'events_behind', 'positions_behind'))))
+                **(dict(lsn=pinned['lsn'], **behind(pinned, book_name(document))) if pinned
+                   else dict.fromkeys(('lsn', 'events_behind', 'positions_behind'))))
 
 
 def sighted(document, sight, verb=None, rows=None):
@@ -3288,8 +3290,8 @@ def book_marks_on(book, closes):
 def marked_instruments(book, since, head=None):
     """Every instrument `book` holds at `head` - the record's own where none is named - or traded
     after LSN `since`: what its marks value."""
-    return {row['instrument'] for row in spine.positions(head) if row['quantity']
-            and spine.under(row['portfolio'], book)} | {
+    return {row['instrument'] for row in spine.positions_of(book, head, folds())
+            if row['quantity']} | {
         fill['instrument'] for fill in spine.fills(after=since, until=head) if fill['book'] == book}
 
 
