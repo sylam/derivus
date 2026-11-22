@@ -10,15 +10,12 @@ import {
 import {
   grantsRead, heldBack, noPositions, readAs, runHeld, spineOf, useApp, useRead,
 } from '../state';
-import { formatNumber, type Kind } from '../tokens';
+import { formatNumber } from '../tokens';
 import { entityText } from '../desk';
 import { NO_PAPER } from '../positions';
 
-/** A figure as a cell: a number signed in colour (`Amount`), and a dash for what nobody can know. */
-function Figure({ value, kind = 'money' }: { value: number | null | undefined; kind?: Kind }) {
-  return value === null || value === undefined ? <td className="n">—</td>
-    : <Amount value={value} kind={kind} />;
-}
+/** What a figure nobody can know says on its dash. */
+const UNKNOWN = 'not known: the lines above name what is missing';
 
 /** The desk's P&L between two marked days, or from the last marks to the book as it stands - per
  * position and in total, narrowed by portfolio, agreement or client - and, asked for, the explain
@@ -178,7 +175,8 @@ export function PnlView() {
                     {formatNumber(row.quantity_start)} → {formatNumber(row.quantity_end)}
                   </td>
                   {FIGURES.map((figure) => (
-                    <Figure key={figure.key} value={row[figure.key] as number | null} />))}
+                    <Amount key={figure.key} value={row[figure.key] as number | null} kind="money"
+                            absent={UNKNOWN} />))}
                 </tr>
               ))}
             </tbody>
@@ -203,10 +201,7 @@ function Explained({ explain, currency }: { explain: NonNullable<Pnl['explain']>
         {explained(explain).map((line) => (
           <Stat key={line.label} label={line.label} value={line.value} currency={currency} />
         ))}
-        <div className="stat">
-          <div className="label">Residual share</div>
-          <div className="value">{share === null ? '—' : formatNumber(100 * share, 'percent')}</div>
-        </div>
+        <Stat label="Residual share" value={share === null ? null : 100 * share} kind="percent" />
       </div>
       <div className="hint">
         The carry is the start's book rolled to the end's day at the start's own quotes; the
@@ -225,9 +220,10 @@ function Explained({ explain, currency }: { explain: NonNullable<Pnl['explain']>
             {explain.factors.map((row) => (
               <tr key={factorLabel(row)}>
                 <td>{factorLabel(row)}</td>
-                <Figure value={row.delta} /><Figure value={row.start} kind="plain" />
-                <Figure value={row.end} kind="plain" /><Figure value={row.move} kind="plain" />
-                <Figure value={row.pnl} />
+                <Amount value={row.delta} kind="money" />
+                {[row.start, row.end, row.move].map((value, at) => (
+                  <Amount key={at} value={value} kind="plain" absent={UNKNOWN} />))}
+                <Amount value={row.pnl} kind="money" absent={UNKNOWN} />
               </tr>
             ))}
           </tbody>

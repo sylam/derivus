@@ -860,15 +860,19 @@ check("an amount's cell draws a negative in the loss colour, the exact value on 
 check("a stat tile draws its label, then its amount and currency, a negative in the loss colour and "
       + 'the exact value on its hover unless its title says what the tile is; one not known is a dash',
       "a loss drawn as a gain on the P&L's totals, its explain, the book's MTM and a trade's worth "
-      + 'alike; or a zero drawn for a total not known',
+      + "alike; a zero drawn for a total not known; or a share drawn as money, which prints the "
+      + "explain's residual share to two decimals with no percent sign",
       [draw('Stat', { label: 'P&L', value: -1250.5, currency: 'USD' }),
        draw('Stat', { label: 'worth', value: 3, title: 'to the desk' }),
-       draw('Stat', { label: 'Realised', value: null, currency: 'USD' })],
+       draw('Stat', { label: 'Realised', value: null, currency: 'USD' }),
+       draw('Stat', { label: 'Residual share', value: -12.5, kind: 'percent' })],
       ['<div class="stat" title="-1250.5"><div class="label">P&amp;L</div><div class="value neg">'
         + '-1,250.50 <span class="unit">USD</span></div></div>',
        '<div class="stat" title="to the desk"><div class="label">worth</div><div class="value">'
         + '3</div></div>',
-       '<div class="stat"><div class="label">Realised</div><div class="value">—</div></div>']);
+       '<div class="stat"><div class="label">Realised</div><div class="value">—</div></div>',
+       '<div class="stat" title="-12.5"><div class="label">Residual share</div><div class="value neg">'
+        + '-12.5 %</div></div>']);
 check("a credit limit's line draws a negative figure in the loss colour, as a tile and a cell do",
       'a headroom gone below zero drawn as room left, or the limit itself drawn as a loss',
       draw('LimitLine', { read: { currency: 'USD', flag: null, notes: [], figures: [

@@ -61,6 +61,7 @@ export function TicketCard({ pending }: { pending: PendingQuote }) {
             {delivery && ` · delivers ${delivery}`}</span>
         </div>
         <div className="stats">
+          {/* unsigned on purpose: the net's sign is the client's direction, not a loss */}
           <div className="stat">
             <div className="label">net, in the client's sign</div>
             <div className="value">
