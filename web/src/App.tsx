@@ -12,8 +12,8 @@ import { NO_BOOK, copyOnly } from './desk';
 import { WORKSPACES } from './registry';
 import { bookOwed, polled, ringsAhead, single, worklistAt } from './spine';
 import {
-  AppContext, INITIAL, PAPER_TABS, bookRisk, clockOf, grantsOwed, paperAt, paperOwed, readBook,
-  reducer, seatClock, spineOf,
+  AppContext, INITIAL, PAPER_TABS, clockOf, paperAt, paperOwed, readBook, reducer, runHeld,
+  seatClock, spineOf,
 } from './state';
 
 const BOOK_POLL_MS = 2000;
@@ -109,7 +109,7 @@ export function App() {
   // for a seat the queue admits to a what-if: taking the tab prices it, every move of the clock
   // under that gaze re-prices it, and a tab left behind or a window gone hidden costs nothing.
   const riskWanted = ['risk', 'trade', 'xva', 'client'].includes(state.tab) && visible
-    && !bookRisk(state).held && !grantsOwed(state);
+    && runHeld(state) === null;
   const riskAt = seatClock(state);
   useEffect(() => {
     if (clock === null || riskAt === null || !riskWanted
