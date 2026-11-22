@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { tickBloomberg, tickMarket } from '../api';
 import { DataTable } from '../components/DataTable';
+import { Gated } from '../components/Desk';
 import { DescriptorPanel, EditableScalar } from '../components/FieldView';
 import { Navigator } from '../components/Navigator';
 import { Whose } from '../components/Whose';
@@ -100,7 +101,6 @@ function MarketPriceBlock({ schema, name, block, live }: {
  * Nothing here names a pair - the scope defaults to the desk's. */
 function BloombergTick() {
   const { state, dispatch } = useApp();
-  const hold = runHeld(state);
   const [outcome, setOutcome] = useState<Record<string, unknown> | null>(null);
   const asking = useQueued<void, Record<string, unknown> | undefined>(tickBloomberg, 'Bloomberg',
                                                                       (answer) => {
@@ -117,11 +117,11 @@ function BloombergTick() {
   return (
     <>
       <div className="statusrow">
-        {hold ? <><span className="hint">tick from Bloomberg</span><span>{hold}</span></> : (
+        <Gated label="tick from Bloomberg" hold={runHeld(state)}>
           <button className="ghost" onClick={tick} disabled={!!asking.run}>
             tick from Bloomberg
           </button>
-        )}
+        </Gated>
         {status && (
           <span className={`chip ${status === 'done' ? 'done'
             : status === 'error' ? 'error' : 'running'}`}>{status}</span>

@@ -9,7 +9,7 @@
 // shows for a dial it does not state.
 
 import { readFileSync } from 'node:fs';
-import { check, done, load } from './check.mjs';
+import { check, done, drawer, load } from './check.mjs';
 
 const desk = await load('desk');
 // the store, for what a run says about the book it ran on
@@ -807,5 +807,16 @@ check("a run's peaks are its row's: the expected exposure's and each PFE column'
       [{ ee: { value: 5, day: '2026-12-16' },
          pfe: [{ value: 9, day: '2027-02-16', quantile: 97.5 },
                { value: 12, day: '2027-02-16', quantile: 99 }] }, { pfe: [] }, { pfe: [] }]);
+
+// --- the primitives of `components/Desk.tsx`, as the markup they draw
+const draw = await drawer('Desk');
+check("a control the seat is held from is said in its button's place, its label then the line "
+      + 'holding it; the control where nothing holds it, and nothing where none is given',
+      'the control drawn under a hold, which offers a seat a button whose press files a denial; '
+      + 'the line holding it dropped, which names a control and not why it is missing; or the '
+      + 'label said where nothing holds',
+      [draw('Gated', { label: 'run', hold: HOLD }, 'Run'),
+       draw('Gated', { label: 'run', hold: null }, 'Run'), draw('Gated', { label: 'run', hold: null })],
+      [`<span class="hint">run</span><span>${HOLD}</span>`, 'Run', '']);
 
 done();

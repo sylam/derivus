@@ -11,7 +11,7 @@ import { currencyOf, lagsBook, ownDials, stampText, tableReading } from '../desk
 import { clockOf, marketOf, runHeld, useApp, usePolled, useRead } from '../state';
 import { formatNumber, isObject, token } from '../tokens';
 import type { JobDoc, Schema, TableShape } from '../types';
-import { OnStrip } from '../components/Desk';
+import { Gated, OnStrip } from '../components/Desk';
 
 // a page of a table: its leading rows and columns, the whole of it a download away
 const PAGE = 200;
@@ -212,11 +212,10 @@ function RunStrip({ origin, submit, extra }: {
   const [refused, setRefused] = useState<string | null>(null);
   const mine = run.origin === origin;
   const busy = run.status === 'queued' || run.status === 'running';
-  const hold = runHeld(state);
   return (
     <>
       <div className="statusrow">
-        {hold ? <><span className="hint">run</span><span>{hold}</span></> : (
+        <Gated label="run" hold={runHeld(state)}>
           <button className="primary" disabled={busy} onClick={async () => {
             setRefused(null);
             try {
@@ -227,7 +226,7 @@ function RunStrip({ origin, submit, extra }: {
           }}>
             Run
           </button>
-        )}
+        </Gated>
         {extra}
         {mine && <StatusChip />}
         {mine && run.summary?.plan_hash && (

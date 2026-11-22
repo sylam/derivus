@@ -5,14 +5,38 @@
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 
-/** `web/src/<name>.ts`, bundled, as its exports. */
-export async function load(name) {
-  const out = await build({
-    entryPoints: [fileURLToPath(new URL(`../src/${name}.ts`, import.meta.url))],
-    bundle: true, format: 'esm', write: false, logLevel: 'silent',
-  });
+const SRC = fileURLToPath(new URL('../src/', import.meta.url));
+
+/** What `entry` names, bundled with what it imports, as its exports. */
+async function bundled(entry) {
+  const out = await build(
+    { ...entry, bundle: true, format: 'esm', write: false, logLevel: 'silent' });
   return import(`data:text/javascript;base64,${
     Buffer.from(out.outputFiles[0].text).toString('base64')}`);
+}
+
+/** `web/src/<name>.ts`, bundled, as its exports. */
+export const load = (name) => bundled({ entryPoints: [`${SRC}${name}.ts`] });
+
+// no chart is drawn in a check, so the chart library a component reaches is left out of its bundle
+const NO_CHARTS = { name: 'no-charts', setup(run) {
+  run.onResolve({ filter: /^echarts/ }, ({ path }) => ({ path, namespace: 'none' }));
+  run.onLoad({ filter: /.*/, namespace: 'none' }, () => (
+    { contents: 'module.exports = new Proxy({}, { get: () => () => {} });' }));
+} };
+
+/** `web/src/components/<name>.tsx` as a function answering the markup one of its components
+ * draws: the component's name, its props and its children. */
+export async function drawer(name) {
+  const { createElement, renderToStaticMarkup, ...parts } = await bundled({
+    stdin: { contents: `export * from './components/${name}';\n`
+      + "export { createElement } from 'react';\n"
+      + "export { renderToStaticMarkup } from 'react-dom/server.browser';\n",
+             resolveDir: SRC, loader: 'ts' },
+    jsx: 'automatic', plugins: [NO_CHARTS],
+  });
+  return (part, props, ...children) =>
+    renderToStaticMarkup(createElement(parts[part], props, ...children));
 }
 
 let ran = 0;

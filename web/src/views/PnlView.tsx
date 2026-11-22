@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { getMarkedDays, getPnl } from '../api';
 import { declaredOn, unmarked } from '../client';
+import { Gated } from '../components/Desk';
 import { EmptyState } from '../components/EmptyState';
 import {
   behind, explained, factorLabel, FIGURES, noPnl, noWindow, opensOn, pnlQuery, pnlRead,
@@ -108,7 +109,7 @@ export function PnlView() {
               {later.map((marked) => <option key={marked.day} value={marked.day}>{marked.day}</option>)}
             </select>
           </label>
-          {toNow && <><span className="hint">to now, or explained</span><span>{toNow}</span></>}
+          <Gated label="to now, or explained" hold={toNow} />
           <input placeholder="portfolio path" value={path}
                  onChange={(event) => setPath(event.target.value)} onBlur={commit}
                  onKeyDown={(event) => { if (event.key === 'Enter') commit(); }} />

@@ -1,6 +1,7 @@
 import { Fragment, useState, type ReactNode } from 'react';
 import { configureSecurities, failure, getSecurities, verifySecurities } from '../api';
 import { DataTable } from '../components/DataTable';
+import { Gated } from '../components/Desk';
 import { EmptyState } from '../components/EmptyState';
 import { EditableScalar, FieldView } from '../components/FieldView';
 import { Navigator, type Page } from '../components/Navigator';
@@ -300,11 +301,10 @@ export function SecuritiesView() {
         <>
           {note}
           <div className="statusrow">
-            {!hold && (queueHold
-              ? <><span className="hint">verify the whole map</span><span>{queueHold}</span></> : (
-                <button className="ghost" disabled={verify.running}
-                        onClick={() => verify.start({})}>verify the whole map</button>
-              ))}
+            {!hold && <Gated label="verify the whole map" hold={queueHold}>
+              <button className="ghost" disabled={verify.running}
+                      onClick={() => verify.start({})}>verify the whole map</button>
+            </Gated>}
             <span className="hint">generated <span className="mono">
               {answer.map.generated ?? 'never'}</span></span>
           </div>

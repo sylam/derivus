@@ -14,7 +14,7 @@ import { clockOf, runHeld, useApp, useQueued } from '../state';
 import { formatNumber } from '../tokens';
 import { tradeAt } from '../trade';
 import type { ChargeAsk, Increment, PendingQuote, Schema } from '../types';
-import { LimitLine, Money, Waiting } from './Desk';
+import { Gated, LimitLine, Money, Waiting } from './Desk';
 import { DealPanels, FieldView } from './FieldView';
 
 /** Quote ticket card: client, solved terms, net, market axis levels, spread, margin and window. */
@@ -126,7 +126,6 @@ export function CreditCharge({ ask }: { ask: ChargeAsk }) {
   const asked = useRef<string | null>(null);
   const asking = useQueued(askCharge, 'Increment',
                            (answer: Increment) => setRead({ answer, clock: asked.current }));
-  const hold = runHeld(state);
   const start = () => {
     asked.current = clockOf(state);
     setRead(null);
@@ -135,19 +134,17 @@ export function CreditCharge({ ask }: { ask: ChargeAsk }) {
   return (
     <>
       <div className="statusrow">
-        {hold ? <><span className="hint">credit charge</span><span>{hold}</span></> : (
-          <>
-            <button className="ghost" disabled={!!asking.run} onClick={start}>
-              credit charge
-            </button>
-            <Waiting {...asking} />
-            {!asking.run && !asking.error && (
-              <span className="hint">what {'quote_id' in ask ? 'booking it does' : 'the trade adds'}
-                {' '}to the client's CVA, FVA and peak exposure: a what-if, which writes
-                nothing</span>
-            )}
-          </>
-        )}
+        <Gated label="credit charge" hold={runHeld(state)}>
+          <button className="ghost" disabled={!!asking.run} onClick={start}>
+            credit charge
+          </button>
+          <Waiting {...asking} />
+          {!asking.run && !asking.error && (
+            <span className="hint">what {'quote_id' in ask ? 'booking it does' : 'the trade adds'}
+              {' '}to the client's CVA, FVA and peak exposure: a what-if, which writes
+              nothing</span>
+          )}
+        </Gated>
       </div>
       {read && (
         <>

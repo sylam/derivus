@@ -92,6 +92,14 @@ export function Amount({ value, currency, absent, kind = 'whole' }: {
   );
 }
 
+/** A control in its button's place: where the seat is held from it (`hold`), its `label` and the
+ * line holding it; else the control, where one is given. */
+export function Gated({ label, hold, children }: {
+  label: string; hold: string | null; children?: ReactNode;
+}) {
+  return hold ? <><span className="hint">{label}</span><span>{hold}</span></> : <>{children}</>;
+}
+
 /** A queued job's wait, and what ended it where that was a refusal (`useQueued`). */
 export function Waiting({ run, error }: {
   run: { status: string; since: number } | null; error: string | null;

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { acceptQuote, failure, getQuoteSheet, quoteStructure } from '../api';
-import { Waiting } from '../components/Desk';
+import { Gated, Waiting } from '../components/Desk';
 import { EmptyState } from '../components/EmptyState';
 import { DescriptorPanel } from '../components/FieldView';
 import { Navigator } from '../components/Navigator';
@@ -228,7 +228,6 @@ function QuoteForm({ draft: initial = EMPTY, from, onQuoted }: {
   const paper = state.paper.data ?? NO_PAPER;
   const [draft, setDraft] = useState<Draft>(initial);
   const quoting = useQuoting(onQuoted);
-  const hold = runHeld(state);
   const declared: StructureType | undefined = types[draft.structure];
   const edit = (change: Partial<Draft>) => setDraft((standing) => ({ ...standing, ...change }));
   const sets = clients(state.doc, paper.agreements);
@@ -308,12 +307,12 @@ function QuoteForm({ draft: initial = EMPTY, from, onQuoted }: {
           </>
         )}
         <div className="statusrow">
-          {hold ? <><span className="hint">quote</span><span>{hold}</span></> : (
+          <Gated label="quote" hold={runHeld(state)}>
             <button className="primary" disabled={!declared || !!quoting.run}
                     onClick={() => declared && quoting.start(requestOf(draft, declared))}>
               {quoting.run ? 'pricing…' : from ? 'quote again' : 'quote'}
             </button>
-          )}
+          </Gated>
           <Waiting {...quoting} />
         </div>
       </div>
@@ -417,7 +416,6 @@ function Acceptance({ id, pending, verdict, quoting, onVerdict, onRequote }: {
   const recording = state.record.spine !== null;
   const seat = actingSeat(state);
   const hold = acceptHeld(state, pending.portfolio);
-  const priceHold = runHeld(state);
   const { quote } = pending;
   const booked = pending.booked ?? verdict?.booked;
 
@@ -485,11 +483,11 @@ function Acceptance({ id, pending, verdict, quoting, onVerdict, onRequote }: {
         ))}
         {verdict && !verdict.booked && verdict.requote && (
           <div className="statusrow">
-            {priceHold ? <><span className="hint">re-quote</span><span>{priceHold}</span></> : (
+            <Gated label="re-quote" hold={runHeld(state)}>
               <button className="primary" disabled={!!quoting.run} onClick={onRequote}>
                 re-quote from the same parameters
               </button>
-            )}
+            </Gated>
             <Waiting {...quoting} />
           </div>
         )}
