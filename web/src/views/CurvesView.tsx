@@ -10,7 +10,7 @@ import {
   type CurveEdit, type CurveForm, type Editing,
 } from '../curves';
 import {
-  SURVIVAL, creditCounterparties, entityText, factorFamily, offBook, valuationDay,
+  SURVIVAL, creditCounterparties, entityText, factorFamily, offBook,
 } from '../desk';
 import { blockHint, heldBack, marketOf, useApp, useRead, written } from '../state';
 import { curveOf, isObject, token } from '../tokens';
@@ -225,8 +225,7 @@ export function CurvesView() {
   // a credit curve per counterparty, the ones still without one filed first
   const recording = state.record.spine !== null;
   const entities = recording ? state.paper.data?.entities ?? [] : null;
-  const credit = { base: valuationDay(doc), recording,
-                   convention: Number(state.schema.Factor.types[SURVIVAL]?.Recovery_Rate?.value) };
+  const credit = { recording };
   const counterparties = creditCounterparties(entities, doc, card.factors).map((id) => ({
     id, factor: card.factors[`${SURVIVAL}.${id}`],
     title: entityText(entities, id),

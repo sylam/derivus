@@ -3,10 +3,10 @@
 import { useEffect, useState } from 'react';
 import { failure, stateSurvival } from '../api';
 import {
-  SURVIVAL, refusedAt, spreadForm, spreadRequest, spreads, survivalCurve, type SpreadForm,
+  SURVIVAL, heldSpreads, recoveryOf, refusedAt, spreadForm, spreadRequest, type SpreadForm,
 } from '../desk';
 import { actingSeat, heldBack, useApp, written } from '../state';
-import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
+import { formatNumber, tenorLabel } from '../tokens';
 import { Gated } from './Desk';
 import { Whose } from './Whose';
 
@@ -19,49 +19,48 @@ const HOLDS = {
   plain: 'This desk keeps no record: a curve is written for any counterparty named.',
 };
 
-/** Tenor, spread (bp) and survival probability table for a counterparty credit curve. */
-export function SpreadTable({ rows }: { rows: [string, unknown, number][] }) {
+/** A counterparty's credit curve as the book holds it (`heldSpreads`): the recovery it is read at,
+ * and each tenor's spread with the survival to it - nothing where the factor holds no curve. */
+export function HeldCurve({ factor }: { factor: unknown }) {
+  const held = heldSpreads(factor, useApp().state.schema);
+  if (!held) return null;
   return (
-    <table className="data">
-      <thead>
-        <tr><th>Tenor</th><th className="n">Spread</th><th className="n">Survival</th></tr>
-      </thead>
-      <tbody>
-        {rows.map(([tenor, spread, survival], at) => (
-          <tr key={at}>
-            <td>{tenor}</td>
-            <td className="n">{typeof spread === 'number' ? formatNumber(spread, 'basis')
-              : String(spread)}</td>
-            <td className="n">
-              {isFinite(survival) ? formatNumber(100 * survival, 'percent') : '—'}
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <>
+      <div className="hint">As the book holds it, at a recovery of{' '}
+        {formatNumber(100 * held.recovery, 'percent')}:</div>
+      <table className="data">
+        <thead>
+          <tr><th>Tenor</th><th className="n">Spread</th><th className="n">Survival</th></tr>
+        </thead>
+        <tbody>
+          {held.rows.map(([tenor, spread, survival]) => (
+            <tr key={tenor}>
+              <td>{tenorLabel(tenor)}</td>
+              <td className="n">{formatNumber(spread * 1e4, 'basis')}</td>
+              <td className="n">{formatNumber(100 * survival, 'percent')}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
   );
 }
 
 /** Counterparty credit curve panel and flat or per-tenor spread entry form. */
-export function CreditCard({ id, title, factor, base, convention, recording }: {
-  id?: string; title: string; factor?: unknown; base: string; convention: number;
-  recording: boolean;
+export function CreditCard({ id, title, factor, recording }: {
+  id?: string; title: string; factor?: unknown; recording: boolean;
 }) {
   const { state, dispatch } = useApp();
   const hold = heldBack(state, 'survival_curve');
   const [name, setName] = useState(id ?? '');
-  const [form, setForm] = useState(() => spreadForm(factor, convention));
+  const [form, setForm] = useState(() => spreadForm(factor, state.schema));
   const [said, setSaid] = useState<{ at: string; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const incoming = JSON.stringify(factor ?? null);
-  useEffect(() => setForm(spreadForm(factor, convention)), [incoming]);
+  useEffect(() => setForm(spreadForm(factor, state.schema)), [incoming]);
 
   const request = spreadRequest(name, form);
-  const knots = survivalCurve(request, base).slice(1);
-  const typed = Array.isArray(request.spread) ? request.spread
-    : [{ tenor: '1Y', spread: request.spread }];
-  const curve = curveOf(token(factor, 'Curve'));
-  const recovery = Number(token(factor, 'Recovery_Rate') ?? convention);
+  const stated = heldSpreads(factor, state.schema);
   const edit = (change: Partial<SpreadForm>) => { setSaid(null); setForm({ ...form, ...change }); };
   const row = (at: number, cell: Partial<SpreadForm['rows'][number]>) =>
     edit({ rows: form.rows.map((held, i) => (i === at ? { ...held, ...cell } : held)) });
@@ -76,7 +75,7 @@ export function CreditCard({ id, title, factor, base, convention, recording }: {
         formatNumber(answer.horizon)} years` });
       if (id) return;
       setName('');
-      setForm(spreadForm(undefined, convention));
+      setForm(spreadForm(undefined, state.schema));
       dispatch({ type: 'PICK', screen: 'curves', id: CREDIT + request.counterparty });
     } catch (error) {
       const text = failure(error).error;
@@ -94,21 +93,15 @@ export function CreditCard({ id, title, factor, base, convention, recording }: {
           {id && <Whose path={['Price Factors', `${SURVIVAL}.${id}`]} />}
           <span>{recording ? HOLDS.record : HOLDS.plain}</span>
         </div>
-        {curve ? (
-          <>
-            <div className="hint">As the book holds it, at a recovery of{' '}
-              {formatNumber(100 * recovery, 'percent')}:</div>
-            <SpreadTable rows={spreads(curve.data, recovery).map(([tenor, spread, survival]) =>
-              [tenorLabel(tenor), spread * 1e4, survival])} />
-          </>
-        ) : id && (
+        <HeldCurve factor={factor} />
+        {!stated && id && (
           <div className="note">No credit curve yet: a CVA against this counterparty has no default
             to read, and the first trade under a netting set naming it is refused until it has
             one.</div>
         )}
       </section>
       <section className="card credit">
-        <h3>{curve ? 'Restate the curve' : 'State the curve'}</h3>
+        <h3>{stated ? 'Restate the curve' : 'State the curve'}</h3>
         <Gated hold={hold}>
         {!id && (
           <div className="statusrow">
@@ -123,7 +116,8 @@ export function CreditCard({ id, title, factor, base, convention, recording }: {
           <span>recovery</span>
           <input value={form.recovery} inputMode="decimal"
                  onChange={(event) => edit({ recovery: event.target.value })} />
-          <span className="hint">the factor's convention is {String(convention)}</span>
+          <span className="hint">the factor's convention is {
+            String(recoveryOf(undefined, state.schema))}</span>
           {refusal('recovery')}
         </div>
         <div className="statusrow">
@@ -161,11 +155,6 @@ export function CreditCard({ id, title, factor, base, convention, recording }: {
               rows: [...form.rows, { tenor: '', spread: '' }] })}>add a tenor</button>
           </>
         )}
-        <div className="hint">What it will write: each spread read as a hazard rate, the spread
-          divided by one less the recovery, counted ACT/365 from {base} to its tenor. A flat spread
-          is stated at one year. Past the last tenor the curve runs on at its last spread.</div>
-        <SpreadTable rows={typed.map((held, at) =>
-          [held.tenor, held.spread, Math.exp(-knots[at][1])])} />
         <div className="statusrow">
           <button className="primary" onClick={() => void write()} disabled={saving}>
             write {SURVIVAL}.{request.counterparty || '…'}

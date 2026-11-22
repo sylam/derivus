@@ -1,12 +1,13 @@
 import { getBookMarkets, patchMarket } from '../api';
+import { HeldCurve } from '../components/CreditCard';
 import { DescriptorPanel, type AmendField } from '../components/FieldView';
 import { Navigator } from '../components/Navigator';
 import { Whose } from '../components/Whose';
-import { factorFamily, fileName, spotQuoted, spreads, stampText } from '../desk';
+import { SURVIVAL, factorFamily, fileName, spotQuoted, stampText } from '../desk';
 import { marketsView } from '../spine';
 import { blockHint, heldBack, marketOf, spineOf, useApp, useRead, written } from '../state';
-import { curveOf, formatNumber, isObject, tenorLabel } from '../tokens';
-import type { Market, Schema, Section } from '../types';
+import { curveOf, formatNumber, isObject } from '../tokens';
+import type { Market, Schema } from '../types';
 
 /** `ModelParams.search` ported (config.py): a `Price Models` block keyed exactly wins; else the
  * first matching Model Configuration filter row; else the type's default; else static. */
@@ -61,8 +62,7 @@ function FactorBlock({ schema, name, block, priceModels, modelConfig, live, mark
         title={name} fields={fields} values={block} onAmend={onPatch}
         editable={(_, descriptor) => descriptor.bind === 'value'}
         beside={(key) => fields?.[key]?.bind === 'value'
-          && <ReadAs name={name} value={block[key]} block={block} fields={fields}
-                     market={market} />} />
+          && <ReadAs name={name} value={block[key]} block={block} market={market} />} />
       <ProcessPanel schema={schema} factorName={name} block={block}
                     priceModels={priceModels} modelConfig={modelConfig} />
       {(schema.Interpolation_factor_map[type] ?? []).length > 0 && (
@@ -193,12 +193,10 @@ function RecordMarkets() {
 
 /** A factor's value as a desk reads it, beside the box holding it as the engine does: an FX spot
  * on its pair as the market quotes it, a credit curve as the spreads a credit officer typed. */
-function ReadAs({ name, value, block, fields, market }: {
-  name: string; value: unknown; block: Record<string, unknown>; fields: Section; market: Market;
+function ReadAs({ name, value, block, market }: {
+  name: string; value: unknown; block: Record<string, unknown>; market: Market;
 }) {
   const spot = typeof value === 'number' ? spotQuoted(name, value, market) : undefined;
-  const curve = curveOf(value);
-  const recovery = block.Recovery_Rate ?? fields.Recovery_Rate?.value;
   if (spot) {
     return (
       <span className="readas">
@@ -208,24 +206,12 @@ function ReadAs({ name, value, block, fields, market }: {
       </span>
     );
   }
-  if (!curve || typeof recovery !== 'number') return null;
+  if (factorFamily(name) !== SURVIVAL || !curveOf(value)) return null;
   return (
     <div className="readas">
-      <div>
-        the curve is the cumulative hazard; as the spreads a credit officer types, each its average
-        hazard to the tenor times one less the recovery of {formatNumber(100 * recovery, 'percent')}
-      </div>
-      <table className="data">
-        <thead><tr><th>Tenor</th><th className="n">Spread</th></tr></thead>
-        <tbody>
-          {spreads(curve.data, recovery).map(([tenor, spread]) => (
-            <tr key={tenor}>
-              <td>{tenorLabel(tenor)}</td>
-              <td className="n">{formatNumber(spread * 1e4, 'basis')}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div>the curve is the cumulative hazard; as the spreads a credit officer types, each its
+        average hazard to the tenor times one less the recovery:</div>
+      <HeldCurve factor={block} />
     </div>
   );
 }

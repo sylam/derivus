@@ -10,7 +10,7 @@ import {
 import { EmptyState } from '../components/EmptyState';
 import { Navigator } from '../components/Navigator';
 import {
-  SURVIVAL, creditCounterparties, entityText, offBook, plural, spreads, stampText, valuationDay,
+  SURVIVAL, creditCounterparties, entityText, offBook, plural, stampText,
 } from '../desk';
 import {
   positionName, statusText, type Agreement, type Entity, type Position,
@@ -19,11 +19,11 @@ import { pinnedAt } from '../spine';
 import {
   bookRisk, marketOf, opened, readAs, riskNow, standing, unread, useApp, useRead,
 } from '../state';
-import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
+import { curveOf, formatNumber, token } from '../tokens';
 import { markOf, markShown, markText, noMark, wholeRecord } from '../trade';
 import type { ActivityRow, Market, Schema, SettlementState } from '../types';
 import { AgreementForm } from '../components/AgreementForm';
-import { CreditCard, SpreadTable } from '../components/CreditCard';
+import { CreditCard, HeldCurve } from '../components/CreditCard';
 import { Amount, Back, Side, Value } from '../components/Desk';
 import { CreditTable, useCredit } from './XvaView';
 
@@ -179,9 +179,7 @@ function ClientPage({ id, lines, own, reads, rows, factor, market, schema }: {
               <span className="hint">The Curves tab's credit form, opened here</span>
               <button className="ghost" onClick={() => setForm(null)}>close the form</button>
             </div>
-            <CreditCard id={id} title={name} factor={factor} base={valuationDay(state.doc)}
-                        recording={!!entities}
-                        convention={Number(schema.Factor.types[SURVIVAL]?.Recovery_Rate?.value)} />
+            <CreditCard id={id} title={name} factor={factor} recording={!!entities} />
           </>
         ) : <CurveRead id={id} factor={factor} restate={() => setForm({ curve: true })} />}
       </div>
@@ -249,21 +247,14 @@ function Terms({ terms }: { terms: Term[] }) {
   );
 }
 
-/** The client's credit curve as the spreads stated, read back by the Curves tab's own rule. */
+/** The client's credit curve as the book holds it, read back as the Curves tab reads it. */
 function CurveRead({ id, factor, restate }: { id: string; factor: unknown; restate: () => void }) {
   const curve = curveOf(token(factor, 'Curve'));
-  const recovery = Number(token(factor, 'Recovery_Rate'));
   return (
     <section className="card credit">
       <h3>Credit curve — {SURVIVAL}.{id}</h3>
-      {curve ? (
-        <>
-          <div className="hint">As the book holds it, at a recovery of{' '}
-            {formatNumber(100 * recovery, 'percent')}:</div>
-          <SpreadTable rows={spreads(curve.data, recovery).map(([tenor, spread, survival]) =>
-            [tenorLabel(tenor), spread * 1e4, survival])} />
-        </>
-      ) : (
+      <HeldCurve factor={factor} />
+      {!curve && (
         <div className="note">No credit curve yet: a CVA against {id} has no default to read.</div>
       )}
       <div><button className="ghost" onClick={restate}>{curve ? 'restate it' : 'state it'}</button></div>

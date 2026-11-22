@@ -420,16 +420,6 @@ check('a credit curve reads as the spreads typed, each with the survival to its 
       [readBack(LAB, 0.4), readBack(ROUTE_21, 0.4)],
       [[[1, 230, 0.962392], [3.0027, 270, 0.873608], [5.0027, 300, 0.778694]],
        [[1, 21, 0.996506]]]);
-check("a tenor's years are the engine's own: ACT/365 to the day the period moves the book's to",
-      'a year read as 365 days flat, 3Y at 3.0 where the route writes 3.0027; a month as 30 days, '
-      + '6M at 0.4932; the day not held to the month\'s end, 31 January and a month read as 3 '
-      + 'March; a lower-case unit unread, or a repeated one summed where the engine keeps the '
-      + 'last; or an unreadable tenor read as nought',
-      [...['1Y', '3Y', '6M', '1Y6M', '2W', '10D', '3m', '1y1y', 'soon', '']
-        .map((tenor) => desk.yearsTo(BASE, tenor)),
-       desk.yearsTo('2026-01-31', '1M') * 365, desk.yearsTo('2028-02-29', '1Y') * 365],
-      [1, 3.0027397260273974, 0.4958904109589041, 1.4986301369863013, 0.038356164383561646,
-       0.0273972602739726, 0.25205479452054796, 1, NaN, NaN, 28, 365]);
 const TERM = { recovery: '0.35', flat: false, rows: [
   { tenor: '1Y', spread: '100' }, { tenor: ' 3Y', spread: '150' }, { tenor: '', spread: '' },
   { tenor: '5Y', spread: '200' }] };
@@ -437,33 +427,41 @@ const FLAT = { recovery: '0.4', flat: true, rows: [{ tenor: '2Y', spread: '120' 
                                                   { tenor: '5Y', spread: '300' }] };
 const factor = (curve, recovery) => ({ Recovery_Rate: recovery, Curve: { '.Curve': {
   meta: [], data: curve } } });
-check('spreads typed, curve written, spreads read: the form and the read-back are one round trip',
-      'a spread read in percent, or the recovery left out of the hazard, which writes a curve the '
-      + 'route does not; a tenor\'s hazard not scaled by its years; a row nothing is typed on '
-      + 'posted; a flat spread posted as a row, or restated as two; a grouped or a mistyped number '
-      + 'sent as anything but what it reads as; a curve restated at the convention\'s recovery '
-      + 'rather than its own; or a blank spread read as nought, which previews a survival of 100 %',
+// the survival curve's declaration, as far as a read-back turns on it
+const CREDIT = { Factor: { types: { SurvivalProb: { Recovery_Rate: { value: 0.4 } } } } };
+check('a curve the service wrote reads back as the spreads typed, and the form a restatement opens '
+      + 'in posts them again: a row nothing is typed on, a grouped or a mistyped number each sent '
+      + 'as what it reads as',
+      'a spread read in percent, or the recovery left out of the read-back; a row nothing is '
+      + 'typed on posted; a flat spread posted as a row, or restated as two; a grouped or a '
+      + "mistyped number sent as anything but what it reads as; or a curve restated at the "
+      + "declared recovery rather than its own",
       [desk.spreadRequest(' MARRICK ', TERM),
-       JSON.stringify(desk.survivalCurve(desk.spreadRequest('MARRICK', TERM), BASE))
-         === JSON.stringify(ROUTE_ROWS.slice(0, -1)),
        readBack(ROUTE_ROWS, 0.35).map(([, spread]) => spread),
-       desk.spreadForm(factor(ROUTE_ROWS, 0.35), 0.4),
-       desk.spreadRequest('ALDERBY-AM', FLAT), desk.survivalCurve(
-         desk.spreadRequest('ALDERBY-AM', FLAT), BASE),
-       desk.spreadForm(factor(ROUTE_120, 0.4), 0.4), desk.spreadForm(undefined, 0.4),
-       desk.survivalCurve(desk.spreadRequest('X', desk.spreadForm(undefined, 0.4)), BASE),
+       desk.spreadForm(factor(ROUTE_ROWS, 0.35), CREDIT),
+       desk.spreadRequest('ALDERBY-AM', FLAT),
+       desk.spreadForm(factor(ROUTE_120, 0.4), CREDIT), desk.spreadForm(undefined, CREDIT),
        desk.spreadRequest('X', { recovery: 'forty', flat: false, rows: [
          { tenor: '1Y', spread: '1,250' }, { tenor: '2Y', spread: '2,5' }] })],
       [{ counterparty: 'MARRICK', recovery: 0.35, spread: [
         { tenor: '1Y', spread: 100 }, { tenor: '3Y', spread: 150 }, { tenor: '5Y', spread: 200 }] },
-       true, [100, 150, 200],
+       [100, 150, 200],
        { recovery: '0.35', flat: false, rows: [{ tenor: '1Y', spread: '100' },
          { tenor: '3Y', spread: '150' }, { tenor: '5Y', spread: '200' }] },
-       { counterparty: 'ALDERBY-AM', recovery: 0.4, spread: 120 }, ROUTE_120.slice(0, -1),
+       { counterparty: 'ALDERBY-AM', recovery: 0.4, spread: 120 },
        { recovery: '0.4', flat: true, rows: [{ tenor: '1Y', spread: '120' }] },
-       { recovery: '0.4', flat: true, rows: [{ tenor: '', spread: '' }] }, [[0, 0], [1, NaN]],
+       { recovery: '0.4', flat: true, rows: [{ tenor: '', spread: '' }] },
        { counterparty: 'X', recovery: 'forty', spread: [{ tenor: '1Y', spread: 1250 },
          { tenor: '2Y', spread: '2,5' }] }]);
+check("a curve read back stating no recovery reads at its field's declared default, and one "
+      + 'holding no curve reads nothing',
+      'the recovery read off the factor alone, which reads every spread NaN where the factor '
+      + 'leaves it to its default; or a factor with no curve read as an empty one',
+      [desk.heldSpreads({ Curve: factor(ROUTE_120).Curve }, CREDIT)?.recovery,
+       desk.heldSpreads({ Curve: factor(ROUTE_120).Curve }, CREDIT)?.rows.map(([tenor, spread]) =>
+         [tenor, Number((spread * 1e4).toFixed(6))]),
+       desk.heldSpreads({ Recovery_Rate: 0.35 }, CREDIT)],
+      [0.4, [[1, 120]], undefined]);
 const ASKED = desk.spreadRequest('KESTREL', FLAT);
 check("a refusal of a credit curve reads beside the box of the request field it opens with, any "
       + 'other by the write',

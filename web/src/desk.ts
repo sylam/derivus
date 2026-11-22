@@ -318,21 +318,17 @@ export function spreads(curve: number[][], recovery: number): [number, number, n
     ? read.slice(0, -1) : read;
 }
 
-/** Years ACT/365 from `base`, an ISO day, to that day moved by `tenor` - a count and one of D, W, M
- * or Y each, largest first (`3M`, `1Y6M`) - the months moved on the calendar and the day held to
- * the month's end; NaN where the tenor is not one. */
-export function yearsTo(base: string, tenor: string): number {
-  const day = /^(\d{4})-(\d{2})-(\d{2})/.exec(base);
-  const units = /^\s*([+-]?\d+\s*[DWMY]\s*)+$/i.test(tenor)
-    ? [...tenor.matchAll(/([+-]?\d+)\s*([DWMY])/gi)] : [];
-  if (!day || !units.length) return NaN;
-  const by = (unit: string) =>
-    Number(units.filter((part) => part[2].toUpperCase() === unit).pop()?.[1] ?? 0);
-  const months = 12 * (+day[1] + by('Y')) + (+day[2] - 1) + by('M');
-  const [year, month] = [Math.floor(months / 12), months - 12 * Math.floor(months / 12)];
-  const held = Math.min(+day[3], new Date(Date.UTC(year, month + 1, 0)).getUTCDate());
-  const moved = Date.UTC(year, month, held + 7 * by('W') + by('D'));
-  return (moved - Date.UTC(+day[1], +day[2] - 1, +day[3])) / 86_400_000 / 365;
+/** The recovery a credit curve `factor` states, else its field's declared default. */
+export const recoveryOf = (factor: unknown, schema: Schema | null): number =>
+  Number(token(factor, 'Recovery_Rate') ?? schema?.Factor.types[SURVIVAL]?.Recovery_Rate?.value);
+
+/** A credit curve `factor` as the book holds it, read back as its `spreads` at its recovery
+ * (`recoveryOf`); undefined where it holds no curve. */
+export function heldSpreads(factor: unknown, schema: Schema | null):
+  { recovery: number; rows: [number, number, number][] } | undefined {
+  const curve = curveOf(token(factor, 'Curve'));
+  const recovery = recoveryOf(factor, schema);
+  return curve && { recovery, rows: spreads(curve.data, recovery) };
 }
 
 /** A credit curve as the officer types it: the recovery, and one flat spread - the first row's - or
@@ -360,26 +356,12 @@ export function spreadRequest(counterparty: string, form: SpreadForm): SpreadReq
   };
 }
 
-/** The curve `POST /book/survival` writes on the book's `base` day, to its last tenor - `spreads`
- * read backwards: each row's spread a hazard s/(1-R) from nought to its tenor, a flat spread a row
- * at a year, and a value typed that is no number none. The service runs the last row's line on. */
-export function survivalCurve({ spread, recovery }: SpreadRequest, base: string): number[][] {
-  const rows = Array.isArray(spread) ? spread : [{ tenor: '1Y', spread }];
-  const number = (value: unknown) => (typeof value === 'number' ? value : NaN);
-  return [[0, 0], ...rows.map((row) => {
-    const years = yearsTo(base, row.tenor);
-    return [years, ((number(row.spread) / 1e4) * years) / (1 - number(recovery))];
-  })];
-}
-
-/** The form a counterparty's curve opens in: the factor's spreads read back at the recovery it
- * states - one alone a flat spread - else one blank row at the factor's `convention`. */
-export function spreadForm(factor: unknown, convention: number): SpreadForm {
-  const curve = curveOf(token(factor, 'Curve'));
-  const recovery = Number(token(factor, 'Recovery_Rate') ?? convention);
-  const rows = (curve ? spreads(curve.data, recovery) : []).map(([tenor, spread]) => ({
+/** The form a counterparty's curve opens in: the factor's spreads read back (`heldSpreads`) - one
+ * alone a flat spread - else one blank row, at its recovery. */
+export function spreadForm(factor: unknown, schema: Schema | null): SpreadForm {
+  const rows = (heldSpreads(factor, schema)?.rows ?? []).map(([tenor, spread]) => ({
     tenor: tenorLabel(tenor), spread: String(+(spread * 1e4).toPrecision(12)) }));
-  return { recovery: String(recovery), flat: rows.length < 2,
+  return { recovery: String(recoveryOf(factor, schema)), flat: rows.length < 2,
            rows: rows.length ? rows : [{ tenor: '', spread: '' }] };
 }
 

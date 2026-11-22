@@ -9,13 +9,13 @@ import {
 import { EmptyState } from '../components/EmptyState';
 import { TimeSeriesChart } from '../components/TimeSeriesChart';
 import {
-  NO_BOOK, PLUS, SURVIVAL, ageOf, currencyOf, entityText, lagsBook, offBook, peaks, plural,
-  replayRows, spreads, stampText, tableReading, valuationDay, xvaTotals, type Peak,
+  NO_BOOK, PLUS, SURVIVAL, ageOf, currencyOf, entityText, heldSpreads, lagsBook, offBook, peaks,
+  plural, replayRows, stampText, tableReading, valuationDay, xvaTotals, type Peak,
 } from '../desk';
 import {
   bookRisk, clockOf, marketOf, nothingWrong, spineOf, unread, useApp, useRead,
 } from '../state';
-import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
+import { formatNumber, tenorLabel } from '../tokens';
 import { Amount, LimitLine, Money, OnStrip } from '../components/Desk';
 
 /** What a cell says of a done run whose row keeps no peaks. */
@@ -174,9 +174,7 @@ export function useCredit() {
         : agreements.map((row) => statedHolding(row.terms, fieldsOf(schema, SET) ?? {}, market)),
     });
     const own = lines.filter((line) => !line.run?.note);
-    const factor = factors[`${SURVIVAL}.${id}`];
-    const curve = curveOf(token(factor, 'Curve'));
-    const [first] = curve ? spreads(curve.data, Number(token(factor, 'Recovery_Rate'))) : [];
+    const [first] = heldSpreads(factors[`${SURVIVAL}.${id}`], schema)?.rows ?? [];
     return {
       id, name: entityText(paper?.entities ?? null, id), lines, wrong: wrongWith(lines),
       spread: first && [first[0], first[1]], value: summed(own.map((line) => line.value)),
