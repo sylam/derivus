@@ -8,7 +8,7 @@ import {
   positionLabel, residualShare, revalues, type Pnl,
 } from '../pnl';
 import {
-  heldBack, noPositions, readAs, runHeld, spineOf, useApp, useRead,
+  grantsRead, heldBack, noPositions, readAs, runHeld, spineOf, useApp, useRead,
 } from '../state';
 import { formatNumber, type Kind } from '../tokens';
 import { entityText } from '../desk';
@@ -70,7 +70,7 @@ export function PnlView() {
   if (none) return <EmptyState {...none} />;
   if (days && !days.days.length) {
     // the verb the declaration demands under the map in force, where the seat's grants are read
-    const verb = state.grants?.read?.demands.official_close_declared;
+    const verb = grantsRead(state)?.read?.demands.official_close_declared;
     return (
       <EmptyState
         title="No close has been marked yet."

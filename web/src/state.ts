@@ -461,7 +461,7 @@ export type Act = 'fill' | 'amendment' | 'quote_filed' | 'approval' | 'entity_de
   | 'collateral' | 'mark' | 'validate';
 
 /** What `GET /book/seat` answered for the seat on screen, null until it is read for that seat. */
-const grantsRead = (state: AppState) => (state.grants?.asked === state.seat ? state.grants : null);
+export const grantsRead = (state: AppState) => (state.grants?.asked === state.seat ? state.grants : null);
 
 /** Why the seat may not `act` at `node` - the book by default, null for the firm's own facts, which
  * only a grant over every node reaches - in a line naming the verb the act demands under the map

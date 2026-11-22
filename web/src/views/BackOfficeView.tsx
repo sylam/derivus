@@ -9,7 +9,7 @@ import { NO_PAPER } from '../positions';
 import { clientText, quoteAt, spreadText } from '../quote';
 import { noWork } from '../spine';
 import {
-  type Act, heldBack, marketOf, opened, useApp, useQuoteList, useQuotes, useRead,
+  type Act, grantsRead, heldBack, marketOf, opened, useApp, useQuoteList, useQuotes, useRead,
 } from '../state';
 import { formatNumber, ungrouped } from '../tokens';
 import {
@@ -56,7 +56,7 @@ export function BackOfficeView() {
         {LISTS.map(({ list, title, act }) => (
           <section className="card" key={list}>
             <h3>{title} ({worklist.counts[list]}){' '}
-              <span className="hint">{state.grants?.read?.demands[act]}</span></h3>
+              <span className="hint">{grantsRead(state)?.read?.demands[act]}</span></h3>
             {worklist[list].length ? (
               <div className="tablewrap">
                 <table className="data">
