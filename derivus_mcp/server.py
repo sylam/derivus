@@ -245,6 +245,10 @@ MAX_TABLE_COLUMNS = 60
 #: `fetch_table`.
 MAX_GREEK_ROWS = 15
 
+#: How many price factor names a book read lists, and how many deals' values one read answers:
+#: past them a list is a payload, paged through `fetch_table`.
+MAX_FACTOR_NAMES, MAX_DEAL_ROWS = 80, 500
+
 
 #: What a quote sheet IS on the wire, so a host offers it as the spreadsheet a client is sent.
 #: The service names it too - the import gate is what keeps this module from reading it off there.
@@ -361,6 +365,20 @@ def list_instrument_types() -> dict:
             'count': len(instrument['types'])}
 
 
+def _unknown(name, kind, vernacular, listing):
+    """`ToolError` for `name`, which is not `kind`: the names in `vernacular` - `{name: its sales
+    names, comma separated}` - whose name or one of whose sales names holds it, those a sales name
+    says whole first, else `listing`. A sales name is how a model spells it."""
+    asked = name.strip().lower()
+    said = {key: [word.strip().lower() for word in words.split(',')]
+            for key, words in sorted(vernacular.items())}
+    close = sorted((key for key, words in said.items()
+                    if asked in key.lower() or any(asked in word for word in words)),
+                   key=lambda key: asked not in said[key])
+    raise ToolError('{!r} is not {}. {}'.format(
+        name, kind, 'Close matches: {}'.format(', '.join(close)) if close else listing))
+
+
 @MCP.tool(annotations=READ_ONLY)
 def describe_instrument_type(name: str) -> dict:
     """Every field one deal type takes, as the engine declares it - call this before booking a
@@ -385,15 +403,8 @@ def describe_instrument_type(name: str) -> dict:
     schema = service().call('GET', '/schema')['Instrument']
     sections = schema['types'].get(name)
     if sections is None:
-        asked = name.strip().lower()
-        said = {t: [word.strip().lower() for word in schema['vernacular'][t].split(',')]
-                for t in schema['types']}
-        close = sorted((t for t in schema['types'] if asked in t.lower()
-                        or any(asked in word for word in said[t])),
-                       key=lambda t: asked not in said[t])
-        raise ToolError('{!r} is not a deal type. {}'.format(
-            name, 'Close matches: {}'.format(', '.join(close)) if close
-            else 'Call list_instrument_types for the full list.'))
+        _unknown(name, 'a deal type', schema['vernacular'],
+                 'Call list_instrument_types for the full list.')
     fields = {}
     for section in sections:
         fields.update(schema['sections'][section])
@@ -431,20 +442,11 @@ def describe_structure(name: str = None) -> dict:
     the variations name the same level and nothing else can tell them apart, `optional` means the
     level says it on its own.
 
-    STRIKES ARRIVE IN MARKET TERMS. A strike parameter is quoted the way the pair trades - a
-    USDZAR strike is 15.50, never its reciprocal - and the runner puts it on the engine's axis
-    itself. That inversion is the one thing not to do by hand here.
-
     `solve_structure` then runs the recipe and answers with the composed deal, each leg's premium,
     the strikes it solved and where the pending files landed; `book_quote` is the approval that
     turns that quote into a trade.
     """
-    store = service().call('GET', '/schema').get('Structure')
-    if store is None:
-        raise ToolError('this DV_Service publishes no Structure store - it is older than the '
-                        'structures vocabulary. Upgrade the service, or compose the legs yourself '
-                        'with solve_deal.')
-    types = store['types']
+    types = service().call('GET', '/schema')['Structure']['types']
     if name is None:
         # a projection of the store and nothing else: the level that selects a variation is that
         # variation's OWN parameter, so the menu carries those beside the shared ones
@@ -458,15 +460,10 @@ def describe_structure(name: str = None) -> dict:
                                      if meta.get('selector')), None)}
                                for key, declared in sorted(types.items())],
                 'count': len(types)}
-    declared = types.get(name)
-    if declared is None:
-        # A sales name is how a model spells it, so the vernacular is searched beside the names.
-        close = [key for key, entry in sorted(types.items())
-                 if name.lower() in key.lower() or name.lower() in entry['vernacular'].lower()]
-        raise ToolError('{!r} is not a structure. {}'.format(
-            name, 'Close matches: {}'.format(', '.join(close)) if close
-            else 'Call describe_structure() for the list with the sales names.'))
-    return dict({'structure': name}, **declared)
+    if name not in types:
+        _unknown(name, 'a structure', {key: entry['vernacular'] for key, entry in types.items()},
+                 'Call describe_structure() for the list with the sales names.')
+    return dict({'structure': name}, **types[name])
 
 
 @MCP.tool(annotations=READ_ONLY)
@@ -579,10 +576,10 @@ def read_book() -> dict:
                 'other_fields': sorted(set(calculation) - {'Object', 'Currency', 'Base_Date'})},
             'market_data': {'file': market.get('MarketDataFile', ''),
                             'factor_count': len(factors),
-                            'factors': factors[:80] + (
-                                ['... and {} more'.format(len(factors) - 80)]
-                                if len(factors) > 80 else [])},
-            'deals': deals, 'count': len(deals)}
+                            'factors': factors[:MAX_FACTOR_NAMES] + (
+                                ['... and {} more'.format(len(factors) - MAX_FACTOR_NAMES)]
+                                if len(factors) > MAX_FACTOR_NAMES else [])},
+            'deals': deals}
 
 
 @MCP.tool(annotations=READ_ONLY)
@@ -657,12 +654,6 @@ def book_deal(deal: dict | None = None, parent_reference: str | None = None,
     takes the fill and the deal stays as the file holds it. Its take-on is `quantity` 1 with its
     own reference as the `execution_reference`, which moves no number; closing it later is a
     booking of -1.
-
-    The engine's FX convention is REPORTING units per one unit of the currency (`FxRate.ZAR`
-    carries USD per ZAR), and an FX option's `Strike_Price` lives on that same axis - so a desk's
-    'USDZAR call', the option paid when ZAR weakens, is authored as a PUT on ZAR with
-    `Underlying_Currency` ZAR. Quote an FX option through `solve_structure` instead and the strike
-    stays in market terms: the runner crosses the axis and `book_quote` books what it composed.
 
     On success the answer carries the new `deal_path`, and every other client (the web UI, Excel)
     sees the deal on its next read. The answer is about THIS booking; anything else outstanding in
@@ -813,11 +804,7 @@ async def run_calculation(name: str, deal_path: str | None = None, actor: str | 
     dials either way is ONE run. Nothing is booked and nothing is recorded. Waits up to
     `wait_seconds`; the answer carries `tables` and `stats` as `price_candidate`'s does, and a
     credit Monte Carlo is minutes - past the wait the answer is the result id to poll."""
-    request = {'name': name}
-    if deal_path is not None:
-        request['deal_path'] = deal_path
-    if actor is not None:
-        request['actor'] = actor
+    request = dict({'name': name}, **_stated(deal_path=deal_path, actor=actor))
     submitted = await asyncio.to_thread(service().call, 'POST', '/calculations/run', json=request)
     return await _await_result(submitted['result_id'], wait_seconds, ctx)
 
@@ -879,8 +866,7 @@ def describe_curve(curve: str = None) -> dict:
     seed declares, each with its conventions and the tenor/security rows it could be set up with.
     That is the menu - pick the rows a desk quotes, put them through `configure_curve`, and the
     book solves the curve from them."""
-    return service().call('GET', '/book/curve',
-                          params={'curve': curve} if curve is not None else None)
+    return service().call('GET', '/book/curve', params=_stated(curve=curve))
 
 
 @MCP.tool()
@@ -945,8 +931,8 @@ def set_base_date(base_date: str, actor: str | None = None) -> dict:
 @MCP.tool()
 def patch_market_values(patch: dict, actor: str | None = None) -> dict:
     """Move market VALUES in the live book - `{factor: {field: value}}`, e.g.
-    `{"FxRate.ZAR": {"Spot": 0.05195}}`: a spot is the book's reporting currency per unit of the
-    factor's own, so USDZAR at 19.25 on a USD book is 1/19.25. Only value-bound fields move (spots,
+    `{"FxRate.ZAR": {"Spot": 0.05195}}`, each on its field's own axis as `describe_factor_type`
+    states it - that spot is USDZAR at 19.25 on a USD book. Only value-bound fields move (spots,
     rate columns, vols); a structural key - anything that would change the plan - is refused by
     the engine's own rule.
     A `Market Prices` block is refused here too, naming `update_market_quotes` as the remedy: a
@@ -1041,8 +1027,7 @@ def describe_securities(block: str = None) -> dict:
     its tenor, security, quote and the print's own timestamp, and that security's evidence beside
     it, or the verdict that rejected it, or `unmapped` where the map has never heard of it. `block`
     narrows the read to one of `fx_vol`, `fx_spot`, `rates`, `swaption`."""
-    return service().call('GET', '/book/securities',
-                          params={'block': block} if block is not None else None)
+    return service().call('GET', '/book/securities', params=_stated(block=block))
 
 
 @MCP.tool()
@@ -1115,17 +1100,15 @@ def book_dependencies(deal_path: str = None, deal: dict = None,
     `block` and `key` this desk seeds it under, how many `securities` the seed spells for it and
     how many a terminal has `verified`, plus `conventions` for a curve. `supply` null with a `note`
     means this desk's vocabulary spells nothing for that factor - an equity or a commodity - and
-    the market for it is authored by hand, or written by the verb the note names
-    (`declare_survival_curve` for a counterparty's `SurvivalProb`).
+    the market for it is authored by hand, or written as the note says (`declare_survival_curve`
+    writes a counterparty's `SurvivalProb`).
 
     A `deal` the booking verb would refuse is refused HERE in its words rather than walked, so a
     misspelt type is never answered "nothing is missing". `setup_market` acts on this answer."""
     if deal is None:
-        return service().call('GET', '/book/dependencies',
-                              params={'deal_path': deal_path} if deal_path is not None else None)
+        return service().call('GET', '/book/dependencies', params=_stated(deal_path=deal_path))
     return service().call('POST', '/book/dependencies', json=dict(
-        {'deal': deal},
-        **({} if parent_reference is None else {'parent_reference': parent_reference})))
+        {'deal': deal}, **_stated(parent_reference=parent_reference)))
 
 
 @MCP.tool()
@@ -1251,12 +1234,7 @@ async def solve_deal(deal: dict, field: str, target: float | dict = 0.0,
     book's market data (brentq inside `bounds`, else a secant from the field's current value -
     exact in two pricings for an amount) and nothing large enters the conversation. The answer
     carries the field's `value`, the pricing count (`evaluations`), the `residual` and `deal` - the
-    deal with the field set, which `book_deal` books as-is.
-
-    The engine's FX convention is REPORTING units per one unit of the currency (`FxRate.ZAR`
-    carries USD per ZAR), and an FX option's `Strike_Price` lives on that same axis - so a desk's
-    'USDZAR call', the option paid when ZAR weakens, is a PUT on ZAR with `Underlying_Currency`
-    ZAR, and the strike solved here is quoted on that axis too. `actor` is the seat reading.
+    deal with the field set, which `book_deal` books as-is. `actor` is the seat reading.
     """
     request = dict({'deal': deal, 'field': field, 'target': target}, **_stated(
         bounds=bounds, calculation_overrides=calculation_overrides or None, actor=actor))
@@ -1275,8 +1253,7 @@ async def solve_structure(structure: str, params: dict, netting_set: str | None 
     conversation getting it right.
 
     `structure` is a name from `describe_structure`, and `params` fills the parameters IT declares
-    - nothing else. STRIKES ARE MARKET TERMS (a USDZAR strike is 15.50); the runner puts them on
-    the engine's axis. The recipe runs server-side against the book's market data: each leg priced
+    - nothing else. The recipe runs server-side against the book's market data: each leg priced
     alone, each solved leg found by the same root find `solve_deal` rides.
 
     `netting_set` is WHO the quote is for, and it is worth naming on any quote for a real client. A
@@ -1352,8 +1329,8 @@ The BOOK IS NOT TOUCHED. What is written is the pending trade:
     """
     submitted = await asyncio.to_thread(
         service().call, 'POST', '/book/structure',
-        json=dict({'structure': structure, 'params': params, 'netting_set': netting_set,
-                   'margin': margin}, **_stated(actor=actor, portfolio=portfolio)))
+        json=dict({'structure': structure, 'params': params}, **_stated(
+            netting_set=netting_set, margin=margin, actor=actor, portfolio=portfolio)))
     quote = await _await_result(submitted['result_id'], wait_seconds, ctx, stat='Quote')
     if 'legs' not in quote:
         return quote
@@ -1497,7 +1474,8 @@ def book_risk_summary(actor: str | None = None) -> dict:
     different calculation for a different reason - see `xva_view`.
 
     Answers the mark (`mtm` in the book's report currency), `as_of`, the `etag` the service cached
-    it under, how many deals it covers, and the LARGEST rows by absolute size, twice. `quotes` is
+    it under, and the LARGEST rows by absolute size, twice - how many deals the book holds being
+    `desk_status`'s to say. `quotes` is
     the risk a desk hedges in - `block` (the quote block), `quote` (the benchmark or smile quote)
     and `value`, the derivative per unit of the quote AS QUOTED (a par rate in percent reads per
     1%), taken through the calibration that builds the factor, `quoted` naming the factors those
@@ -1520,8 +1498,7 @@ def book_risk_summary(actor: str | None = None) -> dict:
 
     greeks, quotes = sorted(risk['greeks'], key=size), sorted(risk['quotes'], key=size)
     return {'as_of': risk['as_of'], 'etag': risk['etag'], 'currency': risk['currency'],
-            'mtm': risk['mtm'], 'deals': len(risk['per_deal']),
-            'quotes': quotes[:MAX_GREEK_ROWS], 'quote_rows': len(quotes),
+            'mtm': risk['mtm'], 'quotes': quotes[:MAX_GREEK_ROWS], 'quote_rows': len(quotes),
             'quoted': risk['quoted'], 'quote_note': risk['quote_note'],
             'greeks': greeks[:MAX_GREEK_ROWS], 'greek_rows': len(greeks),
             'hint': 'the per-deal values are behind price_candidate + deal_values; XVA is '
@@ -1665,7 +1642,7 @@ def close_check(date: str) -> dict:
 
 
 @MCP.tool(annotations=READ_ONLY)
-def book_activity(since: int | None = None, limit: int = 200,
+def book_activity(since: int | None = None, limit: int | None = None,
                   actor: str | None = None, deal_path: str | None = None,
                   agreement: str | None = None, entity: str | None = None) -> dict:
     """The record's own strip: one line per event - where it sits, when it was recorded and when
@@ -1679,15 +1656,15 @@ def book_activity(since: int | None = None, limit: int = 200,
     OLDEST `limit` rows after that position and the `lsn` is the last row delivered, so asking
     again with the one you were given reaches every event in turn - that is how a whole record is
     read without holding it at once; with no `since` it is the NEWEST `limit` rows and the `lsn`
-    is the head. The strip opens no body, so it reads EVERY type - including one this hub has no
+    is the head, `limit` left out being the service's own page. The strip opens no body, so it reads EVERY type - including one this hub has no
     sentence for, which renders its own name rather than dropping out of the sequence. `actor` is
     the seat reading. `deal_path` reads one trade's rows alone, through its restrikes - the path
     `book_positions` gives - and `agreement` or `entity` the rows that name that agreement or that
     legal entity, a client's history, paged the same way. 404 on a box that records nothing.
     """
-    return service().call('GET', '/book/activity', params=dict(
-        _stated(since=since, actor=actor, deal_path=deal_path, agreement=agreement,
-                entity=entity), limit=limit))
+    return service().call('GET', '/book/activity', params=_stated(
+        since=since, limit=limit, actor=actor, deal_path=deal_path, agreement=agreement,
+        entity=entity))
 
 
 @MCP.tool(annotations=READ_ONLY)
@@ -2070,12 +2047,13 @@ def declare_credit_limits(limits: dict, actor: str | None = None) -> dict:
 
 
 @MCP.tool()
-def declare_survival_curve(counterparty: str, spread: float | list[dict], recovery: float = 0.4,
-                           actor: str | None = None) -> dict:
+def declare_survival_curve(counterparty: str, spread: float | list[dict],
+                           recovery: float | None = None, actor: str | None = None) -> dict:
     """Write a counterparty's survival curve - `SurvivalProb.<counterparty>`, what its netting
     set's CVA discounts by - from the credit spread the CVA desk states: `spread` in basis points,
     a number for a flat curve or rows `[{tenor, spread}]` (`tenor` like `5Y`) for a term structure,
-    and `recovery` the share recovered on default, 0.4 by convention. Each spread is read as the
+    and `recovery` the share recovered on default, the factor's convention where unstated
+    (`describe_factor_type('SurvivalProb')`), which the answer names. Each spread is read as the
     hazard spread / (1 - recovery), the last one's line run on to fifty years, so a flat spread is a
     flat hazard to fifty years. Never look a spread up or guess one: it is the desk's number.
     On a recorded desk the counterparty is a declared legal entity and the seat holds `mark`.
@@ -2083,8 +2061,7 @@ def declare_survival_curve(counterparty: str, spread: float | list[dict], recove
     on to; `recalc_xva` then prices the set.
     """
     return service().call('POST', '/book/survival', json=dict(
-        {'counterparty': counterparty, 'spread': spread, 'recovery': recovery},
-        **_stated(actor=actor)))
+        {'counterparty': counterparty, 'spread': spread}, **_stated(recovery=recovery, actor=actor)))
 
 
 @MCP.tool()
@@ -2153,7 +2130,7 @@ def deal_values(result_id: str) -> dict:
     if shape is None or 'Reference' not in shape['columns'] or 'Value' not in shape['columns']:
         raise ToolError('this result carries no per-deal mtm frame - it is not a base valuation. '
                         'Its tables: {}'.format(', '.join(raw.get('tables', {})) or 'none'))
-    if shape['rows'] > 500:
+    if shape['rows'] > MAX_DEAL_ROWS:
         raise ToolError('the mtm frame holds {} deals - too many to hold as text; page it with '
                         'fetch_table instead'.format(shape['rows']))
     page = service().call('GET', '/results/{}/mtm?offset=0&limit={}'.format(
@@ -2232,12 +2209,6 @@ def morning_desk_check() -> str:
 # --------------------------------------------------------------------------- resources
 
 
-#: The stores `/schema` publishes, which is the menu `derivus://schema/{store}` serves and the
-#: refusal names.
-SCHEMA_STORES = ('Instrument', 'Structure', 'Calculation', 'Factor', 'Process', 'MarketPrices',
-                 'Configuration')
-
-
 @MCP.resource('derivus://book', mime_type='application/json')
 def book_document() -> dict:
     """The live book as the job document itself - every deal and all its market data, verbatim.
@@ -2248,11 +2219,12 @@ def book_document() -> dict:
 @MCP.resource('derivus://schema/{store}', mime_type='application/json')
 def schema_store(store: str) -> dict:
     """One store of the engine's declarations, whole - what every describe_* tool reads one entry
-    out of, for a host that wants the vocabulary in front of it."""
-    if store not in SCHEMA_STORES:
+    out of, for a host that wants the vocabulary in front of it - any `/schema` publishes."""
+    stores = {key: value for key, value in _resource('/schema').items() if isinstance(value, dict)}
+    if store not in stores:
         raise ResourceError('{!r} is not a schema store - one of: {}'.format(
-            store, ', '.join(SCHEMA_STORES)))
-    return _resource('/schema')[store]
+            store, ', '.join(stores)))
+    return stores[store]
 
 
 @MCP.resource('derivus://quote/{quote_id}', mime_type='application/json')

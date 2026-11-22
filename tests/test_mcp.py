@@ -168,7 +168,7 @@ def test_the_host_is_offered_three_walks_and_four_documents():
 
     Killing mutations: a prompt argument dropped or made optional, which offers a host a command
     it cannot fill; the sheet declared `application/json`, which hands a host a zip to render as
-    text.
+    text; the stores kept in a list of the server's own, which refuses a store `/schema` serves.
     """
     prompts = {prompt.name: [(argument.name, argument.required)
                              for argument in (prompt.arguments or [])]
@@ -187,6 +187,9 @@ def test_the_host_is_offered_three_walks_and_four_documents():
         ('derivus://schema/{store}', 'application/json'),
         ('derivus://quote/{quote_id}', 'application/json'),
         ('derivus://quote/{quote_id}/sheet', mcp_server.SHEET_MIME)]
+    # a store is any `/schema` publishes, read off it: the calibrations no list here ever named
+    assert json.loads(read_resource('derivus://schema/Calibration')) == CLIENT.get(
+        '/schema').json()['Calibration']
 
 
 def test_desk_status_orients_a_model_in_one_call(book, tmp_path, monkeypatch):
@@ -546,12 +549,14 @@ def test_a_print_reaches_the_record_through_the_binding(book, recorded, tmp_path
 
 
 def test_a_survival_curve_reaches_the_book_through_the_binding(book):
-    """`declare_survival_curve` is one `service().call`: 150bp flat at a 40% recovery lands as the
-    curve the verb writes, a hazard of 0.015 / 0.6 a year to fifty years, and a spread that is not
-    positive comes back as the service's own refusal with the book untouched.
+    """`declare_survival_curve` is one `service().call`: 150bp flat, the recovery stated nowhere and
+    so the factor's declared 40%, lands as the curve the verb writes, a hazard of 0.015 / 0.6 a year
+    to fifty years, and a spread that is not positive comes back as the service's own refusal with
+    the book untouched.
 
-    Killing mutation: the tool sending the spread under another key, which the verb reads as no
-    spread and refuses.
+    Killing mutations: the tool sending the spread under another key, which the verb reads as no
+    spread and refuses; the tool or the verb stating a recovery of its own, 0.3, beside the
+    factor's.
     """
     written = mcp_server.declare_survival_curve('CPTY_Z', 150.0)
     assert (written['factor'], written['recovery']) == ('SurvivalProb.CPTY_Z', 0.4)
@@ -665,8 +670,9 @@ def test_the_structure_store_is_the_quoting_menu():
     computed from the declarations, so a strip, whose two forms name one level, reads 'required'
     where a forward extra reads 'optional'.
 
-    Killing mutation: each variation's own parameters left off the list, which hides `floor` and
-    `cap` until the entry is opened.
+    Killing mutations: each variation's own parameters left off the list, which hides `floor` and
+    `cap` until the entry is opened; the structure's close match searched by a spelling of its own
+    rather than the deal type's, which finds nothing for ` Collar `.
     """
     listed = mcp_server.describe_structure()
     vernaculars = {entry['name']: entry['vernacular'] for entry in listed['structures']}
@@ -695,8 +701,9 @@ def test_the_structure_store_is_the_quoting_menu():
     assert 'FXOptionDeal' in str(collar['variations'])
     assert collar['variations']['floor']['buys'] == 'quote', 'a client given a floor sells the base'
 
-    with pytest.raises(ToolError, match='ZeroCostCollar'):
-        mcp_server.describe_structure('collar')
+    for asked in ('collar', ' Collar '):
+        with pytest.raises(ToolError, match='Close matches: Seagull, ZeroCostCollar$'):
+            mcp_server.describe_structure(asked)
     with pytest.raises(ToolError, match='Close matches: RangeAccrual$'):
         mcp_server.describe_structure('wedding cake')
     cake = mcp_server.describe_structure('RangeAccrual')

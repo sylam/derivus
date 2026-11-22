@@ -5115,7 +5115,8 @@ SURVIVAL_HORIZON = 50.0
 def book_survival(request: dict):
     """`{counterparty, spread, recovery?, actor}` - write `SurvivalProb.<counterparty>`, the curve a
     netting set's CVA reads for its counterparty, from what the CVA desk states: `spread` in basis
-    points, flat or as rows `[{tenor, spread}]`, and `recovery`, 0.4 by the factor's convention.
+    points, flat or as rows `[{tenor, spread}]`, and `recovery`, the factor's declared default where
+    unstated.
     Each spread is a hazard s/(1-R), so the curve - minus the log of survival, ACT/365, linear - is
     [[0, 0], [T, sT/(1-R)]] per row, T its tenor and a year for a flat spread, and runs on the last
     row's line to `SURVIVAL_HORIZON`, which the answer names as `horizon`: a flat spread is a flat
@@ -5127,8 +5128,9 @@ def book_survival(request: dict):
     sentence of their own, the first three opening with the field they are about and what it
     stated, which is their `code`. One atomic write, as every market verb.
     """
+    convention = declared_fields(riskfactors.SurvivalProb)['Recovery_Rate'].default
     live, counterparty, recovery = live_book(), request.get('counterparty'), request.get(
-        'recovery', 0.4)
+        'recovery', convention)
     spread = request.get('spread')
     rows = spread if isinstance(spread, list) else [{'tenor': '1Y', 'spread': spread}]
     marking(request, 'survival_curve')
@@ -5149,7 +5151,7 @@ def book_survival(request: dict):
                                spread), 'spread')
     if not (type(recovery) in (int, float) and 0.0 <= recovery < 1.0):
         raise Refusal(422, 'recovery {!r} is outside [0, 1): it is the share of a claim recovered '
-                           'on default, 0.4 by convention'.format(recovery), 'recovery')
+                           'on default, {} by convention'.format(recovery, convention), 'recovery')
 
     def edit(document, etag):
         base = pd.Timestamp(spine.base_day(document))
