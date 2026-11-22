@@ -1,7 +1,7 @@
 import { Fragment, useMemo, useState } from 'react';
 import { EXPORTS, MARKED, saveCsv } from '../blotter';
 import {
-  NO_BOOK, QUOTE_HEADS, bucketAxes, factorFamily, lagsBook, markHolds, marksExport,
+  OPEN_FILE, QUOTE_HEADS, bucketAxes, factorFamily, lagsBook, markHolds, marksExport,
   marksHeads, offBook, onPair, perOf, perUnitText, placeText, plural, positionsUnder,
   quoteView, quotesExport, readingExport, riskOf, riskReading, sharedPer, sortGreeks,
   stampText, tenorText, unpriced, valuationDay, type GreekKey, type Ladder,
@@ -43,7 +43,7 @@ export function RiskView() {
   // the risk verb answers over the LIVE book; a document opened from a file has no server-side
   // book to differentiate, and saying so is better than showing another book's numbers under it
   if (source?.kind !== 'book') return <EmptyState {...offBook("the desk's own risk")} />;
-  if (risk.status === 404) return <EmptyState {...NO_BOOK} />;
+  if (risk.status === 404) return <EmptyState title={risk.error!} hint={OPEN_FILE} />;
   // what holds the seat from the read, or the service's refusal verbatim, stands in place of the
   // numbers - nothing partial was served and nothing was cached, so there is nothing else to show
   if (risk.error) {

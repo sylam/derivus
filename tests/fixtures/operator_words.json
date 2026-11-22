@@ -6,6 +6,7 @@
   },
   "never": {
     "a route": "\\b(?:GET|POST|PUT|PATCH|DELETE) /\\S*",
-    "an install": "\\bpip install\\b"
+    "an install": "\\bpip install\\b",
+    "an MCP tool": "\\b(?:amend_deal|approve_quote|approve_ticket|book_activity|book_cash|book_deal|book_dependencies|book_diary|book_files|book_markets|book_pnl|book_positions|book_quote|book_reconcile|book_risk_summary|calibrate_spot_model|close_check|collateral_calls|configure_book|configure_calculation|configure_curve|configure_securities|deal_values|declare_agreement|declare_close|declare_credit_limits|declare_file|declare_legal_entity|declare_market|declare_official_calculation|declare_portfolio|declare_survival_curve|delete_deal|describe_agreements|describe_book|describe_calculation_type|describe_calculations|describe_configuration|describe_credit_limits|describe_curve|describe_factor_type|describe_instrument_type|describe_official_calculation|describe_portfolios|describe_seat|describe_securities|describe_structure|desk_status|execute_book|export_settlements|fetch_table|file_lifecycle|file_status|job_skeleton|list_instrument_types|list_quotes|mark_book|patch_market_values|poll_result|price_candidate|read_book|read_deal|recalc_xva|reject_quote|reject_ticket|retire_market_overrides|run_calculation|set_base_date|setup_market|solve_deal|solve_structure|tick_market_from_bloomberg|update_market_quotes|validate_book|verify_securities|xva_increment|xva_view)\\b"
   }
 }

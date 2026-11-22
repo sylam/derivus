@@ -307,14 +307,16 @@ node) and, once it lands, the LSN its denial stands at (`log.RECORDED`). **Held 
 `test_spine_engine.py::test_under_a_document_the_queue_asks_before_the_executor_does`,
 `test_service.py::test_the_market_is_the_marking_seats_on_a_recorded_desk`.
 
-No sentence the service, the record or a quote's notes can say names a route, a query string or an
-install line: it names the act, by the tool that performs it where there is one. One naming a
-command line, a flag, a variable or a folder of the home, or printing a path on the service's own
-disk (`SERVER_PATHS`), is listed with its reason
-(`OPERATOR_SECOND`): the fault is the deployment's and the desk is told first, or no seat at a
-desk meets it. The words are one list, `tests/fixtures/operator_words.json`, which the web's gate
-reads too, and no string or markup text a screen can show says any of them. **Held by**
+No sentence the service, the record or a quote's notes can say names a route, a query string, an
+install line or an MCP tool: it says what did not happen and who puts it right - a seat holding a
+verb, or whoever runs the desk. One naming a command line, a flag, a variable or a folder of the
+home, or printing a path on the service's own disk (`SERVER_PATHS`), is listed with its reason
+(`OPERATOR_SECOND`): no seat at a desk meets it. The words are one list,
+`tests/fixtures/operator_words.json`, every MCP tool but the one a desk word names among them,
+which the web's gate reads too, and no string or markup text a screen can show says any of them.
+**Held by**
 `test_service.py::test_no_sentence_a_desk_reads_names_a_route_and_an_operators_part_is_listed`,
+`test_mcp.py::test_every_tool_is_registered_and_carries_its_contract`,
 `web/scripts/words_check.mjs`.
 
 `verbs` is the map in force, the verb each act demands. A declaration is stored with the

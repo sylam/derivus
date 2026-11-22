@@ -1018,8 +1018,8 @@ def table(result_id: str, table: str, offset: int = 0, limit: int = None, width:
 
 def live_book():
     if BOOK is None:
-        raise HTTPException(404, 'No book is being served, so there is nothing here to read or '
-                                 'write; the operator starts DV_Service on one (--book names it)')
+        raise HTTPException(404, 'this desk serves no book, so there is nothing here to read or '
+                                 'write until whoever runs the desk serves one')
     return BOOK
 
 
@@ -1112,8 +1112,8 @@ def book_open(request: dict):
     over = ()
     if 'name' not in request:
         if DESK is None:
-            raise HTTPException(404, 'this desk has no book of its own to go back to; the '
-                                     'operator started the service with --no-book')
+            raise HTTPException(404, 'this desk has no book of its own to go back to, so the '
+                                     'document opened stays served')
         path = DESK
     else:
         name = os.path.join(INBOX, os.path.basename(request['name']))
@@ -1523,7 +1523,7 @@ def expected_reference(document, request):
         found = deal_at(document, request['deal_path'])['Instrument']['.Deal'].get('Reference')
         if found != request['reference']:
             raise ValueError('deal_path {!r} holds {!r}, not {!r} - the book moved under the '
-                             'path, and read_book says where it stands now'.format(
+                             'path, so read it again for where that deal stands now'.format(
                                  request['deal_path'], found, request['reference']))
 
 
@@ -1760,8 +1760,8 @@ def book_price(request: dict):
             if candidate or not increment:
                 raise ValueError(
                     'a `deal_path` names a trade the book already holds, for the XVA increment of '
-                    'it: state it with `xva_increment` and with no `deal` or `quote_id`, which '
-                    'name a candidate')
+                    'it: ask for that increment, naming no `deal` or `quote_id`, which name a '
+                    'candidate')
             expected_reference(document, request)
         if candidate:
             materialised(document, parent)
@@ -2648,7 +2648,7 @@ def recorded():
     """The 404 a box that records nothing answers, asked WITHOUT a book: a replica carrying a home
     and no book still reads the record, and a fold that opens no document needs none."""
     if not spine.configured():
-        raise HTTPException(404, spine.NO_RECORD.format(spine.SPINE_HOME))
+        raise HTTPException(404, spine.NO_RECORD)
 
 
 def recording():
@@ -6412,8 +6412,8 @@ def book_securities_verify(request: dict):
 #: factor TYPE that names it. A type absent here is one this desk seeds nothing for - written by a
 #: verb of its own where `WRITTEN_BY` names one, and by hand otherwise.
 SUPPLY_BLOCKS = {'InterestRate': 'rates', 'FxRate': 'fx_spot', 'FXVol': 'fx_vol'}
-WRITTEN_BY = {'SurvivalProb': 'the CVA desk writes it from its spread with declare_survival_curve, '
-                               'or its SurvivalProbPrices block of CDS quotes bootstraps it',
+WRITTEN_BY = {'SurvivalProb': 'the CVA desk writes it from its spread, or its SurvivalProbPrices '
+                               'block of CDS quotes bootstraps it',
               'InflationRate': 'its InflationRatePrices block of zero-coupon swap breakevens '
                                'bootstraps it'}
 
@@ -6580,8 +6580,8 @@ def book_dependencies_candidate(request: dict):
     live = live_book()
     document, etag = live.read()
     if request.get('deal') is None:
-        raise HTTPException(422, 'this walk is over a CANDIDATE deal - state it under `deal`, or '
-                                 'read the live book with book_dependencies')
+        raise HTTPException(422, 'this walk is over a CANDIDATE deal - state it under `deal`; '
+                                 'what the book itself needs is read without one')
     if request.get('deal_path') is not None:
         raise HTTPException(422, 'a walk names ONE thing - a candidate `deal`, or the `deal_path` '
                                  'of one the book holds. This request names both')
@@ -8005,7 +8005,7 @@ def book_quote(request: dict):
     path, pending = pending_quote(quote_id), book_quote_pending(quote_id)
     if request.get('portfolio') is not None:
         raise HTTPException(422, 'an acceptance books where its quote was quoted for - a '
-                                 '`portfolio` is stated when quoting (solve_structure) - so the '
+                                 '`portfolio` is stated when quoting - so the '
                                  '{!r} this one names is refused: '
                                  'accept quote {} as quoted, or quote again for that '
                                  'node'.format(request['portfolio'], quote_id))
@@ -8128,7 +8128,7 @@ def decided(request, verb):
         if not accepted:
             raise HTTPException(422, 'quote {} has not been accepted, so there is no ticket to '
                                      'rule on: a ticket is minted when the client takes the price '
-                                     '- accept it first (book_quote)'.format(quote_id))
+                                     '- the quote is accepted first'.format(quote_id))
         quoted, ticket = [spine.quote_at(accepted['lsn'], quote_id)], accepted['ticket']
 
     def carrying():

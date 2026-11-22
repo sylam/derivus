@@ -9,8 +9,8 @@ import {
 import { EmptyState } from '../components/EmptyState';
 import { TimeSeriesChart } from '../components/TimeSeriesChart';
 import {
-  NO_BOOK, PLUS, SURVIVAL, ageOf, reportCurrency, entityText, heldSpreads, lagsBook, offBook, peaks,
-  plural, replayRows, stampText, tableReading, valuationDay, xvaTotals, type Peak,
+  OPEN_FILE, PLUS, SURVIVAL, ageOf, reportCurrency, entityText, heldSpreads, lagsBook, offBook,
+  peaks, plural, replayRows, stampText, tableReading, valuationDay, xvaTotals, type Peak,
 } from '../desk';
 import {
   bookRisk, clockOf, marketOf, nothingWrong, spineOf, unread, useApp, useRead,
@@ -47,7 +47,7 @@ export function XvaView() {
   const credit = useCredit();
 
   if (!live) return <EmptyState {...offBook("the last credit run of each of the desk's sets")} />;
-  if (xva.status === 404) return <EmptyState {...NO_BOOK} />;
+  if (xva.status === 404) return <EmptyState title={xva.error!} hint={OPEN_FILE} />;
   // a corrupt projection file names itself in the refusal; the rows are still on disk
   if (xva.error) {
     return (

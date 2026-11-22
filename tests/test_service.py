@@ -417,15 +417,9 @@ OPERATORS_PART = re.compile('|'.join(OPERATOR_WORDS['operator'].values()))
 #: The calls answering a path on the service's own disk, which a sentence printing one names.
 SERVER_PATHS = ('dv_home', 'quote_dir', 'dirname', 'abspath')
 
-#: The sentences an operator's part rightly stands in, each by a phrase of its own and why: the
-#: fault is the deployment's and the desk is told first, or no seat at a desk meets the sentence.
+#: The sentences an operator's part rightly stands in, each by a phrase of its own and why: no seat
+#: at a desk meets the sentence.
 OPERATOR_SECOND = {
-    'this desk keeps no record': 'no home is configured, which the deployment decides',
-    'No book is being served': 'no book file is served, which the operator starts the service on',
-    'no book of its own to go back to': 'the service was started with no book of its own',
-    'the record is not installed': 'the deployment sets a home and lacks the package that keeps it',
-    "to the desk's own seat": 'a recording desk with no seat of its own, which the operator sets',
-    'does not read as a key set': 'the deployment names a key set that will not read, at start',
     'is not admitted to read the': 'a replica pulling the store, whose reader runs the replica',
     'the capabilities blob is not': 'met declaring a capabilities document, a command line act',
     'a spine home is log/ and blobs/': 'the home configured is not a home, the deployment\'s',
@@ -467,17 +461,18 @@ def constant_strings(node):
 def test_no_sentence_a_desk_reads_names_a_route_and_an_operators_part_is_listed():
     """A REFUSAL SPEAKS TO SOMEONE AT A DESK, read off the SOURCE so the next route cannot creep
     back unseen: every sentence the service, its record seam, the record and a quote's notes can
-    say (`SPOKEN`, `spoken_words`). None names a route of this service, a query string or an
-    install line, which no reader at a desk can act on. One naming an operator's part - a command
-    line, a flag, a variable, a folder of the home (`OPERATORS_PART`), or printing a path on the
-    service's own disk (`SERVER_PATHS`) - is on `OPERATOR_SECOND` by a phrase of its own with its
-    reason, and every phrase there still excuses a sentence. The words are the list the web's
-    wording gate reads too (`OPERATOR_WORDS`).
+    say (`SPOKEN`, `spoken_words`). None names a route of this service, a query string, an install
+    line or an MCP tool, which no reader at a desk can act on. One naming an operator's part - a
+    command line, a flag, a variable, a folder of the home (`OPERATORS_PART`), or printing a path on
+    the service's own disk (`SERVER_PATHS`) - is on `OPERATOR_SECOND` by a phrase of its own with
+    its reason, no seat at a desk meeting it, and every phrase there still excuses a sentence. The
+    words are the list the web's wording gate reads too (`OPERATOR_WORDS`).
 
     Killing mutations: `GET /book/dependencies` put back into the candidate walk's refusal;
     `DV_Spine grant --file` put into the missing-grant sentence (`log.UNGRANTED`), on no list; the
-    folder `quote_dir()` answers printed again by the unknown-quote sentence; and a word a desk
-    reads added to the list, which this gate and the web's both refuse.
+    folder `quote_dir()` answers printed again by the unknown-quote sentence; `read_book` put back
+    into the moved-path refusal; `DV_Service` and `--book` put back into the no-book sentence, on
+    no list; and a word a desk reads added to the list, which this gate and the web's both refuse.
     """
     from derivus_spine import log, tiers
 
@@ -7147,7 +7142,7 @@ def test_a_desk_that_keeps_no_record_funds_at_what_its_document_states_and_decla
                        {'cost': 'FUND', 'benefit': 'FUND'}]
     assert row['status'] == 'done' and row['fva'] > 0.0, row
     assert [(answer.status_code, answer.json()['detail']) for answer in refused] == [
-        (404, spine.NO_RECORD.format('DV_SPINE_HOME'))] * 2
+        (404, spine.NO_RECORD)] * 2
 
 
 def test_a_desk_that_keeps_no_record_declares_no_credit_limit_and_claims_none(desk_xva,
@@ -7166,7 +7161,7 @@ def test_a_desk_that_keeps_no_record_declares_no_credit_limit_and_claims_none(de
                CLIENT.post('/book/limits', json={'limits': {'CPTY_A': {
                    'amount': 5e6, 'currency': 'USD'}}})]
     assert [(answer.status_code, answer.json()['detail']) for answer in refused] == [
-        (404, spine.NO_RECORD.format('DV_SPINE_HOME'))] * 2
+        (404, spine.NO_RECORD)] * 2
 
     recalc(['NS_A'])
     view = CLIENT.get('/book/xva').json()
@@ -7782,14 +7777,13 @@ def test_an_increment_of_a_held_trade_refuses_by_name(desk_xva):
         return answer.status_code, answer.json()['detail']
 
     stated = ('a `deal_path` names a trade the book already holds, for the XVA increment of it: '
-              'state it with `xva_increment` and with no `deal` or `quote_id`, which name a '
-              'candidate')
+              'ask for that increment, naming no `deal` or `quote_id`, which name a candidate')
     assert asked(deal=SHORT_CALL, parent_reference='NS_A', deal_path='0/0',
                  xva_increment=True) == (422, stated)
     assert asked(deal_path='0/0') == (422, stated)
     assert asked(deal_path='0/0', reference='OPT_B', xva_increment=True) == (
-        422, "deal_path '0/0' holds 'OPT_A', not 'OPT_B' - the book moved under the path, and "
-             'read_book says where it stands now')
+        422, "deal_path '0/0' holds 'OPT_A', not 'OPT_B' - the book moved under the path, so "
+             'read it again for where that deal stands now')
     assert asked(deal_path='0/7', xva_increment=True) == (422, "no deal at path '0/7'")
     assert asked(deal_path='0', xva_increment=True) == (422, ROOTED.format('NS_A, NS_B'))
 

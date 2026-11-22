@@ -1,6 +1,7 @@
 // Reads what the screens can SAY, where the eye cannot: every string and every run of markup text
 // in `web/src`, off the parsed source, so a comment or a docstring is never read. A reader at a
-// desk starts no service, so none of them names a flag, a variable, a route or an install.
+// desk starts no service, so none of them names a flag, a variable, a route, an install or an MCP
+// tool.
 //
 //   node web/scripts/words_check.mjs        # exits 1 on a miss
 
@@ -49,11 +50,12 @@ const files = readdirSync(SRC, { recursive: true }).map((name) => name.replaceAl
   .filter((name) => /\.tsx?$/.test(name) && !name.endsWith('.d.ts'));
 
 check("no string or markup text a screen can show names any of an operator's words - a "
-      + 'command-line flag, an environment variable, a folder of the home, a route or an install - '
-      + 'in any source file',
+      + 'command-line flag, an environment variable, a folder of the home, a route, an install or '
+      + 'an MCP tool - in any source file',
       "a flag put back into a hint ('start the service with --book'); a route put into one "
-      + "('POST /book/open refused'); the walk reading no markup text, which lets either stand "
-      + 'between two tags; or a word a screen says added to the list, which both gates refuse',
+      + "('POST /book/open refused'); an MCP tool into one ('read the book with read_book'); the "
+      + 'walk reading no markup text, which lets any stand between two tags; or a word a screen '
+      + 'says added to the list, which both gates refuse',
       [files.length > 30, files.flatMap(said)], [true, []]);
 
 done();

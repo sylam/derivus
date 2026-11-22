@@ -13,6 +13,7 @@ import hashlib
 import inspect
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -28,8 +29,9 @@ from mcp.server.mcpserver.exceptions import ResourceError, ToolError
 import derivus
 from derivus_mcp import server as mcp_server
 from derivus import service
-from test_service import (AMOUNT, BINARY, BOOKED, CASHFLOW, CLIENT, EQUITY, FACTORS, JSON, RATE,
-                          SPOT, UNREAD, VANILLA, Held, block_of, dump, file_world, job)
+from test_service import (AMOUNT, BINARY, BOOKED, CASHFLOW, CLIENT, EQUITY, FACTORS, JSON,
+                          OPERATOR_WORDS, RATE, SPOT, UNREAD, VANILLA, Held, block_of, dump,
+                          file_world, job)
 
 SERVER_FILE = mcp_server.__file__
 
@@ -79,7 +81,8 @@ def test_every_tool_is_registered_and_carries_its_contract():
     Killing mutations: `read_book` registered without its read-only hint, which makes a host ask
     before a model may read the book; `patch_market_values`' example spot written in market terms,
     `19.25`, which a model copies into a field held as the reporting currency per unit; `book_deal`
-    teaching a par amount solved by two `price_candidate` calls again.
+    teaching a par amount solved by two `price_candidate` calls again; a tool registered that the
+    desk's word list does not name, which a refusal may then tell a desk.
     """
     tools = {t.name: t for t in asyncio.run(mcp_server.MCP.list_tools())}
     assert not [name for name, tool in tools.items() if 'trial amount' in tool.description]
@@ -107,6 +110,9 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'describe_official_calculation', 'declare_official_calculation',
                 'describe_credit_limits', 'declare_credit_limits'}
     assert set(tools) == expected
+    # the desk's wording gates know every tool by name, but the one a desk word already names
+    named = re.compile(OPERATOR_WORDS['never']['an MCP tool'])
+    assert {name for name in tools if not named.fullmatch(name)} == {'worklist'}
     for name, tool in tools.items():
         assert tool.description and len(tool.description) > 60, f'{name} has no real contract'
     assert '{{"FxRate.ZAR": {{"Spot": {:.5f}}}}}'.format(1 / 19.25) in tools[
@@ -303,14 +309,12 @@ def test_a_desk_that_keeps_no_record_is_told_so_and_oriented_without_its_tools(
         book, tmp_path, monkeypatch):
     """Every tool of the record, on a desk that keeps none, is the service's 404, which the tool
     turns into the service's own sentence rather than an empty answer a model would read as
-    agreement, or as a record holding nothing: the desk's user is told first and the operator's
-    remedy after. The orientation of that desk names none of them, and a recording desk's adds
-    exactly them.
+    agreement, or as a record holding nothing. The orientation of that desk names none of them,
+    and a recording desk's adds exactly them.
 
     Killing mutations: any of them answering `{}` where no home is configured, which tells a model
     the file and the record agree on a box that has no record; `worklist` named in the part every
-    desk reads, which sends a model on a desk with no record after a tool it lacks; the sentence
-    opening on the operator's variable, which a desk's user cannot act on.
+    desk reads, which sends a model on a desk with no record after a tool it lacks.
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
     for name in RECORD_TOOLS:
@@ -321,8 +325,7 @@ def test_a_desk_that_keeps_no_record_is_told_so_and_oriented_without_its_tools(
                              if parameter.default is parameter.empty})
             asyncio.run(answer) if inspect.iscoroutine(answer) else answer
         said = str(refusal.value)
-        assert '404' in said and 0 < said.find('this desk keeps no record') < said.find(
-            'DV_SPINE_HOME'), (name, said)
+        assert '404' in said and 'this desk keeps no record' in said, (name, said)
     plain, recording = ({tool.name for tool in asyncio.run(mcp_server.MCP.list_tools())
                          if tool.name in mcp_server.orientation(mode)} for mode in (False, True))
     assert recording - plain == set(RECORD_TOOLS) and plain < recording

@@ -110,18 +110,17 @@ HOLDING_AMOUNTS = ('Amount', 'Units', 'Principal')
 POSITIVE = tuple(name for name, declared in vars(riskfactors).items()
                  if isinstance(declared, type) and getattr(declared, 'positive', False))
 
-#: What a tree without the extra is told, with the line that fixes it.
+#: What a tree without the extra is told, and who puts it right.
 NO_PACKAGE = ('this desk is set to keep a record and the record is not installed ({}), so nothing '
-              'is read or filed; the operator installs derivus[enterprise], or unsets {} to run '
-              'the desk without one')
+              'is read or filed: whoever runs the desk installs it, or runs the desk without one')
 #: The kind a refusal is told apart by (`SpineRefused.code`), a short stable name beside its
 #: sentence: an act no seat signs, a seat without the grant an act asks, and any other.
 ACTORLESS, NOT_GRANTED, REFUSED = 'no_actor', 'not_granted', 'refused'
 #: What a configured home with no actor is told. An unconfigured home says nothing at all: that is
 #: the default posture rather than an error.
 NO_ACTOR = ('no actor for this act, and the record files every act under the seat that made it, so '
-            'nothing is filed: name the seat acting, or the operator sets {} to the desk\'s own '
-            'seat')
+            'nothing is filed: name the seat acting, or whoever runs the desk gives it a seat of '
+            'its own')
 #: What an act naming no seat is told once a capabilities document is in force.
 UNNAMED = ('no actor for this act, and this desk grants each seat what it may do, so an act '
            'nobody signs is refused: name the seat acting')
@@ -135,9 +134,9 @@ NOT_THE_BEARER = ('this request names the seat {!r} and is signed in as {!r}: a 
 NO_BEARER = ('this service checks who is asking and the request carries no `Authorization: '
              'Bearer` token - send the ID token the deployment\'s identity provider issued')
 #: What a deployment naming a key set that does not read is told.
-NO_KEYSET = ('{} names {}, which does not read as a key set ({}): every request\'s token is '
-             'checked against it, so nothing is served without one - point it at the JWKS file '
-             'the identity provider publishes, or unset it to check nothing')
+NO_KEYSET = ('the key set every request\'s token is checked against does not read ({}), so nothing '
+             'is served: whoever runs the desk points it at the one the identity provider '
+             'publishes, or checks no token')
 
 #: One writer, one act at a time. The spine answers `WriterBusy` to a second holder of the home;
 #: this lock keeps a request thread and the compute worker from meeting that over their own book.
@@ -193,7 +192,7 @@ def package():
         import derivus_spine.verbs
         import derivus_spine.vocabulary
     except ImportError as absent:
-        raise SpineRefused(NO_PACKAGE.format(absent, SPINE_HOME))
+        raise SpineRefused(NO_PACKAGE.format(absent))
     return derivus_spine
 
 
@@ -209,7 +208,7 @@ def actor(named=None, log=None):
         raise SpineRefused(UNNAMED, ACTORLESS)
     subject = named or hub()
     if subject is None:
-        raise SpineRefused(NO_ACTOR.format(SPINE_ACTOR), ACTORLESS)
+        raise SpineRefused(NO_ACTOR, ACTORLESS)
     if subject == spine.vocabulary.WRITER:
         raise SpineRefused(RESERVED.format(subject))
     return subject
@@ -245,7 +244,7 @@ def keyset():
             with open(keys, encoding='utf-8') as handle:
                 _KEYSET[:] = [keys, stamp, json.load(handle)]
     except (OSError, ValueError) as unreadable:
-        raise SpineRefused(NO_KEYSET.format(SPINE_JWKS, keys, unreadable))
+        raise SpineRefused(NO_KEYSET.format(unreadable))
     return _KEYSET[2]
 
 
@@ -267,18 +266,17 @@ def bearer(authorization):
                                os.environ.get(SPINE_AUDIENCE))['subject']
 
 
-#: What a verb of the record answers on a desk that keeps none: the desk's user first, its
-#: operator's remedy second. The book verbs still answer: this is no failure.
+#: What a verb of the record answers on a desk that keeps none, and who gives it one. The book
+#: verbs still answer: this is no failure.
 NO_RECORD = ('this desk keeps no record, so there is nothing for this to read or file on and the '
-             'book file is the whole truth here; to keep one, the operator sets {} to the home '
-             '`DV_Spine init` minted')
+             'book file is the whole truth here; whoever runs the desk gives it a record to keep')
 
 
 def where():
     """The home to work on, or `SpineRefused` saying the deployment configured none."""
     name = home()
     if name is None:
-        raise SpineRefused(NO_RECORD.format(SPINE_HOME))
+        raise SpineRefused(NO_RECORD)
     return name
 
 

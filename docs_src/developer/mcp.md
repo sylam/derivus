@@ -106,8 +106,8 @@ structure takes it as `name`. **Held by**
 | `describe_credit_limits`, `declare_credit_limits` | `GET`/`POST /book/limits`: the credit limit each legal entity is held to, the `limits` policy |
 
 A tool of the record answers the service's 404 on a desk that keeps none, never an empty answer a
-model would read as agreement, in the seam's one sentence (`spine.NO_RECORD`): the desk's
-user is told first, the operator's remedy after. **Held by**
+model would read as agreement, in the seam's one sentence (`spine.NO_RECORD`): what the desk
+cannot do, and that whoever runs it gives it a record. **Held by**
 `test_a_desk_that_keeps_no_record_is_told_so_and_oriented_without_its_tools`.
 
 ## Prompts and resources

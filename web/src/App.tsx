@@ -8,7 +8,7 @@ import { DocumentLoader } from './components/DocumentLoader';
 import { EmptyState } from './components/EmptyState';
 import { JobHeader } from './components/JobHeader';
 import { ActivityStrip, ReconcileBanner, SeatControl, WorklistBanner } from './components/Record';
-import { NO_BOOK } from './desk';
+import { OPEN_FILE } from './desk';
 import { WORKSPACES } from './registry';
 import { bookOwed, polled, ringsAhead, single, worklistAt } from './spine';
 import {
@@ -265,7 +265,7 @@ export function App() {
         {copy && <div className="note">{copy}</div>}
         {state.market.error && <div className="error-box">{state.market.error}</div>}
         {!state.doc ? (
-          <EmptyState title="No document loaded." hint={NO_BOOK.hint} />
+          <EmptyState title="No document loaded." hint={OPEN_FILE} />
         ) : (
           <Active />
         )}

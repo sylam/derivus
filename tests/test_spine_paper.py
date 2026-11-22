@@ -260,7 +260,7 @@ def test_an_agreement_s_id_belongs_to_one_legal_entity(tmp_path):
     with pytest.raises(MalformedEvent) as refused:
         declare_agreement(log, ACTOR, 'ISDA-A', 'LEI-Y', 'ISDA 2002', PAPER)
     assert str(refused.value) == (
-        "declare_agreement: the agreement 'ISDA-A' stands under entity 'LEI-X', and an "
+        "the agreement 'ISDA-A' stands under entity 'LEI-X', and an "
         "agreement's id belongs to one legal entity - declare the agreement with 'LEI-Y' under an "
         'id of its own')
     assert log.head()[0] == head == first['lsn'], 'a refused declaration appended'

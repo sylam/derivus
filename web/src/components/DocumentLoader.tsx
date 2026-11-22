@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { BOOK_DOCUMENT, failure, getBook, openBook } from '../api';
-import { BACK_TO_BOOK, NO_BOOK, fileName, leavingAsks, recordedCopy } from '../desk';
+import { BACK_TO_BOOK, fileName, leavingAsks, recordedCopy } from '../desk';
 import { bookLoaded, useApp } from '../state';
 import type { JobDoc } from '../types';
 
@@ -46,8 +46,8 @@ export function DocumentLoader() {
   async function backToBook() {
     try {
       dispatch(bookLoaded(await getBook()));
-    } catch {
-      dispatch({ type: 'DOC_FAILED', error: NO_BOOK.title });
+    } catch (error) {
+      dispatch({ type: 'DOC_FAILED', error: failure(error).error });
     }
   }
 

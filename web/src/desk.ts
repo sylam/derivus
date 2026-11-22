@@ -551,13 +551,8 @@ export const offBook = (shown: string): { title: string; hint: string } => ({
 export const recordedCopy = (refused: { error: string; code: RefusalCode | null }): string | null =>
   (refused.code === 'recorded' ? `${refused.error} ${LEAVE_COPY}.` : null);
 
-/** What a screen says where the desk serves no book: what the reader can do, then who gives the
- * desk a book of its own. */
-export const NO_BOOK = {
-  title: 'This desk serves no book.',
-  hint: 'Press "open a job file" at the top to work on one here. Whoever runs the service gives '
-    + 'the desk a book of its own.',
-};
+/** What a screen with no book under it says the reader can do, beneath the service's sentence. */
+export const OPEN_FILE = 'Press "open a job file" at the top to work on one here.';
 
 /** The one clock an answer read off the live book is held against: the book's etag, and on a
  * desk that records how far the record stands (`pinnedAt`) - a booking moves the first, and an

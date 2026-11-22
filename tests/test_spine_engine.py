@@ -1385,7 +1385,7 @@ def test_an_agreement_id_another_entity_holds_is_refused_in_the_record_s_words(r
     first = declared('LEI-A').json()['recorded']['lsn']
     refused = declared('LEI-B')
     assert refused.status_code == 422 and refused.json()['detail'] == (
-        "declare_agreement: the agreement 'CLIENT_A' stands under entity 'LEI-A', and an "
+        "the agreement 'CLIENT_A' stands under entity 'LEI-A', and an "
         "agreement's id belongs to one legal entity - declare the agreement with 'LEI-B' under an "
         'id of its own'), refused.text
     assert declared('LEI-A').json()['recorded']['lsn'] == head(recorded) == first
@@ -4774,7 +4774,7 @@ def test_a_home_with_no_book_at_all_still_reads_the_record(recorded):
     assert CLIENT.get('/book/activity').json()['lsn'] == head(recorded)
     assert CLIENT.get('/book/markets').json()['lsn'] == head(recorded)
     refused = CLIENT.get('/book/reconcile')
-    assert refused.status_code == 404 and 'No book is being served' in refused.json()['detail']
+    assert refused.status_code == 404 and 'this desk serves no book' in refused.json()['detail']
 
 
 def test_a_shredded_home_answers_the_records_own_words_and_never_a_500(recorded, booking):
@@ -5946,7 +5946,7 @@ def test_a_refusal_names_its_kind_beside_its_sentence(recorded, desk, monkeypatc
 
     monkeypatch.delenv('DV_SPINE_ACTOR')
     assert kind(ticketed('CF-NONE', actor=None)) == (
-        422, 'no_actor', spine.NO_ACTOR.format(spine.SPINE_ACTOR))
+        422, 'no_actor', spine.NO_ACTOR)
     monkeypatch.setenv('DV_SPINE_ACTOR', ACTOR)
     entitle(recorded, [(ACTOR, 'admin', '*'), (ACTOR, 'validate', '*'),
                        (DESK_FX, 'book', 'spine-desk/FX')])
@@ -6079,7 +6079,7 @@ def test_a_bearer_token_names_the_seat_and_nothing_else_does(recorded, desk, tmp
     assert spine.hub() == ACTOR, 'a thread no request started lost the deployment\'s seat'
     monkeypatch.setenv('DV_SPINE_JWKS', str(tmp_path / 'missing.json'))
     unread = CLIENT.get('/book', headers=signed)
-    assert unread.status_code == 401 and 'does not read as a key set' in unread.json()['detail']
+    assert unread.status_code == 401 and 'does not read' in unread.json()['detail']
 
 
 def test_a_read_advances_its_folds_across_bookings_and_homes(recorded, desk, tmp_path,

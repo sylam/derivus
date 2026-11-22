@@ -387,8 +387,8 @@ def declare_file(log, actor, name, kind, data):
     """
     if kind not in FILE_KINDS:
         raise MalformedEvent(
-            'declare_file: kind is {!r}, not one of {} - a job names a market data file and a '
-            'calendar'.format(kind, ', '.join(FILE_KINDS)))
+            'a declared file\'s kind is {!r}, not one of {} - a job names a market data file and '
+            'a calendar'.format(kind, ', '.join(FILE_KINDS)))
     name = _name(name, 'name', 'declare_file')
     address = _blob(log, data, 'the file')
     body = restated(log, standing_under(log, 'files', name),
@@ -437,7 +437,7 @@ def declare_agreement(log, actor, agreement, entity, kind, terms, effective_time
     standing = standing_under(log, 'agreements', agreement, state=True) or {}
     if standing and standing['entity'] != entity:
         raise MalformedEvent(
-            "declare_agreement: the agreement {!r} stands under entity {!r}, and an agreement's "
+            "the agreement {!r} stands under entity {!r}, and an agreement's "
             'id belongs to one legal entity - declare the agreement with {!r} under an id of its '
             'own'.format(agreement, standing['entity'], entity))
     address = _blob(log, terms, 'the canonical agreement terms')

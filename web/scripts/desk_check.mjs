@@ -247,7 +247,7 @@ check('over a read-only copy of a file a screen names the control that leaves it
       + 'reader to a button that is not there; or what the screen shows left out of the sentence',
       [pressed(desk.offBook("the desk's own risk")),
        desk.offBook("the desk's own risk").hint.endsWith("this screen then shows the desk's own risk."),
-       pressed(desk.NO_BOOK)],
+       pressed({ hint: desk.OPEN_FILE })],
       [['back to book', true], true, ['open a job file', true]]);
 const RECORDED = "This desk's book is what its record holds, so no file is opened on it.";
 check('a file a desk that records will not open is a read-only copy said in the service\'s own '
