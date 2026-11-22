@@ -1843,10 +1843,11 @@ def run_calculation(request: dict):
 
 
 def as_of():
-    """When a projection or a risk vector was computed, as one ISO stamp - what a blotter shows
-    beside a number to say how old it is. Milliseconds, not seconds: two recalcs of one set can
-    land inside the same second, and the stamp is the ordering key the mosaic is read by. The
-    service's own clock with the offset it runs at, so a reader on another clock can compare it.
+    """When a projection or a risk vector was computed, or a quote given, as one ISO stamp - what a
+    blotter shows beside a number to say how old it is. Milliseconds, not seconds: two recalcs of
+    one set can land inside the same second, and the stamp is the ordering key the mosaic is read
+    by. The service's own clock with the offset it runs at, so a reader on another clock can
+    compare it and an age measured across a change of offset stays true.
     """
     import datetime
 
@@ -7455,7 +7456,10 @@ def book_quotes(actor: str = None):
                                                     'currency')},
                 **{key: pending.get(key) for key in ('quoted_at', 'quoted_by', 'accepted')},
                 booked=booked and dict(booked, reference=pending['deal']['Reference'])))
-    return {'quotes': sorted(rows, key=lambda row: row['quoted_at'] or '', reverse=True)}
+    # newest first by the instant given, an unstamped one last: a stamp carries its own offset
+    aged = [(quote_age(row['quoted_at']), row) for row in rows]
+    return {'quotes': [row for _, row in sorted(aged, key=lambda pair: (pair[0] is None,
+                                                                        pair[0] or 0.0))]}
 
 
 @app.get('/book/quote/{quote_id}/sheet', summary='The quote sheet, as the .xlsx a client is sent')
@@ -7476,23 +7480,11 @@ def book_quote_sheet(quote_id: str, actor: str = None):
     return FileResponse(path, media_type=QUOTE_SHEET_MIME, filename=os.path.basename(path))
 
 
-def quote_stamp():
-    """When a quote was GIVEN, as one ISO stamp in UTC - what the firm window is measured from.
-
-    UTC and offset-aware, unlike `as_of`: a quote's age is arithmetic against a running clock, and
-    a naive local stamp puts an hour into it twice a year. The `quote_id` cannot serve - it hashes
-    a `perf_counter`, a monotonic tick with no epoch.
-    """
-    import datetime
-
-    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds')
-
-
 def quote_age(stamp, until=None):
     """How many seconds passed between `stamp` and `until` - now, where none is named - or None
     where there is nothing readable to measure: a pending file from before quotes were stamped, or
     a stamp that will not parse. None is not zero: an age nobody can establish is not an age inside
-    a window. A stamp carrying no zone reads as UTC, which is what `quote_stamp` writes."""
+    a window. A stamp carrying no zone reads as UTC."""
     import datetime
 
     if not stamp:
@@ -7739,7 +7731,7 @@ class StructureJob:
     def run_job(self):
         # the stamp first: the board's age and the desk's own firm window are both measured
         # against it, and only the thing that files a quote knows when it was given
-        quoted_at = quote_stamp()
+        quoted_at = as_of()
         # the book loaded before the live spot moves this copy's market: its own pins, and the
         # calendar every load of the quote takes (`Context.reading`)
         context = load(self.document)

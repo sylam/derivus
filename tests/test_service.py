@@ -9082,6 +9082,26 @@ def test_the_desks_quotes_are_listed_newest_first_with_where_each_stands(quoting
     assert CLIENT.get('/book/quotes').json() == {'quotes': [newer, older]}
 
 
+def test_the_desks_quotes_are_listed_by_the_instant_each_was_given(quoting, tmp_path):
+    """A quote is stamped on the service's own clock with the offset it runs at (`as_of`), so the
+    list orders by the instant a stamp names and never by its text: two quotes given either side of
+    a clock going back an hour - 00:30 UTC written `01:30+01:00`, then 01:10 UTC written
+    `01:10+00:00` - list the later first, behind the quote just given and ahead of one stating no
+    time.
+
+    Killing mutation: the rows sorted by their stamps' text, which lists 01:30 ahead of 01:10.
+    """
+    given = quote_of('ZeroCostCollar', COLLAR)
+    filed = json.loads((tmp_path / 'tmp' / (given['quote_id'] + '.json')).read_text())
+    # authored here: no verb gives a quote at an instant of the caller's choosing
+    for name, stamp in (('summer', '2026-10-25T01:30:00.000+01:00'),
+                        ('winter', '2026-10-25T01:10:00.000+00:00'), ('unstamped', None)):
+        (tmp_path / 'tmp' / (name + '.json')).write_text(json.dumps(dict(filed, quoted_at=stamp)),
+                                                         newline='\n')
+    assert [row['quote_id'] for row in CLIENT.get('/book/quotes').json()['quotes']] == [
+        given['quote_id'], 'winter', 'summer', 'unstamped']
+
+
 def test_a_quote_for_a_client_the_book_never_opened_refuses_at_the_ask(quoting_client, tmp_path):
     """A netting set nobody opened refuses while the quote is being ASKED for, naming what was asked
     for and what the book holds, in the XVA verb's own wording.
