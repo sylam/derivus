@@ -761,13 +761,15 @@ agreement's terms write as its entity. The rules:
 - A limit in another currency than the rows' is not converted, the position a tier's size check
   takes of a notional: the entry states no usage and `not_comparable` says so naming both.
 - `breached` is usage above the limit. Nothing is blocked and nothing runs.
+- `clients` is the entities the usage covers, the limit's own among them, so a reader never walks
+  the parent chain again.
 
 `GET /book/xva` answers one entry per limited entity under `limits`, beside its rows
 ([the readers](#readers)). The credit charge, `POST /book/price` with `xva_increment`, answers the
 same entry under `stats.Increment.limits` for each limit its set draws on, its counterparty's and
 each above it (`service.limits_against`): this set's peak is the run's own in place of its row's,
-so `usage`, `headroom` and `breached` are with the trade and `usage_without` is the same sum at
-the peak of the run without it. What the other sets draw is read where the charge is asked and its
+so `usage`, `headroom` and `breached` are with the trade, and `usage_without` and
+`breached_without` are the same sum and the same test at the peak of the run without it. What the other sets draw is read where the charge is asked and its
 hash is part of what the result is named by, so the charge asked again after a limit is restated
 or another row moves runs again. A set drawing on no limit, and every desk keeping no record, is
 named and answered as it was. No tier reads a limit: a breach is reported and

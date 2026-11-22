@@ -400,13 +400,15 @@ A COUNTERPARTY CREDIT LIMIT is declared on a desk that records: `POST /book/limi
 the amount above zero, an entity the record does not hold refused by name, and `GET /book/limits`
 answers the one in force with its `blob` and `lsn`, nulls where none is declared. `GET /book/xva`
 then answers `limits` beside its rows, one entry per limited entity:
-`{entity, name, limit, usage, headroom, sets, unrun, breached, not_comparable}`. `usage` is the sum
-of the peak PFE of every netting set the book carries against the entity or an entity under it,
-`sets` how many it sums and `unrun` how many have no finished run, where `headroom` is null. A
-limit in another currency than the rows' is not converted: `usage`, `headroom` and `breached` are
-null and `not_comparable` says why. An increment whose set draws on a limit answers the entries
-under `stats.Increment.limits`, each at the usage with the trade beside `usage_without`. A breach
-is reported and nothing is blocked. On a desk keeping no record the list is empty and both routes
+`{entity, name, limit, clients, usage, headroom, sets, unrun, breached, not_comparable}`. `usage` is
+the sum of the peak PFE of every netting set the book carries against the entity or an entity
+under it, `clients` those entities, the limit's own among them, `sets` how many it sums and `unrun`
+how many have no finished run, where `headroom` is null. A limit in another currency than the
+rows' is not converted: `usage`, `headroom` and `breached` are null and `not_comparable` says why.
+An increment whose set draws on a limit answers the entries under `stats.Increment.limits`, each
+at the usage with the trade beside `usage_without` and `breached_without`, the usage without it
+and whether that is above the limit, null where not comparable. A breach is reported and nothing
+is blocked. On a desk keeping no record the list is empty and both routes
 answer 404.
 
 THE POLL IS `GET /book/status`. Its `etag` names the book's text, so a client fetches the book only

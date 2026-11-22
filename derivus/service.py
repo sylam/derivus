@@ -4504,8 +4504,9 @@ class IncrementJob:
 
     AND WHAT IT DOES TO A CREDIT LIMIT, where the set draws on one (`limits_against`): `limits`
     carries each limit's entry (`limit_usage`) with the set's peak the run's own in place of its
-    row's - `usage`, `headroom` and `breached` with the trade, `usage_without` the usage without
-    it. A trade that would breach is answered like any other: nothing here blocks.
+    row's - `usage`, `headroom` and `breached` with the trade, `usage_without` and
+    `breached_without` the usage without it and whether that is above the limit. A trade that
+    would breach is answered like any other: nothing here blocks.
     """
 
     def __init__(self, contexts, terms, limits):
@@ -4542,9 +4543,11 @@ class IncrementJob:
             column = pfe_column(profiles[0].columns)
             mine = [(self.terms['netting_set'], column and answer[column][run]['peak'],
                      self.terms['currency']) for run in ('with', 'without')]
-            answer['limits'] = [dict(limit_usage(limit, others + [mine[0]]),
-                                     usage_without=limit_usage(limit, others + [mine[1]])['usage'])
-                                for limit, others in self.limits]
+            answer['limits'] = [
+                dict(limit_usage(limit, others + [mine[0]]), usage_without=without['usage'],
+                     breached_without=without['breached'])
+                for limit, others in self.limits
+                for without in [limit_usage(limit, others + [mine[1]])]]
         return None, {'Results': {'with': results[0], 'without': results[1]},
                       'Stats': {'Increment': answer}}
 
@@ -4606,9 +4609,10 @@ def book_xva_view():
 
     `limits` is one entry per legal entity the record's `limits` policy declares a credit limit
     for (`limit_usage`): the limit, the `usage` these rows' peak exposures add up to against the
-    entity and every entity under it, and the `headroom` left. The limits are kept under the
-    poll's key and the sums are of the rows this answer carries, so a restated limit reads at once
-    and nothing runs. Empty where none is declared and where the desk keeps no record.
+    entity and every entity under it, `clients`, and the `headroom` left. The limits are kept
+    under the poll's key and the sums are of the rows this answer carries, so a restated limit
+    reads at once and nothing runs. Empty where none is declared and where the desk keeps no
+    record.
     """
     live = live_book()
     entries = xva_entries(live.read()[0])
@@ -4691,9 +4695,10 @@ def draws_on(limit, entries):
 
 
 def limit_usage(limit, draws):
-    """One credit limit's entry, `{entity, name, limit, usage, headroom, sets, unrun, breached,
-    not_comparable}`, over `draws`, what each netting set draws on it (`draws_on`).
+    """One credit limit's entry, `{entity, name, limit, clients, usage, headroom, sets, unrun,
+    breached, not_comparable}`, over `draws`, what each netting set draws on it (`draws_on`).
 
+    `clients` is the entities the usage covers, the limit's own among them (`credit_limits`).
     `usage` is the sum of the peaks, each floored at nothing: exposure nets inside a netting set
     and adds across sets, so a set that owes the desk nothing takes none of another's away. `sets`
     counts the sets summed and `unrun` those with no peak, which are not guessed at: `headroom`,
@@ -4702,9 +4707,8 @@ def limit_usage(limit, draws):
     usage, and `not_comparable` says so naming both."""
     stated = limit['limit']
     peaks = [max(peak, 0.0) for _, peak, _ in draws if peak is not None]
-    entry = dict({key: limit[key] for key in ('entity', 'name', 'limit')}, sets=len(peaks),
-                 unrun=len(draws) - len(peaks), usage=None, headroom=None, breached=None,
-                 not_comparable=None)
+    entry = dict(limit, sets=len(peaks), unrun=len(draws) - len(peaks), usage=None,
+                 headroom=None, breached=None, not_comparable=None)
     other = sorted({currency for _, peak, currency in draws if peak is not None}
                    - {stated['currency']})
     if other:

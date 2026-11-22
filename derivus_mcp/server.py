@@ -754,9 +754,10 @@ async def xva_increment(deal: dict | None = None, parent_reference: str | None =
     Where the client, or an entity above it, has a credit limit, `limits` holds each against the
     trade: `limit`, `usage` with the trade and `usage_without` it - the other sets' peaks off the
     XVA view's rows, this set's off these two runs - `headroom` after the trade, null where a set
-    counted under `unrun` has no finished run, and `breached` where the trade would take usage
-    over the limit. Say so plainly when it would; the answer blocks nothing. `not_comparable`,
-    where set, is read out in place of a usage.
+    counted under `unrun` has no finished run, `breached` where usage with the trade is over the
+    limit and `breached_without` where it already was without it. Say so plainly when the trade
+    is what takes it over; the answer blocks nothing. `not_comparable`, where set, is read out in
+    place of a usage.
     """
     request = _stated(deal=deal, parent_reference=parent_reference, quote_id=quote_id,
                       deal_path=deal_path, reference=reference,

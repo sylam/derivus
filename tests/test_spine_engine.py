@@ -6484,11 +6484,15 @@ def limits_view():
     return {entry['entity']: entry for entry in CLIENT.get('/book/xva').json()['limits']}
 
 
+#: The entities each limit of the group desk covers: the parent's own and the child under it.
+COVERED = {'CPTY_A': ['CPTY_A', 'CPTY_B'], 'CPTY_B': ['CPTY_B']}
+
+
 def held_to(entity, limit, **stated):
     """One entry of the view's `limits` as it reads with nothing stated: the keys it always has."""
-    return dict({'entity': entity, 'name': entity + ' Ltd', 'limit': limit, 'usage': None,
-                 'headroom': None, 'sets': 0, 'unrun': 0, 'breached': None,
-                 'not_comparable': None}, **stated)
+    return dict({'entity': entity, 'name': entity + ' Ltd', 'limit': limit,
+                 'clients': COVERED[entity], 'usage': None, 'headroom': None, 'sets': 0,
+                 'unrun': 0, 'breached': None, 'not_comparable': None}, **stated)
 
 
 def pfe(reference):
@@ -6501,6 +6505,7 @@ def test_usage_against_a_limit_is_the_peak_exposure_of_the_entity_s_sets_and_of_
     """`GET /book/xva`'s `limits` holds each declared limit against the peak PFE of the netting
     sets drawn on it, off the rows as they stand. `CPTY_A` is limited to 100,000 dollars and
     `CPTY_B`, declared under it, to 50,000; NS_A is against the parent, NS_B and NS_C the child.
+    Each entry names the entities it covers under `clients`: the parent's both, the child's itself.
 
     NOT GUESSED AT. Before any run each entry sums no set, counts every set unrun and states no
     headroom. NS_A and NS_B run: the child's usage is NS_B's peak beside one set unrun, still
@@ -6516,7 +6521,8 @@ def test_usage_against_a_limit_is_the_peak_exposure_of_the_entity_s_sets_and_of_
     usage carries the parent's NS_A; the limit's own entity alone drawing on it (`credit_limits`),
     where the parent's usage is NS_A's; headroom stated with a set unrun; the limit's currency
     not read (`limit_usage`), where the euro limit states the dollar usage; the floor dropped,
-    where the rewritten row takes 1,000 off NS_B's peak.
+    where the rewritten row takes 1,000 off NS_B's peak; `clients` dropped from the entry
+    (`limit_usage`), where no entry says whose sets it sums.
     """
     for entity, parent in (('CPTY_A', None), ('CPTY_B', 'CPTY_A')):
         entity_declared(entity, parent)
@@ -6598,16 +6604,20 @@ def test_a_credit_charge_holds_each_limit_its_set_draws_on_against_the_usage_wit
     NS_C's standing peak plus `w` to the bit, the standing usage with NS_B's own peak replaced by
     the run's, `usage_without` the same sum at `wo`, and its headroom 40,000 less the usage. The
     trade takes the child from within its limit to over it, which reads `breached` on a headroom
-    below nothing, and the run is done like any other. The parent's entry sums NS_A's and NS_C's
-    standing peaks with `w` and stands within. NO LIMIT, NO CLAIM. With the child's limit alone
-    declared, a charge into the parent's own NS_A names no limit at all: a limit is drawn on by
-    the sets of its entity and of those under it, never by one above.
+    below nothing beside `breached_without` false, and the run is done like any other. The
+    parent's entry sums NS_A's and NS_C's standing peaks with `w` and stands within, breached
+    neither way. NOT COMPARABLE, NOT JUDGED. The child's limit restated in euros, its entry states
+    no usage with the trade or without it and `breached` and `breached_without` are both null.
+    NO LIMIT, NO CLAIM. With the child's limit alone declared, a charge into the parent's own NS_A
+    names no limit at all: a limit is drawn on by the sets of its entity and of those under it,
+    never by one above.
 
     Killing mutations: NS_B's standing row left among what the charge is held against
     (`limits_against`), where its peak counts beside the run's; what stood left out of what the
     result names (`book_price`), where the second ask is handed the first's answer, NS_C still
     unrun; a limit read for any set of the group (`limits_against` reading every limit), where
-    the charge into NS_A carries the child's.
+    the charge into NS_A carries the child's; `breached` and `breached_without` swapped
+    (`IncrementJob`), where the child reads over its limit before the trade and within it after.
     """
     for entity, parent in (('CPTY_A', None), ('CPTY_B', 'CPTY_A')):
         entity_declared(entity, parent)
@@ -6624,8 +6634,9 @@ def test_a_credit_charge_holds_each_limit_its_set_draws_on_against_the_usage_wit
     assert wo < 40_000.0 < w, (wo, w)
     assert first['limits'] == [
         dict(held_to('CPTY_A', parent, usage=a + w, sets=2, unrun=1, breached=False),
-             usage_without=a + wo),
-        dict(held_to('CPTY_B', child, usage=w, sets=1, unrun=1, breached=True), usage_without=wo)]
+             usage_without=a + wo, breached_without=False),
+        dict(held_to('CPTY_B', child, usage=w, sets=1, unrun=1, breached=True), usage_without=wo,
+             breached_without=False)]
 
     recalc(['NS_C'])
     c = pfe('NS_C')
@@ -6635,10 +6646,17 @@ def test_a_credit_charge_holds_each_limit_its_set_draws_on_against_the_usage_wit
     assert second['limits'] == [
         dict(held_to('CPTY_A', parent, usage=math.fsum([a, c, w]), sets=3, breached=False,
                      headroom=200_000.0 - math.fsum([a, c, w])),
-             usage_without=math.fsum([a, c, wo])),
+             usage_without=math.fsum([a, c, wo]), breached_without=False),
         dict(held_to('CPTY_B', child, usage=c + w, sets=2, breached=True,
-                     headroom=40_000.0 - (c + w)), usage_without=c + wo)]
+                     headroom=40_000.0 - (c + w)), usage_without=c + wo, breached_without=False)]
     assert second['limits'][1]['headroom'] < 0.0 < second['cva']['increment']
+
+    euros = {'amount': 40_000.0, 'currency': 'EUR'}
+    assert limits_declared({'CPTY_B': euros}).status_code == 200
+    assert charged()[0]['limits'] == [dict(
+        held_to('CPTY_B', euros, sets=2,
+                not_comparable=service.NOT_COMPARABLE.format('EUR', 'USD')),
+        usage_without=None, breached_without=None)]
 
     assert limits_declared({'CPTY_B': child}).status_code == 200
     assert 'limits' not in charged('NS_A')[0]
