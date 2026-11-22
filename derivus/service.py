@@ -3928,8 +3928,9 @@ WORKLIST_ROWS = 200
 @app.get('/book/worklist', summary='What waits on somebody - tickets, payments, confirmations, '
                                     'marks, rejected trades')
 def book_worklist(actor: str = None):
-    """`{date, counts, pending, payments, unconfirmed, calls, unmarked, rejected}` - six lists of
-    what waits on THIS seat, each row `{kind, what, key, lsn, since}` with `key` what the fact that
+    """`{date, counts, pending, payments, unconfirmed, calls, unmarked, rejected, elsewhere, seat}`
+    - six lists of what waits on THIS seat and the tickets it is shown waiting on another, each row
+    `{kind, what, key, lsn, since}` with `key` what the fact that
     clears it is filed against - a payment's also its `amount`, `currency` and the `agreement` it
     is due under where it is one (`answered`), a call's its `amount` and `currency` - `counts`
     how many each list holds and each list the newest `WORKLIST_ROWS` of them. Nothing here is
@@ -3937,10 +3938,10 @@ def book_worklist(actor: str = None):
 
     Each list is what one act clears, where the seat holds the verb the map in force has that act
     demand (`spine.demands`), the vocabulary's named here: `pending` the tickets awaiting a
-    second seat's approval - a fill's or a restrike's, one row each (`spine.standing`) - for
-    `approve`; `payments` the payments and premiums due by the book's own day no settlement was
-    filed against, each row's `kind` its own (`close_verdict` - a fee settles nothing), for
-    `settle`; `unconfirmed` the clips no `confirmed`
+    second seat's approval - a fill's or a restrike's, one row each (`spine.standing`) - that the
+    seat may sign, for `approve`; `payments` the payments and premiums due by the book's own day
+    no settlement was filed against, each row's `kind` its own (`close_verdict` - a fee settles
+    nothing), for `settle`; `unconfirmed` the clips no `confirmed`
     status filed since their own ticket stands against, keyed as they were filled
     (`spine.fill_key`) - so a restrike makes a re-confirmation due - for `confirm`; `calls` the
     collateral the marks of the book's day call for or post, keyed by agreement, every movement
@@ -3957,10 +3958,14 @@ def book_worklist(actor: str = None):
     A ticket's row - `pending`, `unconfirmed`, `rejected` - names its trade: the `reference` and
     `deal_path` the file holds it at, the `client`, the `agreement` and its `booker`; a pending
     one also its `tier` and `fell_past`, as its position's ticket reads them, the `price` and
-    `currency` it was booked at, and `waits_on`, the tier's own sentence for what it wants.
+    `currency` it was booked at, `waits_on`, the tier's own sentence for what it wants, and `may`:
+    null in `pending`, and in `elsewhere` - the pending tickets the seat is shown and may not sign
+    - the record's sentence why: the denial of its approval where the verdict is filed
+    (`spine.may`, `filed_at`), else its tier's four eyes (`tiers.refuses`). So a maker reads its
+    own ticket waiting on a checker, never as its to sign.
     """
     document, _ = recording().read()
-    book, sight = book_name(document), spine.sight(actor)
+    book, seat, sight = book_name(document), spine.reader(actor), spine.sight(actor)
     vocabulary, confirmed = spine.package().vocabulary, spine.package().verbs.CONFIRMED
     demands = spine.demands()
     day = spine.base_day(document)
@@ -4009,17 +4014,27 @@ def book_worklist(actor: str = None):
         return list(found.values())
 
     def waiting(found):
-        # what a pending trade was booked at, off its own fact, beside its ticket's tier and wait
+        # what a pending trade was booked at, off its own fact, beside its ticket's tier and wait,
+        # and what holds this seat from signing it: its grant where it books, then four eyes
         if not found:
             return found
         booked = spine.folded(lambda log: {row['lsn']: log.open_body(log.frame_at(row['lsn']))
                                            for row in found})
-        entries = {entry['lsn']: entry for position in rows for entry in position['tickets']}
+        entries, placed = {}, {}
+        for position in rows:
+            for entry in position['tickets']:
+                entries[entry['lsn']] = entry
+                placed.setdefault(entry['ticket'], []).append(position)
+        nodes = {row['key']: filed_at(placed[row['key']]) for row in found}
+        granted = {} if sight is None else spine.may(actor, sorted(set(nodes.values())), {})[
+            'approval']
         reporting = structures.reporting_currency(document, market_of)
         return [dict(row, price=booked[row['lsn']].get('price'),
                      currency=booked[row['lsn']].get('currency') or reporting,
                      tier=entries[row['lsn']]['tier'], fell_past=entries[row['lsn']]['fell_past'],
-                     waits_on=entries[row['lsn']]['waits_on'])
+                     waits_on=entries[row['lsn']]['waits_on'],
+                     may=granted.get(nodes[row['key']]) or spine.package().tiers.refuses(
+                         spine.pending_tier(entries[row['lsn']]), row['booker'], seat))
                 for row in found]
 
     # a seat that posts collateral nowhere pays nothing for calls it cannot see
@@ -4036,10 +4051,10 @@ def book_worklist(actor: str = None):
             call['agreement'], marks[day]['lsn'], day), amount=call['call'],
             currency=call['currency'], unknown=call['unknown'])
 
+    shown = waiting(ticketed(None, 'pending', 'awaits a second seat\'s approval', ticket,
+                             lambda position, entry, at: entry['status'] == 'pending'))
     lists = {
-        'pending': waiting(ticketed(
-            demands['approval'], 'pending', 'awaits a second seat\'s approval', ticket,
-            lambda position, entry, at: entry['status'] == 'pending')),
+        'pending': [found for found in shown if found['may'] is None],
         'payments': [dict(row(entry['kind'], '{} {} pays {} {}'.format(
             entry['reference'], entry['leg'],
             'an undetermined amount' if entry['amount'] is None else entry['amount'],
@@ -4060,7 +4075,8 @@ def book_worklist(actor: str = None):
             and spine.reaches(sight, book, vocabulary.MARK)],
         'rejected': ticketed(demands['fill'], 'rejected', 'was rejected and still stands', ticket,
                              lambda position, entry, at: entry['status'] == 'rejected'
-                             and position['quantity'])}
+                             and position['quantity']),
+        'elsewhere': [found for found in shown if found['may'] is not None]}
     return dict({name: sorted(found, key=lambda row: (row['since'] or '', row['lsn'] or 0))[
         -WORKLIST_ROWS:] for name, found in lists.items()}, date=day,
         counts={name: len(found) for name, found in lists.items()}, seat=spine.reader(actor))
@@ -8061,6 +8077,13 @@ def book_quote(request: dict):
         raise HTTPException(422, str(error))
 
 
+def filed_at(placed):
+    """The node a verdict on a ticket is filed at: the deepest holding every row it is `placed` in -
+    the positions carrying it, else the quote that minted it."""
+    return spine.package().capability.deepest(
+        [row.get('portfolio') or row['book'] for row in placed])
+
+
 def decided(request, verb):
     """One verdict filed over a ticket, where the trade carrying it books: `{recorded: {lsn},
     ticket, portfolio, status}`.
@@ -8101,8 +8124,7 @@ def decided(request, verb):
                                  'nothing to rule on: a verdict is filed over a trade, where it '
                                  'books - a quote no tier admitted is ruled by its quote_id'.format(
                                      ticket))
-    portfolio = spine.package().capability.deepest(
-        [row.get('portfolio') or row['book'] for row in placed])
+    portfolio = filed_at(placed)
     filed = verb(ticket, request, placed[0]['book'], portfolio)
     return {'recorded': {'lsn': filed['lsn']}, 'ticket': ticket, 'portfolio': portfolio,
             'status': next((entry['status'] for _, entry in carrying()), None)}

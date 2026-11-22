@@ -506,14 +506,15 @@ export type Reconcile = {
  * amount, currency and the agreement it is due under where it is one, a call the amount and
  * currency it calls, and a call nobody can work out what is not known. A ticket's row names its
  * trade, and a pending one its tier, what it fell past first as its ticket reads it, what it was
- * booked at and why it waits. */
+ * booked at, why it waits and `may`: null where the seat may sign it, else the record's sentence
+ * why not. */
 export type WorkRow = {
   kind: string; what: string; key: string; lsn: number | null; since: string | null;
   amount?: number | null; currency?: string | null; agreement?: string | null;
   unknown?: { instrument: string | null; what: string }[];
   reference?: string | null; deal_path?: string | null; client?: string | null;
   booker?: string; tier?: string | null; fell_past?: string[] | null; price?: number | null;
-  waits_on?: string | null;
+  waits_on?: string | null; may?: string | null;
 };
 
 /** What an agreement's terms never state, `GET /book/agreements` names: the netting set's `fields`
@@ -564,19 +565,21 @@ export type Recorded = { recorded: { lsn: number } };
 export type Decided = Recorded & { ticket: string; portfolio: string; status: string | null };
 
 /** `GET /book/worklist` - six lists of what waits on the seat asking, read off what stands, so a
- * row leaves when its fact lands: how many each holds, and the newest of them. `seat` is the seat
- * they wait on, null where none was named and they are what waits on anyone. */
+ * row leaves when its fact lands, and `elsewhere`, the tickets it is shown waiting on another
+ * seat: how many each holds, and the newest of them. `seat` is the seat they are read for, null
+ * where none was named and they are what waits on anyone. */
 export type Worklist = {
   date: string;
   seat: string | null;
   counts: { pending: number; payments: number; unconfirmed: number; calls: number;
-            unmarked: number; rejected: number };
+            unmarked: number; rejected: number; elsewhere: number };
   pending: WorkRow[];
   payments: WorkRow[];
   unconfirmed: WorkRow[];
   calls: WorkRow[];
   unmarked: WorkRow[];
   rejected: WorkRow[];
+  elsewhere: WorkRow[];
 };
 
 // ---- the curves half of the market: /book/curve -------------------------------------------------

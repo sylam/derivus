@@ -15,7 +15,6 @@ import {
 import type {
   ActivityPage, ActivityRow, BookRisk, DealMark, DealNode, Descriptor, Market, Moved, PositionMark,
   QuoteGiven, Schema,
-  WorkRow,
 } from './types';
 
 /** The trade a deal path names: the outermost node on the path that is no netting set - a leg
@@ -283,36 +282,4 @@ export function paperText(set: string, agreements: Agreement[], schema: Schema |
   return `${set} (${paper.kind})${!(COLLATERAL in fields) ? ''
     : uncollateralised(fields, paper.terms) ? ', uncollateralised'
       : `, collateralised${currency ? ` in ${currency}` : ''}`}`;
-}
-
-/** The tickets awaiting a second seat that `listed` - the seat's own worklist - leaves out, oldest
- * first and each once, though a restrike books several positions under one, as rows of the
- * worklist's shape - the tier each fell in, what it fell past first and what it waits on among
- * them: what a seat that cannot sign them reads of what waits. */
-export function waitingElsewhere(positions: Position[], listed: WorkRow[]): WorkRow[] {
-  const seen = new Set(listed.map((row) => row.key));
-  const rows: WorkRow[] = [];
-  for (const position of positions) {
-    for (const ticket of position.tickets) {
-      if (ticket.status !== 'pending' || seen.has(ticket.ticket)) continue;
-      seen.add(ticket.ticket);
-      rows.push({ kind: 'pending', what: '', key: ticket.ticket, lsn: ticket.lsn, since: ticket.at,
-                  booker: ticket.actor, reference: position.reference, agreement: position.agreement,
-                  deal_path: position.deal_paths[0] ?? null, client: position.counterparty,
-                  tier: ticket.tier, fell_past: ticket.fell_past, waits_on: ticket.waits_on });
-    }
-  }
-  return rows.sort((a, b) => a.lsn! - b.lsn!);
-}
-
-/** What holds for the seat reading a pending ticket, or null where it signs it: no seat named; the
- * booker's own, whose verdict four eyes do not count; one the seat's worklist does not list. */
-export function holdsFor(row: WorkRow, seat: string | null, listed: boolean): string | null {
-  if (seat === null) return 'No seat is set: type yours in the seat box at the top right to sign it.';
-  if (row.booker === seat) {
-    return 'Booked by this seat: under four eyes its own verdict counts for nothing, so another '
-      + 'seat signs it.';
-  }
-  return listed ? null : 'This seat does not sign it: a seat its tier wants signs it from its own '
-    + 'Back Office.';
 }

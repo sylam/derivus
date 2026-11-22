@@ -1178,7 +1178,7 @@ def test_a_recorded_desk_books_and_accepts_through_the_binding(recorded, tmp_pat
         pending = mcp_server.book_quote(quote['quote_id'], actor='subject-desk-one')
         assert pending['written'] is True and pending['tier']['name'] == 'desk'
         assert 'no verdict is filed' in pending['waits_on']
-        waits = mcp_server.worklist(actor='subject-desk-one')['pending']
+        waits = mcp_server.worklist(actor='subject-desk-two')['pending']
         assert [row['key'] for row in waits] == [pending['ticket']]
         held = [row for row in mcp_server.book_positions()['positions']
                 if row['portfolio'] == 'service/FX']

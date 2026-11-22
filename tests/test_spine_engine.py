@@ -3798,14 +3798,18 @@ def test_the_worklist_names_each_ticket_and_the_seat_it_waits_on(recorded, desk)
     """ONE ANSWER FOR WHAT WAITS ON A SEAT. A ticket under four eyes waits on the seat that may sign
     it, named as a trade - its reference, path, client and agreement, its booker, its tier, the
     price it was booked at and the tier's own sentence for what it wants, which its booker's own
-    signature does not clear - and on no seat that may sign nothing; a read no seat signs lists it
+    signature does not clear. Its booker, which holds `approve` too, and a seat that only reads are
+    each shown it waiting on another seat, with the record's sentence why: the tier's four eyes,
+    and the denial of the approval it holds no grant for. A read no seat signs lists it to sign
     beside `seat` null, and one on a box narrowing nothing is read for the seat it names. Signed by
     the second seat, it leaves the list.
 
     Killing mutations: `seat` answered null on a box narrowing nothing, which a desk reads as no
     seat named and shows the seat nothing it may sign; the tier's four eyes dropped from the
-    sentence, which reads the booker's own signature as the verdict standing; and the client named
-    by its entity id, which a desk reads as a code.
+    sentence, which reads the booker's own signature as the verdict standing; four eyes not asked
+    of the seat reading, which lists the booker's own ticket to sign; the grant not asked where the
+    ticket books, which lists it to sign for a seat that only reads; and the client named by its
+    entity id, which a desk reads as a code.
     """
     def worklist(**params):
         return CLIENT.get('/book/worklist', params=params).json()
@@ -3818,17 +3822,25 @@ def test_the_worklist_names_each_ticket_and_the_seat_it_waits_on(recorded, desk)
                        ).json()['status'] == 'pending'
 
     listed = worklist(actor=DESK_TWO)
-    assert (listed['seat'], listed['counts']['pending']) == (DESK_TWO, 1)
+    assert (listed['seat'], listed['counts']['pending'], listed['elsewhere']) == (DESK_TWO, 1, [])
     row = listed['pending'][0]
     assert {key: row[key] for key in ('what', 'key', 'reference', 'deal_path', 'client',
-                                      'agreement', 'booker', 'tier', 'price', 'currency')} == {
+                                      'agreement', 'booker', 'tier', 'price', 'currency',
+                                      'may')} == {
         'what': "EXEC-BIG for Client A Ltd awaits a second seat's approval",
         'key': waiting['ticket'], 'reference': 'EXEC-BIG', 'deal_path': waiting['deal_path'],
         'client': 'Client A Ltd', 'agreement': CLIENT_SET, 'booker': ACTOR, 'tier': 'desk',
-        'price': 1250.0, 'currency': structures.reporting_currency(json.loads(desk.read_text()))}
+        'price': 1250.0, 'currency': structures.reporting_currency(json.loads(desk.read_text())),
+        'may': None}
     assert "{!r} booked it, which the 'desk' tier refuses".format(ACTOR) in row['waits_on']
-    risk = worklist(actor=RISK_SEAT)
-    assert risk['seat'] == RISK_SEAT and set(risk['counts'].values()) == {0}, risk['counts']
+    own, risk = worklist(actor=ACTOR), worklist(actor=RISK_SEAT)
+    assert own['pending'] == [] and [(row['key'], row['may']) for row in own['elsewhere']] == [(
+        waiting['ticket'], "{!r} booked it, which the 'desk' tier refuses: the booker and the "
+                           "approver are one seat - have another seat sign it".format(ACTOR))]
+    assert risk['seat'] == RISK_SEAT and {
+        name: count for name, count in risk['counts'].items() if count} == {'elsewhere': 1}
+    assert risk['elsewhere'][0]['may'].startswith(
+        'actor {!r} holds no approve scope'.format(RISK_SEAT)), risk['elsewhere']
     nobody = worklist()
     assert nobody['seat'] is None and nobody['pending'][0]['key'] == waiting['ticket']
 

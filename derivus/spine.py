@@ -1581,10 +1581,8 @@ def standing(lsn=None, folds=None):
     spine = package()
 
     def waits_on(entry, status, decisions):
-        # a pending ticket is one the hub never signed, so its tier is under four eyes
         return None if status != 'pending' else spine.tiers.standing_approval(
-            {'name': entry['tier'], 'four_eyes': True}, entry['actor'],
-            decisions['plans'].get(entry['ticket'], []))[1]
+            pending_tier(entry), entry['actor'], decisions['plans'].get(entry['ticket'], []))[1]
 
     def read(log):
         projections = spine.projections
@@ -1602,6 +1600,12 @@ def standing(lsn=None, folds=None):
         return rows
 
     return folded(read)
+
+
+def pending_tier(entry):
+    """The tier a pending ticket `entry` of `standing` waits under: its own, under four eyes - a
+    pending ticket being one the hub never signed."""
+    return {'name': entry['tier'], 'four_eyes': True}
 
 
 def status_of(tickets, decisions):

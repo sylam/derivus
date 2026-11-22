@@ -643,7 +643,11 @@ reconcile's lists, never the behind counts, because every write re-pins the file
 delete included, and names each disagreement's trade, what is wrong and what to do.
 `GET /book/worklist` lists what waits on the asking seat, `seat` null where none was named, each
 row keyed by what its clearing fact is filed against and a ticket's row naming its trade, booker,
-tier, booked price and the tier's sentence for why it waits. **Held by**
+tier, booked price and the tier's sentence for why it waits. Its `pending` are the tickets the
+seat may sign; those it is shown and may not are `elsewhere`, each with `may`, the record's
+sentence why - the denial of its approval where the verdict is filed (`service.filed_at`), else
+its tier's four eyes (`tiers.refuses`) - so a maker reads its own ticket waiting on a checker,
+never as its to sign. **Held by**
 `test_spine_engine.py::test_a_page_walks_the_record_forward_one_event_at_a_time`,
 `::test_what_the_file_lost_is_drift_under_a_pin_that_has_seen_every_position`,
 `::test_a_strip_row_names_the_trade_who_did_it_and_what_it_opens`,
@@ -653,7 +657,8 @@ tier, booked price and the tier's sentence for why it waits. **Held by**
 The web client reads the worklist ONCE per head and seat into its store (`worklistAt` keys both),
 and the banner, the Back Office and the approval queue count from that one answer. The Back
 Office workspace (`web/src/views/BackOfficeView.tsx`) is the seat that signs, pays, confirms and
-posts: the `pending` tickets with approve and refuse-with-a-reason, then the `payments`,
+posts: the `pending` tickets with approve and refuse-with-a-reason, those `elsewhere` read only
+beside the record's sentence for why this seat does not sign them, then the `payments`,
 `unconfirmed` and `calls` lists - each the list of its own verb - every row beside the fact that
 clears it, with the day's close check and the close behind its verdict. The Paper workspace
 (`web/src/views/PaperView.tsx`) lists the entities and the agreements with their terms and
@@ -848,7 +853,8 @@ trade naming no tier was routed before trades named one. **Held by**
 `test_spine_engine.py::test_an_automatic_tier_is_the_hubs_own_approval_between_the_quote_and_the_fill`,
 `::test_a_retry_lands_every_event_on_the_lsn_it_already_has`.
 
-The latest verdict stands, none being withdrawn; under four eyes the booker's own are not read.
+The latest verdict stands, none being withdrawn; under four eyes the booker's own are not read
+(`tiers.refuses`).
 `POST /book/approve` and `/reject` file at the deepest node holding the ticket's positions, read off
 the record, so an approver cannot sign another node's ticket. A rejected trade stands: it happened.
 A trade sent again under its key is answered `{written: false, booked}`, other fields refused.

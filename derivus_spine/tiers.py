@@ -144,13 +144,21 @@ def check(policy, ticket, standing):
     return verdict
 
 
+def refuses(tier, booker, seat):
+    """The sentence `tier` turns away a verdict `seat` files on a ticket `booker` booked with, None
+    where it reads it: under `four_eyes`, the booker's own."""
+    if tier.get('four_eyes') and seat == booker:
+        return ('{!r} booked it, which the {!r} tier refuses: the booker and the approver are one '
+                'seat - have another seat sign it'.format(booker, tier.get('name')))
+    return None
+
+
 def standing_verdict(tier, booker, verdicts):
     """The verdict standing on a ticket, or None: THE LATEST BY LSN, which the record makes unique,
     so the order a caller hands them in cannot change the answer. Under `four_eyes` the booker's own
-    verdicts are not read at all - a booker neither signs its ticket nor withdraws another seat's
-    verdict by filing one after it."""
-    counted = [verdict for verdict in verdicts
-               if not (tier.get('four_eyes') and verdict['actor'] == booker)]
+    verdicts are not read at all (`refuses`) - a booker neither signs its ticket nor withdraws
+    another seat's verdict by filing one after it."""
+    counted = [verdict for verdict in verdicts if refuses(tier, booker, verdict['actor']) is None]
     return max(counted, key=lambda verdict: verdict['lsn']) if counted else None
 
 
@@ -164,9 +172,8 @@ def standing_approval(tier, booker, verdicts):
     """
     latest = standing_verdict(tier, booker, verdicts)
     if latest is None and verdicts:
-        return (None, 'every verdict on this ticket is {!r}\'s own and {!r} booked it, which the '
-                      '{!r} tier refuses: the booker and the approver are one seat - have another '
-                      'seat sign it'.format(booker, booker, tier.get('name')))
+        return (None, 'every verdict on this ticket is {!r}\'s own and {}'.format(
+            booker, refuses(tier, booker, booker)))
     if latest is None:
         return (None, 'no verdict is filed against this ticket, and the {!r} tier wants a seat '
                       'other than the booker to sign it'.format(tier.get('name')))

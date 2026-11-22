@@ -1947,9 +1947,11 @@ def worklist(actor: str | None = None) -> dict:
     """What waits on the seat asking, read off what stands - nothing here is filed, so a row leaves
     the moment its fact lands. Six lists, each what one verb acts on where `actor` holds it, each
     row `{kind, what, key, lsn, since}` with `key` what the clearing fact is filed against:
-    `pending` tickets to sign (`approve_ticket`, for an approve seat); `payments` due by the book's
-    day nobody settled, each with its `amount`, `currency` and the `agreement` it is due under
-    where it is one, which a settle seat clears with `file_status` `settled`, kind `payment`;
+    `pending` tickets this seat may sign (`approve_ticket`) - never its own under four eyes, which
+    with every ticket it is shown and may not sign are `elsewhere`, each with `may` saying why;
+    `payments` due by the book's day nobody settled, each with its `amount`, `currency` and the
+    `agreement` it is due under where it is one, which a settle seat clears with `file_status`
+    `settled`, kind `payment`;
     `unconfirmed` fills, which a confirm seat clears with `file_status` `confirmed` against the
     key; the collateral `calls` the day's marks make, keyed by agreement with the `amount` and
     `currency` called, which a collateral seat clears with `file_status` `settled`, kind

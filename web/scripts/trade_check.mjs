@@ -367,45 +367,4 @@ check('the paper says its agreement and kind, and collateral by its own terms - 
        'ISDA-SAYS-CSA (ISDA 2002 with CSA), uncollateralised', 'CSA-USD (CSA), collateralised in USD',
        'ISDA-X, which the record declares no agreement for']);
 
-const WANTS = "no verdict is filed against this ticket, and the 'second-seat' tier wants a seat "
-  + 'other than the booker to sign it';
-const CAP = "the 'desk-auto' tier caps max_notional at 5000000 USD and this ticket is 6560000.0 of "
-  + 'it - book it under a tier that admits the size, or split the clip';
-const ticketed = (ticket, lsn, status, actor = 'sales-1') => ({
-  ticket, lsn, fill: lsn, actor, at: `2026-11-19T21:${lsn}:00Z`, status,
-  execution_reference: `EX-${lsn}`, quantity: 1, tier: status === 'pending' ? 'second-seat' : 'desk-auto',
-  fell_past: status === 'pending' ? [CAP] : [], waits_on: status === 'pending' ? WANTS : null });
-const position = (reference, path, tickets) => ({
-  reference, agreement: 'ISDA-K', counterparty: 'K', deal_paths: [path], tickets });
-const HELD = [
-  position('RESTRUCK-A', '0/4', [ticketed('t9', 40, 'pending', 'sales-2')]),
-  position('NDF', '0/1', [ticketed('t2', 25, 'pending')]),
-  position('CALL', '0/0', [ticketed('t1', 24, 'approved')]),
-  position('RESTRUCK-B', '0/5', [ticketed('t9', 40, 'pending', 'sales-2')]),
-  position('FWD-2Y', '1/1', [ticketed('t3', 28, 'pending', 'sales-2')]),
-];
-const elsewhere = trade.waitingElsewhere(HELD, [{ key: 't3' }]);
-check('what waits elsewhere is every pending ticket the seat\'s worklist leaves out, oldest first, '
-        + 'a restrike\'s once, in the worklist\'s shape - its tier, what it fell past first and '
-        + 'what it waits on among them',
-      'the worklist\'s own tickets listed again as waiting on another seat; a restrike\'s ticket '
-        + 'once per position it moved; or the tier, the checks it fell past or the service\'s '
-        + 'sentence left off, so the booker reads only that it waits',
-      [elsewhere.map((row) => row.key), elsewhere[0] && [elsewhere[0].booker, elsewhere[0].reference,
-        elsewhere[0].deal_path, elsewhere[0].agreement, elsewhere[0].since, elsewhere[0].tier,
-        elsewhere[0].fell_past, elsewhere[0].waits_on]],
-      [['t2', 't9'], ['sales-1', 'NDF', '0/1', 'ISDA-K', '2026-11-19T21:25:00Z', 'second-seat',
-        [CAP], WANTS]]);
-
-const holds = (seat, listed) => trade.holdsFor({ booker: 'fx-trader' }, seat, listed)
-  ?.split(':')[0] ?? null;
-check('a seat signs only a ticket its worklist lists that it did not book; no seat, its own and one '
-        + 'not listed each say what holds',
-      'the booker\'s own ticket given its verdicts, an approval four eyes count for nothing; or no '
-        + 'seat at all handed the buttons',
-      [holds(null, true), holds('fx-trader', true), holds('fx-trader', false), holds('risk', true),
-       holds('risk', false)],
-      ['No seat is set', 'Booked by this seat', 'Booked by this seat', null,
-       'This seat does not sign it']);
-
 done();

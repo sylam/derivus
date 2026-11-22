@@ -12,9 +12,7 @@ import {
   type Act, grantsRead, heldBack, marketOf, opened, useApp, useQuoteList, useQuotes, useRead,
 } from '../state';
 import { formatNumber, ungrouped } from '../tokens';
-import {
-  holdsFor, paperText, ticketWords, tradeAt, tradeName, waitedText, waitingElsewhere,
-} from '../trade';
+import { paperText, ticketWords, tradeAt, tradeName, waitedText } from '../trade';
 import type { CloseVerdict, Decided, PendingQuote, WorkRow, Worklist } from '../types';
 import { TicketCard } from '../components/TicketCard';
 
@@ -86,10 +84,10 @@ const nothing = (hold: string | null, none: string) =>
 /** What a verdict answered, kept on the card once its ticket has left the list. */
 type Said = { status: string | null; text: string };
 
-/** The tickets waiting for a second seat: those this seat's worklist lists, each with its two
- * verdicts or what holds for this seat, then those it does not sign, which it reads and never
- * clears. What a verdict answered stays after its row leaves, which it does when the record's head
- * moves past it. */
+/** The tickets waiting for a second seat: those this seat signs, each with its two verdicts, then
+ * those it is shown waiting on another seat, each with the record's sentence why - once on the
+ * card where every one says the same - which it reads and never clears. What a verdict answered
+ * stays after its row leaves, which it does when the record's head moves past it. */
 function Tickets({ worklist }: { worklist: Worklist }) {
   const { state } = useApp();
   const { doc, schema } = state;
@@ -105,8 +103,8 @@ function Tickets({ worklist }: { worklist: Worklist }) {
     const timer = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(timer);
   }, []);
+  const { elsewhere } = worklist;
   const positions = state.paper.data?.positions ?? [];
-  const elsewhere = waitingElsewhere(positions, worklist.pending);
   const executions = new Map(positions.flatMap((position) => position.tickets)
     .map((ticket) => [ticket.ticket, ticket.execution_reference]));
   // each ticket's quote is the one that booked its trade, read whole for its margin and spread
@@ -115,7 +113,6 @@ function Tickets({ worklist }: { worklist: Worklist }) {
     ? quoteAt(desk.data.quotes, row.deal_path, row.reference) : undefined);
   const quotes = useQuotes([...new Set([...worklist.pending, ...elsewhere]
     .flatMap((row) => given(row)?.quote_id ?? []))]);
-  const own = worklist.pending.filter((row) => row.booker === worklist.seat).length;
   const signing = (row: WorkRow, hold: string | null) => {
     const at = row.deal_path ? tradeAt(children, row.deal_path) : undefined;
     const quote = given(row);
@@ -128,14 +125,13 @@ function Tickets({ worklist }: { worklist: Worklist }) {
   };
   // what holds this seat from signing: once on a card where it holds every row, else per row
   const hold = heldBack(state, 'approval');
-  const holds = elsewhere.map((row) => holdsFor(row, worklist.seat, false));
+  const holds = elsewhere.map((row) => row.may ?? null);
   const once = hold ?? (new Set(holds).size === 1 ? holds[0] : null);
   return (
     <>
       <section className="card">
-        <h3>Tickets to sign ({worklist.counts.pending}) <span className="hint">{own
-          ? `${own} booked by this seat, which another seat signs`
-          : 'approve, or refuse with a reason'}</span></h3>
+        <h3>Tickets to sign ({worklist.counts.pending}) <span className="hint">approve, or refuse
+          with a reason</span></h3>
         <div className="nested">
           {(desk.error ?? quotes.error) && (
             <div className="error-box">
@@ -149,14 +145,15 @@ function Tickets({ worklist }: { worklist: Worklist }) {
               <span>{said.text}</span>
             </div>
           )}
-          {worklist.pending.map((row) => signing(row, holdsFor(row, worklist.seat, true)))}
-          {!worklist.pending.length && nothing(hold, 'nothing waits on this seat to sign')}
+          {worklist.pending.map((row) => signing(row, hold && ''))}
+          {(hold || !worklist.pending.length)
+            && nothing(hold, 'nothing waits on this seat to sign')}
         </div>
       </section>
       {elsewhere.length > 0 && (
         <section className="card">
-          <h3>Waiting on another seat ({elsewhere.length}) <span className="hint">read only</span>
-          </h3>
+          <h3>Waiting on another seat ({worklist.counts.elsewhere}){' '}
+            <span className="hint">read only</span></h3>
           <div className="nested">
             {once && <div className="note">{once}</div>}
             {elsewhere.map((row, at) => signing(row, hold || holds[at] === once ? '' : holds[at]))}
