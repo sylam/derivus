@@ -84,21 +84,23 @@ function AddRule({ menu, attribute, configure }: {
 function RuleTable({ schema, name, declared, value, configure }: {
   schema: Schema; name: string; declared: ConfigSection; value: unknown; configure?: Configure;
 }) {
+  const { state } = useApp();
   const [refused, setRefused] = useState<string[] | null>(null);
   const menu = menuOf(schema, declared.menu);
+  // each type's scheme where no rule names one, as the engine answers it
+  const schemes = state.describe?.interpolation ?? {};
   const params = token(value, '.ModelParams');
   const half = (key?: string): Record<string, unknown> => {
     const stated = isObject(params) ? params[key ?? ''] : undefined;
     return isObject(stated) ? stated : {};
   };
-  const defaults = half(declared.entry);
   const attribute = declared.key ?? '';
   const save = configure && (async (factor: string, fields: Record<string, unknown>) =>
     setRefused(await configure(factor, fields)));
   const at = (key: string | undefined, factor: string) => [name, '.ModelParams', key ?? '', factor];
   const rows = [
     ...Object.keys(menu).map((factor) => ({
-      factor, method: String(defaults[factor] ?? declared.value ?? ''), where: '', equals: '',
+      factor, method: schemes[factor] ?? '', where: '', equals: '',
       path: at(declared.entry, factor) })),
     ...Object.entries(half(declared.rules)).flatMap(([factor, filed]) =>
       (Array.isArray(filed) ? filed as [[string, string], string][] : [])

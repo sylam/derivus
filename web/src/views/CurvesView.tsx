@@ -13,9 +13,9 @@ import {
   SURVIVAL, creditCounterparties, entityText, factorFamily, offBook,
 } from '../desk';
 import { blockHint, heldBack, marketOf, useApp, useRead, written } from '../state';
-import { curveOf, isObject, token } from '../tokens';
+import { curveOf } from '../tokens';
 import type {
-  ConfigSection, CurveBlock, CurveOutcome, CurveRow, Descriptor, Schema, SeededCurve, Section,
+  CurveBlock, CurveOutcome, CurveRow, Descriptor, Schema, SeededCurve, Section,
 } from '../types';
 import { CREDIT, CreditCard } from '../components/CreditCard';
 
@@ -214,12 +214,9 @@ export function CurvesView() {
   const declared = state.schema.MarketPrices.types[FAMILY] ?? {};
   const fields = curveFields(declared, answer);
   const panel = panelFields(declared, fields, state.schema.Interpolation_factor_map[FACTOR] ?? []);
-  // the scheme every curve of the type is built under where no rule names one - what a card posts
-  // BLANK for, so wanting what every curve has writes no rule at all
-  const section: ConfigSection = state.schema.Configuration['Price Factor Interpolation'] ?? {};
-  const params = token(market['Price Factor Interpolation'], '.ModelParams');
-  const defaults = isObject(params) ? params[section.entry ?? ''] : undefined;
-  const typeScheme = String((isObject(defaults) ? defaults[FACTOR] : '') || section.value || '');
+  // the scheme every curve of the type is built under where no rule names one, as the engine
+  // answers it - what a card posts BLANK for, so wanting what every curve has writes no rule
+  const typeScheme = state.describe?.interpolation[FACTOR] ?? '';
   const card = { schema: state.schema, fields, panel, declared, typeScheme,
                  factors: market['Price Factors'] ?? {} };
   // a credit curve per counterparty, the ones still without one filed first

@@ -812,14 +812,23 @@ def validate(job: dict):
 @app.post('/describe', summary='What the engine parsed, and what running it would cost')
 def describe(job: dict):
     """What the engine made of this job without running any of it - `cx.describe()` verbatim - plus
-    the dispatcher's own reading under `cost` and each price factor's process under `processes`
-    (`factor_processes`). Nothing here writes, so describing a job and then executing it reports
+    the dispatcher's own reading under `cost`, each price factor's process under `processes`
+    (`factor_processes`) and each interpolated type's scheme under `interpolation`
+    (`type_schemes`). Nothing here writes, so describing a job and then executing it reports
     exactly what executing it alone reports.
     """
     context = context_for(job)
     config = context.current_cfg
     return dict(as_json(context.describe()), cost=cost(config.deals['Calculation']),
-                processes=factor_processes(config))
+                processes=factor_processes(config), interpolation=type_schemes(config.params))
+
+
+def type_schemes(params):
+    """`{factor type: scheme}` - what a factor of each interpolated type is built under where no
+    `Price Factor Interpolation` rule names it: the section's default for the type, else the
+    engine's own fallback, the scheme `curve_interpolation` resolves such a curve to."""
+    return {kind: params['Price Factor Interpolation'].modeldefaults.get(kind)
+            or riskfactors.INTERPOLATION_DEFAULT for kind in mapping['Interpolation_factor_map']}
 
 
 def factor_processes(config):

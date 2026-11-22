@@ -233,6 +233,8 @@ export type DescribeResult = {
   factors: { resolved: string[]; missing: string[] };
   /** Each price factor the engine simulates, by the process it simulates it with. */
   processes: Record<string, string>;
+  /** Each interpolated factor type's scheme where no rule names one. */
+  interpolation: Record<string, string>;
   calculation: Record<string, unknown>;
   cost?: { class: number; estimate: number; basis: string };
 };
