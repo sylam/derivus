@@ -458,10 +458,11 @@ export function blockHint(doc: JobDoc, path: string[]): string | undefined {
 /** What a control does, as `GET /book/seat` keys its verdicts (`may`): an act the record files, as
  * the map in force keys it - a transition's a payment's `status_transition`, a confirmation's
  * `confirmed` or a collateral movement's `collateral` - a write of the market or of this box's
- * paths, `mark`, and `run`, a what-if on the book the queue admits. */
+ * paths, `mark`, and a run the queue admits: `run`, a what-if on the book, and a P&L read to now
+ * or explained. */
 export type Act = 'fill' | 'amendment' | 'quote_filed' | 'approval' | 'entity_declared'
   | 'agreement_declared' | 'official_close_declared' | 'status_transition' | 'confirmed'
-  | 'collateral' | 'mark' | 'run';
+  | 'collateral' | 'mark' | 'run' | 'pnl_to_now' | 'pnl_explain';
 
 /** What `GET /book/seat` answered for the seat on screen, null until it is read for that seat. */
 export const grantsRead = (state: AppState) => (state.grants?.asked === state.seat ? state.grants : null);
@@ -493,6 +494,12 @@ export const grantsOwed = (state: AppState): boolean =>
  * holding it from a what-if (`heldBack` of `run`). Null where it may be asked. */
 export const runHeld = (state: AppState, hold = heldBack(state, 'run')): string | null =>
   (grantsOwed(state) ? 'reading what this seat may do…' : hold);
+
+/** Why the seat may not read the P&L ending `end`, now where blank: the service's verdict on the
+ * run it is where it is one - explained, or to now - and null for a window between two marked days
+ * read plain, a read of the record. */
+export const pnlHeld = (state: AppState, end: string, explain: boolean): string | null =>
+  (explain ? heldBack(state, 'pnl_explain') : end ? null : heldBack(state, 'pnl_to_now'));
 
 /** Why the seat may not accept a quote that books at `node`, the book where it states none: an
  * acceptance files the quote and its fill, so it is held where either act is. */

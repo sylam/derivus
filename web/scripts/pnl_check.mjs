@@ -78,18 +78,10 @@ check('the P&L is asked on the wire with its query and the seat joined by one `&
       ['/book/pnl?actor=sales-1', '/book/pnl', '/book/pnl?start=2024-07-01&actor=sales-1',
        '/book/pnl?start=2024-07-01']);
 
-check("a read ending now, or explained, is a what-if's work, which the queue admits a seat to; a "
-      + 'window between two marked days read plain is a read of the record, asked of any seat',
-      'the explain dropped, which asks three valuations of a seat the queue refuses; or every '
-      + 'read taken for a what-if, which holds a struck window from a seat that may read it',
-      [pnl.revalues('', false), pnl.revalues('2024-07-02', true), pnl.revalues('', true),
-       pnl.revalues('2024-07-02', false)],
-      [true, true, true, false]);
-
 const DAYS = ['2024-06-28', '2024-07-01', '2024-07-02'].map((day) => ({ day, lsn: 1 }));
 const opens = (days, held) => {
   const window = pnl.opensOn(days, held);
-  return window && [window.start, window.end, pnl.revalues(window.end, false)];
+  return window && [window.start, window.end];
 };
 check('the page opens to now from the last marks for a seat that may ask a what-if; for a seat '
       + 'held from one it opens on the last two marked days, a window that asks none, and on no '
@@ -97,7 +89,7 @@ check('the page opens to now from the last marks for a seat that may ask a what-
       'the held seat still opened to now, which holds it from every window the page could show '
       + 'it; its window opened on the first two days marked; or one marked day read as a window',
       [opens(DAYS, false), opens(DAYS, true), opens(DAYS.slice(0, 1), true), opens([], true)],
-      [['', '', true], ['2024-07-01', '2024-07-02', false], null, null]);
+      [['', ''], ['2024-07-01', '2024-07-02'], null, null]);
 const HOLD = 'Needs validate: sales-9 holds it nowhere.';
 check('a held seat with no window is told, after the line holding it, that a P&L between two '
       + 'marked days is not held from it and reads once two are marked, beside the one that is',

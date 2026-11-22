@@ -670,6 +670,15 @@ check('a run the queue admits waits in its button\'s place while the seat\'s gra
        state.runHeld(seated(null, 'sales-1', { record: { spine: null } })),
        state.runHeld(seated(null), null), state.runHeld(mays(HELD_RUN), null)],
       [WAIT, WAIT, HOLD, null, null, WAIT, null]);
+const PNL = { pnl_to_now: { HARBOURLINE: HOLD }, pnl_explain: { HARBOURLINE: SAID.book } };
+check("a P&L read that is a run is held by the service's verdict on that run - explained, whatever "
+      + 'its window, or to now - and a window between two marked days read plain by none',
+      'the explain read as a read to now, which offers three valuations to a seat the service '
+      + 'holds from them; the two verdicts turned; or a struck window held as a run, which keeps a '
+      + 'seat from the read of the record it may make',
+      [state.pnlHeld(mays(PNL), '', false), state.pnlHeld(mays(PNL), '2024-07-02', true),
+       state.pnlHeld(mays(PNL), '', true), state.pnlHeld(mays(PNL), '2024-07-02', false)],
+      [HOLD, SAID.book, SAID.book, null]);
 const ROWS = [{ deal_path: '0', value: 5 }, { deal_path: '0/1', value: 2 }];
 const READ = { data: { mtm: 5, per_deal: [ROWS[0]], in_sets: [ROWS[1]] }, error: null,
                loading: false, clock: 'c' };

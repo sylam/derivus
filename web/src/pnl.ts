@@ -106,10 +106,6 @@ export function behind(end: string, readAt: string | undefined, now: string | un
   return !end && readAt !== undefined && now !== readAt;
 }
 
-/** Whether a P&L read is a what-if's work, which the queue admits a seat to: one ending now marks
- * the book as it stands, and an explain values it three times more. */
-export const revalues = (end: string, explain: boolean): boolean => !end || explain;
-
 /** The window the page opens on, a blank being the service's own - the last marks, to now: both
  * blank, and for a seat `held` from a read to now the last two of the marked `days`, which asks
  * no what-if - null where fewer than two are marked, when that seat has no window to read. */

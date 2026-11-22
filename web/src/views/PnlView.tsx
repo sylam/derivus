@@ -5,10 +5,10 @@ import { Amount, Gated, Stat } from '../components/Desk';
 import { EmptyState } from '../components/EmptyState';
 import {
   behind, explained, factorLabel, FIGURES, noPnl, noWindow, opensOn, pnlQuery, pnlRead,
-  positionLabel, residualShare, revalues, type Pnl,
+  positionLabel, residualShare, type Pnl,
 } from '../pnl';
 import {
-  grantsRead, heldBack, noPositions, readAs, runHeld, spineOf, useApp, useRead,
+  grantsRead, noPositions, pnlHeld, readAs, runHeld, spineOf, useApp, useRead,
 } from '../state';
 import { formatNumber } from '../tokens';
 import { entityText } from '../desk';
@@ -48,10 +48,10 @@ export function PnlView() {
   const paper = state.paper.data ?? NO_PAPER;
   // a what-if's work - a read to now, an explain - only of a seat that may ask one: a seat held
   // from it opens on the last two marked days, and reads no window where fewer are marked
-  const toNow = heldBack(state, 'run');
+  const toNow = pnlHeld(state, '', false);
   const opens = opensOn(days?.days ?? [], toNow !== null);
   const [from, to] = [start || opens?.start || '', end || opens?.end || ''];
-  const hold = revalues(to, explain) ? toNow : null;
+  const hold = pnlHeld(state, to, explain);
   // read again whenever the seat, the window or the scope moves, or the reader asks, with the
   // book it was read at
   const query = pnlQuery(from, to, scope, explain);
