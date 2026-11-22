@@ -19,6 +19,8 @@ export type Position = {
   clips: number;
   first_lsn: number;
   last_lsn: number;
+  /** The fill that booked it first: who filed it, where on the record and when it is true. */
+  booked: { actor: string; lsn: number; at: string };
   deal_paths: string[];
   reference: string | null;
   object: string | null;
@@ -153,10 +155,9 @@ export function statusText(held: Position[]): string {
   return pending && pending !== quantity ? `${read} · ${formatNumber(pending)} pending` : read;
 }
 
-/** Who booked `held`, each seat once: the actor of a position's first ticket, whoever filled it
- * or unwound it after. */
+/** Who booked `held`, each seat once, as the record names each position's first fill. */
 export const bookedBy = (held: Position[]): string[] =>
-  [...new Set(held.flatMap((row) => row.tickets.slice(0, 1).map((ticket) => ticket.actor)))];
+  [...new Set(held.map((row) => row.booked.actor))];
 
 /** What the record holds of a row as the blotter's five record columns: the net quantity - none
  * where nothing is held - the portfolios and the clients it sits under, what its tickets read, or

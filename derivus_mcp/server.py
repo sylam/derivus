@@ -1928,7 +1928,8 @@ def describe_agreements() -> dict:
 def book_positions(actor: str | None = None) -> dict:
     """The book's positions as the record holds them, one row per instrument under an agreement and
     a portfolio: the counterparty, the NET quantity in units of the deal - the fills summed, 1 being
-    the deal as written - the clips behind it, and `deal_paths` where the book file holds it, the
+    the deal as written - the clips behind it, `booked` the fill that booked it first (who, where on
+    the record, when; a restrike keeps it), and `deal_paths` where the book file holds it, the
     path `read_deal` and `amend_deal` take. The portfolio is a path whose top node is the book; the
     client is the counterparty, whose name and parent `describe_agreements` gives. A position closed
     to zero stands at a quantity of 0 where it sat, and one whose deal has expired stands until the

@@ -134,7 +134,7 @@ function Held({ position, paper }: { position: Position; paper: Paper }) {
                        Agreement: position.agreement,
                        Counterparty: clientName(paper.entities, position.counterparty),
                        Clips: position.clips,
-                       First_Fill: `LSN ${position.first_lsn}`,
+                       First_Fill: `LSN ${position.booked.lsn}`,
                        Last_Moved: `LSN ${position.last_lsn}`,
                        ...(position.expired
                          ? { Expired: position.expired, Settles: position.settles } : {}),

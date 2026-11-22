@@ -17,7 +17,7 @@ import {
 } from '../state';
 import { formatNumber, ungrouped } from '../tokens';
 import {
-  bookedBy, datesOf, favour, historyOf, judgedAt, legsOf, markOf, movedTerms, noMark, positionMark,
+  datesOf, favour, historyOf, judgedAt, legsOf, markOf, movedTerms, noMark, positionMark,
   tradeAt, tradeName, tradeSize, unwindAgainst, unwindFill, unwindWords, wholeRecord, type Price,
 } from '../trade';
 import type { QuoteGiven } from '../types';
@@ -75,7 +75,7 @@ export function TradeView() {
             <span className="mono">{trade.path}</span></span></h2>
         <Terms row={row} set={trade.set} units={recording ? units ?? null : undefined}
                quote={quote ?? undefined} />
-        <Origin recording={recording} held={held} history={history} quote={quote} />
+        <Origin recording={recording} held={held} quote={quote} />
         <Worth path={trade.path} reference={row.reference} legs={row.children.length}
                shut={closed(units)} />
         <History recording={recording} history={history} deal={row.deal} />
@@ -172,18 +172,20 @@ const CHIP: Record<string, string> = { approved: 'done', pending: 'running', rej
  * and where the desk records, who booked it and when, and every clip with what its ticket reads -
  * the tier it fell in, while pending what it waits on, and each check it fell past, a line each, in
  * the service's words. */
-function Origin({ recording, held, history, quote }: {
-  recording: boolean; held: Position[]; history: History; quote: QuoteGiven | null | undefined;
+function Origin({ recording, held, quote }: {
+  recording: boolean; held: Position[]; quote: QuoteGiven | null | undefined;
 }) {
   const { state } = useApp();
   const [showing, setShowing] = useState(false);
   const read = useQuotes(showing && quote ? [quote.quote_id] : []);
   const pending = quote && read.data?.[quote.quote_id];
-  const booked = history.data ? bookedBy(history.data) : undefined;
+  // the trade's first fill: the earliest of those its positions name as booking each
+  const [booked] = held.map((position) => position.booked).sort((a, b) => a.lsn - b.lsn);
   const tickets: Ticket[] = held.flatMap((position) => position.tickets)
     .sort((a, b) => a.fill - b.fill);
   // what stands where no fill is read, and the quote's line, said once where the two are one
-  const unbooked = unread(history) ?? noneShown(state, 'no fill on the record opens this trade');
+  const unbooked = unread(state.paper)
+    ?? noneShown(state, 'no fill on the record opens this trade');
   const unquoted = noneShown(state, 'No quote this desk gave landed here');
   return (
     <section className="card">
@@ -195,7 +197,7 @@ function Origin({ recording, held, history, quote }: {
         ) : (
           <div className="ticketline">
             {booked ? (
-              <span>booked by <b>{booked.by}</b> at {stampText(booked.record_time)}, record
+              <span>booked by <b>{booked.actor}</b> at {stampText(booked.at)}, record
                 position {booked.lsn}</span>
             ) : <span className="hint">{unbooked}</span>}
           </div>
@@ -216,7 +218,7 @@ function Origin({ recording, held, history, quote }: {
         {showing && (read.error ? <div className="error-box">{read.error}</div>
           : pending ? <TicketCard pending={pending} />
             : <div className="hint">reading its ticket…</div>)}
-        {!recording ? null : tickets.length > 0 ? (
+        {recording && tickets.length > 0 && (
           <div className="tablewrap">
             <table className="data desk">
               <thead>
@@ -251,7 +253,7 @@ function Origin({ recording, held, history, quote }: {
               </tbody>
             </table>
           </div>
-        ) : booked && <div className="hint">{unread(state.paper) ?? `${noneShown(state)}.`}</div>}
+        )}
       </div>
     </section>
   );

@@ -133,9 +133,6 @@ check('a trade\'s history is its rows newest first, the read it came from left a
       'the rows left in the record\'s order, so the oldest act reads as the latest; or sorted in '
         + 'place, which reorders the page the next read merges onto',
       [history.map((row) => row.lsn), ROWS.map((row) => row.lsn)], [[33, 31, 24, 23], [23, 24, 31, 33]]);
-check('who booked it is its first fill on the record, never a later clip or the restrike',
-      'the newest fill taken, naming the seat that unwound it as the one that booked it',
-      trade.bookedBy(history)?.lsn, 24);
 
 // --- what a restrike moved
 const TERMS = { Instrument: { types: { FXForwardDeal: ['Fwd'] }, sections: { Fwd: {

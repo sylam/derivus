@@ -122,11 +122,6 @@ export function movedTerms(changed: Moved[], deal: Record<string, unknown>,
   });
 }
 
-/** Who booked the trade and when: its first fill on the record. A restrike signs the position's
- * ticket again, so the ticket names the last seat to touch it and never the first. */
-export const bookedBy = (history: ActivityRow[]): ActivityRow | undefined =>
-  history.filter((row) => row.event_type === 'fill').sort((a, b) => a.lsn - b.lsn)[0];
-
 /** The rows a trade's terms read as: its legs, or the deal itself where it has none. */
 export const legsOf = (row: BlotterRow): BlotterRow[] => (row.children.length ? row.children
   : [row]);

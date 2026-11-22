@@ -3,6 +3,11 @@
     "agreement": "CSA-0007",
     "amended_to": "e3d93128a1eb379ecf1ee4b60f87849d34b7e2d32abed682c918c42ead5a3201",
     "book": "FX-VANILLA",
+    "booked": {
+      "actor": "subject-desk-one",
+      "at": "2026-08-26T08:00:00.000000Z",
+      "lsn": 5
+    },
     "clips": 0,
     "counterparty": "LEI-5493001KJTIIGC8Y1R12",
     "first_lsn": 5,
@@ -16,6 +21,11 @@
     "agreement": "CSA-0007",
     "amended_to": null,
     "book": "FX-VANILLA",
+    "booked": {
+      "actor": "subject-desk-one",
+      "at": "2026-08-26T08:00:00.000000Z",
+      "lsn": 5
+    },
     "clips": 2,
     "counterparty": "LEI-5493001KJTIIGC8Y1R12",
     "first_lsn": 7,

@@ -1723,11 +1723,13 @@ def test_a_position_is_read_where_it_sits_and_where_the_file_holds_it(recorded, 
 def test_a_position_netted_to_nothing_reads_closed_where_it_sat(recorded, desk):
     """A cashflow booked at one and closed by a fill of minus one at its own node stands at
     1 + (-1) = 0 beside that node, the file still holding the deal and both clips behind it, so a
-    screen can say it closed. Terms restruck onto others are not a close: the new terms carry the
-    one unit and the old terms stand no more. Two rows, whole.
+    screen can say it closed. Terms another seat restrikes onto others are not a close: the new
+    terms carry the one unit and the old terms stand no more, the clip read under the restriker's
+    ticket and the position booked by the fill that opened it. Two rows, whole.
 
     Killing mutations: the standing filter read on quantity alone, which drops the closed row; the
-    fold read whole, which adds the restruck terms' row at nothing with no node.
+    fold read whole, which adds the restruck terms' row at nothing with no node; and a row an
+    amendment opens booked by the amendment, which names the restriker as who booked the trade.
     """
     document = json.loads(desk.read_text())
     document['Calc']['Deals']['Deals']['Children'].append(netting_set(CLIENT_SET, 'CPTY_A'))
@@ -1745,16 +1747,22 @@ def test_a_position_netted_to_nothing_reads_closed_where_it_sat(recorded, desk):
            execution_reference='EXEC-2')
     moved = booked(action='add', deal=dict(CASHFLOW, Reference='CF-MOVED', Amount=250_000.0),
                    parent_reference=CLIENT_SET, quantity=1.0, execution_reference='EXEC-3')
-    assert restruck(moved['deal_path'], Amount=300_000.0)['written'] is True
+    assert CLIENT.post('/book/deals', content=dump({
+        'action': 'amend', 'deal_path': moved['deal_path'], 'fields': {'Amount': 300_000.0},
+        'actor': DESK_TWO}), headers=JSON).json()['written'] is True
 
     rows = CLIENT.get('/book/positions').json()['positions']
     assert sorted(((row['reference'], row['quantity'], row['deal_paths']) for row in rows),
                   key=str) == [('CF-MOVED', 1.0, [moved['deal_path']]),
                                ('CF-SHUT', 0.0, [shut['deal_path']])]
+    assert sorted((row['reference'], row['booked']['actor'], row['booked']['lsn'],
+                   [clip['actor'] for clip in row['tickets']]) for row in rows) == [
+        ('CF-MOVED', ACTOR, moved['recorded']['lsn'], [DESK_TWO]),
+        ('CF-SHUT', ACTOR, shut['recorded']['lsn'], [ACTOR, ACTOR])]
     closed = next(row for row in rows if row['reference'] == 'CF-SHUT')
     assert closed['first_lsn'] < closed['last_lsn'] and len(closed['instrument']) == 64
     assert {key: value for key, value in closed.items()
-            if key not in ('instrument', 'first_lsn', 'last_lsn', 'tickets')} == {
+            if key not in ('instrument', 'first_lsn', 'last_lsn', 'tickets', 'booked')} == {
         'agreement': CLIENT_SET, 'portfolio': 'spine-desk', 'book': 'spine-desk',
         'counterparty': 'CPTY_A', 'quantity': 0.0, 'clips': 2, 'amended_to': None,
         'status': 'unticketed', 'pending': 0.0, 'expired': None, 'settles': None,

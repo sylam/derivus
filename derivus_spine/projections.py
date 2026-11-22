@@ -117,12 +117,13 @@ class Positions(Projector):
     restruck it, with the tier that routed it and the sentences of the tiers it fell past - every
     clip keeping the instrument and execution reference it was filled under, the key its
     confirmation is filed against, and the LSN of that fill: `{ticket, tier, fell_past, lsn, actor,
-    at, quantity, instrument, execution_reference, fill}`. So what a position reads is a fold and
-    no fill is reopened.
+    at, quantity, instrument, execution_reference, fill}`. `booked` is the fill that booked the
+    position first, `{actor, lsn, at}`, which an amendment carries with it. So what a position reads
+    is a fold and no fill is reopened.
     """
 
     name = 'positions'
-    version = 5
+    version = 6
     reads = ('fill', 'amendment')
 
     def initial(self):
@@ -982,14 +983,21 @@ def _stand(under, name, frame, row):
 
 def _position(state, instrument, agreement, portfolio, frame, moved=None):
     """The positions row under `(instrument, agreement, portfolio)`, opened at this frame where none
-    stands. A row an amendment opens carries the book and counterparty of the row `moved` onto it."""
+    stands, a fill booking it. A row an amendment opens carries the book, the counterparty and the
+    fill that booked the row `moved` onto it."""
     under = state.setdefault(instrument, {}).setdefault(agreement, {})
     if portfolio not in under:
         under[portfolio] = {'book': frame['book'] if moved is None else moved['book'],
                             'counterparty': None if moved is None else moved['counterparty'],
+                            'booked': _filed(frame) if moved is None else moved['booked'],
                             'quantity': 0.0, 'clips': 0, 'amended_to': None,
                             'first_lsn': frame['lsn'], 'last_lsn': frame['lsn'], 'tickets': []}
     return under[portfolio]
+
+
+def _filed(frame):
+    """Where `frame` sits on the record, who filed it and when it is true: `{lsn, actor, at}`."""
+    return {'lsn': frame['lsn'], 'actor': frame['actor'], 'at': as_of_key(frame)[0]}
 
 
 def _ticketed(frame, body, clip):
@@ -997,8 +1005,7 @@ def _ticketed(frame, body, clip):
     carries, the tier it fell in and the sentences it fell past, who filed that and when it is
     true."""
     return dict(clip, ticket=body.get('ticket'), tier=body.get('tier'),
-                fell_past=body.get('fell_past'), lsn=frame['lsn'], actor=frame['actor'],
-                at=as_of_key(frame)[0])
+                fell_past=body.get('fell_past'), **_filed(frame))
 
 
 def _cost_row(state, instrument, agreement, portfolio):

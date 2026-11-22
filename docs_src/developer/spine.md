@@ -1014,8 +1014,13 @@ declared terms, and every compile writes the terms standing at its LSN over it
 
 `portfolio_declared` is judged at its parent. Once any node of a book stands, a fill books into the
 book or a declared node. `GET /book/positions` answers each standing position beside the file's
-nodes, an expired one until it settles and one netted to nothing at a quantity of nothing. A seat with grants at nodes reads only the rows under them
-(`spine.visible`), totals summed over those - presentation while one class key opens every body.
+nodes, an expired one until it settles and one netted to nothing at a quantity of nothing. Each
+names the fill that booked it first (`booked`, which a restrike carries onto the new terms), the
+one owner of who booked a trade: the Blotter's "Booked by" and its own-trades filter
+(`bookedBy` in `web/src/positions.ts`), the trade's page and a position's first fill read it, and
+never a ticket's seat, which a restrike signs again. A seat with grants at nodes reads only the
+rows under them (`spine.visible`), totals summed over those - presentation while one class key
+opens every body.
 A client's pending quote is shown the same way, by the `portfolio` it books under, a quote being
 confidential to those who need it (FX Global Code, Principle 19): `GET /book/quotes` lists, and
 `GET /book/quote/{id}` and its sheet answer, the quotes under the seat's nodes and the quotes the
@@ -1038,7 +1043,8 @@ the desk makes or gives up against it at the price (`unwindAgainst`), or why no 
 `::test_a_seat_is_shown_the_quotes_booking_under_the_nodes_it_acts_at`,
 `::test_a_seat_is_shown_the_quotes_it_gave`,
 `::test_a_token_s_seat_is_shown_the_quotes_it_gave`,
-`web/scripts/desk_check.mjs`, `web/scripts/trade_check.mjs`.
+`::test_a_position_netted_to_nothing_reads_closed_where_it_sat`,
+`web/scripts/desk_check.mjs`, `web/scripts/trade_check.mjs`, `web/scripts/positions_check.mjs`.
 
 **The take-on.** A deal the book file holds that nobody booked - a book written before its record,
 or landed by another system - prices as written, one unit, outside the positions, the marks and

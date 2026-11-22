@@ -2693,7 +2693,8 @@ def sighted(document, sight, verb=None, rows=None):
 def book_positions(actor: str = None):
     """`{positions}` - every position standing on the record at its head, as the fold keys it:
     the instrument, the agreement and the portfolio it sits under, its counterparty, the NET
-    quantity in units of the instrument and the clips behind it.
+    quantity in units of the instrument and the clips behind it, and `booked`, the fill that booked
+    it first - `{actor, lsn, at}` - which a restrike carries onto the terms it moves it to.
 
     Beside each, where the book FILE holds it: `deal_paths` are the nodes carrying that instrument
     under that agreement's set - the first the one the book prices at the net, any later one a
