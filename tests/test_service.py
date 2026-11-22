@@ -6000,8 +6000,11 @@ def test_the_consolidated_risk_writes_nothing_on_the_document_it_values(tmp_path
         read = CLIENT.get('/book/risk').json()
     finally:
         service.BOOK = None
-    assert answer['quotes'] and {key: value for key, value in read.items() if key not in (
-        'as_of', 'etag')} == {key: value for key, value in answer.items() if key != 'as_of'}
+    # no home holds no position, so the route's own rows are none
+    shown = {key: value for key, value in read.items()
+             if key not in ('as_of', 'etag', 'per_position')}
+    assert read['per_position'] == [] and answer['quotes'] and shown == {
+        key: value for key, value in answer.items() if key != 'as_of'}
 
 
 def cold_read(path):
