@@ -57,13 +57,14 @@ export function reconciledAs(reconcile: Reconcile | null): string | null {
   ]);
 }
 
-/** What this client holds of the record: where the file stands, the strip as it has been merged,
- * the reconcile answer with the head and file it was read at (`reconcileAt`), and the one worklist
- * every screen counts from with the head and seat it was read at (`worklistAt`) or the read's refusal.
+/** What this client holds of the record: where the file stands, the strip as it has been merged -
+ * null until its first page is read - the reconcile answer with the head and file it was read
+ * at (`reconcileAt`), and the one worklist every screen counts from with the head and seat it was
+ * read at (`worklistAt`) or the read's refusal.
  * The two transitions below are the whole of what a beat can do to it. */
 export type RecordHeld = {
   spine: SpineBlock | null;
-  rows: ActivityRow[];
+  rows: ActivityRow[] | null;
   reconcile: Reconcile | null;
   reconciledAt: string | null;
   worklist: Worklist | null;
@@ -158,17 +159,18 @@ export function divergences(reconcile: Reconcile): Divergence[] {
   ];
 }
 
-/** `held` with `page` merged into it: LSN order, no row twice, the newest `cap` kept.
+/** `held` with `page` merged into it: LSN order, no row twice, the newest `cap` kept; `held` null
+ * until a first page is read, so a record not read yet is not one holding none.
  *
  * A page is what came after the `since` the client held, but a restarted service, a reconnect or
  * a cursor answered off a fold that moved can repeat one, so the merge is keyed by LSN rather
  * than trusting the cursor. Never mutates the rows it was handed, and a page carrying nothing
- * answers the rows THEMSELVES - most beats of a poll bring no event, and a new array for each
+ * answers the rows held THEMSELVES - most beats of a poll bring no event, and a new array for each
  * would repaint a desk that nothing happened to. */
-export function mergeActivity(held: ActivityRow[], page: ActivityPage | null,
-                              cap: number = STRIP_ROWS): ActivityRow[] {
-  if (page === null || page.rows.length === 0) return held;
-  const byLsn = new Map(held.map((row) => [row.lsn, row]));
+export function mergeActivity(held: ActivityRow[] | null, page: ActivityPage | null,
+                              cap: number = STRIP_ROWS): ActivityRow[] | null {
+  if (page === null || (page.rows.length === 0 && held !== null)) return held;
+  const byLsn = new Map((held ?? []).map((row) => [row.lsn, row]));
   for (const row of page.rows) byLsn.set(row.lsn, row);
   return [...byLsn.values()].sort((a, b) => a.lsn - b.lsn).slice(-cap);
 }

@@ -4,7 +4,7 @@ import {
   GROUPINGS, NO_PAPER, POSITION, byId, byPath, clientName, clientTree, closed, nodeAt,
   portfolioTree, type Paper, type Position,
 } from '../positions';
-import { openTrade, spineOf, useApp } from '../state';
+import { openTrade, spineOf, unread, useApp } from '../state';
 import { tradeAt } from '../trade';
 import type { DealNode, Descriptor } from '../types';
 import { DealEditor } from '../components/Desk';
@@ -65,11 +65,8 @@ export function PortfolioView() {
             ))}
           </div>
         )}
-        {grouping !== 'book' && state.paper.error && (
-          <div className="empty">the record did not answer: {state.paper.error}</div>
-        )}
-        {grouping !== 'book' && !state.paper.data && state.paper.loading && (
-          <div className="empty">reading the record…</div>
+        {grouping !== 'book' && unread(state.paper) && (
+          <div className="empty">{unread(state.paper)}</div>
         )}
         <Tree
           id={`portfolio.${grouping}`}

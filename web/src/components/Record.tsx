@@ -6,7 +6,7 @@ import {
   WAITING, divergences, reconcileAt, reconcileVerdict, wantsReconcile, wantsWorklist, worklistAt,
   worklistLine,
 } from '../spine';
-import { noneShown, opened, spineOf, useApp } from '../state';
+import { noneShown, opened, spineOf, unread, useApp } from '../state';
 import type { Reconcile } from '../types';
 
 /** Where the book FILE stands against the record, in the app frame beside the book's own header.
@@ -170,7 +170,7 @@ export function ActivityStrip() {
   const [open, setOpen] = useState(false);
   if (spineOf(state) === null) return null;
 
-  const rows = [...state.record.rows].reverse();
+  const rows = [...state.record.rows ?? []].reverse();
   const newest = rows[0];
 
   return (
@@ -183,7 +183,8 @@ export function ActivityStrip() {
           <b className="mono">LSN {newest.lsn}</b> {newest.by}: {newest.summary}
           {' · '}{stampText(newest.record_time)}
         </span>
-      ) : <span>{noneShown(state, 'nothing has been recorded here yet')}</span>}
+      ) : <span>{unread({ data: state.record.rows })
+        ?? noneShown(state, 'nothing has been recorded here yet')}</span>}
       <span className="spacer" />
       {newest && <span className="mono">{rows.length} rows held</span>}
       {open && (

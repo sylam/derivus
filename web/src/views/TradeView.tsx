@@ -12,7 +12,7 @@ import {
 import { clientText, quoteAt, verdictOf, type Verdict } from '../quote';
 import { pinnedAt } from '../spine';
 import {
-  bookRisk, clockOf, heldBack, marketOf, noneShown, riskNow, spineOf, useApp, useQuoteList,
+  bookRisk, clockOf, heldBack, marketOf, noneShown, riskNow, spineOf, unread, useApp, useQuoteList,
   useQuotes, useRead, written,
 } from '../state';
 import { formatNumber, ungrouped } from '../tokens';
@@ -20,19 +20,20 @@ import {
   bookedBy, datesOf, favour, historyOf, judgedAt, legsOf, markOf, movedTerms, noMark, tradeAt,
   tradeName, tradeSize, unwindAgainst, unwindFill, unwindWords, wholeRecord, type Price,
 } from '../trade';
-import type { ActivityRow, QuoteGiven } from '../types';
+import type { QuoteGiven } from '../types';
 import { Back, DealEditor, OnStrip, Side, Stat, Value } from '../components/Desk';
 import { CreditCharge, TicketCard } from '../components/TicketCard';
 
 /** One trade's rows on the record, newest first, asked for by its path where the desk keeps one
- * and again whenever the record moves - the service's own sentence where the read is refused -
- * and null until the read of this path lands. */
+ * and again whenever the record moves, as a read (`unread`): the service's own sentence where it
+ * is refused, and no rows until the read of this path lands. */
 function useHistory(path: string | undefined, recording: boolean, at: string | null) {
   const read = useRead(recording && path !== undefined ? async () => ({ path, rows: historyOf(
     await wholeRecord((since) => getBookActivity(since, { deal_path: path }))) }) : null,
   [path, recording, at]);
-  return read.error ?? (read.data && read.data.path === path ? read.data.rows : null);
+  return { error: read.error, data: read.data && read.data.path === path ? read.data.rows : null };
 }
+type History = ReturnType<typeof useHistory>;
 
 /** One trade on one page: what it is in the market's words, where it came from, what it is
  * worth, what happened to it on the record, and the amendment and the unwind - each part saying
@@ -111,7 +112,7 @@ function Terms({ row, set, units, quote }: {
           )}
           {units !== undefined && (
             <span title="the net of every fill, in units of the trade as written">
-              {units === null ? <>{noneShown(state)}: its sizes are as written</>
+              {units === null ? unread(state.paper) ?? <>{noneShown(state)}: its sizes are as written</>
                 : shut ? <><b>closed</b>: netted to nothing, its sizes are as written</>
                 : <>held <b>{formatNumber(units)}</b> of the trade as written</>}
             </span>
@@ -172,20 +173,17 @@ const CHIP: Record<string, string> = { approved: 'done', pending: 'running', rej
  * the tier it fell in, while pending what it waits on, and each check it fell past, a line each, in
  * the service's words. */
 function Origin({ recording, held, history, quote }: {
-  recording: boolean; held: Position[]; history: ActivityRow[] | string | null;
-  quote: QuoteGiven | null | undefined;
+  recording: boolean; held: Position[]; history: History; quote: QuoteGiven | null | undefined;
 }) {
   const { state } = useApp();
   const [showing, setShowing] = useState(false);
   const read = useQuotes(showing && quote ? [quote.quote_id] : []);
   const pending = quote && read.data?.[quote.quote_id];
-  const booked = Array.isArray(history) ? bookedBy(history) : undefined;
+  const booked = history.data ? bookedBy(history.data) : undefined;
   const tickets: Ticket[] = held.flatMap((position) => position.tickets)
     .sort((a, b) => a.fill - b.fill);
   // what stands where no fill is read, and the quote's line, said once where the two are one
-  const unbooked = typeof history === 'string' ? `the record did not answer: ${history}`
-    : history === null ? 'reading the record…'
-      : noneShown(state, 'no fill on the record opens this trade');
+  const unbooked = unread(history) ?? noneShown(state, 'no fill on the record opens this trade');
   const unquoted = noneShown(state, 'No quote this desk gave landed here');
   return (
     <section className="card">
@@ -253,7 +251,7 @@ function Origin({ recording, held, history, quote }: {
               </tbody>
             </table>
           </div>
-        ) : booked && <div className="hint">{noneShown(state)}.</div>}
+        ) : booked && <div className="hint">{unread(state.paper) ?? `${noneShown(state)}.`}</div>}
       </div>
     </section>
   );
@@ -314,7 +312,7 @@ function Worth({ path, reference, legs, shut }: {
 
 /** What happened to the trade, newest first, as the record tells it: who did what and when. */
 function History({ recording, history, deal }: {
-  recording: boolean; history: ActivityRow[] | string | null; deal: Record<string, unknown>;
+  recording: boolean; history: History; deal: Record<string, unknown>;
 }) {
   const { state } = useApp();
   const { schema } = state;
@@ -325,12 +323,11 @@ function History({ recording, history, deal }: {
         {!recording ? (
           <div className="note">This desk keeps no record: nothing says who booked or changed
             this trade.</div>
-        ) : typeof history === 'string' ? <div className="error-box">{history}</div>
-          : history === null ? <div className="hint">reading the record…</div> : (
+        ) : !history.data ? <div className={history.error ? 'error-box' : 'hint'}>{unread(history)}</div> : (
           <div className="tablewrap">
             <table className="data desk">
               <tbody>
-                {history.map((row) => (
+                {history.data.map((row) => (
                   <tr key={row.lsn}>
                     <td className="n mono">{row.lsn}</td>
                     <td>{stampText(row.record_time)}</td>
@@ -352,7 +349,7 @@ function History({ recording, history, deal }: {
                     </td>
                   </tr>
                 ))}
-                {!history.length && (
+                {!history.data.length && (
                   <tr><td className="hint">
                     {noneShown(state, 'nothing on the record opens this trade')}.</td></tr>
                 )}
@@ -410,8 +407,8 @@ function Actions({ row, held, recording }: {
             : <Unwind key={key} row={row} position={position} net={netOf(held)}
                       onVerdict={setVerdict} />;
         }) : hold ? <div className="note">{hold}</div> : (
-          <div className="note">{held.length ? 'Closed: the record holds none of it'
-            : noneShown(state)}, so there is nothing to unwind.</div>
+          <div className="note">{unread(state.paper) ?? `${held.length
+            ? 'Closed: the record holds none of it' : noneShown(state)}, so there is nothing to unwind.`}</div>
         )}
         {verdict && (verdict.booked ? (
           <>

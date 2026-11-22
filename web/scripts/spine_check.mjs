@@ -104,6 +104,13 @@ check('a page carrying nothing leaves the strip itself standing',
       + 'of a poll bring no event, so the desk would repaint every two seconds for nothing',
       [spine.mergeActivity(HELD, null) === HELD,
        spine.mergeActivity(HELD, { lsn: 20, rows: [] }) === HELD], [true, true]);
+check('the strip holds nothing until its first page is read, and a first page carrying nothing is '
+      + 'a record read and holding none',
+      'the first empty page left as nothing read, which says the record is being read forever on '
+      + 'a desk where nothing is recorded yet; or no read taken as none, which tells a desk on a slow '
+      + 'first load that nothing has been recorded',
+      [spine.mergeActivity(null, null), spine.mergeActivity(null, { lsn: 0, rows: [] }),
+       lsns(spine.mergeActivity(null, PAGE))], [null, [], [21, 22]]);
 check('the pin reads as one comparable value, and no record as none',
       'the counts left out of it, after which a record moving past a standing pin is the same '
       + 'state and the banner never appears',

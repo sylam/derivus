@@ -9,7 +9,7 @@ import {
   GROUPINGS, NO_PAPER, POSITION, bookedBy, byId, byPath, clientTree, closed, heldColumns,
   portfolioTree, type Paper, type Position,
 } from '../positions';
-import { actingSeat, marketOf, openTrade, riskNow, spineOf, useApp } from '../state';
+import { actingSeat, marketOf, openTrade, riskNow, spineOf, unread, useApp } from '../state';
 import { formatNumber } from '../tokens';
 import { markShown } from '../trade';
 import type { Market, Schema } from '../types';
@@ -182,8 +182,9 @@ export function BlotterView() {
               ))}
               {rows.length === 0 && (
                 <tr><td colSpan={heads.length + 1} className="hint">
-                  {mine && seat ? `${seat} booked nothing${horizon === null ? ''
-                    : ' that rolls off in this window'}.` : 'nothing rolls off in this window.'}
+                  {(recording && unread(state.paper)) || (mine && seat ? `${seat} booked nothing${
+                    horizon === null ? '' : ' that rolls off in this window'}.`
+                    : 'nothing rolls off in this window.')}
                 </td></tr>
               )}
             </tbody>

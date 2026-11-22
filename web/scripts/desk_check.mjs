@@ -578,6 +578,15 @@ check("a seat shown the whole book is told each place's own sentence - no fill o
        state.noneShown(seated({ book: ['HARBOURLINE/FX'] }, 'sales-9'), NO_QUOTE)],
       [YET, YET, 'sales-9 is shown none of it, seeing only what sits under HARBOURLINE/FX',
        NO_QUOTE, 'sales-9 is shown none of it, seeing only what sits under HARBOURLINE/FX']);
+check('a read of the record not answered yet is said as being read and a refused one in its '
+      + 'words, never as holding none; one answered, empty or not, leaves the place its own line',
+      'the unread read let through as answered, which tells a trade on a slow first load that the '
+      + 'record holds none of it and there is nothing to unwind; or a refusal said as being read',
+      [state.unread({ data: null, error: null }), state.unread({ data: null }),
+       state.unread({ data: null, error: 'refused' }), state.unread({ data: [], error: null }),
+       state.unread({ data: { positions: [] } })],
+      ['reading the record…', 'reading the record…', 'the record did not answer: refused', null,
+       null]);
 
 const DONE = "Every client's sets have a run that is done";
 check('an XVA table with nothing to act on says every run is done, and on a desk that records '

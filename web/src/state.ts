@@ -109,7 +109,7 @@ export const IDLE_MARKET: Fetched<BookMarket> = NOTHING_FETCHED;
 export const IDLE_PATHS: Fetched<PathsAnswer> = NOTHING_FETCHED;
 export const IDLE_PAPER: Fetched<Paper> = NOTHING_FETCHED;
 export const NO_RECORD: RecordState = {
-  spine: null, rows: [], reconcile: null, reconciledAt: null, worklist: null, worklistAt: null,
+  spine: null, rows: null, reconcile: null, reconciledAt: null, worklist: null, worklistAt: null,
   worklistError: null,
 };
 
@@ -536,10 +536,18 @@ export function riskNow(state: AppState) {
 export const actingSeat = (state: AppState): string =>
   grantsRead(state)?.read?.seat || state.seat;
 
-/** What a seat shown nothing of a thing on the record is told - no position in a trade, no row of
- * its history or of the record's strip - the record showing a seat what sits under the nodes it
- * holds a grant at: `whole`, that the record holds none, where it is shown the whole book - a node
- * at or above it, or no grants read - and else that the seat is shown none, with what it sees. */
+/** What a screen says in place of what a read of the record holds - the positions, a trade's rows,
+ * the strip - until it answers: that the record did not answer, in its words, or that it is being
+ * read; null once it has, where what it holds is said, or that it holds none (`noneShown`). */
+export const unread = (read: { data: unknown; error?: string | null }): string | null =>
+  (read.error ? `the record did not answer: ${read.error}`
+    : read.data === null ? 'reading the record…' : null);
+
+/** What a seat shown nothing of a thing on the record is told, once the read answered (`unread`) -
+ * no position in a trade, no row of its history or of the record's strip - the record showing a
+ * seat what sits under the nodes it holds a grant at: `whole`, that the record holds none, where it
+ * is shown the whole book - a node at or above it, or no grants read - and else that the seat is
+ * shown none, with what it sees. */
 export function noneShown(state: AppState, whole = 'The record holds none of it now'): string {
   const read = grantsRead(state)?.read;
   const book = String(state.doc?.Calc.Deals.Reference ?? '');
