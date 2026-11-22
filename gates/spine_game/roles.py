@@ -35,7 +35,6 @@ import asyncio
 import contextlib
 import io
 import json
-import time
 from pathlib import Path
 
 from derivus import spine as seam
@@ -262,17 +261,6 @@ class Table:
     def read(self, fold):
         """`fold(log)` over the hub's home, on a handle this closes."""
         return seam.folded(fold)
-
-    def settled(self, result_id):
-        """The run at `result_id` once it stops moving - the binding's summary, replay tuple
-        included."""
-        deadline = time.monotonic() + WAIT_SECONDS
-        while time.monotonic() < deadline:
-            ran = binding.poll_result(result_id)
-            if ran['status'] not in ('queued', 'running'):
-                return ran
-            time.sleep(0.25)
-        raise AssertionError('{} was still running after {:.0f}s'.format(result_id, WAIT_SECONDS))
 
     def work(self, seat, listed):
         """The rows of the `listed` list of `seat`'s worklist, the read recorded."""
@@ -501,9 +489,8 @@ def close_and_mark(day):
 
 def mark(table, day):
     """Product control: mark the book at the close standing on `day` - the standing run every P&L
-    of the day reads - and wait for it."""
-    marking = binding.mark_book(actor=PRODUCT_CONTROL)
-    ran = table.settled(marking['result_id'])
+    of the day reads - which the tool waits for."""
+    ran = asyncio.run(binding.mark_book(actor=PRODUCT_CONTROL, wait_seconds=WAIT_SECONDS))
     table.did(PRODUCT_CONTROL, 'mark_book ' + day, lane=STANDING, replay=ran, status=ran['status'])
 
 

@@ -11,7 +11,7 @@ importing the engine pulls torch into a process that only speaks HTTP.
 | `derivus_mcp/server.py` | the tools, prompts and resources on `MCP`, the host-facing `INSTRUCTIONS` and `RECORD`, `main` (stdio) |
 | `Service`, `configure` | the HTTP client; `session` is the transport seam a test drives in process |
 | `_await_result` | the poll loop every waiting tool rides, reporting progress on each poll |
-| `_summary`, `_booking` | a run trimmed to its replay tuple and table shapes; a booking answer to that booking |
+| `_summary`, `_booking` | a run trimmed to its replay tuple and table shapes, or to the job's own outcome a `stat` names; a booking answer to that booking |
 | `derivus/service.py` | the endpoints, and `Metronome` behind `--tick` |
 
 Tests named below are in `tests/test_mcp.py` unless another module is given; they drive the tool
@@ -79,7 +79,7 @@ structure takes it as `name`. **Held by**
 | `approve_ticket`, `reject_ticket`, `approve_quote`, `reject_quote` | `POST /book/approve`, `/book/reject`: a second seat's verdict |
 | `worklist` | `GET /book/worklist`: what waits on the seat asking |
 | `describe_seat` | `GET /book/seat`: the nodes the seat asking holds each verb at, and the verb each act demands under the map in force |
-| `poll_result`, `fetch_table`, `deal_values` | `GET /results/{id}[/{table}]`: status and shapes; one capped page; `{reference: value}` |
+| `poll_result`, `fetch_table`, `deal_values` | `GET /results/{id}[/{table}]`: status and shapes, or the outcome a `stat` names; one capped page; `{reference: value}` |
 | `update_market_quotes`, `patch_market_values`, `retire_market_overrides` | `POST /book/market`: quote blocks ticked and bootstrapped; values patched; the block's own entries retired, the file's standing again |
 | `configure_book` | `POST /book/configure`: one bootstrap dial, the market re-bootstrapped |
 | `describe_curve`, `configure_curve` | `GET`/`POST /book/curve`: curves as definitions; a curve authored from its rows |
@@ -273,13 +273,22 @@ A desktop host cuts a call that stays quiet for about a minute and resets that c
 progress notification, and several runs take minutes. So each tool that sits on a run
 (`price_candidate`, `xva_increment`, `execute_book`, `run_calculation`, `solve_deal`,
 `solve_structure`, `recalc_xva`, `calibrate_spot_model`, `tick_market_from_bloomberg`,
-`verify_securities`, `setup_market`) is `async`, threads its blocking calls, and waits in `_await_result`, which reports
-the seconds waited, the `wait_seconds` and the run's own `progress` note on every poll: a quarter
-second apart for two seconds, then a second. `ctx` never appears in a schema, since a host would try
-to fill it. Past `wait_seconds` the answer is `{result_id, status, hint}` and the run carries on.
-**Held by** `test_every_waiting_tool_is_async_and_takes_the_context` (its list omits
-`run_calculation`), `test_no_tool_advertises_the_context_the_sdk_injects`,
-`test_a_waiting_tool_notifies_the_host_the_whole_time_it_waits`.
+`verify_securities`, `setup_market`, `mark_book`) is `async`, threads its blocking calls, and
+waits in `_await_result`, which reports the seconds waited, the `wait_seconds` and the run's own
+`progress` note on every poll: a quarter second apart for two seconds, then a second. `ctx` never
+appears in a schema, since a host would try to fill it. A settled run answers as
+`poll_result(result_id, stat)` reads it: a tool whose answer is its job's own outcome names that
+outcome's `stat` (`Increment`, `Solved`, `Quote`, `Setup`, `Bloomberg`, `Securities`,
+`SpotModel`) and answers it with `result_id` and `status` beside it, every other the run's
+summary. Past `wait_seconds` the answer is `{result_id, status, hint}`, the hint naming that
+`poll_result` call, and the run carries on. **Held by**
+`test_every_waiting_tool_is_async_and_takes_the_context` (its list omits `run_calculation`),
+`test_no_tool_advertises_the_context_the_sdk_injects`,
+`test_a_waiting_tool_notifies_the_host_the_whole_time_it_waits`,
+`test_a_margin_target_is_money_and_the_deal_records_what_was_charged`,
+`test_a_bloomberg_tick_returns_the_finished_payload`,
+`test_a_market_is_set_up_from_what_a_trade_needs`,
+`test_pnl.py::test_the_marking_tool_waits_for_the_marks_a_pnl_then_reads`.
 
 ### First use provisions the desk
 

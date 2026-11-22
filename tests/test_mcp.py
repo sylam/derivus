@@ -313,9 +313,10 @@ def test_a_desk_that_keeps_no_record_is_told_so_and_oriented_without_its_tools(
     for name in RECORD_TOOLS:
         tool = getattr(mcp_server, name)
         with pytest.raises(ToolError) as refusal:
-            tool(**{parameter.name: '2030-01-01'
-                    for parameter in inspect.signature(tool).parameters.values()
-                    if parameter.default is parameter.empty})
+            answer = tool(**{parameter.name: '2030-01-01'
+                             for parameter in inspect.signature(tool).parameters.values()
+                             if parameter.default is parameter.empty})
+            asyncio.run(answer) if inspect.iscoroutine(answer) else answer
         said = str(refusal.value)
         assert '404' in said and 0 < said.find('this desk keeps no record') < said.find(
             'DV_SPINE_HOME'), (name, said)
@@ -576,7 +577,7 @@ def test_the_fx_strike_axis_is_published_on_the_field_a_model_fills_in():
 #: The tools that sit on a run and therefore have to speak while they sit.
 WAITING = ('price_candidate', 'xva_increment', 'execute_book', 'solve_deal', 'solve_structure',
            'calibrate_spot_model', 'recalc_xva', 'tick_market_from_bloomberg',
-           'verify_securities', 'setup_market')
+           'verify_securities', 'setup_market', 'mark_book')
 
 
 def test_no_tool_advertises_the_context_the_sdk_injects():
@@ -804,7 +805,7 @@ def test_booking_a_deal_prices_it(book):
     assert mcp_server.read_deal('1')['deal']['Reference'] == 'CF2'
 
     run = asyncio.run(mcp_server.execute_book())
-    assert run['status'] == 'done' and run['waited'] is True
+    assert run['status'] == 'done'
     values = mcp_server.deal_values(run['result_id'])
     assert values['CF2'] == pytest.approx(BOOKED['Amount'] * SPOT * np.exp(-RATE * 2.0), rel=1e-3)
 
@@ -828,8 +829,8 @@ def test_the_increment_tool_answers_the_services_own_increment(tmp_path, monkeyp
             {'deal': SHORT_CALL, 'parent_reference': 'NS_A', 'xva_increment': True}),
             headers=JSON).json()
         service.EXECUTOR.queue.join()
-        assert answer == CLIENT.get('/results/{}'.format(
-            submitted['result_id'])).json()['stats']['Increment']
+        assert answer == dict(CLIENT.get('/results/{}'.format(submitted['result_id'])).json()[
+            'stats']['Increment'], result_id=submitted['result_id'], status='done')
         assert answer['cva']['increment'] > 0.0 and path.read_bytes() == before
     finally:
         service.BOOK = None
@@ -881,8 +882,8 @@ def test_the_increment_tool_asks_of_a_trade_the_book_holds_by_its_path(tmp_path,
         submitted = CLIENT.post('/book/price', content=dump(
             {'deal_path': '0/0', 'xva_increment': True}), headers=JSON).json()
         service.EXECUTOR.queue.join()
-        assert answer == CLIENT.get('/results/{}'.format(
-            submitted['result_id'])).json()['stats']['Increment']
+        assert answer == dict(CLIENT.get('/results/{}'.format(submitted['result_id'])).json()[
+            'stats']['Increment'], result_id=submitted['result_id'], status='done')
         assert answer['cva']['with'] == answer['cva']['increment'] > 0.0 == answer['cva']['without']
         with pytest.raises(Exception, match="holds 'OPT_A', not 'OPT_Z'"):
             asyncio.run(mcp_server.xva_increment(deal_path='0/0', reference='OPT_Z'))
@@ -920,16 +921,18 @@ def test_a_margin_target_is_money_and_the_deal_records_what_was_charged(book):
     This book reports DOLLARS and carries a rand rate, so `{'amount': 50000, 'currency': 'ZAR'}`
     crosses at the book's own spot and the deal is solved to mark there - the desk's own side of
     the ticket, at PLUS the margin. What comes back records the charge as agreed, and books with
-    it: the field is on every deal, a margin being a property of the ticket.
+    it: the field is on every deal, a margin being a property of the ticket. The run read back by
+    its id and the outcome the tool answers with is the same answer.
 
-    Killing mutation: the solved value left off the solved deal, which books the trial amount.
+    Killing mutations: the solved value left off the solved deal, which books the trial amount;
+    `poll_result` dropping the `stat` it takes, which reads the run back without its deal.
     """
-    outcome = asyncio.run(mcp_server.solve_deal(
+    solved = asyncio.run(mcp_server.solve_deal(
         json.loads(dump(dict(BOOKED, Reference='SLV2'))), 'Amount',
         target={'amount': 50_000.0, 'currency': 'ZAR'}))
-    solved = outcome['stats']['Solved']
 
-    assert outcome['status'] == 'done' and abs(solved['residual']) <= 0.01
+    assert solved['status'] == 'done' and abs(solved['residual']) <= 0.01
+    assert mcp_server.poll_result(solved['result_id'], 'Solved') == solved
     assert solved['deal']['Amount'] == solved['value']
     assert solved['margin'] == {'amount': 50_000.0, 'currency': 'ZAR',
                                 'pricing_currency': 'USD', 'value': 50_000.0 * SPOT}
@@ -962,9 +965,9 @@ def test_the_practical_loop_quotes_to_a_booked_structure(tmp_path):
         option = json.loads(dump(FX_OPTION))
         outcome = asyncio.run(mcp_server.solve_deal(option, 'Strike_Price', target=500_000.0,
                                                     bounds=[12.0, 30.0]))
-        assert outcome['status'] == 'done' and abs(outcome['stats']['Solved']['residual']) <= 0.01
+        assert outcome['status'] == 'done' and abs(outcome['residual']) <= 0.01
 
-        booked = mcp_server.book_deal(outcome['stats']['Solved']['deal'])
+        booked = mcp_server.book_deal(outcome['deal'])
         run = asyncio.run(mcp_server.execute_book())
         assert booked['written'] is True
         assert mcp_server.deal_values(run['result_id'])['OPT1'] == pytest.approx(
@@ -1802,19 +1805,20 @@ class Watching:
 
 
 def test_a_bloomberg_tick_returns_the_finished_payload():
-    """A run that is already done comes back verbatim - a provisioning answer is what installed
-    and what was refused, not a shape summary - and the None arguments never reach the wire.
+    """A run that is already done comes back as the job's own outcome - a provisioning answer is
+    what installed and what was refused, not a shape summary - with the id and the status beside
+    it, held against a REAL `/results` envelope; and the None arguments never reach the wire.
 
-    Killing mutation: the arguments nobody stated sent as nulls.
+    Killing mutations: the arguments nobody stated sent as nulls; the envelope handed back, which
+    carries `tables` and buries the outcome under `stats`.
     """
-    finished = {'result_id': 'bbg-1', 'status': 'done', 'installed': ['FXVol.USD.ZAR'],
-                'updated': [], 'verified': 42}
-    terminal = Terminal(finished)
+    landed = {'installed': ['FXVol.USD.ZAR'], 'updated': [], 'verified': 42}
+    terminal = Terminal({'status': 'done', 'tables': {}, 'stats': {'Bloomberg': landed}})
     mcp_server.configure(base_url='http://testserver', session=terminal)
 
     answer = asyncio.run(mcp_server.tick_market_from_bloomberg(pairs=['USDZAR']))
 
-    assert answer == finished
+    assert answer == dict(landed, result_id='bbg-1', status='done')
     assert terminal.requests[0] == ('POST', 'http://testserver/book/bloomberg',
                                     {'pairs': ['USDZAR']})
 
@@ -1846,14 +1850,14 @@ def test_provisioning_reports_its_progress_while_it_runs():
     terminal = Terminal(
         {'status': 'queued', 'progress': {'done': 0, 'total': 3, 'note': 'copying the seed'}},
         {'status': 'running', 'progress': {'done': 2, 'total': 3, 'note': 'verifying USDZAR'}},
-        {'status': 'done', 'installed': ['FXVol.USD.ZAR']})
+        {'status': 'done', 'stats': {'Bloomberg': {'installed': ['FXVol.USD.ZAR']}}})
     mcp_server.configure(base_url='http://testserver', session=terminal)
     watching = Watching()
 
     started = time.monotonic()
     answer = asyncio.run(mcp_server.tick_market_from_bloomberg(ctx=watching))
 
-    assert answer == {'status': 'done', 'installed': ['FXVol.USD.ZAR']}
+    assert answer == {'result_id': 'bbg-1', 'status': 'done', 'installed': ['FXVol.USD.ZAR']}
     assert [(total, note) for _, total, note in watching.reported] == [
         (360.0, 'queued - copying the seed'), (360.0, 'running - verifying USDZAR')]
     assert time.monotonic() - started >= 0.5, 'a poll between notifications, not a spin'

@@ -254,10 +254,14 @@ def _raw_result(result_id):
     return service().call('GET', '/results/{}'.format(result_id))
 
 
-def _summary(raw, result_id):
-    """A run trimmed to what the model should hold: identity - the replay tuple, the engine version
-    in it - stats, and each table's shape as one line. Never a column list and never a cell - those
-    stay behind `fetch_table`."""
+def _summary(raw, result_id, stat=None):
+    """A run trimmed to what the model should hold. Where `stat` names the job's own outcome and the
+    run filed it under its stats, that outcome with the run's `result_id` and `status` beside it;
+    else identity - the replay tuple, the engine version in it - stats, and each table's shape as
+    one line. Never a column list and never a cell - those stay behind `fetch_table`."""
+    outcome = (raw.get('stats') or {}).get(stat) if stat else None
+    if outcome is not None:
+        return dict(outcome, result_id=result_id, status=raw.get('status'))
     trimmed = {'result_id': result_id, 'status': raw.get('status')}
     for key in ('plan_hash', 'values_hash', 'engine_version', 'seed', 'quasi_seed', 'stats',
                 'error'):
@@ -270,17 +274,17 @@ def _summary(raw, result_id):
     return trimmed
 
 
-async def _await_result(result_id, wait_seconds, ctx=None, summarise=True,
-                        hint=', and fetch_table once it is done'):
+async def _await_result(result_id, wait_seconds, ctx=None, stat=None):
     """Poll `/results/{id}` until it settles or `wait_seconds` runs out, saying on every poll how
     long it has waited, so one tool call returns the answer rather than a model burning a turn per
-    poll - and a host never hears silence.
+    poll - and a host never hears silence. A settled run answers as `poll_result(result_id, stat)`
+    does (`_summary`).
 
     A desktop host cuts a tool call that stays quiet for about a minute and resets that clock on
     every notification, so a run measured in minutes only finishes if the wait speaks: `done` is
     the seconds waited, `total` the wait asked for, and the note is the run's status with whatever
-    the job itself is publishing. On timeout the id and the way forward travel in `hint`, so a long
-    run stays reachable.
+    the job itself is publishing. On timeout the id and that `poll_result` call travel in `hint`,
+    so a long run stays reachable.
     """
     started = time.monotonic()
     while True:
@@ -288,7 +292,7 @@ async def _await_result(result_id, wait_seconds, ctx=None, summarise=True,
         # the progress notifications on the wire.
         raw = await asyncio.to_thread(_raw_result, result_id)
         if raw.get('status') not in ('queued', 'running'):
-            return dict(_summary(raw, result_id), waited=True) if summarise else raw
+            return _summary(raw, result_id, stat)
         waited = time.monotonic() - started
         if ctx is not None:
             note = (raw.get('progress') or {}).get('note')
@@ -296,8 +300,9 @@ async def _await_result(result_id, wait_seconds, ctx=None, summarise=True,
                                       ' - '.join(filter(None, (raw['status'], note))))
         if waited >= wait_seconds:
             return {'result_id': result_id, 'status': raw['status'],
-                    'hint': 'still {} - call poll_result({!r}) to check again{}'.format(
-                        raw['status'], result_id, hint)}
+                    'hint': 'still {} - call poll_result({}) to check again; the run carries on '
+                            'service-side either way'.format(raw['status'], ', '.join(
+                                repr(part) for part in (result_id, stat) if part))}
         # a quick run should not pay a second of latency, a long one should not spin
         await asyncio.sleep(1.0 if waited >= 2.0 else 0.25)
 
@@ -765,8 +770,7 @@ async def xva_increment(deal: dict | None = None, parent_reference: str | None =
                       calculation_overrides=calculation_overrides or None, actor=actor)
     submitted = await asyncio.to_thread(service().call, 'POST', '/book/price',
                                         json=dict(request, xva_increment=True))
-    outcome = await _await_result(submitted['result_id'], wait_seconds, ctx)
-    return outcome.get('stats', {}).get('Increment') or outcome
+    return await _await_result(submitted['result_id'], wait_seconds, ctx, stat='Increment')
 
 
 @MCP.tool(annotations=READ_ONLY)
@@ -997,7 +1001,7 @@ async def tick_market_from_bloomberg(pairs: list = None, expiries: list = None,
     `pairs` narrows the currency pairs to fetch (`["USDZAR"]`); `expiries` narrows the surface's
     expiry column; `pillars` the delta pillars (`[0.25]`, the default - `[0.1, 0.25]` for wider
     wings the map verified). Omit all three for the desk's own scope - every pair the map
-    carries, at the expiries it verified. The finished run's outcome rides `stats.Bloomberg`: what installed,
+    carries, at the expiries it verified. The answer is the finished run's outcome: what installed,
     what updated, whether the map had to be provisioned, or the refusal messages.
 
     A refusal is an answer and it NAMES what stopped it: no terminal answering on this machine,
@@ -1009,9 +1013,7 @@ async def tick_market_from_bloomberg(pairs: list = None, expiries: list = None,
     request = _stated(pairs=pairs, expiries=expiries, pillars=pillars, actor=actor)
     submitted = await asyncio.to_thread(
         service().call, 'POST', '/book/bloomberg', json=request)
-    # a provisioning answer is what installed and what was refused, so this one is not summarised
-    return await _await_result(submitted['result_id'], wait_seconds, ctx, summarise=False,
-                               hint='; the provisioning carries on service-side either way')
+    return await _await_result(submitted['result_id'], wait_seconds, ctx, stat='Bloomberg')
 
 
 @MCP.tool(annotations=READ_ONLY)
@@ -1087,9 +1089,7 @@ async def verify_securities(block: str = None, key: str = None, securities: list
     request = _stated(block=block, key=key, securities=securities, actor=actor)
     submitted = await asyncio.to_thread(
         service().call, 'POST', '/book/securities/verify', json=request)
-    # a verification's answer is the drift and the verdicts, so this one is not summarised
-    return await _await_result(submitted['result_id'], wait_seconds, ctx, summarise=False,
-                               hint='; the verification carries on service-side either way')
+    return await _await_result(submitted['result_id'], wait_seconds, ctx, stat='Securities')
 
 
 @MCP.tool(annotations=READ_ONLY)
@@ -1173,13 +1173,7 @@ async def setup_market(pair: str = None, deal: dict = None, parent_reference: st
     request = _stated(pair=pair, deal=deal, parent_reference=parent_reference,
                       deal_path=deal_path, actor=actor)
     submitted = await asyncio.to_thread(service().call, 'POST', '/book/setup', json=request)
-    answer = await _await_result(submitted['result_id'], wait_seconds, ctx, summarise=False,
-                                 hint='; the set-up carries on service-side either way')
-    # the job's own outcome is the answer, not the result envelope it rides in; a run that has not
-    # settled carries no outcome and is handed back as the pointer it is
-    outcome = (answer.get('stats') or {}).get('Setup')
-    return answer if outcome is None else dict(
-        outcome, result_id=submitted['result_id'], status=answer.get('status'))
+    return await _await_result(submitted['result_id'], wait_seconds, ctx, stat='Setup')
 
 
 @MCP.tool()
@@ -1212,9 +1206,9 @@ async def calibrate_spot_model(pair: str, family: str = '', actor: str | None = 
     parameters. Below the family's own minimum the verb refuses by name, saying which pillars the
     surface carries - the remedy is to quote the pair at more expiries.
 
-    `pair` is the surface's own name (`"USD.ZAR"`). The answer is the run's outcome under
-    `stats.SpotModel`: the family and parameters fitted, the block installed, the factor written,
-    the quotes' provenance and the fit's wall time. THIS IS THE EXPENSIVE ONE - measured in the
+    `pair` is the surface's own name (`"USD.ZAR"`). The answer is the run's outcome: the family
+    and parameters fitted, the block installed, the factor written, the quotes' provenance and the
+    fit's wall time. THIS IS THE EXPENSIVE ONE - measured in the
     tens of minutes, at the same cost class as an XVA recalculation, so quotes and valuations keep
     jumping the queue while it runs. `poll_result` follows it if the wait runs out; the fit carries
     on service-side either way.
@@ -1226,7 +1220,7 @@ async def calibrate_spot_model(pair: str, family: str = '', actor: str | None = 
     """
     submitted = await asyncio.to_thread(service().call, 'POST', '/book/model', json=dict(
         {'pair': pair, 'family': family}, **_stated(actor=actor)))
-    outcome = await _await_result(submitted['result_id'], wait_seconds, ctx)
+    outcome = await _await_result(submitted['result_id'], wait_seconds, ctx, stat='SpotModel')
     return dict(outcome, factor=submitted['factor'])
 
 
@@ -1249,8 +1243,8 @@ async def solve_deal(deal: dict, field: str, target: float | dict = 0.0,
 
     Prefer this over hand-iterating `price_candidate`: the root find runs server-side against the
     book's market data (brentq inside `bounds`, else a secant from the field's current value -
-    exact in two pricings for an amount) and nothing large enters the conversation. The answer's
-    `stats.Solved` carries the field's `value`, the pricing count, the `residual` and `deal` - the
+    exact in two pricings for an amount) and nothing large enters the conversation. The answer
+    carries the field's `value`, the pricing count (`evaluations`), the `residual` and `deal` - the
     deal with the field set, which `book_deal` books as-is.
 
     The engine's FX convention is REPORTING units per one unit of the currency (`FxRate.ZAR`
@@ -1261,7 +1255,7 @@ async def solve_deal(deal: dict, field: str, target: float | dict = 0.0,
     request = dict({'deal': deal, 'field': field, 'target': target}, **_stated(
         bounds=bounds, calculation_overrides=calculation_overrides or None, actor=actor))
     submitted = await asyncio.to_thread(service().call, 'POST', '/book/solve', json=request)
-    return await _await_result(submitted['result_id'], wait_seconds, ctx)
+    return await _await_result(submitted['result_id'], wait_seconds, ctx, stat='Solved')
 
 
 @MCP.tool()
@@ -1354,23 +1348,16 @@ The BOOK IS NOT TOUCHED. What is written is the pending trade:
         service().call, 'POST', '/book/structure',
         json=dict({'structure': structure, 'params': params, 'netting_set': netting_set,
                    'margin': margin}, **_stated(actor=actor, portfolio=portfolio)))
-    outcome = await _await_result(submitted['result_id'], wait_seconds, ctx)
-    quote = outcome.get('stats', {}).get('Quote')
-    if quote is not None:
-        # a leg's spread is one row per quoted pillar, most of them at no vega: the answer keeps the
-        # rows a vega reaches and the quote resource every one
-        legs = [dict(leg, spread=leg['spread'] and [row for row in leg['spread'] if row['vega']])
-                for leg in quote['legs']]
-        return dict(quote, legs=legs, resources={
-            'quote': 'derivus://quote/{}'.format(quote['quote_id']),
-            'sheet': 'derivus://quote/{}/sheet'.format(quote['quote_id'])})
-    # No quote: the run summary is the answer, and its poll pointer follows up on the stats rather
-    # than on a table.
-    if 'hint' in outcome:
-        outcome['hint'] = ('still {} - call poll_result({!r}) to check again; the quote lands '
-                           'under stats.Quote, and the pending trade is filed the moment it '
-                           'does'.format(outcome['status'], submitted['result_id']))
-    return outcome
+    quote = await _await_result(submitted['result_id'], wait_seconds, ctx, stat='Quote')
+    if 'legs' not in quote:
+        return quote
+    # a leg's spread is one row per quoted pillar, most of them at no vega: the answer keeps the
+    # rows a vega reaches and the quote resource every one
+    legs = [dict(leg, spread=leg['spread'] and [row for row in leg['spread'] if row['vega']])
+            for leg in quote['legs']]
+    return dict(quote, legs=legs, resources={
+        'quote': 'derivus://quote/{}'.format(quote['quote_id']),
+        'sheet': 'derivus://quote/{}/sheet'.format(quote['quote_id'])})
 
 
 @MCP.tool()
@@ -1871,16 +1858,21 @@ def collateral_calls(date: str | None = None, actor: str | None = None) -> dict:
 
 
 @MCP.tool()
-def mark_book(actor: str | None = None) -> dict:
+async def mark_book(actor: str | None = None, wait_seconds: float = 120.0,
+                    ctx: Context = None) -> dict:
     """Mark the book at the close: one unit of every instrument it holds or traded since its last
     marks, valued on the close standing under the market the desk designated for `pnl`, and the
     run attested - which is what every later P&L reads that close from. Call it once the day's close
     is declared. Refused where no market is designated for `pnl`, where it stands on no close or on
     a close for another day than the book's, and for a day behind the last one marked - marks run
-    forward. Answers `{result_id, status, market, close_lsn, instruments}`; `poll_result` waits on
-    the run.
+    forward. Waits up to `wait_seconds` for the run, so the P&L reads the marks once this answers:
+    the run's replay tuple, stats and table shapes beside the `market`, `close_lsn` and the count
+    of `instruments` marked.
     """
-    return service().call('POST', '/book/marks', json=_stated(actor=actor))
+    submitted = await asyncio.to_thread(service().call, 'POST', '/book/marks',
+                                        json=_stated(actor=actor))
+    outcome = await _await_result(submitted['result_id'], wait_seconds, ctx)
+    return dict(outcome, **{key: submitted[key] for key in ('market', 'close_lsn', 'instruments')})
 
 
 @MCP.tool(annotations=READ_ONLY)
@@ -2131,12 +2123,14 @@ def export_settlements(due_before: str, actor: str | None = None) -> dict:
 
 
 @MCP.tool(annotations=READ_ONLY)
-def poll_result(result_id: str) -> dict:
+def poll_result(result_id: str, stat: str | None = None) -> dict:
     """Where a run got to: `queued`/`running`, or `done` with the replay tuple (`plan_hash`,
     `values_hash`, `engine_version`, `seed`, `quasi_seed`), the run's stats and each table's SHAPE
     as one line (fetch cells with `fetch_table`), or `error` with the message. Never the cells
-    themselves."""
-    return _summary(_raw_result(result_id), result_id)
+    themselves. `stat` names the outcome a tool answers with - the `hint` of a tool that stopped
+    waiting passes it on - and a run that filed one answers that outcome, with `result_id` and
+    `status` beside it, as the tool would have."""
+    return _summary(_raw_result(result_id), result_id, stat)
 
 
 @MCP.tool(annotations=READ_ONLY)

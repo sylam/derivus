@@ -2,11 +2,13 @@
 fees and a partial unwind between them, and the P&L read back per position, per portfolio and
 live - held to independent valuations and to its own identity, nothing monkeypatched.
 """
+import asyncio
 import json
 import math
 import os
 import shutil
 import sys
+import threading
 
 import pandas as pd
 import pytest
@@ -1702,6 +1704,30 @@ def test_a_ticket_booked_while_the_marks_wait_is_the_next_day_s_and_marks_run_fo
     closed()
     refused = CLIENT.post('/book/marks', content=dump({'actor': ACTOR}), headers=JSON)
     assert refused.status_code == 422 and 'marks run forward' in refused.text, refused.text
+
+
+def test_the_marking_tool_waits_for_the_marks_a_pnl_then_reads(recorded, desk):
+    """`mark_book` waits on the run it queues, as every tool that sits on a run does, so the day
+    stands marked when it answers: with the one worker held by another job until a second after
+    the ask, the tool answers the attested run done, and the day reads marked at once.
+
+    Killing mutation: the tool answering the queued run unwaited, which reads no day marked and
+    sends the P&L that follows to a refusal whose remedy was just taken.
+    """
+    designated(recorded, fixings=False)
+    booked(LONG, 1.0, 'EXEC-A', BOOK + '/Rates', 17_800_000.0)
+    closed()
+    barrier = holding()
+    binding.configure(base_url='http://testserver', session=CLIENT)
+    try:
+        assert barrier.running.wait(WORKER_SECONDS), 'the worker never picked the barrier up'
+        threading.Timer(1.0, barrier.released.set).start()
+        ran = asyncio.run(binding.mark_book(actor=ACTOR))
+    finally:
+        barrier.released.set()
+        binding.SERVICE = None
+    assert (ran['status'], ran['market']) == ('done', 'official') and ran['plan_hash'], ran
+    assert [row['day'] for row in CLIENT.get('/book/marks').json()['days']] == ['2024-06-28']
 
 
 def test_a_past_day_restated_after_today_s_close_restates_that_day_alone(recorded, desk):
