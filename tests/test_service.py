@@ -6252,8 +6252,7 @@ def test_a_named_calculation_is_the_desks_own_and_prices_what_it_is_pointed_at(d
     which saves `Calculate: 'Maybe'` and dies inside the Monte Carlo instead.
     """
     book = desk_xva.read_bytes()
-    cva_a = {'Object': 'CreditMonteCarlo', 'Batch_Size': service.XVA_BATCH_SIZE,
-             'Simulation_Batches': service.XVA_SIMULATION_BATCHES,
+    cva_a = {'Object': 'CreditMonteCarlo',
              'Credit_Valuation_Adjustment': dict(
                  service.XVA_CVA_BLOCK, Calculate='Yes', Counterparty='CPTY_A'),
              'Funding_Valuation_Adjustment': dict(
@@ -7206,7 +7205,7 @@ def test_both_runs_of_an_increment_draw_one_grid_on_one_factor_list(desk_xva):
             for run in ('with', 'without')}
 
     assert result['stats']['Increment']['paths'] == {
-        'seed': 5120, 'count': service.XVA_BATCH_SIZE, 'dates': 27, 'factors': ['EquityPrice.EQ']}
+        'seed': 5120, 'count': 1024, 'dates': 27, 'factors': ['EquityPrice.EQ']}
     assert days['with'] == days['without'] and len(days['with']) == 27
     assert len(alone) == 26 and len([day for day in days['with'] if day not in alone]) == 1
 
@@ -7287,8 +7286,7 @@ def test_the_increment_on_a_second_seed_moves_by_rounding_and_the_two_runs_by_mo
     Killing mutation: the 'without' run on a seed of its own, which puts the set's noise back into
     the increment: 8.98 between the seeds.
     """
-    block = {'Object': 'CreditMonteCarlo', 'Batch_Size': service.XVA_BATCH_SIZE,
-             'Simulation_Batches': service.XVA_SIMULATION_BATCHES,
+    block = {'Object': 'CreditMonteCarlo',
              'Credit_Valuation_Adjustment': dict(
                  service.XVA_CVA_BLOCK, Calculate='Yes', Counterparty='CPTY_A'),
              'Funding_Valuation_Adjustment': dict(

@@ -381,9 +381,10 @@ that records, the `calculation` policy's `CreditMonteCarlo` block laid over it k
 container it states replacing the file's whole. That is the OFFICIAL calculation - on a desk that
 keeps no record it comes with the document - and the recalc, the increment and every other credit
 run of the live book start from it, while a credit job posted whole to `/execute` or `/prepare`
-states its own and reads no policy; a recalc lays its own floor under both - 1,024 paths in one
-batch, deterministic deflation and hazard rates, no gradient - and switches each adjustment on
-against the set's counterparty over both. `POST /book/calculations` `{calculations, actor}`
+states its own and reads no policy; a recalc lays its own floor under both - deterministic
+deflation and hazard rates, no gradient - and switches each adjustment on against the set's
+counterparty over both, and one stating no path count runs at the engine's declared default,
+1,024 paths in one batch. `POST /book/calculations` `{calculations, actor}`
 declares the policy under `admin`, each block judged against its type's declarations before
 anything is filed, and `GET /book/calculations` answers the one in force with its `blob` and
 `lsn`, nulls where none is declared. A seat's own dials - a named calculation, the

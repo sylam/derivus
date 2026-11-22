@@ -4172,12 +4172,6 @@ def book_settlements(request: dict):
 XVA_FILE = 'xva.json'
 XVA_LOCK = threading.Lock()
 
-#: What a recalc runs at when the book's `Calculation` block states nothing of its own. THIS IS A
-#: DESK PROJECTION, NOT A REGULATORY NUMBER: one batch of 1024 paths is the smallest count whose
-#: exposure profile is not visibly noisy, and a book that states more is never overridden.
-XVA_BATCH_SIZE = 1024
-XVA_SIMULATION_BATCHES = 1
-
 #: The CVA block a recalc switches on, in the shape the engine's own CVA fixtures configure it.
 #: `Calculate` and `Counterparty` are decided per set; the rest is what a desk PROJECTION wants -
 #: deterministic deflation and hazard rates, no gradient.
@@ -4268,10 +4262,10 @@ def xva_document(document, node, counterparty):
     bucket, so the CVA integrand divides it back out and the `cva` column reads the same either
     way, 0 ULP on both of the gate's sets. FVA keeps the scaled cube it is defined on.
 
-    The synthesized fields are a FLOOR: `setdefault` leaves a book stating its own path count or
-    batching alone, and an authored adjustment block keeps every field but `Calculate` and the
-    counterparty. No deflation or risk-free curve is written: the engine reads both as the base
-    currency's own, so nothing here reads the market.
+    The synthesized fields are a FLOOR: an authored adjustment block keeps every field but
+    `Calculate` and the counterparty. No path count or batching is written, the engine's declared
+    defaults being what a calculation stating neither runs at, and no deflation or risk-free
+    curve: the engine reads both as the base currency's own, so nothing here reads the market.
 
     THE FVA FUNDS AT THE CURVES THE CALCULATION IT IS HANDED STATES, `Funding_Cost_Interest_Curve`
     and `Funding_Benefit_Interest_Curve`, for every set alike: the book file's own block, under the
@@ -4286,8 +4280,6 @@ def xva_document(document, node, counterparty):
     # the pin moves on a booking into any set, so one set's plan does not carry it
     run.pop(SPINE_PIN, None)
     calculation = dict(run['Calc']['Calculation'], Object='CreditMonteCarlo')
-    calculation.setdefault('Batch_Size', XVA_BATCH_SIZE)
-    calculation.setdefault('Simulation_Batches', XVA_SIMULATION_BATCHES)
     for adjustment, floor in (('Credit_Valuation_Adjustment', XVA_CVA_BLOCK),
                               ('Funding_Valuation_Adjustment', XVA_FVA_BLOCK)):
         calculation[adjustment] = {**floor, **(calculation.get(adjustment) or {}),

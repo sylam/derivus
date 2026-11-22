@@ -6215,7 +6215,7 @@ def test_a_credit_run_under_the_policy_is_the_run_of_the_same_block_written_in_t
     assert all(cva > 0.0 != fva for _, _, cva, fva in declared.values()), declared
     assert all(own[name][0] != declared[name][0] for name in own), 'the file change moved no plan'
     assert own['NS_B'][3] != declared['NS_B'][3], 'the benefit leg reads no exposure'
-    assert drew(declared['NS_A']) == (service.XVA_BATCH_SIZE, 2)
+    assert drew(declared['NS_A']) == (1024, 2)
 
 
 def test_the_policy_stands_over_the_book_file_which_stands_where_the_policy_says_nothing(
@@ -6343,7 +6343,7 @@ def test_a_restated_policy_is_a_new_plan_and_a_job_compiled_before_it_is_the_ear
     moved = asked()
     assert moved != first[1], 'the restatement left the credit run where it was'
     second = credit_runs(['NS_A'])['NS_A']
-    assert (second[1], drew(second)) == (moved, (service.XVA_BATCH_SIZE, 3))
+    assert (second[1], drew(second)) == (moved, (1024, 3))
     assert second[0] != first[0]
 
     pinned = spine.compiled_job(service.BOOK.read()[0], lsn=before, strict=False,
@@ -6376,7 +6376,7 @@ def test_a_credit_job_a_seat_posts_whole_runs_at_its_own_calculation_under_any_p
     ran = drained(submit(posted))
     assert ran['status'] == 'done', ran.get('error')
     assert (ran['plan_hash'], ran['stats']['Simulation_Batches']) == (own, 5)
-    assert drew(credit_runs(['NS_A'])['NS_A']) == (service.XVA_BATCH_SIZE, 2)
+    assert drew(credit_runs(['NS_A'])['NS_A']) == (1024, 2)
 
 
 def test_the_increment_and_the_credit_charge_start_from_the_policy(recorded, credit_hub):
@@ -6393,7 +6393,7 @@ def test_the_increment_and_the_credit_charge_start_from_the_policy(recorded, cre
     standing = credit_runs(['NS_A'])['NS_A']
     held = answered(deal_path='0/0', reference='OPT_A')
     assert (held['cva']['with'], held['fva']['with']) == standing[2:]
-    assert held['paths']['count'] == 2 * service.XVA_BATCH_SIZE
+    assert held['paths']['count'] == 2 * 1024
 
     charge = answered(deal=SHORT_CALL, parent_reference='NS_A')
     booked = CLIENT.post('/book/deals', content=dump({
@@ -6687,7 +6687,7 @@ def test_a_block_declared_past_the_engine_s_judge_refuses_the_credit_run_by_name
     assert CLIENT.post('/book/price', content=dump({}), headers=JSON).status_code == 200
 
     assert official({'CreditMonteCarlo': {'Simulation_Batches': 2}}).status_code == 200
-    assert drew(credit_runs(['NS_A'])['NS_A']) == (service.XVA_BATCH_SIZE, 2)
+    assert drew(credit_runs(['NS_A'])['NS_A']) == (1024, 2)
 
 
 def test_the_xva_view_answers_its_rows_while_the_policy_in_force_cannot_be_read(
