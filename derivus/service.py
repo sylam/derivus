@@ -53,6 +53,7 @@ doorbell carry an ID token that set verifies, whose subject IS the seat; narrow 
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import math
@@ -631,6 +632,7 @@ class Book:
     def _read(self):
         etag = self._current()
         document = json.loads(self._cache[3])
+        job_children(document)  # a text that is no job is refused by name before it is read
         # a retired family key reads under the family's name: every verb sees one spelling, and
         # the next write carries it
         market = document['Calc'].get('MergeMarketData', {}).get('ExplicitMarketData') or {}
@@ -779,6 +781,19 @@ def queued(job, cost_class=COST_CLASS['BaseValuation']):
     return {'result_id': job.result_id, 'status': EXECUTOR.submit(job, cost_class)}
 
 
+@contextlib.contextmanager
+def refusals():
+    """A `ValueError` raised in the block answered as the 422 carrying its sentence, and a
+    `KeyError` as the 422 naming the key nothing stated: a request or a book that does not say
+    what a verb reads is refused by name, never a 500."""
+    try:
+        yield
+    except KeyError as missing:
+        raise HTTPException(422, '{} is not stated, and nothing is done without it'.format(missing))
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+
+
 def context_for(body):
     """The Context an endpoint works on: the posted document parsed, or a deep copy of the plan it
     names. Nothing downstream can tell the two apart, which is the whole point of `plan_id`."""
@@ -787,7 +802,8 @@ def context_for(body):
         if context is None:
             raise HTTPException(404, 'Unknown plan {}'.format(body['plan_id']))
         return context
-    return load(body)
+    with refusals():
+        return load(body)
 
 
 @app.get('/schema', summary='Every declaration a front end renders from')
@@ -877,7 +893,7 @@ def prepare(job: dict):
         job = spine.compiled_job(job, folds=folds())
     except spine.SpineRefused as refused:
         raise HTTPException(422, str(refused))
-    context = load(job)
+    context = context_for(job)
     return {'plan_id': PLANS.put(context), 'values_hash': context.values_hash(),
             'engine_version': __version__}
 
@@ -1109,6 +1125,8 @@ def book_open(request: dict):
         name = os.path.join(INBOX, os.path.basename(request['name']))
         path = os.path.join(dv_home(), name)
         if 'document' in request:
+            with refusals():  # a document that is no job is refused before it is filed
+                job_children(request['document'])
             if os.path.isfile(path):
                 # the copy this files over by the hash of its text, unparsed: a broken copy is
                 # replaced all the same, and one that is no text had no etag to name
@@ -1122,7 +1140,8 @@ def book_open(request: dict):
                 os.path.basename(path)))
     # read before it is served, so a document that is no job leaves the book served standing
     served = Book(path)
-    answer = {'path': path, 'etag': served.read()[1]}
+    with refusals():
+        answer = {'path': path, 'etag': served.read()[1]}
     if over and over[0] != answer['etag']:
         answer['replaced'] = over[0]
     BOOK = served
@@ -3097,8 +3116,9 @@ def file_paths_mapped(request: dict):
     rewritten. Demands `mark` on a recording desk. Answers what `GET /paths` then answers."""
     global BOOK
     marking(request, 'paths')
-    write_desk_file(PATHS_FILE, {'path_transform': request['path_transform'],
-                                 'file_transform': request['file_transform']})
+    with refusals():
+        maps = {key: request[key] for key in ('path_transform', 'file_transform')}
+    write_desk_file(PATHS_FILE, maps)
     if BOOK is not None:
         BOOK = Book(BOOK.path)
     return file_paths()
@@ -5062,10 +5082,8 @@ def book_market(request: dict):
         return market_edit(document, request.get('quotes', {}), request.get('patch', {}),
                            request.get('bootstrap'), retire=request.get('retire', ()))
 
-    try:
+    with refusals():
         return live.mutate(edit)
-    except (ValueError, KeyError) as error:
-        raise HTTPException(422, str(error))
 
 
 #: Every write of the market or its set-up, by the name its denial files, and what a seat holding
@@ -5157,10 +5175,8 @@ def book_survival(request: dict):
         return True, {'written': True, 'factor': factor, 'recovery': recovery, 'curve': points,
                       'horizon': SURVIVAL_HORIZON}
 
-    try:
+    with refusals():
         return live.mutate(edit)
-    except (ValueError, KeyError) as error:
-        raise HTTPException(422, str(error))
 
 
 def bootstrapper_entry(document, entry, fields):
@@ -5321,10 +5337,8 @@ def book_configure(request: dict):
         return configure_edit(document, request['section'], request['entry'],
                               request.get('fields', {}))
 
-    try:
+    with refusals():
         return live.mutate(edit)
-    except (ValueError, KeyError) as error:
-        raise HTTPException(422, str(error))
 
 
 #: What a curve request states about the CURVE, and the seat writing it. Everything else it carries
@@ -5622,7 +5636,7 @@ def book_curve(request: dict):
     marking(request, 'curve')
     live = live_book()
     document, _ = live.read()
-    try:
+    with refusals():
         name, block, as_of = authored_curve(document, request)
 
         def edit(document, etag):
@@ -5635,8 +5649,6 @@ def book_curve(request: dict):
             return curve_edit(document, {name: block}, as_of)
 
         written = live.mutate(edit)
-    except (ValueError, KeyError) as error:
-        raise HTTPException(422, str(error))
     if not written['written']:
         raise HTTPException(422, '; '.join(written['refused']))
     return dict(written, block=name, knots=[row['Tenor'] for row in block['instrument']['Points']
@@ -5849,12 +5861,10 @@ def book_date(request: dict):
     """
     marking(request, 'base_date')
     live = live_book()
-    try:
+    with refusals():
         base_date = read_stamp(request['base_date'])
         written = live.mutate(lambda document, etag: curve_edit(
             document, {}, base_date, stated=True))
-    except (ValueError, KeyError) as error:
-        raise HTTPException(422, str(error))
     if not written['written']:
         raise HTTPException(422, '; '.join(written['refused']))
     return written
@@ -6557,10 +6567,8 @@ def book_dependencies(deal_path: str = None):
     `POST /book/setup` is what acts on this.
     """
     document, etag = live_book().read()
-    try:
+    with refusals():
         resolved, missing = walked_factors(document, deal_path)
-    except (ValueError, KeyError) as error:
-        raise HTTPException(422, str(error))
     return dependency_answer(document, resolved, missing, etag=etag, deal_path=deal_path)
 
 
@@ -6583,12 +6591,10 @@ def book_dependencies_candidate(request: dict):
     if request.get('deal_path') is not None:
         raise HTTPException(422, 'a walk names ONE thing - a candidate `deal`, or the `deal_path` '
                                  'of one the book holds. This request names both')
-    try:
+    with refusals():
         deal_path, resolved, missing = candidate_walk(
             document, request['deal'], request.get('parent_reference'),
             live.baseline(document, etag))
-    except (ValueError, KeyError) as error:
-        raise HTTPException(422, str(error))
     return dependency_answer(document, resolved, missing, etag=etag, deal_path=deal_path)
 
 
@@ -7011,7 +7017,7 @@ def spot_model_family(family):
     """The bootstrapper class that fits `family`, by the naming convention the pin resolves its
     parameters on (`utils.spot_model_factor`). A family that authors no quote block off the
     book's own built surface has nothing for this verb to run, and refuses by name."""
-    calibrator = getattr(bootstrappers, family + 'ModelParameters', None)
+    calibrator = getattr(bootstrappers, '{}ModelParameters'.format(family), None)
     if not hasattr(calibrator, 'fx_surface_block'):
         raise ValueError(
             '{0!r} names no spot model this verb calibrates - {0}ModelParameters authors no quote '

@@ -625,11 +625,13 @@ seat signs), `not_granted` (a seat without the grant the act asks), `unpriced` (
 book that will not price), `recorded` (`/book/open` on a desk that keeps a record, nothing filed
 or served), the request field a refused credit curve names - `counterparty`, `spread` or
 `recovery` (`/book/survival`) - and `refused` for every other kind, a body or a query that does
-not read among them, whose sentence names each part that did not. **Held by**
+not read among them, whose sentence names each part that did not, and a body leaving out a key its
+verb reads, named. **Held by**
 `test_spine_engine.py::test_a_refusal_names_its_kind_beside_its_sentence`,
 `test_service.py::test_a_book_holding_a_deal_it_cannot_price_has_no_consolidated_risk`,
 `::test_a_refused_survival_curve_names_the_field_it_is_about`,
-`::test_a_failure_no_verb_refuses_answers_its_type_and_message`.
+`::test_a_failure_no_verb_refuses_answers_its_type_and_message`,
+`::test_a_request_not_stating_what_its_verb_reads_is_refused_by_name`.
 
 **Generating a client.** The service publishes its own OpenAPI document at
 `http://localhost:8000/openapi.json`, with a summary and a description on every endpoint. An SPA

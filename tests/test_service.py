@@ -1034,6 +1034,41 @@ def test_a_failure_no_verb_refuses_answers_its_type_and_message(book, caplog):
     assert book.read_bytes() == before
 
 
+def test_a_request_not_stating_what_its_verb_reads_is_refused_by_name(recorded, book, monkeypatch):
+    """A body that leaves out a key its verb reads, or states one the verb cannot read, answers a
+    422 naming it with its kind - never the bare key or a 500 - and nothing is written: on a desk
+    that records, a survival curve and an agreement for a counterparty stated as a list; on one that
+    records nothing, a dial with no section, the paths with no maps, a curve with no currency, a
+    date with no day, a spot model named by a number and a job with no `Calculation`.
+
+    Killing mutations: `refusals` answering a missing key bare, which says `'section'`; the posted
+    job loaded outside it, a 500 `KeyError`; the record's entity check reading the names it is
+    handed as a set, a 500 `TypeError`; the spot model's class named by adding to the family, a 500.
+    """
+    before = book.read_bytes()
+    asked = [CLIENT.post(route, json=body) for route, body in (
+        ('/book/survival', {'counterparty': ['CPTY_A'], 'spread': 150.0}),
+        ('/book/agreements', {'agreement': 'CSA-X', 'entity': ['LEI-A'], 'kind': 'ISDA',
+                              'terms': {}}))]
+    monkeypatch.delenv('DV_SPINE_HOME')
+    asked += [CLIENT.post(route, json=body) for route, body in (
+        ('/book/configure', {}), ('/paths', {}), ('/book/curve', {'curve': 'ZAR', 'rows': []}),
+        ('/book/date', {}), ('/book/model', {'pair': 'USDZAR', 'family': 7}),
+        ('/execute', {'Calc': {key: section for key, section in json.loads(dump(job()))[
+            'Calc'].items() if key != 'Calculation'}}))]
+    stranger = "{} ['{}'] is no legal entity the record declares - it declares none: declare the " \
+               'entity first'.format
+    stated = '{!r} is not stated, and nothing is done without it'.format
+    assert [(answer.status_code, answer.json()['code'], answer.json()['detail'])
+            for answer in asked] == [(422, 'refused', detail) for detail in (
+                stranger('counterparty', 'CPTY_A'), stranger('entity', 'LEI-A'),
+                stated('section'), stated('path_transform'), stated('currency'),
+                stated('base_date'), '7 names no spot model this verb calibrates - '
+                '7ModelParameters authors no quote block off a built surface. The model this book '
+                "pins is 'LogVar2FJ'", stated('Calculation'))]
+    assert book.read_bytes() == before
+
+
 def test_a_calculation_override_is_judged_against_its_own_declarations(book):
     """An override is a dial of a declared calculation, so a field it does not declare - a base
     valuation's `Random_Seed` among them, its draws being `Quasi_Seed`'s - a value outside that
@@ -8849,7 +8884,8 @@ def test_a_document_opened_is_served_as_the_book_and_the_desks_own_stands(book, 
     amended copy's etag; posted a third time it files over an identical copy and answers none, as
     the first filing did; and a copy somebody broke is replaced all the same, one that is no JSON
     under the hash of its text and one that is no text under null. A name nothing is filed under
-    answers 404, and a document that is no job fails with the book served standing. `GET
+    answers 404, and a document that is no job - a dict or a list - is refused by name, nothing
+    filed, with the book served standing. `GET
     /book/document` answers the served file byte for byte under its own name, the amended copy
     and then the desk's own.
 
@@ -8860,7 +8896,8 @@ def test_a_document_opened_is_served_as_the_book_and_the_desks_own_stands(book, 
     the download written from the parsed document, which is another text under another etag,
     or read off the desk's own path while a copy is served; `replaced` answered wherever a copy
     stood, which reports an identical one as lost work; the overwritten copy's etag read through
-    a parse, which has none for a copy that is no JSON.
+    a parse, which has none for a copy that is no JSON; the document filed before it is judged,
+    which leaves the copy that is no job in the inbox.
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path))
     service.DESK, copy = str(book), tmp_path / 'inbox' / 'NS_FOREIGN.json'
@@ -8872,8 +8909,11 @@ def test_a_document_opened_is_served_as_the_book_and_the_desks_own_stands(book, 
 
     try:
         assert CLIENT.post('/book/open', json={'name': copy.name}).status_code == 404
-        with pytest.raises(KeyError):
-            CLIENT.post('/book/open', json={'name': 'NO_JOB.json', 'document': {}})
+        for unjob in ({}, [1, 2]):
+            refused = CLIENT.post('/book/open', json={'name': 'NO_JOB.json', 'document': unjob})
+            assert (refused.status_code, refused.json()) == (422, {
+                'detail': 'not a job document - no Calc.Deals.Deals.Children', 'code': 'refused'})
+        assert not (tmp_path / 'inbox' / 'NO_JOB.json').exists()
         assert CLIENT.get('/book').json()['etag'] == desk['etag']
         opened = CLIENT.post('/book/open', json={'name': copy.name, 'document': foreign}).json()
         live = CLIENT.get('/book').json()

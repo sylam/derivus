@@ -1391,11 +1391,12 @@ def declared_entities(field=None, named=()):
     """`{entity: row}` for every legal entity the record declares, or `SpineRefused` naming each
     of `named`, the entities `field` states, that is none of them."""
     declared = {row['entity']: row for row in entities()}
-    strangers = sorted(set(named) - set(declared))
+    strangers = sorted({repr(name) for name in named
+                        if not isinstance(name, str) or name not in declared})
     if strangers:
         raise SpineRefused(
             '{} {} is no legal entity the record declares - it declares {}: declare the entity '
-            'first'.format(field, ', '.join(map(repr, strangers)),
+            'first'.format(field, ', '.join(strangers),
                            ', '.join(sorted(declared)) or 'none'))
     return declared
 
