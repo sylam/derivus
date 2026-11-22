@@ -43,7 +43,7 @@ from .errors import SpineRefusal
 from .log import GENESIS_PREV, SpineLog, as_of_key
 from .policy import (
     DESIGNATIONS_SECTION, TIERS_POLICY, TIERS_SECTION, TOLERANCE_POLICY, TOLERANCE_SECTION,
-    compare, in_force, tiers_in_force)
+    compare, in_force, section_in_force, tiers_in_force)
 from .projections import CSA, PROJECTORS, fold
 from .store import BlobStore
 from .vocabulary import (
@@ -620,7 +620,7 @@ def the_pnl_is_additive(log, pnl):
         return unasked('the P&L is a compile of the book and not a fold of the record, so a '
                        'replica cannot put this question - hand in the answers (--pnl)')
     try:
-        tolerances = (in_force(log, TOLERANCE_POLICY)[1] or {}).get(TOLERANCE_SECTION, {})
+        tolerances = section_in_force(log, TOLERANCE_POLICY, TOLERANCE_SECTION)
         window, days, parts = pnl['window'], list(pnl.get('days') or ()), list(
             pnl.get('portfolios') or ())
         failures = [] if not days or [window['start']] + [day['end'] for day in days] == [
@@ -785,7 +785,7 @@ def cash_reconciles(log, script, keys):
                                                 body.get('asset'), subject,
                                                 'instrument a fill booked'))
     try:
-        tolerances = (in_force(log, TOLERANCE_POLICY)[1] or {}).get(TOLERANCE_SECTION, {})
+        tolerances = section_in_force(log, TOLERANCE_POLICY, TOLERANCE_SECTION)
     except SpineRefusal as unreadable:
         return unasked('the tolerance policy is a blob this copy does not hold ({}) - follow with '
                        '`--blobs` and ask again'.format(unreadable))
@@ -833,8 +833,8 @@ def every_close_marked(log):
         for frame in log.frames():
             if frame['event_type'] == 'policy_declared' and log.open_body(frame).get(
                     'policy') == TIERS_POLICY:
-                designated = (tiers_in_force(log, frame['lsn']) or {}).get(
-                    DESIGNATIONS_SECTION, {}).get(PNL)
+                designated = section_in_force(
+                    log, TIERS_POLICY, DESIGNATIONS_SECTION, frame['lsn']).get(PNL)
                 ever = ever or designated is not None
             elif frame['event_type'] == 'official_close_declared' and designated is not None:
                 body = log.open_body(frame)

@@ -1908,7 +1908,9 @@ def designated_market(process):
 
 def designation(process):
     """The market name the `tiers` policy in force designates for `process`, or None."""
-    return (tiers_policy() or {}).get(package().policy.DESIGNATIONS_SECTION, {}).get(process)
+    policy = package().policy
+    return folded(lambda log: policy.section_in_force(
+        log, policy.TIERS_POLICY, policy.DESIGNATIONS_SECTION)).get(process)
 
 
 def admit(lane, actor_name=None, book=None):
