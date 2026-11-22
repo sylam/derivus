@@ -4246,12 +4246,11 @@ def waiting_on(row):
     its leg and its day, and the fact nobody filed: the close's refusal and the worklist alike."""
     if row['kind'] == Diary.UNREADABLE:
         return '{} - unreadable, so outstanding on every day'.format(row['reason'])
-    trade = '{} {} on {}'.format(row['reference'], row['leg'], row['due_date'])
+    trade = "{}'s {} {} on {}".format(row['reference'], row['kind'], row['leg'], row['due_date'])
     if row['kind'] == Diary.FIXING:
-        return '{} waits on the fixing of {}, which no declared source has printed'.format(
-            trade, row['index'])
+        return '{} of {} has no print from a declared source'.format(trade, row['index'])
     if row['kind'] == Diary.EXPIRY:
-        return '{} expires on a choice nobody has elected'.format(trade)
+        return '{} vests a choice nobody has elected'.format(trade)
     return '{} pays {} {} and no settlement is filed against it'.format(
         trade, 'an undetermined amount' if row['amount'] is None else row['amount'],
         row['currency'])
