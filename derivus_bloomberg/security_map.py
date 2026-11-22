@@ -48,9 +48,8 @@ def packaged_seed():
 
 
 def read_seed(path=None):
-    """The seed this workstation reads: the desk's own `$DV_HOME/seed.json` where it has one, else
-    the packaged questionnaire. `leverage_prior`'s rule - the desk's file is authoritative and
-    nothing here writes it."""
+    """The seed file this workstation reads: the desk's own `$DV_HOME/seed.json` where it has one,
+    else the packaged questionnaire. Nothing here writes it."""
     candidate = path or os.path.join(home(), 'seed.json')
     with open(candidate if os.path.isfile(candidate) else packaged_seed(), encoding='utf-8') as f:
         return json.load(f)
@@ -71,10 +70,9 @@ def prior_axis(pair):
     return next((x for x in tokens if x != 'USD'), tokens[1]) if 'USD' in tokens else max(tokens)
 
 
-def leverage_prior(pair, *, underlying=None, path=None):
-    """The desk's declared LogVar2FJ leverage prior for `pair` ON THE AXIS WHOSE PRICED TOKEN IS
-    `underlying`, or `None` where the seed states none - `$DV_HOME/seed.json` unless named, falling
-    back to the packaged questionnaire.
+def leverage_prior(seed, pair, *, underlying=None):
+    """The LogVar2FJ leverage prior `seed` declares for `pair` ON THE AXIS WHOSE PRICED TOKEN IS
+    `underlying`, or `None` where it states none.
 
     A prior is a VIEW and not a quote, so it lives in the seed the desk owns and never in the
     verified map: there is no terminal evidence for it. What it is a view ABOUT is one rate, and
@@ -82,29 +80,25 @@ def leverage_prior(pair, *, underlying=None, path=None):
     reciprocal, and asking for the axis a book actually fits NEGATES it there. `-0.4` on USDZAR is
     vol rising as the rand weakens: `-0.4` on the rand priced in the dollar or in the euro, `+0.4`
     on the dollar or the euro priced in the rand. `underlying` left out answers the seed's own axis
-    unturned, which is what a reader of the file wants. Both are KEYWORD-ONLY: this is a package's
-    public surface and a `path` passed positionally would have flipped a sign.
+    unturned, which is what a reader of the file wants. It is KEYWORD-ONLY: this is a package's
+    public surface.
 
     THE LOOKUP IS SPELLING-BLIND. A view is about the PAIR, so the separator and the token order are
     the caller's business and neither may lose it: `ZAREUR` reads the `EURZAR` the seed states, and
     a prior silently dropped is a fit that runs with no desk view and says nothing.
 
-    The desk's seed is AUTHORITATIVE where it exists, packaged numbers included: a desk whose seed
-    predates this field declares no prior and gets the calibrator's asset-class default, which is
-    what a view nobody wrote should be.
+    `seed` is the merged vocabulary the caller reads every other block from: an `fx_vol` block the
+    desk states is its whole, so one predating this field declares no prior and gets the
+    calibrator's asset-class default, which is what a view nobody wrote should be.
     """
-    for candidate in (path or os.path.join(home(), 'seed.json'), packaged_seed()):
-        if os.path.isfile(candidate):
-            with open(candidate, encoding='utf-8') as handle:
-                priors = (json.load(handle).get('fx_vol') or {}).get('leverage_prior') or {}
-            name = pair_name(pair)
-            value = priors.get(name, priors.get(name[3:] + name[:3]))
-            if value is None:
-                return None
-            # `not value` keeps a declared zero off the negative zero a flip would print
-            turned = underlying is not None and str(underlying).upper() != prior_axis(name)
-            return -float(value) if turned and value else float(value)
-    return None
+    priors = (seed.get('fx_vol') or {}).get('leverage_prior') or {}
+    name = pair_name(pair)
+    value = priors.get(name, priors.get(name[3:] + name[:3]))
+    if value is None:
+        return None
+    # `not value` keeps a declared zero off the negative zero a flip would print
+    turned = underlying is not None and str(underlying).upper() != prior_axis(name)
+    return -float(value) if turned and value else float(value)
 
 
 def load(path=None):

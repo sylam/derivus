@@ -256,10 +256,12 @@ valuation date. **Held by**
 
 **Vocabulary and evidence.** The seed (`$DV_HOME/seed.json`) names what a desk could quote, read
 once as the packaged questionnaire with the desk's file over it entry by entry (`desk_seed`) by
-every verb that reads it, so the strip a set-up prices is the one the Curves screen offers; the map
+every verb that reads it, so the strip a set-up prices is the one the Curves screen offers and the
+leverage prior a fit takes is the one the Securities screen shows; the map
 (`$DV_HOME/security_map.json`) is what a terminal verified, beside a `rejected` ledger verification
 re-asks, a rejection being one day's answer; `used` joins each curve row to that evidence. **Held by**
 `test_service.py::test_a_vocabulary_entry_is_merged_kept_and_refused_by_name`,
+`test_cross_spot_model.py::test_both_spellings_of_one_pair_calibrate_to_one_law`,
 `test_service.py::test_a_set_up_reads_the_curve_its_own_seed_verified`,
 `test_service.py::test_every_knot_names_the_print_it_was_solved_from`.
 

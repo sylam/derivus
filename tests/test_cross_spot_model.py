@@ -776,16 +776,21 @@ def test_both_spellings_of_one_pair_calibrate_to_one_law(tmp_path, monkeypatch):
     `{pair: 'EURZAR'}` land the same factor - which makes every OTHER input to the fit have to be
     spelling-blind too, or the two calls write the same key with different numbers and nothing
     notes it. The desk's leverage prior is such an input: it is a view about the PAIR, so the seed
-    is asked about the pair rather than about what the caller typed.
+    is asked about the pair rather than about what the caller typed. It is read off the seed every
+    other verb reads (`desk_seed`): a desk file stating only `fx_spot` keeps the packaged `fx_vol`
+    view under it, the one `/book/securities` serves.
 
     Both runs here go through the queue on one book, one after the other, and the second must
     reproduce the first to the bit.
 
     KILLING MUTATION - the seed lookup left spelling-bound: `ZAREUR` misses the seed's `EURZAR`, the
     second fit runs with NO desk view, its `Rho_S` goes -0.413 -> -0.001 and the parameters below
-    separate by 2.0e+00 - with both spellings still pinning and neither noting anything.
+    separate by 2.0e+00 - with both spellings still pinning and neither noting anything. The prior
+    read off the desk's file whole (`desk_seed()` -> `security_map.read_seed()` in
+    `spot_model_block`): that file states no `fx_vol`, and both fits install no `Leverage_Prior`.
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path))
+    (tmp_path / 'seed.json').write_text(json.dumps({'fx_spot': {'pairs': ['EURZAR']}}))
     path = tmp_path / 'book.json'
     document = surfaced('USD')
     document['Calc']['MergeMarketData']['ExplicitMarketData'][
@@ -793,6 +798,8 @@ def test_both_spellings_of_one_pair_calibrate_to_one_law(tmp_path, monkeypatch):
     path.write_text(json.dumps(json.loads(dump(document)), indent=2), newline='\n')
     service.BOOK = service.Book(str(path))
     try:
+        served = CLIENT.get('/book/securities', params={'block': 'fx_vol'}).json()['seed']
+        assert served['fx_vol']['leverage_prior']['EURZAR'] == LEVERAGE_PRIOR
         laws, sources = [], []
         for spelling in ('EURZAR', 'ZAREUR'):
             submitted = CLIENT.post('/book/model', json={'pair': spelling}).json()
@@ -806,7 +813,7 @@ def test_both_spellings_of_one_pair_calibrate_to_one_law(tmp_path, monkeypatch):
                 'ExplicitMarketData']
             laws.append(numbers(on_disk['Price Factors'][CROSS_FACTOR]))
             installed = on_disk['Market Prices'][CROSS_BLOCK]['instrument']
-            assert installed['Leverage_Prior'] == LEVERAGE_PRIOR, (
+            assert installed.get('Leverage_Prior') == LEVERAGE_PRIOR, (
                 '{} lost the desk view the pair states'.format(spelling))
             sources.append(installed['Quote_Source'])
 

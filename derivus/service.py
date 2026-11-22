@@ -7018,34 +7018,20 @@ def spot_model_factor(family, block_name):
     return utils.spot_model_factor(family, block_name.split('.', 1)[1])
 
 
-def desk_leverage_prior(pair, underlying):
-    """The desk's own leverage prior for `pair` ON THE AXIS THE FIT WILL DESCRIBE, or `None` where
-    this workstation has no `derivus_bloomberg` and no seed to read - a prior undeclared is the
-    asset class default, which the calibrator supplies.
-
-    `underlying` is the token the law prices, which the seed turns its own number onto: a view is
-    about one rate and reads the other sign on the reciprocal. The engine stays seed-agnostic and
-    the seed owns its own convention. Imported inside, as every other use of that package here is.
-    """
-    from derivus_bloomberg import security_map
-
-    try:
-        return security_map.leverage_prior(pair, underlying=underlying)
-    except (OSError, ValueError):
-        return None
-
-
 def spot_model_block(document, pair, family):
     """`(the family's calibrator, name, block)` - the quote block `family` fits `pair` off, read
     off the book's own built surface on the ladder its `Bootstrapper Configuration` entry states,
-    under the desk's leverage prior turned onto the axis the fit will describe."""
+    under the leverage prior `desk_seed` states turned onto the axis the fit will describe."""
+    from derivus_bloomberg import security_map
+
     calibrator, config = spot_model_family(family), load(document).current_cfg
     params = config.params
     fitted = utils.spot_model_pair(
         *structures.split_pair(pair), structures.base_currency(params))[0]
     return (calibrator,) + calibrator.fx_surface_block(
         pair, params['Price Factors'], params['System Parameters'],
-        params['Price Factor Interpolation'], config.holidays, desk_leverage_prior(pair, fitted),
+        params['Price Factor Interpolation'], config.holidays,
+        security_map.leverage_prior(desk_seed(), pair, underlying=fitted),
         params['Bootstrapper Configuration'].get(calibrator.__name__))
 
 
