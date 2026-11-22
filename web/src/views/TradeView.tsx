@@ -17,7 +17,7 @@ import {
 } from '../state';
 import { formatNumber, ungrouped } from '../tokens';
 import {
-  bookedBy, datesOf, favour, historyOf, judgedAt, legsOf, markOf, markShown, movedTerms, noMark,
+  bookedBy, datesOf, favour, historyOf, judgedAt, legsOf, markOf, movedTerms, noMark, positionMark,
   tradeAt, tradeName, tradeSize, unwindAgainst, unwindFill, unwindWords, wholeRecord, type Price,
 } from '../trade';
 import type { QuoteGiven } from '../types';
@@ -451,9 +451,9 @@ function Unwind({ row, position, onVerdict }: {
     || 'the client';
   // the reference the price is typed beside: the desk's mark of these units, or why none is read
   const risk = riskNow(state);
-  const own = markShown(risk, row.path, position);
-  const against = own === undefined ? `the desk's mark of these units: ${noMark(risk)}`
-    : unwindAgainst(held, count, own, risk.data!.currency ?? '',
+  const unit = positionMark(risk, row.path, position)?.unit;
+  const against = unit == null ? `the desk's mark of these units: ${noMark(risk)}`
+    : unwindAgainst(held, count, unit, risk.data!.currency ?? '',
                     price.trim() !== '' && isFinite(at) ? cost : undefined);
 
   async function file(execution: string) {

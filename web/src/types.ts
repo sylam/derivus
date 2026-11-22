@@ -308,9 +308,11 @@ export type DealMark = {
 };
 
 /** One position the record holds on a priced deal, at its own share of the deal's mark by the
- * record's share rule - the positions on a deal adding to its mark - none where it nets to nothing. */
+ * record's share rule - `unit` a unit's, `value` its `quantity`'s, the positions on a deal adding
+ * to its mark - both none where the deal has no mark or nets to nothing. */
 export type PositionMark = {
-  deal_path: string; portfolio: string; agreement: string; quantity: number; value: number | null;
+  deal_path: string; portfolio: string; agreement: string; quantity: number; unit: number | null;
+  value: number | null;
 };
 
 export type BookRisk = {

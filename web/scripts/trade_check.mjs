@@ -79,10 +79,10 @@ check('a trade has its own mark, at the top or inside a set, beside the set\'s n
 const [DESK, FX, ALONE] = [['HARBOURLINE/desk', 'ISDA-A'], ['HARBOURLINE/fx', 'ISDA-A'],
   ['HARBOURLINE', 'ISDA-B']].map(([portfolio, agreement]) => ({ portfolio, agreement }));
 // the risk answer's own share of each deal per position the record holds on it
-const PER = [{ deal_path: '0/1', ...DESK, quantity: 1, value: 1 },
-             { deal_path: '0/1', ...FX, quantity: 0.5, value: 0.5 },
-             { deal_path: '1', ...ALONE, quantity: 3, value: -2.25 },
-             { deal_path: '0', ...ALONE, quantity: 2, value: null }];
+const PER = [{ deal_path: '0/1', ...DESK, quantity: 1, unit: 1, value: 1 },
+             { deal_path: '0/1', ...FX, quantity: 0.5, unit: 1, value: 0.5 },
+             { deal_path: '1', ...ALONE, quantity: 3, unit: -0.75, value: -2.25 },
+             { deal_path: '0', ...ALONE, quantity: 2, unit: null, value: null }];
 const shown = (path, position, data = { per_position: PER }) => {
   const mark = trade.markShown({ marks: MARKS, data }, path, position);
   return mark === undefined ? 'none' : mark;
@@ -211,11 +211,11 @@ check("a mark is said as the desk's side, on a client's page, a trade's and an u
        'flat', "in the client's favour"]);
 const priced = (amount, currency = 'USD') => ({ amount, currency });
 check('an unwind\'s price is set against the desk\'s mark of the units unwound, in the mark\'s '
-        + 'currency and favour: part of a position reads that part of the position\'s own mark, '
+        + 'currency and favour: the position\'s unit mark times the units unwound, '
         + 'a price over it is made and one under it given up, a short\'s cash is '
         + 'paid against a mark in the client\'s favour, a price in another currency is set '
         + 'against nothing, and no units read no mark',
-      'the position\'s whole mark shown for a part unwind, 60,000 read against the price of a '
+      'the position\'s unit mark shown for a part unwind, 60,000 read against the price of a '
         + 'quarter unit; the sign turned, a price over the mark said as given up; the units '
         + 'unwound taken as long whatever is held, a short\'s liability read as worth to the '
         + 'desk; a difference struck across two currencies; or the favour dropped',
@@ -223,8 +223,8 @@ check('an unwind\'s price is set against the desk\'s mark of the units unwound, 
        trade.unwindAgainst(1, 0.25, 60000, 'USD', priced(70000)),
        trade.unwindAgainst(1, 0.25, 60000, 'USD', priced(50000)),
        trade.unwindAgainst(1, 0.25, 60000, 'USD', priced(60000)),
-       trade.unwindAgainst(-2, 1, -600, 'USD', priced(250)),
-       trade.unwindAgainst(-2, 1, -600, 'USD', priced(350)),
+       trade.unwindAgainst(-2, 1, 300, 'USD', priced(250)),
+       trade.unwindAgainst(-2, 1, 300, 'USD', priced(350)),
        trade.unwindAgainst(1, 0.25, 60000, 'USD', priced(1300000, 'ZAR')),
        trade.unwindAgainst(1, 0, 60000, 'USD', priced(70000)) ?? 'none'],
       ['The desk marks the 0.25 unwound at 15,000 USD, in the desk\'s favour.',
