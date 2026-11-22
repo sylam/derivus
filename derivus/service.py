@@ -4085,8 +4085,10 @@ def book_seat(actor: str = None):
     is act -> node -> null where the seat may perform it there, else the sentence the record
     refuses it with before where its denial would stand (`spine.may`): every act the map has a
     seat's verb do and every run in `RUNS`, at the book, each node the record declares or holds a
-    position at, and each node above one - kept on the served book under the poll's key. A request
-    naming no seat is refused as each of its acts would be. 404 where no home is configured.
+    position at, and each node above one - kept on the served book under the poll's key. `sees` is
+    null where the seat is shown the whole book, a verb held at it or above (`spine.reaches`), else
+    the nodes whose positions it is shown, sorted. A request naming no seat is refused as each of
+    its acts would be. 404 where no home is configured.
     """
     recorded()
     seat = spine.actor(actor)
@@ -4101,7 +4103,9 @@ def book_seat(actor: str = None):
     return {'seat': seat, 'verbs': {verb: None if sight is None else sight[verb]
                                     for verb in spine.package().vocabulary.VERBS},
             'demands': spine.demands(),
-            'may': may({}, None) if BOOK is None else polled(BOOK, ('seat', seat), may)}
+            'may': may({}, None) if BOOK is None else polled(BOOK, ('seat', seat), may),
+            'sees': None if spine.reaches(sight, None if BOOK is None else BOOK.named()[1])
+            else sorted({at for nodes in sight.values() for at in nodes})}
 
 
 @app.get('/book/portfolios', summary="The book's declared tree - where a position may sit")

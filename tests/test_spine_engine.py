@@ -5788,7 +5788,7 @@ def test_a_seat_reads_what_it_may_do_and_where(recorded, desk):
 
     def read(actor=None):
         answer = seat(actor).json()
-        assert sorted(answer) == ['demands', 'may', 'seat', 'verbs'], answer
+        assert sorted(answer) == ['demands', 'may', 'seat', 'sees', 'verbs'], answer
         return answer['seat'], answer['verbs'], {act: answer['demands'][act] for act in asked}
 
     assert read(DESK_FX) == (DESK_FX, dict.fromkeys(verbs), asked)
@@ -5823,17 +5823,24 @@ def test_a_seat_reads_what_it_may_do_and_where(recorded, desk):
 
 def test_a_seat_reads_at_each_node_whether_it_may_act_in_the_records_own_words(recorded, desk):
     """WHETHER A SEAT MAY ACT AT A NODE IS THE RECORD'S ANSWER (`may`), act -> node -> null or the
-    sentence the act is refused with there. With no capabilities document every act and run is
-    open. Under one, a seat granted `book` and `validate` at its FX node may fill there alone - at
-    the book and at the rates node another seat holds a position at, it reads the sentence its fill
-    at the book is then refused with, before the LSN its denial lands at - and may run a what-if
-    at the book and at its node, the queue admitting a seat that works one node of a book, but not
-    at the rates node. A seat holding no `validate` reads at the book the sentence its risk read is
-    refused with; a seat holding every verb over `*` may do everything everywhere.
+    sentence the act is refused with there, at the book, every node a position sits at and every
+    node above one. With no capabilities document every act and run is open. Under one, a seat
+    granted `book` and `validate` at its FX node may fill there alone - at the book and at the
+    rates node above another seat's position it reads the sentence its fill at the book is then
+    refused with, before the LSN its denial lands at - and may run a what-if at the book and at its
+    node, the queue admitting a seat that works one node of a book, but not at the rates node. A
+    seat holding no `validate` reads at the book the sentence its risk read is refused with; a
+    seat holding every verb over `*` may do everything everywhere.
+
+    `sees` is what the positions read shows the seat: null for one holding any verb at the book or
+    above, the FX seat its own node, whose positions are the ones it reads, and a seat holding
+    nothing no node.
 
     Killing mutations: the reach rule turned, a grant reaching the nodes ABOVE it; the queue's
     admission of a seat at a node under the book dropped; the fill's sentence spelled apart from
-    the writer's refusal.
+    the writer's refusal; `sees` asking whether the seat holds a verb everywhere rather than at
+    the book, which shows the seat granted at the book its node; the nodes above a position's
+    left out, which names the rates node nowhere.
     """
     with_client(desk)
     book, fx, rates = 'spine-desk', 'spine-desk/FX', 'spine-desk/RATES'
@@ -5841,13 +5848,14 @@ def test_a_seat_reads_at_each_node_whether_it_may_act_in_the_records_own_words(r
     def may(actor):
         return CLIENT.get('/book/seat', params={'actor': actor}).json()['may']
 
-    assert ticketed('CF-RATES', portfolio=rates).json()['written'] is True
+    assert ticketed('CF-RATES', portfolio=rates + '/EM').json()['written'] is True
     unheld = may(DESK_FX)
     assert {'fill', 'approval', 'confirmed', 'run', 'standing'} <= set(unheld)
-    assert set(unheld['run']) == {book, rates}
+    assert set(unheld['run']) == {book, rates, rates + '/EM'}
     assert {verdict for nodes in unheld.values() for verdict in nodes.values()} == {None}
     entitle(recorded, [(ACTOR, verb, '*') for verb in VERBS] + [
-        (DESK_FX, 'book', fx), (DESK_FX, 'validate', fx), (DESK_TWO, 'approve', '*')])
+        (DESK_FX, 'book', fx), (DESK_FX, 'validate', fx), (DESK_TWO, 'approve', '*'),
+        (RISK_SEAT, 'settle', book)])
     assert ticketed('CF-FX', portfolio=fx, actor=DESK_FX).json()['written'] is True
     seat = may(DESK_FX)
     assert {node: seat['fill'][node] is None for node in (book, fx, rates)} == {
@@ -5860,6 +5868,10 @@ def test_a_seat_reads_at_each_node_whether_it_may_act_in_the_records_own_words(r
     risk = CLIENT.get('/book/risk', params={'actor': DESK_TWO})
     assert risk.json()['detail'] == unrun + log.RECORDED.format(head(recorded))
     assert {verdict for nodes in may(ACTOR).values() for verdict in nodes.values()} == {None}
+    assert [CLIENT.get('/book/seat', params={'actor': actor}).json()['sees'] for actor in (
+        DESK_FX, DESK_TWO, RISK_SEAT, STRANGER)] == [[fx], None, None, []]
+    shown = CLIENT.get('/book/positions', params={'actor': DESK_FX}).json()['positions']
+    assert {row['portfolio'] for row in shown} == {fx}, shown
 
 
 def test_a_refusal_names_its_kind_beside_its_sentence(recorded, desk, monkeypatch):

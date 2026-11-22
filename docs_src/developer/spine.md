@@ -330,7 +330,9 @@ acceptance files a quote and its fill, so its control is held where either is (`
 `may` answers the verdict itself, act -> node -> null or the sentence the act is refused with
 there before its denial's LSN (`spine.may`): the writer's (`SpineLog.denied`) for each act the
 map has a seat's verb do, the queue's (`spine.admission`) for each run it admits (`RUNS`), at
-the book, each node declared or holding a position, and each node above one. **Held by**
+the book, each node declared or holding a position, and each node above one. `sees` is null
+where the seat is shown the whole book (`spine.reaches` there), else the nodes whose positions
+it is shown. **Held by**
 `test_spine_engine.py::test_a_seat_reads_what_it_may_do_and_where`,
 `::test_a_seat_reads_at_each_node_whether_it_may_act_in_the_records_own_words`, `web/scripts/desk_check.mjs`,
 `test_spine_verbs.py::test_the_back_office_is_three_seats_and_none_of_them_does_anothers_work`,
