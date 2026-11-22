@@ -74,9 +74,10 @@ INDEX_VERSION = 1
 #: the record.
 WATCHERS = []
 
-#: What a seat without the grant an act asks is told, whoever turns it away: what did not happen,
-#: who puts it right, and where the refusal stands on the record.
-DENIED = 'actor {!r} holds no {} scope over {!r}, so {}: {}. The refusal is recorded at LSN {}'
+#: What a seat without the grant an act asks is told, whoever turns it away: what did not happen
+#: and who puts it right - and once its denial has landed, where it stands (`RECORDED`).
+DENIED = 'actor {!r} holds no {} scope over {!r}, so {}: {}'
+RECORDED = '. The refusal is recorded at LSN {}'
 #: Who puts it right where the document in force simply grants the seat nothing there.
 UNGRANTED = 'a seat holding admin over {!r} can grant it'
 
@@ -635,12 +636,10 @@ class SpineLog:
             return
         refused = self._refused(event_type, body, actor, book, pending)
         if refused is not None:
-            verb, scope, doc, genesis, moved = refused
-            denial = self.refuse(actor, verb, scope, event_type)
-            shown = ANY_BOOK if scope is None else scope
-            raise CapabilityDenied(DENIED.format(
-                actor, verb, shown, 'its {} is not filed'.format(event_type),
-                self._why(doc, genesis, actor, verb, shown, moved), denial['lsn']))
+            verb, scope, _, _, moved = refused
+            said = self.denied(event_type, actor, verb, scope, moved)
+            raise CapabilityDenied(said + RECORDED.format(
+                self.refuse(actor, verb, scope, event_type)['lsn']))
         if event_type == 'policy_declared' and isinstance(body, dict) \
                 and body.get('policy') == CAPABILITIES_POLICY:
             blob = body.get('blob')
@@ -666,6 +665,15 @@ class SpineLog:
         except (CapabilityDenied, CollisionRefusal, MissingBlobRefusal):
             return None
         return beyond(doc, declared, actor)
+
+    def denied(self, event_type, actor, verb, scope, moved=None):
+        """What `actor` is told where its `event_type`, asking `verb` at `scope`, is refused under
+        the document in force at this head (`DENIED`): the sentence whether the act is met or
+        asked about before it is tried."""
+        doc, genesis = self.capabilities()
+        shown = ANY_BOOK if scope is None else scope
+        return DENIED.format(actor, verb, shown, 'its {} is not filed'.format(event_type),
+                             self._why(doc, genesis, actor, verb, shown, moved))
 
     def _why(self, doc, genesis, actor, verb, scope, moved=None):
         """The middle of a denial message: what the record says, and what would change it.

@@ -1938,38 +1938,85 @@ def admit(lane, actor_name=None, book=None):
     one the record could not attribute - and a refused seat lands its `capability_denied` in the
     writer's voice before the raise, a repeat coalescing onto the LSN it already has.
     """
+    verb, attempted, refused, anywhere = admission(lane)
+    entitled(verb, actor_name, book, attempted, refused, anywhere)
+
+
+def admission(lane):
+    """`(verb, attempted, refused, anywhere)` - what `admit` asks `entitled` of a seat putting a
+    job of `lane` on the queue."""
     standing = lane == STANDING
     # the type the lane would have filed, or the lane itself where it files none
-    entitled(MARK if standing else VALIDATE, actor_name,
-             book, STANDING_TYPE if standing else (lane or CURIOSITY),
-             'the calculation asked for does not run', anywhere=not standing)
+    return (MARK if standing else VALIDATE, STANDING_TYPE if standing else (lane or CURIOSITY),
+            'the calculation asked for does not run', not standing)
 
 
 def entitled(verb, actor_name, book, attempted, refused, anywhere=False):
     """Let this seat act under `verb` over `book` - over any node under it where `anywhere` - or
-    refuse in the record's own words, saying `refused`, the denial of `attempted` landed first.
+    refuse in the record's own words (`withheld`), the denial of `attempted` landed first.
     Every seat where no home is configured or no capabilities document is in force."""
     if not configured():
         return
-    spine = package()
 
     def asked(log):
-        document, genesis = log.capabilities()
-        if document is None:
-            return None
+        if log.capabilities()[0] is None:
+            return None, None
         subject = actor(actor_name, log)
-        held = (spine.capability.holds_any(document, subject, verb, book) if anywhere
-                else spine.capability.evaluate(document, genesis, subject, verb, book))
-        return None if held else subject
+        return subject, withheld(log, verb, subject, book, refused, anywhere)
 
-    subject = folded(asked)
-    if subject is None:
+    subject, said = folded(asked)
+    if said is None:
         return
     with writing() as log:
         denial = log.refuse(subject, verb, book, attempted)
+    raise SpineRefused(said + package().log.RECORDED.format(denial['lsn']), NOT_GRANTED)
+
+
+def withheld(log, verb, subject, book, refused, anywhere=False):
+    """What `entitled` tells `subject` acting under `verb` over `book` - over any node under it
+    where `anywhere` - under the document in force on `log`, saying `refused`, before where its
+    denial stands; None where the seat may."""
+    spine = package()
+    document, genesis = log.capabilities()
+    if (spine.capability.holds_any(document, subject, verb, book) if anywhere
+            else spine.capability.evaluate(document, genesis, subject, verb, book)):
+        return None
     over = book if book is not None else spine.capability.ANY_BOOK
-    raise SpineRefused(spine.log.DENIED.format(
-        subject, verb, over, refused, spine.log.UNGRANTED.format(over), denial['lsn']), NOT_GRANTED)
+    return spine.log.DENIED.format(subject, verb, over, refused, spine.log.UNGRANTED.format(over))
+
+
+def may(named, nodes, runs):
+    """act -> node -> None where the seat `named` may perform the act at that node of `nodes`, else
+    the sentence the record refuses it with there, before where its denial would stand: each act
+    the map in force has a seat's verb do, judged as the writer judges it (`SpineLog.denied`), and
+    each of `runs`, name -> the lane the queue admits it in (`admission`). Null throughout where no
+    capabilities document is in force."""
+    def read(log):
+        spine = package()
+        capability = spine.capability
+        document, genesis = log.capabilities()
+        acts = [act for act in capability.ACT_VERB
+                if capability.demanded(act, document) in spine.vocabulary.VERBS]
+        if document is None:
+            return {name: dict.fromkeys(nodes) for name in acts + list(runs)}
+        subject = actor(named, log)
+
+        def filed(act, node):
+            # a transition's narrower acts are filed as the transition
+            kind = act if act in spine.vocabulary.EVENT_VERB else capability.VERB_TYPES[0]
+            scope, verb = capability.scope_of(kind, None, node), capability.demanded(act, document)
+            return None if capability.evaluate(document, genesis, subject, verb, scope) \
+                else log.denied(kind, subject, verb, scope)
+
+        def admitted(lane, node):
+            verb, _, refused, anywhere = admission(lane)
+            return withheld(log, verb, subject, node, refused, anywhere)
+
+        return dict({act: {node: filed(act, node) for node in nodes} for act in acts},
+                    **{name: {node: admitted(lane, node) for node in nodes}
+                       for name, lane in runs.items()})
+
+    return folded(read)
 
 
 def firmness_policy():

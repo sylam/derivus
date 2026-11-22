@@ -302,7 +302,7 @@ naming the seat that can grant it, and beats on. **Held by**
 **What a refused seat is told.** A refusal speaks to someone at a desk. A seat without the grant
 an act asks reads one sentence, whoever turns it away (`log.DENIED`): the seat, the verb, the
 node, what did not happen, who puts it right (`log.UNGRANTED`, a seat holding `admin` over the
-node) and the LSN its denial stands at. **Held by**
+node) and, once it lands, the LSN its denial stands at (`log.RECORDED`). **Held by**
 `test_spine_engine.py::test_under_a_document_the_queue_asks_before_the_executor_does`,
 `test_service.py::test_the_market_is_the_marking_seats_on_a_recorded_desk`.
 
@@ -327,8 +327,12 @@ map as `demands` beside the nodes the seat holds each verb at, so a screen judge
 act it performs (`heldBack` in `web/src/state.ts`): the act's verb under the map in force where
 the record files one, and the verb itself where the service asks it and files nothing. An
 acceptance files a quote and its fill, so its control is held where either is (`acceptHeld`).
-**Held by**
-`test_spine_engine.py::test_a_seat_reads_what_it_may_do_and_where`, `web/scripts/desk_check.mjs`,
+`may` answers the verdict itself, act -> node -> null or the sentence the act is refused with
+there before its denial's LSN (`spine.may`): the writer's (`SpineLog.denied`) for each act the
+map has a seat's verb do, the queue's (`spine.admission`) for each run it admits (`RUNS`), at
+the book, each node declared or holding a position, and each node above one. **Held by**
+`test_spine_engine.py::test_a_seat_reads_what_it_may_do_and_where`,
+`::test_a_seat_reads_at_each_node_whether_it_may_act_in_the_records_own_words`, `web/scripts/desk_check.mjs`,
 `test_spine_verbs.py::test_the_back_office_is_three_seats_and_none_of_them_does_anothers_work`,
 `test_spine_capability.py::test_every_verb_bearing_type_refuses_an_unscoped_actor_and_records_the_refusal`,
 `::test_a_capabilities_document_that_cannot_be_evaluated_does_not_land`,

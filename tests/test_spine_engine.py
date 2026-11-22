@@ -62,8 +62,9 @@ from derivus import service, spine, structures, utils
 from derivus.config import CustomJsonEncoder
 from derivus.schema import deal_at, splice_deal, walk_job_deals
 from derivus_spine import SpineLog, canonical_bytes, init_home, verify_home
-from derivus_spine import oracle, policy, projections
+from derivus_spine import log, oracle, policy, projections
 from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
+from derivus_spine.vocabulary import VERBS
 
 import test_spine_identity
 from test_service import (FUNDED, SHORT_CALL, VANILLA, answered, file_world, recalc, xva_book,
@@ -5738,7 +5739,7 @@ def test_a_seat_reads_what_it_may_do_and_where(recorded, desk):
 
     def read(actor=None):
         answer = seat(actor).json()
-        assert sorted(answer) == ['demands', 'seat', 'verbs'], answer
+        assert sorted(answer) == ['demands', 'may', 'seat', 'verbs'], answer
         return answer['seat'], answer['verbs'], {act: answer['demands'][act] for act in asked}
 
     assert read(DESK_FX) == (DESK_FX, dict.fromkeys(verbs), asked)
@@ -5769,6 +5770,47 @@ def test_a_seat_reads_what_it_may_do_and_where(recorded, desk):
     refused = sign(DESK_TWO)
     assert refused.status_code == 422 and 'holds no mark scope' in refused.json()['detail']
     assert sign(RISK_SEAT).status_code == 200
+
+
+def test_a_seat_reads_at_each_node_whether_it_may_act_in_the_records_own_words(recorded, desk):
+    """WHETHER A SEAT MAY ACT AT A NODE IS THE RECORD'S ANSWER (`may`), act -> node -> null or the
+    sentence the act is refused with there. With no capabilities document every act and run is
+    open. Under one, a seat granted `book` and `validate` at its FX node may fill there alone - at
+    the book and at the rates node another seat holds a position at, it reads the sentence its fill
+    at the book is then refused with, before the LSN its denial lands at - and may run a what-if
+    at the book and at its node, the queue admitting a seat that works one node of a book, but not
+    at the rates node. A seat holding no `validate` reads at the book the sentence its risk read is
+    refused with; a seat holding every verb over `*` may do everything everywhere.
+
+    Killing mutations: the reach rule turned, a grant reaching the nodes ABOVE it; the queue's
+    admission of a seat at a node under the book dropped; the fill's sentence spelled apart from
+    the writer's refusal.
+    """
+    with_client(desk)
+    book, fx, rates = 'spine-desk', 'spine-desk/FX', 'spine-desk/RATES'
+
+    def may(actor):
+        return CLIENT.get('/book/seat', params={'actor': actor}).json()['may']
+
+    assert ticketed('CF-RATES', portfolio=rates).json()['written'] is True
+    unheld = may(DESK_FX)
+    assert {'fill', 'approval', 'confirmed', 'run', 'standing'} <= set(unheld)
+    assert set(unheld['run']) == {book, rates}
+    assert {verdict for nodes in unheld.values() for verdict in nodes.values()} == {None}
+    entitle(recorded, [(ACTOR, verb, '*') for verb in VERBS] + [
+        (DESK_FX, 'book', fx), (DESK_FX, 'validate', fx), (DESK_TWO, 'approve', '*')])
+    assert ticketed('CF-FX', portfolio=fx, actor=DESK_FX).json()['written'] is True
+    seat = may(DESK_FX)
+    assert {node: seat['fill'][node] is None for node in (book, fx, rates)} == {
+        book: False, fx: True, rates: False}
+    assert {node: seat['run'][node] is None for node in (book, fx, rates)} == {
+        book: True, fx: True, rates: False}
+    root = ticketed('CF-ROOT', actor=DESK_FX)
+    assert root.json()['detail'] == seat['fill'][book] + log.RECORDED.format(head(recorded))
+    unrun = may(DESK_TWO)['run'][book]
+    risk = CLIENT.get('/book/risk', params={'actor': DESK_TWO})
+    assert risk.json()['detail'] == unrun + log.RECORDED.format(head(recorded))
+    assert {verdict for nodes in may(ACTOR).values() for verdict in nodes.values()} == {None}
 
 
 def test_a_refusal_names_its_kind_beside_its_sentence(recorded, desk, monkeypatch):

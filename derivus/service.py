@@ -4035,23 +4035,39 @@ def book_worklist(actor: str = None):
         seat=None if sight is None else spine.reader(actor))
 
 
+#: The runs the queue admits that a seat's `may` answers for, by the lane `spine.admit` judges each
+#: in: a what-if on the book - its risk, a calculation, a quote, a credit charge - and the marks job.
+RUNS = {'run': spine.CURIOSITY, 'standing': spine.STANDING}
+
+
 @app.get('/book/seat', summary='What the seat asking may do, and at which nodes')
 def book_seat(actor: str = None):
-    """`{seat, verbs, demands}` - the seat this request's acts are filed under and, for every verb
-    a grant names - `book`, `approve`, `mark` and the rest - the nodes it holds that verb at, each
-    reaching every path under it: null where nothing narrows it, a grant over `*` or no
+    """`{seat, verbs, demands, may}` - the seat this request's acts are filed under and, for every
+    verb a grant names - `book`, `approve`, `mark` and the rest - the nodes it holds that verb at,
+    each reaching every path under it: null where nothing narrows it, a grant over `*` or no
     capabilities document in force, and empty where it holds it nowhere. The grants fold's own
     answer (`spine.sight`). `demands` is the map in force, act -> the verb it demands
-    (`spine.demands`), so a control asked by the act it performs is one the record clears. A
-    request naming no seat is refused as each of its acts would be. 404 where no home is
-    configured.
+    (`spine.demands`), so a control asked by the act it performs is one the record clears. `may`
+    is act -> node -> null where the seat may perform it there, else the sentence the record
+    refuses it with before where its denial would stand (`spine.may`): every act the map has a
+    seat's verb do and every run in `RUNS`, at the book, each node the record declares or holds a
+    position at, and each node above one - kept on the served book under the poll's key. A request
+    naming no seat is refused as each of its acts would be. 404 where no home is configured.
     """
     recorded()
     seat = spine.actor(actor)
     sight = spine.sight(seat)
+
+    def may(document, _):
+        held = ({spine.book_name(document)} | {row['path'] for row in spine.portfolios()}
+                | {row['portfolio'] for row in spine.positions()}) - {None}
+        nodes = {node.rsplit('/', depth)[0] for node in held for depth in range(node.count('/') + 1)}
+        return spine.may(seat, sorted(nodes), RUNS)
+
     return {'seat': seat, 'verbs': {verb: None if sight is None else sight[verb]
                                     for verb in spine.package().vocabulary.VERBS},
-            'demands': spine.demands()}
+            'demands': spine.demands(),
+            'may': may({}, None) if BOOK is None else polled(BOOK, ('seat', seat), may)}
 
 
 @app.get('/book/portfolios', summary="The book's declared tree - where a position may sit")
