@@ -5422,12 +5422,9 @@ def authored_curve(document, request):
     `derivus_bloomberg` is imported HERE for the reason `BloombergJob` imports it inside `run_job`,
     and its refusals are re-raised as the `ValueError` every /book verb answers 422 on.
     """
-    try:
-        from derivus_bloomberg import ir_curve
-        from derivus_bloomberg.errors import BloombergFXError
-    except ImportError as error:
-        raise ValueError('a curve is authored by `derivus_bloomberg`, which is not importable '
-                         '({}) - install the `desk` extra'.format(error))
+    from derivus_bloomberg import ir_curve
+    from derivus_bloomberg.errors import BloombergFXError
+
     curve, as_of = request['curve'], book_base_date(document)
     try:
         conventions = ir_curve.curve_conventions(
@@ -5497,6 +5494,12 @@ def curve_edit(document, curves, base_date, quotes={}, patch={}, held=(), stated
                    if write else outcome)
 
 
+def curve_names(prices):
+    """`(block, curve)` for each `InterestRatePrices` block of a `Market Prices` section."""
+    return [(name, name.split('.', 1)[1]) for name in sorted(prices)
+            if name.startswith(CURVE_FAMILY + '.')]
+
+
 def held_rows(name, rows):
     """The rows of `name` the screen did not believe, each named with its security and verdict."""
     return ['{} {} ({}): {}'.format(name, row.label, row.security, row.verdict) for row in rows
@@ -5508,8 +5511,8 @@ def curve_quotes(source, document, base_date=None, reading=Context):
     off `source` - `(blocks, held out, date)`.
 
     THE BLOCK IS THE CURVE'S DEFINITION, so its own conventions are what a rolled date is re-rolled
-    under and nothing is read off the seed (`desk_seed`) but the print scale. A row whose print the screen
-    refuses keeps the number it had, is held out with `Use` No and is NAMED - one dead ticker is
+    under and nothing is read off the seed (`desk_seed`) but the print scale. A row whose print
+    the screen refuses keeps the number it had, is held out with `Use` No and is NAMED - one dead ticker is
     one knot fewer where a refused strip is no curve at all - and `POST /book/curve` is what puts
     it back. A block this emitter cannot read, an older book's among them, is named and left
     exactly as it stands rather than taking the tick down with it.
@@ -5527,10 +5530,7 @@ def curve_quotes(source, document, base_date=None, reading=Context):
     dated, read, quotes, held, seed = book_base_date(document), {}, {}, [], desk_seed()
     as_of = base_date or dated
     prices = market_of(document, reading())['Market Prices']
-    for name in sorted(prices):
-        if not name.startswith(CURVE_FAMILY + '.'):
-            continue
-        curve = name.split('.', 1)[1]
+    for name, curve in curve_names(prices):
         try:
             instrument = prices[name]['instrument']
             conventions = ir_curve.block_conventions(instrument, seed, curve)
@@ -5665,9 +5665,8 @@ def curve_blocks(market, curve=None):
     what the block itself states - its curve, currencies, rows and latest print - and the
     interpolation its solved factor carries (`curve_interpolation`)."""
     blocks = {}
-    for name in sorted(market.get('Market Prices', {})):
-        named = name.split('.', 1)[1] if name.startswith(CURVE_FAMILY + '.') else None
-        if named is None or curve not in (None, named):
+    for name, named in curve_names(market.get('Market Prices', {})):
+        if curve not in (None, named):
             continue
         instrument = market['Market Prices'][name]['instrument']
         method, source = curve_interpolation(market, named)
@@ -5675,8 +5674,8 @@ def curve_blocks(market, curve=None):
             'curve': named, 'currency': instrument['Currency'],
             'discount_rate': instrument['Discount_Rate'],
             'interpolation': method, 'interpolation_source': source,
-            'snapped': max([(row.get('Timestamp') or {}).get('.Timestamp', '')
-                            for row in instrument['Points']], default=''),
+            'snapped': max([wire_stamp(row.get('Timestamp')) for row in instrument['Points']],
+                           default=''),
             'rows': [{'tenor': row.get('Tenor', ''), 'security': row.get('Security', ''),
                       'quote': row.get('Quoted_Market_Value'), 'use': row.get('Use', 'Yes')}
                      for row in instrument['Points']]}
@@ -5706,7 +5705,7 @@ def terminal_status():
     try:
         session.blpapi_module()
         present = True
-    except (BloombergUnavailable, ImportError):
+    except BloombergUnavailable:
         present = False
     return {'present': present, 'ticking': TICKER.interval if TICKER else None,
             'provisioned': discover.provisioned() is not None}
@@ -6109,13 +6108,12 @@ def curve_securities(document, mapped):
                 for _, entry in entries(mapped)}
     evidence.update(mapped.get('rejected', {}))
     prices = market_of(document)['Market Prices']
-    return [{'curve': name.split('.', 1)[1], 'tenor': row.get('Tenor', ''),
+    return [{'curve': curve, 'tenor': row.get('Tenor', ''),
              'security': row.get('Security', ''), 'quote': row.get('Quoted_Market_Value'),
-             'timestamp': (row.get('Timestamp') or {}).get('.Timestamp', ''),
+             'timestamp': wire_stamp(row.get('Timestamp')),
              'use': row.get('Use', 'Yes'),
              'evidence': evidence.get(row.get('Security', ''), UNMAPPED)}
-            for name in sorted(prices) if name.startswith(CURVE_FAMILY + '.')
-            for row in prices[name]['instrument']['Points']]
+            for name, curve in curve_names(prices) for row in prices[name]['instrument']['Points']]
 
 
 @app.get('/book/securities', summary="The ticker vocabulary, its evidence, and every knot's print")
@@ -6339,7 +6337,7 @@ def submit_verify(scope, actor=None):
     # submission clock names it: two verifications of one scope are two trips
     result_id = content_hash({'securities': scope, 'at': time.perf_counter()})
     return queued(Job(result_id, VerifyJob(scope, result_id), {}, spine.TELEMETRY, actor=actor,
-                      book=None if BOOK is None else book_name(BOOK.read()[0])))
+                      book=book_served()))
 
 
 @app.post('/book/securities/verify', summary='Re-verify the ticker vocabulary against the terminal')
@@ -6429,18 +6427,23 @@ def supply_of(factor, base_currency, seed, mapped):
     return entry, None
 
 
+def around(document, node):
+    """`document` re-wrapped around ONE deal node, its market and every other block shared rather
+    than copied, so the caller's document is left exactly where it was found."""
+    return dict(document, Calc=dict(document['Calc'], Deals=dict(
+        document['Calc']['Deals'], Deals={'Children': [node]})))
+
+
 def walked_factors(document, deal_path=None):
     """`(resolved, missing)` for the deals under one node of a document - `factor_universe` over
     that subtree against the document's own market data, with no model resolution and no pricing.
 
-    No path is the book as it stands. A path re-wraps the document around that ONE node rather
-    than copying it or editing it, so the caller's document is left exactly where it was found and
-    the market data is not duplicated to ask a question about the deals. A `Calculation` block its
-    declarations refuse is refused here in their words, the walk having nothing to answer with.
+    No path is the book as it stands; a path walks the document `around` that ONE node. A
+    `Calculation` block its declarations refuse is refused here in their words, the walk having
+    nothing to answer with.
     """
     if deal_path is not None:
-        document = dict(document, Calc=dict(document['Calc'], Deals=dict(
-            document['Calc']['Deals'], Deals={'Children': [deal_at(document, deal_path)]})))
+        document = around(document, deal_at(document, deal_path))
     universe = load(document).current_cfg.factor_universe()
     if 'calculation' in universe:
         raise ValueError('; '.join(universe['calculation']))
@@ -6489,9 +6492,7 @@ def pair_factors(document, pair):
     probe = dict(PAIR_PROBE, Currency=right, Underlying_Currency=left,
                  FX_Volatility='{}.{}'.format(left, right), Discount_Rate=utils.own_curve_name(right, factors),
                  Expiry_Date=expiry, Delivery_Date=expiry)
-    resolved, missing = walked_factors(dict(document, Calc=dict(
-        document['Calc'], Deals=dict(document['Calc']['Deals'],
-                                     Deals={'Children': [{'Instrument': {'.Deal': probe}}]}))))
+    resolved, missing = walked_factors(around(document, {'Instrument': {'.Deal': probe}}))
     unspotted = ['InterestRate.{}'.format(currency) for currency in (left, right)
                  if 'FxRate.{}'.format(currency) not in factors
                  and 'InterestRate.{}'.format(currency) not in factors]
@@ -6728,7 +6729,7 @@ class SetupJob(Progressing):
              'check': [], 'discovered': {'added': {}, 'revived': {}}},
             **fields, seconds=round(time.perf_counter() - started, 2))}}
 
-    def want(self, document, seed, mapped):
+    def want(self, document, etag, seed, mapped):
         """`({(block, key): the walk's row}, the wanted factors, the rows nothing seeds)` - the
         dependency walk of whatever this set-up names, read as the supplies that would fill it."""
         if 'pair' in self.scope:
@@ -6736,7 +6737,7 @@ class SetupJob(Progressing):
         elif 'deal' in self.scope:
             _, resolved, missing = candidate_walk(
                 document, self.scope['deal'], self.scope.get('parent_reference'),
-                load(document).validate())
+                self.book.baseline(document, etag))
         else:
             resolved, missing = walked_factors(document, self.scope.get('deal_path'))
         rows = dependency_answer(document, resolved, missing, seed, mapped)['factors']
@@ -6754,13 +6755,13 @@ class SetupJob(Progressing):
         from derivus_bloomberg.session import BloombergSession
 
         started, today = time.perf_counter(), datetime.date.today()
-        document, _ = self.book.read()
+        document, etag = self.book.read()
         dated, base = book_base_date(document), structures.base_currency(market_of(document))
         discovered, not_supplied = {'added': {}, 'revived': {}}, []
         seed, (mapped, _) = desk_seed(), desk_map()
         try:
             self.note('reading the want-list')
-            wanted, factors, not_supplied = self.want(document, seed, mapped)
+            wanted, factors, not_supplied = self.want(document, etag, seed, mapped)
             if not wanted:
                 return self.outcome(started, not_supplied=not_supplied)
             strips, routes, definitions = {}, {}, []
@@ -7008,11 +7009,26 @@ def desk_leverage_prior(pair, underlying):
     about one rate and reads the other sign on the reciprocal. The engine stays seed-agnostic and
     the seed owns its own convention. Imported inside, as every other use of that package here is.
     """
+    from derivus_bloomberg import security_map
+
     try:
-        from derivus_bloomberg import security_map
         return security_map.leverage_prior(pair, underlying=underlying)
-    except (ImportError, OSError, ValueError):
+    except (OSError, ValueError):
         return None
+
+
+def spot_model_block(document, pair, family):
+    """`(the family's calibrator, name, block)` - the quote block `family` fits `pair` off, read
+    off the book's own built surface on the ladder its `Bootstrapper Configuration` entry states,
+    under the desk's leverage prior turned onto the axis the fit will describe."""
+    calibrator, config = spot_model_family(family), load(document).current_cfg
+    params = config.params
+    fitted = utils.spot_model_pair(
+        *structures.split_pair(pair), structures.base_currency(params))[0]
+    return (calibrator,) + calibrator.fx_surface_block(
+        pair, params['Price Factors'], params['System Parameters'],
+        params['Price Factor Interpolation'], config.holidays, desk_leverage_prior(pair, fitted),
+        params['Bootstrapper Configuration'].get(calibrator.__name__))
 
 
 def spot_model_edit(document, pair, family):
@@ -7035,18 +7051,9 @@ def spot_model_edit(document, pair, family):
     configured = market_of(document)['Bootstrapper Configuration']
     if not configured:
         raise ValueError(NO_BOOTSTRAPPER)
-    calibrator = spot_model_family(family)
-    config = load(document).current_cfg
-    params = config.params
+    calibrator, name, block = spot_model_block(document, pair, family)
     # the section is keyed by what a family writes, and its entry names the stem it routes on
     entry = calibrator.__name__
-    # the seed turns its own number onto the axis the fit will describe, which is the pair's rule
-    fitted = utils.spot_model_pair(
-        *structures.split_pair(pair), params['System Parameters'].get('Base_Currency', 'USD'))[0]
-    name, block = calibrator.fx_surface_block(
-        pair, params['Price Factors'], params['System Parameters'],
-        params['Price Factor Interpolation'], config.holidays, desk_leverage_prior(pair, fitted),
-        configured.get(entry))
     market.get('Market Prices', {}).pop(name, None)
     borrowed = entry not in configured
     if borrowed:
@@ -7136,13 +7143,7 @@ def book_model(request: dict):
         pair = '{}.{}'.format(*structures.split_pair(pair))
         # the pre-flight IS the emitter, run on the read copy and thrown away: every refusal it
         # names is a fact about the book a desk must hear now rather than poll for
-        config = load(document).current_cfg
-        params = config.params
-        calibrator = spot_model_family(family)
-        block_name, _ = calibrator.fx_surface_block(
-            pair, params['Price Factors'], params['System Parameters'],
-            params['Price Factor Interpolation'], config.holidays, None,
-            params['Bootstrapper Configuration'].get(calibrator.__name__))
+        block_name = spot_model_block(document, pair, family)[1]
     except (ValueError, KeyError) as error:
         raise HTTPException(422, str(error))
     # content addressed on the book it fits: the same calibration over an unmoved book is one
@@ -7599,12 +7600,9 @@ def live_spot_crosses(base_currency, currencies, host=None, port=None):
     stamp, remembered = EXECUTOR.spot_failure
     if remembered is not None and time.monotonic() - stamp < SPOT_BACKOFF_SECONDS:
         return None, remembered
-    try:
-        from derivus_bloomberg import security_map
-        from derivus_bloomberg.discover import provisioned
-    except ImportError as error:
-        return None, NO_LIVE_SPOT.format('this desk has no Bloomberg link installed ({})'.format(
-            error))
+    from derivus_bloomberg import security_map
+    from derivus_bloomberg.discover import provisioned
+
     try:
         path = provisioned()
         if path is None:
@@ -8122,13 +8120,10 @@ def blank_book():
 
     document = json.loads(json.dumps(JOB_SKELETON))
     job_children(document)[:] = []
-    stamp = {'.Timestamp': datetime.date.today().strftime('%Y-%m-%d')}
-    document['Calc']['Calculation']['Base_Date'] = stamp
-    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
-    market['System Parameters']['Base_Date'] = stamp
+    stamp_base_date(document, datetime.date.today())
     # keyed by the Price Factors type each family writes, with the Market Prices stem it routes on
-    market['Bootstrapper Configuration'] = {'FXVol': {'Prices': 'FXVol'},
-                                            'InterestRate': {'Prices': 'InterestRate'}}
+    document['Calc']['MergeMarketData']['ExplicitMarketData']['Bootstrapper Configuration'] = {
+        'FXVol': {'Prices': 'FXVol'}, 'InterestRate': {'Prices': 'InterestRate'}}
     return document
 
 
@@ -8217,12 +8212,9 @@ def main():
             parser.error('--tick {:g} is not an interval'.format(args.tick))
         # a ticker that could never tick is a misconfiguration: a usage error at startup rather
         # than a warning every beat from a thread nobody is reading
-        from derivus_bloomberg.errors import BloombergUnavailable
-        from derivus_bloomberg.session import blpapi_module
-        try:
-            blpapi_module()
-        except BloombergUnavailable as error:
-            parser.error('--tick needs a Bloomberg terminal on this workstation - {}'.format(error))
+        if not terminal_status()['present']:
+            parser.error('--tick needs a Bloomberg terminal on this workstation, and blpapi does '
+                         'not import here')
         Metronome(args.tick).start()
 
     uvicorn.run(app, host=args.bind, port=args.port)
