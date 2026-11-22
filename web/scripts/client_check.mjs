@@ -432,7 +432,7 @@ const OTHER = 'this limit is stated in EUR and the exposure against it is report
 const LIMITS = [
   limited('WITHIN', 50000, { clients: ['WITHIN', 'OVER'] }), limited('OVER', 25000),
   limited('UNRUN', 50000, { sets: 1, unrun: 2, headroom: null }),
-  limited('NEVER', 50000, { sets: 0, unrun: 1, usage: 0, headroom: null }),
+  limited('NEVER', 50000, { sets: 0, unrun: 1, usage: null, headroom: null, breached: null }),
   limited('OTHER', 50000, { usage: null, headroom: null, breached: null, not_comparable: OTHER }),
   limited('GROUP', 90000, { clients: ['GROUP', 'WITHIN', 'OVER'] })];
 const lineOf = (read) => read && [read.figures.map((figure) => `${figure.label} ${figure.value}`)
@@ -445,7 +445,8 @@ check('a credit limit reads as the limit, the usage of the sets run and the head
       'headroom stated with a set unrun, room promised against exposure nobody has run; the '
       + 'breach flag turned, a limit within its usage flagged and one over it not; the '
       + 'not-comparable sentence swallowed, a limit in another currency read as unused; a usage '
-      + "of nothing said where no set has run; a parent's limit read as the parent's alone; or "
+      + "said where the service answers none, no set having run; a parent's limit read as the "
+      + "parent's alone; or "
       + 'the entity counted among those under it, which says every limit covers one more',
       [...LIMITS.map((entry) => lineOf(client.limitOf(entry.entity, LIMITS))),
        lineOf(client.limitOf('NONE', LIMITS)) ?? null],

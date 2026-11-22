@@ -138,7 +138,8 @@ export type Increment = {
 /** One credit limit held against the peak exposure of the netting sets drawn on it - the entity's
  * and those of every entity under it, `clients` naming them all, itself included: `sets` summed
  * into `usage` and `unrun` left out for want of a run, `headroom` stated only where none is and
- * negative where `breached`, and all three null beside the `not_comparable` sentence. On a credit
+ * negative where `breached`, `usage` and `breached` null where no set has run, and all three null
+ * beside the `not_comparable` sentence. On a credit
  * charge `usage`, `headroom` and `breached` are with the trade, `usage_without` is the usage
  * without it and `breached_without` whether that is over the limit, null where not comparable. */
 export type CreditLimit = {

@@ -444,15 +444,14 @@ export type LimitRead = {
 export function limitRead(entry: CreditLimit, under = 0): LimitRead {
   const { limit, sets, unrun, usage, headroom, usage_without: without } = entry;
   const charge = without !== undefined;
-  const stated = sets > 0 || !unrun ? usage : null;
   return {
-    currency: limit.currency, limit: limit.amount, usage: stated, headroom,
+    currency: limit.currency, limit: limit.amount, usage, headroom,
     figures: [
       { label: 'credit limit', value: limit.amount },
-      ...(stated !== null && charge && without !== null
+      ...(usage !== null && charge && without !== null
         ? [{ label: 'usage without the trade', value: without }] : []),
-      ...(stated !== null ? [{ label: charge ? 'with it' : `usage of ${plural(sets, 'set')}`,
-                               value: stated }] : []),
+      ...(usage !== null ? [{ label: charge ? 'with it' : `usage of ${plural(sets, 'set')}`,
+                              value: usage }] : []),
       ...(headroom !== null
         ? [{ label: charge ? 'headroom after it' : 'headroom', value: headroom }] : []),
     ],
