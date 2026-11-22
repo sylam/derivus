@@ -174,7 +174,8 @@ Under `DV_SPINE_HOME` a booking also needs a signed `quantity` (the position cha
 deal), an `execution_reference` and an enclosing `NettingCollateralSet` naming a counterparty, and
 every write files under the seat in `actor`. They are optional in the schema because one schema
 serves a desk with a record and one without; the service's refusal names a missing one. A delete
-records nothing, so it takes no seat. Under a capabilities document the queue admits only a named
+files nothing and asks `book` where the deal is held, so it takes `actor` too, and every write of
+the market or the date asks `mark`. Under a capabilities document the queue admits only a named
 seat, so every tool whose endpoint asks one takes `actor` as `run_calculation` does
 (`price_candidate`, `xva_increment`, `solve_deal`, `book_risk_summary`,
 `recalc_xva`, `calibrate_spot_model`, `setup_market`, `tick_market_from_bloomberg`,
@@ -182,7 +183,9 @@ seat, so every tool whose endpoint asks one takes `actor` as `run_calculation` d
 gated on the two refusals alone, never on an admitted trip.
 `describe_instrument_type` marks the fields a position scales (`sized`), flips (`side`) and settles
 cash on (`settles`). **Held by** `test_a_recorded_desk_books_and_accepts_through_the_binding`,
-`test_a_tool_that_asks_the_queue_answers_the_seat_it_names_and_refuses_none`; **Not gated:** those
+`test_a_tool_that_asks_the_queue_answers_the_seat_it_names_and_refuses_none`,
+`test_spine_engine.py::test_a_delete_asks_book_at_the_node_holding_the_position`,
+`test_service.py::test_the_market_is_the_marking_seats_on_a_recorded_desk`; **Not gated:** those
 three marks.
 
 ### Deals are addressed by position {#positional-addressing}
