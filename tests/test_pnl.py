@@ -882,7 +882,8 @@ def test_a_book_written_before_its_record_is_taken_on_as_if_it_were_booked(recor
     def risk():
         answer = CLIENT.get('/book/risk')
         assert answer.status_code == 200, answer.text
-        return answer.json()
+        # the positions are what a take-on adds; the numbers are the book's
+        return {key: value for key, value in answer.json().items() if key != 'per_position'}
 
     def carried(path):
         """What a book makes of the days after its deals stand on the record, and of a close."""

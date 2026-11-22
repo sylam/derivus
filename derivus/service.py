@@ -2086,6 +2086,31 @@ def consolidated_risk(document):
     return answer
 
 
+def marked_positions(document, risk):
+    """One row per position the record holds at a quantity on a deal the book file holds,
+    `{deal_path, portfolio, agreement, quantity, unit, value}`: `unit` the deal's mark in `risk` per
+    unit of its terms as written, its share among the positions on it (`PnL.per_unit`), and `value`
+    the position's, both null where the deal has no mark or nets to nothing. None held where no
+    home is configured."""
+    if not spine.configured():
+        return []
+    book = book_name(document)
+    rows = [row for row in spine.standing(folds=folds()) if row['quantity'] and row['book'] == book]
+    nets, held = spine._nets(book=book, rows=rows), held_at(document, {
+        row['instrument'] for row in rows})
+    marks = {row['deal_path']: row['value'] for row in risk['per_deal'] + risk['in_sets']}
+    answer = []
+    for row in rows:
+        key = (row['instrument'], row['agreement'])
+        if key in held:
+            path = held[key][0]['deal_path']
+            unit = None if marks.get(path) is None else PnL.per_unit(marks[path], nets[key])
+            answer.append({'deal_path': path, 'portfolio': row['portfolio'],
+                           'agreement': row['agreement'], 'quantity': row['quantity'],
+                           'unit': unit, 'value': None if unit is None else unit * row['quantity']})
+    return answer
+
+
 @app.get('/book/risk', summary="The book's consolidated risk - every counterparty at once")
 def book_risk(actor: str = None):
     """The consolidated view's feed: the book's mark and its whole-book gradient, in one answer.
@@ -2108,14 +2133,15 @@ def book_risk(actor: str = None):
     coordinate - `value` per unit of the factor at `level`, `risk` the same per the move `per`
     names; `quotes` is `{block, quote, value, level, risk, per}` per quote the book's factors are
     built from, `value` per unit of the quote as quoted, `quoted` the factors those rows stand for
-    and `quote_note` names each block read on its factors instead, and why.
+    and `quote_note` names each block read on its factors instead, and why. `per_position` is each
+    position's own mark (`marked_positions`), those the seat `actor` sees (`spine.visible`).
     """
     live = live_book()
     # before the cache: a warm answer served to a seat the cold one refuses is no admission
     spine.admit(spine.CURIOSITY, actor, live.named()[1])
 
-    def risk(document, _):
-        document = priced(document, 'BaseValuation')
+    def risk(served, _):
+        document = priced(served, 'BaseValuation')
         etag = risk_etag(document)
         answer = live.risk_cache.get(etag)
         if answer is None:
@@ -2124,9 +2150,11 @@ def book_risk(actor: str = None):
             except Exception as error:
                 raise Refusal(422, 'the book will not price a consolidated risk run: {}'.format(
                     error), 'unpriced')
-        return dict(answer, etag=etag)
+        return dict(answer, etag=etag, per_position=marked_positions(served, answer))
 
-    return polled(live, 'risk', risk)
+    answer = polled(live, 'risk', risk)
+    # the poll's answer is every seat's: each is shown the positions it sees
+    return dict(answer, per_position=spine.visible(answer['per_position'], spine.sight(actor)))
 
 
 # ------------------------------------------------------------------------------------------------

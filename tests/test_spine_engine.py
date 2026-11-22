@@ -5285,6 +5285,48 @@ def test_the_consolidated_risk_and_the_explain_ask_the_queue_s_question(recorded
     assert verify_home(recorded)['events'] == head(recorded)
 
 
+def test_a_position_reads_its_own_share_of_its_deals_mark(recorded, desk):
+    """EACH POSITION'S OWN MARK IS ON THE RISK ANSWER (`per_position`), the deal's mark shared by
+    what each position holds (`PnL.per_unit`): `unit` the mark per unit of the terms as written and
+    `value` that times the position's quantity, to the bit. Two positions of one unit each, at two
+    nodes, on one deal priced at its net of two read half its mark each, which add to the mark to
+    the bit (a half of a double is exact); a lone unit reads the deal's mark; a deal bought at one
+    node and sold at another nets to nothing, is priced at none and gives neither a unit nor a
+    value. A seat granted at one node reads that node's position alone.
+
+    Killing mutations: a position valued at its deal's whole mark, which reads each of the two the
+    mark and their sum twice it; the rows not narrowed to the seat's sight, which shows the seat
+    at one node the positions at the other.
+    """
+    with_client(desk)
+    two = ticketed('CF-TWO', portfolio='spine-desk/A').json()
+    lone = ticketed('CF-LONE', amount=300_000.0, portfolio='spine-desk/A').json()
+    flat = ticketed('CF-FLAT', amount=400_000.0, portfolio='spine-desk/A').json()
+    for path, reference, quantity in ((two['deal_path'], 'CF-TWO', 1.0),
+                                      (flat['deal_path'], 'CF-FLAT', -1.0)):
+        filled = CLIENT.post('/book/deals', content=dump({
+            'action': 'fill', 'deal_path': path, 'reference': reference, 'quantity': quantity,
+            'execution_reference': reference + '-B', 'portfolio': 'spine-desk/B',
+            'actor': ACTOR}), headers=JSON).json()
+        assert filled['written'] is True, filled
+    risk = CLIENT.get('/book/risk', params={'actor': ACTOR}).json()
+    marks = {row['deal_path']: row['value'] for row in risk['per_deal'] + risk['in_sets']}
+    rows = {(row['deal_path'], row['portfolio']): row for row in risk['per_position']}
+    pair = [rows[(two['deal_path'], node)] for node in ('spine-desk/A', 'spine-desk/B')]
+    assert [(row['quantity'], row['unit'] * row['quantity'] == row['value']) for row in pair] == [
+        (1.0, True), (1.0, True)]
+    assert pair[0]['value'] + pair[1]['value'] == marks[two['deal_path']] != 0.0
+    single = rows[(lone['deal_path'], 'spine-desk/A')]
+    assert single['value'] == single['unit'] == marks[lone['deal_path']] != 0.0
+    assert flat['deal_path'] not in marks
+    assert [(rows[(flat['deal_path'], node)]['unit'], rows[(flat['deal_path'], node)]['value'])
+            for node in ('spine-desk/A', 'spine-desk/B')] == [(None, None)] * 2
+    entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate')]
+            + [(STRANGER, 'validate', 'spine-desk/B')])
+    seen = CLIENT.get('/book/risk', params={'actor': STRANGER}).json()['per_position']
+    assert {row['portfolio'] for row in seen} == {'spine-desk/B'} and len(seen) == 2, seen
+
+
 def test_the_tick_and_the_verification_queue_under_the_seat_that_asked(recorded, quoting):
     """A POSTED TICK AND A VERIFICATION ARE THE CALLER'S; the metronome's beat alone is the
     deployment's. Under a document granting the hub's seat `validate`, a tick posted for a seat

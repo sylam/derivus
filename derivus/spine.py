@@ -809,11 +809,12 @@ def book_name(document):
     return named if isinstance(named, str) and named else None
 
 
-def _nets(lsn=None, book=None):
+def _nets(lsn=None, book=None, rows=None):
     """`{(instrument, agreement): net}` - every position `book` holds at `lsn`, summed over its
-    portfolios, the agreement being the set the file materialises it under."""
+    portfolios, the agreement being the set the file materialises it under; of `rows`, the
+    positions standing, where they are already read."""
     nets = {}
-    for row in positions(lsn):
+    for row in positions(lsn) if rows is None else rows:
         if row.get('book') == book:
             key = (row['instrument'], row['agreement'])
             nets[key] = nets.get(key, 0.0) + row['quantity']
@@ -2759,7 +2760,7 @@ class PnL:
                                   'nothing, so what one unit was paid is not known'.format(
                                       movement['reference'])
                             break
-                        moved.append((movement['amount'] / net, movement['asset']))
+                        moved.append((cls.per_unit(movement['amount'], net), movement['asset']))
                 for amount, currency in moved:
                     if currency not in marks['rates']:
                         why = 'the close the {} marks stood on carries no spot for {}'.format(
@@ -2831,6 +2832,12 @@ class PnL:
                     movement['effective_time'][:10], cls._filed(movement['lsn'], flows)[0], flows,
                     key[0], unknown))
         return total
+
+    @staticmethod
+    def per_unit(amount, net):
+        """What one unit carries of `amount`, among positions holding `net` units in all - each
+        sharing it by what it holds - or None where they net to nothing."""
+        return amount / net if net else None
 
     @staticmethod
     def _booked(positions, movement):

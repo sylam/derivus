@@ -481,8 +481,12 @@ the level it writes at, as `service.xva_document` and `service.consolidated_risk
   declared `side` flipped, else sizes signed). A swaption's underlying is its terms, never flipped.
   A zero net or a repeated node is ignored, not removed, so resolved paths stay valid. A block
   stating none of its amounts refuses rather than price one unit, and a structure held whole is one
-  instrument, so a position in its leg too refuses. **Held by**
-  `test_spine_engine.py::test_the_book_prices_every_position_at_its_net`, `test_position_scaling.py`.
+  instrument, so a position in its leg too refuses. The risk answer shares each node's mark among
+  the positions on it (`per_position`, `marked_positions`): `unit` the mark per unit of the terms
+  as written, the P&L's own share of an amount among positions netting to it (`PnL.per_unit`),
+  and `value` that times the position's quantity, both null at a net of nothing. **Held by**
+  `test_spine_engine.py::test_the_book_prices_every_position_at_its_net`, `test_position_scaling.py`,
+  `test_spine_engine.py::test_a_position_reads_its_own_share_of_its_deals_mark`.
 - **Observations.** Where a type declares an observation table (`schema.OBSERVES`), the fixing in
   force fills its cell for rows dated on or before the base date - a forward-dated print is legal,
   and writing it would price a barrier observed on a day yet to come. An FX cell is the ratio of its
