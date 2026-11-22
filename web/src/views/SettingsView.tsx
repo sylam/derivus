@@ -17,9 +17,10 @@ const HERE: Descriptor = { widget: 'Text', description: 'on this box', value: nu
 
 /** This workstation's first, where it reads the files a job names, which is no part of the
  * document and stands whether or not its market read; then the document's settings. What a seat
- * that may not mark needs to change either is said once above them. */
+ * that may not write the paths or the market needs to change either is said once above them. */
 export function SettingsView() {
-  const hold = heldBack(useApp().state, 'mark');
+  const { state } = useApp();
+  const hold = heldBack(state, 'paths') ?? heldBack(state, 'market_tick');
   return (
     <div className="main">
       <div className="panel">
@@ -71,7 +72,7 @@ function Stated() {
  * through, each entry edited in place and an emptied one removed, by a seat that may mark. */
 function Files() {
   const { state, dispatch } = useApp();
-  const hold = heldBack(state, 'mark');
+  const hold = heldBack(state, 'paths');
   const paths = state.paths.data;
   if (!paths) {
     return state.paths.error ? (

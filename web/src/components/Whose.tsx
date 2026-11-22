@@ -28,7 +28,7 @@ export function Whose({ path }: { path: string[] }) {
   return (
     <span className="editcell">
       <span className={block ? 'chip on' : 'chip'} title={title}>{block ? 'block' : 'file'}</span>
-      {block && file && state.source?.kind === 'book' && !heldBack(state, 'mark') && (
+      {block && file && state.source?.kind === 'book' && !heldBack(state, 'market_tick') && (
         <button className="ghost" title={`delete the block's entry - ${file}'s stands again`}
                 onClick={() => void retire()}>retire</button>
       )}

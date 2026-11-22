@@ -59,7 +59,7 @@ function CurveCard({ schema, title, block, seeded, fields, panel, declared, fact
   factors: Record<string, unknown>; typeScheme: string;
 }) {
   const { state, dispatch } = useApp();
-  const hold = heldBack(state, 'mark');
+  const hold = heldBack(state, 'curve');
   const [edit, setEdit] = useState<Editing>(() => idle(prefill(block?.curve ?? '', block ?? {},
                                                               fields)));
   const [outcome, setOutcome] = useState<CurveOutcome | null>(null);

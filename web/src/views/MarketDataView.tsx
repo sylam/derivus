@@ -83,7 +83,7 @@ export function MarketDataView() {
   const marketFile = doc.Calc.MergeMarketData?.MarketDataFile ?? '';
   const factors = market['Price Factors'] ?? {};
   const priceModels = market['Price Models'] ?? {};
-  const hold = heldBack(state, 'mark');
+  const hold = heldBack(state, 'market_tick');
   const live = state.source?.kind === 'book';
 
   return (

@@ -89,7 +89,7 @@ function SeedFields({ path, entry, onEdit }: {
 function SeedCard({ block, name, entry, onSaved }: {
   block: string; name: string; entry: unknown; onSaved: () => void;
 }) {
-  const hold = heldBack(useApp().state, 'mark');
+  const hold = heldBack(useApp().state, 'ticker_vocabulary');
   const [edited, setEdited] = useState<unknown>(null);
   const [outcome, setOutcome] = useState<SeedOutcome | null>(null);
   const [refused, setRefused] = useState<string | null>(null);
@@ -284,14 +284,13 @@ export function SecuritiesView() {
   }
 
   const saved = () => setReload((count) => count + 1);
-  // a seat that may not mark reads the vocabulary and the evidence, told once what it needs
-  const hold = heldBack(state, 'mark');
-  const note = hold && <div className="note">{hold}</div>;
-  // a verification is the marking seat's and a job of the queue, which admits under validate
+  // a seat that may not write the vocabulary or the map reads them and the evidence, told once
+  // what it needs; a verification writes the map and is a job of the queue
+  const [named, hold] = [heldBack(state, 'ticker_vocabulary'), heldBack(state, 'security_map')];
   const queueHold = runHeld(state);
   const panes: Record<string, { pages: Page[]; empty: string; head?: ReactNode }> = {
     vocabulary: { pages: vocabularyPages(answer.seed, saved), empty: 'the seed names nothing',
-                  head: note },
+                  head: named && <div className="note">{named}</div> },
     evidence: {
       pages: evidencePages(answer, hold ?? queueHold ? undefined : verify),
       empty: answer.provisioned ? 'the map carries no entry'
@@ -299,7 +298,7 @@ export function SecuritiesView() {
           + 'evidenced it',
       head: (
         <>
-          {note}
+          {hold && <div className="note">{hold}</div>}
           <div className="statusrow">
             {!hold && <Gated label="verify the whole map" hold={queueHold}>
               <button className="ghost" disabled={verify.running}

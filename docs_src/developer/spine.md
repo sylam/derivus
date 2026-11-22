@@ -948,9 +948,10 @@ queue under the seat that asked; the poll paths (a read's diary, the metronome's
 risk and diary caches, so no cached answer depends on who asked first. The web client reads the
 service's verdict on every read and run the queue admits before it asks (`heldBack` of `run`), a
 refused ask filing a denial: a credit charge, a calculation run, a quote, and a tick or a
-verification after `mark`, each control saying what holds it; and the risk and a P&L to now or
-explained (`pnlHeld`, the service's verdict on that run), which a held seat is not sent, that
-line standing in the read's place with nothing another seat read (`readAs`, `bookRisk` in
+verification after its write's own verdict, each control saying what holds it; every write of
+the market by its route's own name (`market_tick`, `curve` and the rest); and the risk and a P&L
+to now or explained (`pnlHeld`, the service's verdict on that run), which a held seat is not sent,
+that line standing in the read's place with nothing another seat read (`readAs`, `bookRisk` in
 `web/src/state.ts`). The
 P&L page opens such a seat on the last two marked days, a window that asks no what-if (`opensOn`),
 tells it where fewer are marked that such a window reads once two are (`noWindow`), and reads

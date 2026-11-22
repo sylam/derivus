@@ -149,12 +149,12 @@ export function MarketPricesView() {
   if (!doc || !schema || !market) return null;
 
   const blocks = market['Market Prices'] ?? {};
-  const hold = heldBack(state, 'mark');
-  const live = state.source?.kind === 'book' && !hold;
+  const live = state.source?.kind === 'book' && !heldBack(state, 'market_tick');
 
   return (
     <Navigator
-      screen="prices" head={<Gated hold={hold}><BloombergTick /></Gated>}
+      screen="prices"
+      head={<Gated hold={heldBack(state, 'terminal_tick')}><BloombergTick /></Gated>}
       empty="this book quotes nothing"
       pages={Object.keys(blocks).sort().map((name) => {
         const [family, ...rest] = name.split('.');

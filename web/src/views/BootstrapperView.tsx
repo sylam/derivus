@@ -186,7 +186,7 @@ export function BootstrapperView() {
   const market = marketOf(state);
   if (!doc || !schema || !market) return null;
 
-  const hold = heldBack(state, 'mark');
+  const hold = heldBack(state, 'market_configuration');
   const configure = (section: string): Configure | undefined =>
     state.source?.kind === 'book' && !hold
       ? async (entry, fields) => written(dispatch, await configureBook(section, entry, fields))

@@ -8,7 +8,7 @@
 // surface they build too, and a spot nothing quotes. The last check is what a named calculation
 // shows for a dial it does not state.
 
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { check, done, drawer, load } from './check.mjs';
 
 const desk = await load('desk');
@@ -762,6 +762,27 @@ check('every write of the market or its set-up names the seat the settings contr
       + "the curve's set-up or the vocabulary's entry - which a recording desk refuses outright",
       [await asking('marker'), await asking('')],
       [MARKET_WRITES.map((path) => [path, 'marker']), MARKET_WRITES.map((path) => [path, null])]);
+
+// --- each write of the market held by the service's verdict on that write, by the route's name
+const WRITES = { patchMarket: 'market_tick', tickMarket: 'market_tick', retireMarket: 'market_tick',
+                 tickBloomberg: 'terminal_tick', configureBook: 'market_configuration',
+                 configureCurve: 'curve', stateSurvival: 'survival_curve',
+                 configureSecurities: 'ticker_vocabulary', verifySecurities: 'security_map',
+                 savePaths: 'paths' };
+const unheld = (folder) => readdirSync(new URL(`../src/${folder}/`, import.meta.url))
+  .flatMap((file) => {
+    const text = readFileSync(new URL(`../src/${folder}/${file}`, import.meta.url), 'utf8');
+    const writers = /import \{([^}]*)\} from '\.\.\/api'/.exec(text)?.[1] ?? '';
+    const held = new Set([...text.matchAll(/heldBack\([^,]+, '(\w+)'/g)].map((hit) => hit[1]));
+    return Object.entries(WRITES).filter(([writer, key]) => !held.has(key)
+      && new RegExp(`\\b${writer}\\b`).test(writers)).map(([writer]) => `${file} ${writer}`);
+  });
+check("every screen writing the market holds its control by the service's verdict on that write, "
+      + 'by the route\'s own name, and a screen performing two writes by both',
+      "a screen held by another write's verdict, which offers a seat the service holds from a "
+      + 'survival curve its form; or a second write left to the first one\'s verdict, which '
+      + 'offers a terminal tick to a seat the service holds from it',
+      [...unheld('components'), ...unheld('views')], []);
 
 // --- a refusal told apart by its code: what a read the service refuses throws, as a view renders it
 const refusing = async (status, body) => {

@@ -458,11 +458,13 @@ export function blockHint(doc: JobDoc, path: string[]): string | undefined {
 /** What a control does, as `GET /book/seat` keys its verdicts (`may`): an act the record files, as
  * the map in force keys it - a transition's a payment's `status_transition`, a confirmation's
  * `confirmed` or a collateral movement's `collateral` - a write of the market or of this box's
- * paths, `mark`, and a run the queue admits: `run`, a what-if on the book, and a P&L read to now
- * or explained. */
+ * paths by the route's own name, and a run the queue admits: `run`, a what-if on the book, and a
+ * P&L read to now or explained. */
 export type Act = 'fill' | 'amendment' | 'quote_filed' | 'approval' | 'entity_declared'
   | 'agreement_declared' | 'official_close_declared' | 'status_transition' | 'confirmed'
-  | 'collateral' | 'mark' | 'run' | 'pnl_to_now' | 'pnl_explain';
+  | 'collateral' | 'run' | 'pnl_to_now' | 'pnl_explain' | 'market_tick' | 'terminal_tick'
+  | 'market_configuration' | 'curve' | 'survival_curve' | 'ticker_vocabulary' | 'security_map'
+  | 'paths';
 
 /** What `GET /book/seat` answered for the seat on screen, null until it is read for that seat. */
 export const grantsRead = (state: AppState) => (state.grants?.asked === state.seat ? state.grants : null);

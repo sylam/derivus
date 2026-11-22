@@ -48,7 +48,7 @@ export function CreditCard({ id, title, factor, base, convention, recording }: {
   recording: boolean;
 }) {
   const { state, dispatch } = useApp();
-  const hold = heldBack(state, 'mark');
+  const hold = heldBack(state, 'survival_curve');
   const [name, setName] = useState(id ?? '');
   const [form, setForm] = useState(() => spreadForm(factor, convention));
   const [said, setSaid] = useState<{ at: string; text: string } | null>(null);
