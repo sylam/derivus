@@ -17,7 +17,7 @@ import {
 } from '../state';
 import { formatNumber, ungrouped } from '../tokens';
 import {
-  datesOf, favour, historyOf, judgedAt, legsOf, markOf, movedTerms, noMark, positionMark,
+  datesOf, favour, historyOf, legsOf, markOf, movedTerms, noMark, positionMark,
   tradeAt, tradeName, tradeSize, unwindAgainst, unwindFill, unwindWords, wholeRecord, type Price,
 } from '../trade';
 import type { QuoteGiven } from '../types';
@@ -404,7 +404,7 @@ function Actions({ row, held, recording }: {
             an unwind is a fill, and a fill is filed on a desk that records.</div>
         ) : open.length ? open.map((position) => {
           const key = `${position.agreement}/${position.portfolio}`;
-          const kept = heldBack(state, 'fill', judgedAt([position]));
+          const kept = heldBack(state, 'fill', position.portfolio);
           return <Gated key={key} hold={kept}><Unwind row={row} position={position}
             onVerdict={setVerdict} /></Gated>;
         }) : (

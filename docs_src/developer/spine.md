@@ -358,10 +358,10 @@ the deepest node holding every position in it under the book (`capability.judged
 the positions fold and never stated by a caller. `spine.amend` and `spine.apply_lifecycle` file
 that node as the body's `portfolio`, and the oracle names a frame judged narrower than what it
 moved. An election of an instrument the record holds no position in, and one whose body names no
-node, is judged at its book. The web client holds a trade's amend at that node, and each
-position's unwind at the position's own, off the positions it reads (`judgedAt` in
-`web/src/trade.ts`). **Held by**
-`web/scripts/trade_check.mjs`,
+node, is judged at its book. Each position `GET /book/positions` answers names that node
+(`judged_at`, `spine.standing`), null where nothing of its terms is held; the web client holds a
+trade's amend at it, and each position's unwind - a fill - at the position's own `portfolio`.
+**Held by**
 `test_spine_engine.py::test_an_election_is_judged_where_its_position_sits`,
 `::test_a_declared_tree_is_where_a_book_books_and_a_restrike_is_judged`,
 `test_spine_oracle.py::test_an_election_is_judged_at_the_node_its_body_names_and_else_at_its_book`,

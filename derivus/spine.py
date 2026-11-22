@@ -1575,9 +1575,10 @@ STATUSES = ('rejected', 'pending', 'approved', 'unticketed')
 def standing(lsn=None, folds=None):
     """Every position the record holds at `lsn` with what its tickets read: each ticket its own
     `status` (`status_of`) and, where pending, `waits_on` - its tier's own sentence for the seat
-    it wants - the position the first of `STATUSES` among them and `pending` the quantity awaiting
-    a second seat. The positions fold beside the decisions fold, both ADVANCED in `folds` in one
-    open of the log - no fill is reopened."""
+    it wants - the position the first of `STATUSES` among them, `pending` the quantity awaiting
+    a second seat and `judged_at` the node an act on its instrument is judged at
+    (`capability.judged_at`), null where nothing of it is held. The positions fold beside the
+    decisions fold, both ADVANCED in `folds` in one open of the log - no fill is reopened."""
     spine = package()
 
     def waits_on(entry, status, decisions):
@@ -1587,8 +1588,8 @@ def standing(lsn=None, folds=None):
     def read(log):
         projections = spine.projections
         decisions = _state(log, projections.PROJECTORS['decisions'], lsn, folds)
-        rows = deepcopy(projections.PROJECTORS['positions'].rows(
-            _state(log, projections.PROJECTORS['positions'], lsn, folds)))
+        held = _state(log, projections.PROJECTORS['positions'], lsn, folds)
+        rows = deepcopy(projections.PROJECTORS['positions'].rows(held))
         for row in rows:
             row['tickets'] = [dict(entry, status=status, waits_on=waits_on(entry, status, decisions))
                               for entry, status in zip(row['tickets'],
@@ -1596,7 +1597,8 @@ def standing(lsn=None, folds=None):
             said = {entry['status'] for entry in row['tickets']}
             row.update(status=next((word for word in STATUSES if word in said), STATUSES[-1]),
                        pending=sum((entry['quantity'] for entry in row['tickets']
-                                    if entry['status'] == 'pending'), 0.0))
+                                    if entry['status'] == 'pending'), 0.0),
+                       judged_at=spine.capability.judged_at(held, row['instrument'], row['book']))
         return rows
 
     return folded(read)

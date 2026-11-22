@@ -9,7 +9,7 @@ import { byPath } from '../positions';
 import { verdictOf } from '../quote';
 import { heldBack, marketOf, spineOf, useApp, written } from '../state';
 import { formatNumber, type Kind } from '../tokens';
-import { judgedAt, tradeAt } from '../trade';
+import { tradeAt } from '../trade';
 import type { DealNode, JobDoc, Schema } from '../types';
 import { DealPanels, type AmendField } from './FieldView';
 
@@ -203,7 +203,7 @@ export function DealEditor({ path, node }: { path: string; node: DealNode }) {
     <>
       {said.map((words) => <div key={words} className="note">{words}</div>)}
       <DealPanels deal={node.Instrument['.Deal']} schema={state.schema} onAmend={onAmend}
-                  hold={heldBack(state, 'amendment', judgedAt(held))}
+                  hold={heldBack(state, 'amendment', held[0]?.judged_at)}
                   beside={beside} ask={recording ? RESTRIKE : undefined} />
     </>
   );

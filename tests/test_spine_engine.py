@@ -1378,11 +1378,13 @@ def test_a_declared_tree_is_where_a_book_books_and_a_restrike_is_judged(recorded
     whatever another book declared; once any node of it stands, a fill books into the book itself
     or a node declared under it, an undeclared path refusing by name with the file untouched. An
     amendment names the deepest node holding every position in the terms it restrikes - read off
-    the positions fold under the book lock, never stated by a caller - which is where it is judged.
+    the positions fold under the book lock, never stated by a caller - which is where it is judged,
+    and where each of those positions says beforehand that an act on its terms is judged.
 
     Killing mutations: the declared nodes read across every book, which refuses a book another
-    book's tree has nothing to do with; and the restrike judged at the first position holding the
-    terms rather than at the node holding them all.
+    book's tree has nothing to do with; the restrike judged at the first position holding the
+    terms rather than at the node holding them all; and a position's `judged_at` read as its own
+    portfolio, which holds a restrike at a node beside the one the record judges it at.
     """
     document = json.loads(desk.read_text())
     document['Calc']['Deals']['Deals']['Children'].append(netting_set(CLIENT_SET, 'CPTY_A'))
@@ -1409,6 +1411,12 @@ def test_a_declared_tree_is_where_a_book_books_and_a_restrike_is_judged(recorded
         ('EXEC-OPT', 'spine-desk/FX/Options'), ('EXEC-SPOT', 'spine-desk/FX/Spot'))]
     assert all(answer['written'] for answer in held), held
     assert booking('EXEC-ROOT', 'spine-desk', 'CF-ROOT').json()['written'] is True
+    assert sorted((row['reference'], row['portfolio'], row['judged_at'])
+                  for row in CLIENT.get('/book/positions').json()['positions']) == [
+        ('CF-FREE', 'spine-desk/Anywhere', 'spine-desk/Anywhere'),
+        ('CF-ROOT', 'spine-desk', 'spine-desk'),
+        ('CF-TREE', 'spine-desk/FX/Options', 'spine-desk/FX'),
+        ('CF-TREE', 'spine-desk/FX/Spot', 'spine-desk/FX')]
     amended = CLIENT.post('/book/deals', content=dump({
         'action': 'amend', 'deal_path': held[0]['deal_path'],
         'fields': {'Amount': 260_000.0}}), headers=JSON).json()
@@ -1766,7 +1774,8 @@ def test_a_position_netted_to_nothing_reads_closed_where_it_sat(recorded, desk):
         'agreement': CLIENT_SET, 'portfolio': 'spine-desk', 'book': 'spine-desk',
         'counterparty': 'CPTY_A', 'quantity': 0.0, 'clips': 2, 'amended_to': None,
         'status': 'unticketed', 'pending': 0.0, 'expired': None, 'settles': None,
-        'deal_paths': [shut['deal_path']], 'reference': 'CF-SHUT', 'object': 'FixedCashflowDeal'}
+        'judged_at': None, 'deal_paths': [shut['deal_path']], 'reference': 'CF-SHUT',
+        'object': 'FixedCashflowDeal'}
     assert [(clip['quantity'], clip['execution_reference']) for clip in closed['tickets']] == [
         (1.0, 'EXEC-1'), (-1.0, 'EXEC-2')]
 

@@ -21,6 +21,9 @@ export type Position = {
   last_lsn: number;
   /** The fill that booked it first: who filed it, where on the record and when it is true. */
   booked: { actor: string; lsn: number; at: string };
+  /** The node a restrike, an election or a delete of its terms is judged at, null where nothing
+   * of them is held and the book judges it. */
+  judged_at: string | null;
   deal_paths: string[];
   reference: string | null;
   object: string | null;
