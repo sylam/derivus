@@ -2135,12 +2135,6 @@ def book_risk(actor: str = None):
 #: How long a diary request waits on the one worker before it says so instead of hanging a client.
 DIARY_SECONDS = 300.0
 
-#: What a verb of the record answers on a desk that keeps none: the desk's user first, its
-#: operator's remedy second. The book verbs still answer: this is no failure.
-NO_RECORD = ('this desk keeps no record, so there is nothing for this to read or file on and the '
-             'book file is the whole truth here; to keep one, the operator sets {} to the home '
-             '`DV_Spine init` minted')
-
 #: What a row whose index no `fixings` policy orders says instead of a source. A reading never
 #: refuses, so the row stands due and names why the record cannot answer it.
 UNRESOLVED = ('the fixings policy in force orders no source for {}, so the record cannot say which '
@@ -2561,7 +2555,7 @@ def recorded():
     """The 404 a box that records nothing answers, asked WITHOUT a book: a replica carrying a home
     and no book still reads the record, and a fold that opens no document needs none."""
     if not spine.configured():
-        raise HTTPException(404, NO_RECORD.format(spine.SPINE_HOME))
+        raise HTTPException(404, spine.NO_RECORD.format(spine.SPINE_HOME))
 
 
 def recording():

@@ -47,7 +47,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import derivus
-from derivus import service, structures, utils
+from derivus import service, spine, structures, utils
 from derivus.config import CustomJsonEncoder
 from derivus.schema import deal_at
 from test_bloomberg_session import canned_terminal
@@ -495,7 +495,7 @@ def test_no_sentence_a_desk_reads_names_a_route_and_an_operators_part_is_listed(
     # a collector that stopped collecting would pass anything: a module constant, a table of
     # sentences, a refusal's own literal and a quote's note are each among what it read
     read = {words for _, _, words in said}
-    assert {service.NO_RECORD, log.DENIED, 'a solve names the field it moves',
+    assert {spine.NO_RECORD, log.DENIED, 'a solve names the field it moves',
             *tiers.FAILED.values()} <= read
     assert any('there is no charge to tighten' in words for words in read)
 
@@ -6928,7 +6928,7 @@ def test_a_desk_that_keeps_no_record_funds_at_what_its_document_states_and_decla
                        {'cost': 'FUND', 'benefit': 'FUND'}]
     assert row['status'] == 'done' and row['fva'] > 0.0, row
     assert [(answer.status_code, answer.json()['detail']) for answer in refused] == [
-        (404, service.NO_RECORD.format('DV_SPINE_HOME'))] * 2
+        (404, spine.NO_RECORD.format('DV_SPINE_HOME'))] * 2
 
 
 def test_a_desk_that_keeps_no_record_declares_no_credit_limit_and_claims_none(desk_xva,
@@ -6947,7 +6947,7 @@ def test_a_desk_that_keeps_no_record_declares_no_credit_limit_and_claims_none(de
                CLIENT.post('/book/limits', json={'limits': {'CPTY_A': {
                    'amount': 5e6, 'currency': 'USD'}}})]
     assert [(answer.status_code, answer.json()['detail']) for answer in refused] == [
-        (404, service.NO_RECORD.format('DV_SPINE_HOME'))] * 2
+        (404, spine.NO_RECORD.format('DV_SPINE_HOME'))] * 2
 
     recalc(['NS_A'])
     view = CLIENT.get('/book/xva').json()

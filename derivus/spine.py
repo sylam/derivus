@@ -263,13 +263,18 @@ def bearer(authorization):
                                os.environ.get(SPINE_AUDIENCE))['subject']
 
 
+#: What a verb of the record answers on a desk that keeps none: the desk's user first, its
+#: operator's remedy second. The book verbs still answer: this is no failure.
+NO_RECORD = ('this desk keeps no record, so there is nothing for this to read or file on and the '
+             'book file is the whole truth here; to keep one, the operator sets {} to the home '
+             '`DV_Spine init` minted')
+
+
 def where():
     """The home to work on, or `SpineRefused` saying the deployment configured none."""
     name = home()
     if name is None:
-        raise SpineRefused(
-            'this desk keeps no record, so there is nothing to read or file on; to keep one, the '
-            'operator sets {} to the home `DV_Spine init` minted'.format(SPINE_HOME))
+        raise SpineRefused(NO_RECORD.format(SPINE_HOME))
     return name
 
 
