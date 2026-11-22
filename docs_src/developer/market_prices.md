@@ -238,10 +238,12 @@ and the web's type check; the rendering is **Not gated**. A writing verb holds f
 `FxRate.<ccy>.Spot` onto the engine's axis, never triangulating a cross. Every wanted security is
 screened by `security_map.stale` before anything is fetched, and one late print refuses the trip,
 because a dead series keeps answering with a plausible number. A curve row the screen refuses is
-held out with `Use` No, by name: one dead ticker is one knot fewer. **Held by**
+held out with `Use` No, by name: one dead ticker is one knot fewer. A block the emitter cannot read
+is named once under `held_out` and left as it stands, a roll onto a new day included. **Held by**
 `test_service.py::test_a_stale_quote_refuses_the_tick_by_name`,
 `test_service.py::test_a_spot_print_the_terminal_will_not_stand_behind_refuses_the_tick`,
-`test_service.py::test_the_tick_values_the_books_curve_rows_and_holds_a_dead_one_out`.
+`test_service.py::test_the_tick_values_the_books_curve_rows_and_holds_a_dead_one_out`,
+`test_service.py::test_a_tick_rolling_the_book_names_a_block_it_cannot_read_once`.
 
 **The snap sets the date.** A row priced off a terminal carries the print's clock, so the curve
 verb, the tick and a set-up author on the latest print of the whole trip, a set-up's new strip and

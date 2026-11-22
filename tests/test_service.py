@@ -3030,6 +3030,29 @@ def test_the_tick_values_the_books_curve_rows_and_holds_a_dead_one_out(curve_des
     assert [row['Quoted_Market_Value'] for row in curve_block(curve_desk)['Points']] == values
 
 
+def test_a_tick_rolling_the_book_names_a_block_it_cannot_read_once(curve_desk, monkeypatch):
+    """A BLOCK THE EMITTER CANNOT READ IS NAMED ONCE on a tick whose prints roll the book: the trip
+    names it, the roll re-reading every block onto the new day names it again, and `held_out`
+    carries the one line.
+
+    Killing mutation: `curve_edit` joining the caller's held rows and the roll's without
+    `dict.fromkeys`, so the ZAR block is named twice.
+    """
+    dollars = [dict(row, security='USD{} Curncy'.format(row['tenor'])) for row in USD_ROWS]
+    assert set_up_curve(rows=dollars, curve='USD', currency='USD').status_code == 200
+    document = json.loads(curve_desk.read_text())
+    del document['Calc']['MergeMarketData']['ExplicitMarketData']['Market Prices'][
+        CURVE_BLOCK]['instrument']['Spot_Days']
+    curve_desk.write_text(json.dumps(document, indent=2), newline='\n')
+
+    result, outcome, _ = curve_tick(monkeypatch, canned(
+        {row['security']: row['quote'] for row in dollars}, stamp='2024-07-05'))
+
+    assert result['status'] == 'done' and outcome['written'] is True, outcome
+    assert outcome['base_date'] == '2024-07-05'
+    assert outcome['held_out'] == ["{} left as it stands - 'Spot_Days'".format(CURVE_BLOCK)]
+
+
 def test_a_rolled_base_date_re_authors_the_curve_rather_than_refusing(curve_desk, monkeypatch):
     """A TICK CANNOT CARRY A ROLLED DATE. `Effective_Date` and `Maturity_Date` are structure, so
     the value guard refuses them - rightly, since it cannot tell a rolled date from a mis-authored
@@ -5687,6 +5710,25 @@ def test_a_quote_with_no_map_prices_on_the_book_and_names_the_spot_it_used(quoti
         assert (row['premium'], row['strike_market'], row['solved']) == (
             same['premium'], same['strike_market'], same['solved']), row
     assert quoting.read_bytes() == before
+
+
+def test_a_terminal_that_failed_a_live_spot_is_not_asked_again_inside_the_backoff(
+        quoting, tmp_path, monkeypatch):
+    """A LIVE SPOT THAT REACHED THE TERMINAL AND FAILED IS LEARNED ONCE. On a verified desk whose
+    terminal refuses the USDZAR spot, the first quote asks it and prices on the book's spot naming
+    the refusal; the next, inside `SPOT_BACKOFF_SECONDS`, prices the same way under the same note
+    without asking, so a dead terminal costs one quote its timeout rather than every quote.
+
+    Killing mutation: `live_spot_crosses` reading no remembered failure, so the second quote asks
+    the terminal again.
+    """
+    seeded_map(tmp_path, ('fx_spot', 'USDZAR'))
+    terminal = canned_terminal(monkeypatch, canned({}, dead=['USDZAR BGN Curncy']))
+    first, second = (quote_of('ZeroCostCollar', COLLAR)['spot'] for _ in range(2))
+
+    assert first['source'] == second['source'] == 'book'
+    assert first['note'] == second['note'] and 'USDZAR BGN Curncy' in first['note'], first
+    assert terminal.asked == ['USDZAR BGN Curncy'], 'the backoff asked the terminal again'
 
 
 def test_an_unknown_quote_id_is_refused_by_its_id_and_names_no_path(quoting):

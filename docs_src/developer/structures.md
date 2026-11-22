@@ -431,6 +431,7 @@ market carried) names the files; the service's `result_id` (book etag and the re
 queued job. **Held by** `test_a_quote_is_an_act_not_a_lookup`,
 `test_a_live_cross_lands_exactly_where_engine_spot_reads_it_back`,
 `test_service.py::test_a_quote_with_no_map_prices_on_the_book_and_names_the_spot_it_used`,
+`test_service.py::test_a_terminal_that_failed_a_live_spot_is_not_asked_again_inside_the_backoff`,
 `test_spine_engine.py::test_a_quote_pins_the_book_before_the_live_spot_lands_on_its_copy`.
 
 **Accept** (`POST /book/quote {quote_id, actor}`): reads the pending file, refuses a `portfolio`
