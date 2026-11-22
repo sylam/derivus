@@ -5824,9 +5824,9 @@ def test_a_pending_quote_and_its_sheet_are_read_back_by_id(quoting, tmp_path):
     assert escaping.status_code == 422 and 'is not a quote id' in escaping.json()['detail']
 
 
-def test_a_quote_given_with_no_sheet_writer_names_the_install(quoting, tmp_path):
+def test_a_quote_given_with_no_sheet_writer_says_what_the_desk_lacks(quoting, tmp_path):
     """A sheet is the `quote` extra's and a quote never fails for want of one, so the read refuses
-    404 carrying the quote's OWN `sheet_note` - the install, not a bare miss. Authored here
+    404 carrying the quote's OWN `sheet_note` - what the desk lacks, not a bare miss. Authored here
     because that is the only way to reach the branch on a workstation that has the writer.
 
     Killing mutation: the refusal saying 'no sheet' without the note, which leaves a desk with
@@ -5835,13 +5835,12 @@ def test_a_quote_given_with_no_sheet_writer_names_the_install(quoting, tmp_path)
     filed = tmp_path / 'tmp'
     filed.mkdir(parents=True, exist_ok=True)
     (filed / 'sheetless.json').write_text(json.dumps({'quote': {'files': {
-        'sheet': None, 'sheet_note': 'no quote sheet - pip install derivus[quote]'}}}),
-        newline='\n')
+        'sheet': None, 'sheet_note': 'this desk has no spreadsheet writer'}}}), newline='\n')
 
     answer = CLIENT.get('/book/quote/sheetless/sheet')
 
     assert answer.status_code == 404
-    assert 'pip install derivus[quote]' in answer.json()['detail']
+    assert 'this desk has no spreadsheet writer' in answer.json()['detail']
     assert CLIENT.get('/book/quote/sheetless').json()['quote']['files']['sheet'] is None
 
 

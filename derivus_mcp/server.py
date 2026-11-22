@@ -1346,7 +1346,7 @@ never ran, and `note` says why (no policy declared, no two-way, or a bucket past
 The BOOK IS NOT TOUCHED. What is written is the pending trade:
     `DV_HOME/tmp/<quote_id>.json` holds the quote and its deal, with `<quote_id>.xlsx` - the sheet
     that goes to the client - beside it when the sheet writer is installed; `files` names both, and
-    `files.sheet_note` names the install when there is no sheet. A missing sheet writer never
+    `files.sheet_note` says what the desk lacks when there is no sheet. A missing sheet writer never
     refuses a quote.
 
     Then `book_quote(quote_id)` is the ACCEPTANCE that makes it a trade - call it when the client

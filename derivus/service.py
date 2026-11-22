@@ -7507,8 +7507,8 @@ def book_quote_sheet(quote_id: str, actor: str = None):
     seat `actor` the quote is shown to (`shown_quote`).
 
     The sheet is the `quote` extra's and genuinely optional: where `xlsxwriter` was not installed
-    when the quote was given, this is a 404 carrying the quote's own `sheet_note`, which names the
-    install. The quote is still there and still approvable."""
+    when the quote was given, this is a 404 carrying the quote's own `sheet_note`, which says what
+    the desk lacks. The quote is still there and still approvable."""
     pending = shown_quote(quote_id, actor)
     path = os.path.join(quote_dir(), quote_id + '.xlsx')
     if not os.path.isfile(path):
@@ -7740,8 +7740,8 @@ class StructureJob:
 
     `derivus.structures` is imported INSIDE `run_job`, the way `BloombergJob` reaches its own
     package. The sheet writer is reached the same way and is genuinely optional - `xlsxwriter` is
-    the `quote` extra, and a desk without it gets the quote with `files['sheet_note']` naming the
-    install rather than a refusal. The outcome rides the run's Stats under `Quote`.
+    the `quote` extra, and a desk without it gets the quote with `files['sheet_note']` saying what
+    it lacks rather than a refusal. The outcome rides the run's Stats under `Quote`.
 
     THE DOCUMENT TRAVELS WHOLE, which is what lets the quote read its own mandate: the book's
     `Quote Policy` block rides the copy the legs price against, so the risk-impact half is a
@@ -7793,8 +7793,8 @@ class StructureJob:
             from . import quote_sheet
         except ImportError as error:
             return {'sheet': None,
-                    'sheet_note': 'no quote sheet was written, the desk lacking what writes one '
-                                  '({}); the operator installs derivus[quote]'.format(error)}
+                    'sheet_note': 'this desk has no spreadsheet writer ({}); the quote stands and '
+                                  'is accepted all the same'.format(error)}
         path = os.path.join(directory, outcome['quote_id'] + '.xlsx')
         quote_sheet.write_sheet(path, outcome, self.document, market_of(self.document))
         return {'sheet': path}
