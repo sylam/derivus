@@ -197,17 +197,26 @@ class Service:
             self.transport['headers'] = {'Authorization': 'Bearer ' + os.getenv('DV_SPINE_TOKEN')}
 
     def request(self, method, path, **kwargs):
+        """The service's answer, or `ToolError` carrying its refusal whole - its `code`, then its
+        sentence - and, where it took the request and never answered, that a write may still land."""
         try:
             response = self.session.request(method, self.base_url + path,
                                             **dict(self.transport, **kwargs))
+        except requests.ReadTimeout as error:
+            raise ToolError('DV_Service took the request and did not answer in time ({}): what it '
+                            'asked may still land, so read what it changes before sending it '
+                            'again.'.format(error))
         except requests.RequestException as error:
             raise ToolError(
                 'DV_Service is not reachable at {}: {}. Start it with `DV_Service --book '
                 '<job file>`, or point RF_SERVICE_URL at a running one.'.format(
                     self.base_url, error))
         if response.status_code >= 400:
-            raise ToolError('DV_Service answered {} for {} {}: {}'.format(
-                response.status_code, method, path, response.text[:500]))
+            try:
+                said = '{code}: {detail}'.format(**response.json())
+            except (ValueError, KeyError, TypeError):
+                said = 'DV_Service answered {}: {}'.format(response.status_code, response.text)
+            raise ToolError(said)
         return response
 
     def call(self, method, path, **kwargs):
@@ -2115,7 +2124,7 @@ def poll_result(result_id: str, stat: str | None = None) -> dict:
 def fetch_table(result_id: str, table: str, offset: int = 0, limit: int = 50) -> dict:
     """One table of a finished run, paged and CAPPED: at most 200 rows per call, and a table wider
     than 60 columns - a scenario cube, a wide book's `Greeks_Second` - is refused by name with
-    nothing fetched, the refusal naming the file the service serves it whole as. Table names come
+    nothing fetched, the refusal saying the desk downloads it whole. Table names come
     from the result summary; a grouped table is a path (`cashflows/USD`)."""
     shape = _raw_result(result_id).get('tables', {}).get(table)
     if shape is None:
@@ -2123,10 +2132,9 @@ def fetch_table(result_id: str, table: str, offset: int = 0, limit: int = 50) ->
             result_id, table))
     if len(shape['columns']) > MAX_TABLE_COLUMNS:
         raise ToolError('{} is {} columns wide, more than the {} read here as text, so nothing was '
-                        'fetched: the service serves it whole as a file at '
-                        '/results/{}/{}?format=csv, and a narrower table of the run reads here - '
-                        'poll_result lists them.'.format(table, len(shape['columns']),
-                                                         MAX_TABLE_COLUMNS, result_id, table))
+                        'fetched: the desk downloads it whole as a CSV file, and a narrower table '
+                        'of the run reads here - poll_result lists them.'.format(
+                            table, len(shape['columns']), MAX_TABLE_COLUMNS))
     return service().call('GET', '/results/{}/{}?offset={}&limit={}'.format(
         result_id, table, offset, min(int(limit), MAX_PAGE_ROWS)))
 

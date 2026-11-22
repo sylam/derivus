@@ -324,18 +324,20 @@ def test_a_desk_that_keeps_no_record_is_told_so_and_oriented_without_its_tools(
                              for parameter in inspect.signature(tool).parameters.values()
                              if parameter.default is parameter.empty})
             asyncio.run(answer) if inspect.iscoroutine(answer) else answer
-        said = str(refusal.value)
-        assert '404' in said and 'this desk keeps no record' in said, (name, said)
+        assert str(refusal.value) == 'refused: ' + service.spine.NO_RECORD, name
     plain, recording = ({tool.name for tool in asyncio.run(mcp_server.MCP.list_tools())
                          if tool.name in mcp_server.orientation(mode)} for mode in (False, True))
     assert recording - plain == set(RECORD_TOOLS) and plain < recording
 
 
 class Down:
-    """A transport whose service is not there."""
+    """A transport whose service is not there, or that meets `error` once the request is sent."""
+
+    def __init__(self, error=None):
+        self.error = error
 
     def request(self, *args, **kwargs):
-        raise __import__('requests').exceptions.ConnectionError('refused')
+        raise self.error or __import__('requests').exceptions.ConnectionError('refused')
 
 
 def test_a_host_is_shown_the_orientation_of_the_mode_its_service_is_in(
@@ -765,7 +767,7 @@ def test_a_model_retires_an_override_and_the_files_entry_stands_again(file_book)
     assert market.read_bytes() == filed
 
     before = book.read_bytes()
-    with pytest.raises(ToolError, match="answered 422 .*'Price Factors'"):
+    with pytest.raises(ToolError, match="^refused: .*'Price Factors'"):
         mcp_server.retire_market_overrides([['Price Factors', 'FxRate.ZAR']])
     assert book.read_bytes() == before
 
@@ -1648,13 +1650,20 @@ def test_a_parent_that_takes_no_children_is_refused(book):
 
 def test_the_service_being_down_names_dv_service(book):
     """'Connection refused' tells a model nothing actionable; the refusal names the service and
-    how to start it.
+    how to start it. A request the service took and never answered is told that what it asked may
+    still land, never to start the service, which invites a write sent twice.
 
-    Killing mutation: a transport error left to propagate rather than named as the service.
+    Killing mutations: a transport error left to propagate rather than named as the service; a
+    read timeout told to start the service.
     """
     mcp_server.configure(base_url='http://nowhere', session=Down())
     with pytest.raises(ToolError, match='DV_Service'):
         mcp_server.read_book()
+    mcp_server.configure(base_url='http://nowhere', session=Down(
+        __import__('requests').exceptions.ReadTimeout('read timed out')))
+    with pytest.raises(ToolError, match='may still land') as unanswered:
+        mcp_server.book_deal(json.loads(dump(BOOKED)))
+    assert 'Start it' not in str(unanswered.value)
 
 
 def test_execute_hands_back_the_id_when_it_will_not_wait(book):
@@ -1722,7 +1731,7 @@ def test_fetch_table_is_capped_and_a_cube_is_refused():
 
     counting = Counting(TestClient(service.app))
     mcp_server.configure(base_url='http://testserver', session=counting)
-    with pytest.raises(ToolError, match=r'100 columns wide.*/results/mcp-caps/wide\?format=csv'):
+    with pytest.raises(ToolError, match=r'100 columns wide.*downloads it whole as a CSV file'):
         mcp_server.fetch_table('mcp-caps', 'wide')
     assert not any(path.endswith('/wide') for path in counting.paths)
     whole = CLIENT.get('/results/mcp-caps/wide', params={'format': 'csv'})
@@ -1922,6 +1931,22 @@ def test_a_failure_the_service_has_no_refusal_for_reaches_a_model_as_its_type_an
                          session=TestClient(service.app, raise_server_exceptions=False))
     with pytest.raises(ToolError) as refused:
         asyncio.run(mcp_server.price_candidate(deal={'.Deal': json.loads(dump(BOOKED))}))
-    assert str(refused.value) == ('DV_Service answered 500 for POST /book/price: {"detail":'
-                                  '"AttributeError: \'DeferredDeal\' object has no attribute '
-                                  '\'get\'","code":"error"}')
+    assert str(refused.value) == "error: AttributeError: 'DeferredDeal' object has no attribute 'get'"
+
+
+def test_a_refusal_reaches_a_model_whole_after_its_kind(recorded, book):
+    """The relay raises the service's refusal whole, its kind and then its sentence, and never the
+    method or the route: a survival curve for a counterparty the record does not declare, refused
+    naming the forty entities it does - over a thousand characters - reaches a model as `refused: `
+    and that sentence to its last word.
+
+    Killing mutation: the relayed body cut at 500 characters, which loses the tail of the list.
+    """
+    entities = ['LEI-{:020d}'.format(index) for index in range(40)]
+    for entity in entities:
+        mcp_server.declare_legal_entity(entity, 'Entity ' + entity[-2:])
+    with pytest.raises(ToolError) as refused:
+        mcp_server.declare_survival_curve('GHOST', 150.0)
+    said = ("counterparty 'GHOST' is no legal entity the record declares - it declares {}: declare "
+            'the entity first'.format(', '.join(entities)))
+    assert len(said) > 1000 and str(refused.value) == 'refused: ' + said
