@@ -1599,12 +1599,13 @@ def test_the_status_says_which_market_the_p_and_l_reads_and_whether_a_close_stan
     record designating none reads no market and no close, a close standing on `official` all the
     same; designating `desk-close`, which nothing is declared on, it reads that market and no
     close; a close posted, one. The answer is kept under the poll's key and a second poll with
-    nothing moved is answered what was kept.
+    nothing moved is answered what was kept. `marked` is whether the book is marked on that close
+    for its own base day: not in any of the three, and once the marks are run, it is.
 
     Killing mutations: the market read as the close verb reads it, `official` where none is
     designated, where the first state reads a close standing; `stands` read as a market
     designated, where the second does; `close` added beside the kept answer, where nothing kept
-    carries it.
+    carries it; `marked` read as a close standing (`spine_block`), where the third reads marked.
     """
     def close():
         return CLIENT.get('/book/status').json()['spine']['close']
@@ -1612,17 +1613,25 @@ def test_the_status_says_which_market_the_p_and_l_reads_and_whether_a_close_stan
     def posted():
         assert CLIENT.post('/book/close', json={'actor': ACTOR}).status_code == 200
 
+    with_client(desk)
     posted()
-    assert close() == {'market': None, 'stands': False} and spine.closes('official')
+    assert close() == {'market': None, 'stands': False, 'marked': False} and spine.closes(
+        'official')
     declare(recorded, policy.TIERS_POLICY, tiers({'name': 'auto'},
                                                  designations={spine.PNL: 'desk-close'}))
-    assert close() == {'market': 'desk-close', 'stands': False}
+    assert close() == {'market': 'desk-close', 'stands': False, 'marked': False}
     posted()
     first = close()
     kept = service.BOOK.polls.get(('status',) + service.poll_key(service.BOOK, service.xva_path()))
-    assert first == kept['spine']['close'] == {'market': 'desk-close', 'stands': True}
+    assert first == kept['spine']['close'] == {'market': 'desk-close', 'stands': True,
+                                               'marked': False}
     assert close() == first and service.BOOK.polls.get(('status',) + service.poll_key(
         service.BOOK, service.xva_path())) is kept
+    assert ticketed('CF-MARKED').json()['written'] is True
+    assert close()['marked'] is False, 'a booking marked the book'
+    marks = CLIENT.post('/book/marks', json={'actor': ACTOR})
+    assert marks.status_code == 200 and drained(marks.json())['status'] == 'done', marks.text
+    assert close() == {'market': 'desk-close', 'stands': True, 'marked': True}
 
 
 def test_a_risk_poll_with_nothing_moved_is_a_lookup_and_a_frame_that_moves_no_number_runs_nothing(

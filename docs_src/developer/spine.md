@@ -590,8 +590,10 @@ the hash of all the run reads, so a frame that moves none of it runs nothing. Th
 what a client holding the paper re-reads it on, the web client its entities and agreements
 (`paperOwed` in `web/src/state.ts`), a booking moving its holdings alone. Its `close`, beside
 `paper`, is the market the `tiers` policy designates for the P&L, null where none is, and whether
-an official close `stands` declared on it (`service.spine_block`): what a read of a marked close
-needs, as fields, so a client tells "no close stands" without reading a refusal's words.
+an official close `stands` declared on it (`service.spine_block`), and whether the book is
+`marked` on it for its own base day (`service.book_marks_on`, read only where a close stands):
+what a read of a marked close needs, as fields, so a client tells "no close stands" and "not
+marked" without reading a refusal's words.
 `GET /book/xva` reads its rows on every ask and keeps one part under the same key: `funding`, the
 two curves a recalc asked
 now would fund its FVA at (`service.funded`), read through `spine.official_calculation` as the run
