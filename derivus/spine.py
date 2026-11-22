@@ -114,6 +114,9 @@ POSITIVE = tuple(name for name, declared in vars(riskfactors).items()
 NO_PACKAGE = ('this desk is set to keep a record and the record is not installed ({}), so nothing '
               'is read or filed; the operator installs derivus[enterprise], or unsets {} to run '
               'the desk without one')
+#: The kind a refusal is told apart by (`SpineRefused.code`), a short stable name beside its
+#: sentence: an act no seat signs, a seat without the grant an act asks, and any other.
+ACTORLESS, NOT_GRANTED, REFUSED = 'no_actor', 'not_granted', 'refused'
 #: What a configured home with no actor is told. An unconfigured home says nothing at all: that is
 #: the default posture rather than an error.
 NO_ACTOR = ('no actor for this act, and the record files every act under the seat that made it, so '
@@ -150,8 +153,12 @@ class SpineRefused(ValueError):
 
     A `ValueError` on purpose: the book verbs already map one to a 422 carrying its message
     verbatim, so a refusal reaches a desk in the spine's own wording, and catching it needs no
-    import of the spine's exception tree.
+    import of the spine's exception tree. `code` is its kind, `REFUSED` where it names none.
     """
+
+    def __init__(self, sentence, code=REFUSED):
+        super().__init__(sentence)
+        self.code = code
 
 
 def home():
@@ -199,10 +206,10 @@ def actor(named=None, log=None):
     named = reader(named)
     if not named and (folded(spine.capability.state_at) if log is None
                       else log.capabilities())[0] is not None:
-        raise SpineRefused(UNNAMED)
+        raise SpineRefused(UNNAMED, ACTORLESS)
     subject = named or hub()
     if subject is None:
-        raise SpineRefused(NO_ACTOR.format(SPINE_ACTOR))
+        raise SpineRefused(NO_ACTOR.format(SPINE_ACTOR), ACTORLESS)
     if subject == spine.vocabulary.WRITER:
         raise SpineRefused(RESERVED.format(subject))
     return subject
@@ -278,11 +285,13 @@ def where():
 @contextlib.contextmanager
 def translating():
     """Every `SpineRefusal` raised inside leaves as `SpineRefused` carrying the same sentence, so a
-    desk reads the library's own words rather than a paraphrase."""
+    desk reads the library's own words rather than a paraphrase, a seat's denial named as one."""
+    spine = package()
     try:
         yield
-    except package().SpineRefusal as refusal:
-        raise SpineRefused(str(refusal)) from None
+    except spine.SpineRefusal as refusal:
+        raise SpineRefused(str(refusal), NOT_GRANTED if isinstance(
+            refusal, spine.CapabilityDenied) else REFUSED) from None
 
 
 def check_lane(lane):
@@ -1960,7 +1969,7 @@ def entitled(verb, actor_name, book, attempted, refused, anywhere=False):
         denial = log.refuse(subject, verb, book, attempted)
     over = book if book is not None else spine.capability.ANY_BOOK
     raise SpineRefused(spine.log.DENIED.format(
-        subject, verb, over, refused, spine.log.UNGRANTED.format(over), denial['lsn']))
+        subject, verb, over, refused, spine.log.UNGRANTED.format(over), denial['lsn']), NOT_GRANTED)
 
 
 def firmness_policy():

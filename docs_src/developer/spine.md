@@ -61,7 +61,9 @@ not start recording. **Held by**
 `Context` has nine delegators (`book`, `amend`, `apply_lifecycle`, `transition`, `declare_market`,
 `declare_close`, `approve`, `reject`, `pin_result`) that hand the spine engine-canonical bytes.
 `spine.writing()` holds a process lock for one act, so threads queue rather than meet `WriterBusy`.
-A `SpineRefusal` leaves as `SpineRefused`, a `ValueError`, so a 422 carries the library's sentence.
+A `SpineRefusal` leaves as `SpineRefused`, a `ValueError`, so a 422 carries the library's sentence
+and its kind (`SpineRefused.code`): `not_granted` for a `CapabilityDenied`, `no_actor` for an act
+no seat signs, `refused` otherwise, which a refusal the service respells keeps.
 
 ### The CLI {#the-cli}
 

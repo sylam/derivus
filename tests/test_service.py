@@ -1066,7 +1066,8 @@ def test_a_calculation_override_is_judged_against_its_own_declarations(book):
         'detail']
     assert outside.status_code == 422
     assert outside.json()['detail'] == "Greeks is 'Maybe', not one of All, First, No"
-    assert blank.json() == {'detail': 'Greeks is blank, not one of All, First, No'}
+    assert blank.json() == {'detail': 'Greeks is blank, not one of All, First, No',
+                            'code': 'refused'}
     assert bare.status_code == 422 and bare.json()['detail'].startswith('Base_Date must be')
     assert declared.status_code == 200
     assert CLIENT.get('/results/{}'.format(
@@ -5871,8 +5872,9 @@ def test_a_swaption_vol_reads_per_unit_its_distribution_being_each_surface_s_own
 
 def test_a_book_holding_a_deal_it_cannot_price_has_no_consolidated_risk(quoting, tmp_path):
     """`/book/risk` over a book holding the unreadable cash flow answers 422 in the skip's words,
-    with its surface refitted from its quotes and on its factors alike. Killing mutations: either
-    run of `quote_run` without `utils.run_whole` - 200, the book without CF_GAP."""
+    its kind `unpriced`, with its surface refitted from its quotes and on its factors alike.
+    Killing mutations: either run of `quote_run` without `utils.run_whole` - 200, the book without
+    CF_GAP; the refusal raised with no kind of its own, which answers `refused`."""
     quoted = json.loads(quoting.read_text())
     quoted['Calc']['Deals']['Deals']['Children'] += [
         {'Instrument': {'.Deal': json.loads(dump(deal))}} for deal in (FX_OPTION, UNREAD)]
@@ -5881,10 +5883,10 @@ def test_a_book_holding_a_deal_it_cannot_price_has_no_consolidated_risk(quoting,
         path.write_text(json.dumps(document, indent=2), newline='\n')
         service.BOOK = service.Book(str(path))
         answer = CLIENT.get('/book/risk')
-        assert (answer.status_code, answer.json().get('detail')) == (422, (
-            "the book will not price a consolidated risk run: the run skipped what it could not "
-            "price (1 Deals Skipped): FixedCashflowDeal CF_GAP ('Cannot find "
-            "InterestRate.ZAR-SWAP',) - Skipped")), (path.name, answer.json())
+        assert (answer.status_code, answer.json().get('detail'), answer.json().get('code')) == (
+            422, "the book will not price a consolidated risk run: the run skipped what it could "
+            "not price (1 Deals Skipped): FixedCashflowDeal CF_GAP ('Cannot find "
+            "InterestRate.ZAR-SWAP',) - Skipped", 'unpriced'), (path.name, answer.json())
 
 
 def curve_book(path, bootstrapper=True):

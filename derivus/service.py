@@ -73,6 +73,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 import pandas as pd
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import (PATHS_FILE, Context, bootstrappers, content_hash, dv_home, instruments, riskfactors,
                solve_deal_field, spine, structures, utils)
@@ -1051,9 +1052,9 @@ def book_open(request: dict):
     fold, and an amendment to a document from another system would append facts about it."""
     global BOOK
     if spine.configured():
-        raise HTTPException(422, 'this desk keeps a record and its book is what the record holds, '
-                                 'so a document from another system is not opened here: open it '
-                                 'on a desk that keeps no record')
+        raise Refusal(422, 'this desk keeps a record and its book is what the record holds, so a '
+                           'document from another system is not opened here: open it on a desk '
+                           'that keeps no record', 'recorded')
     over = ()
     if 'name' not in request:
         if DESK is None:
@@ -2121,8 +2122,8 @@ def book_risk(actor: str = None):
             try:
                 answer = live.risk_cache.put(etag, consolidated_risk(document))
             except Exception as error:
-                raise HTTPException(422, 'the book will not price a consolidated risk run: {}'
-                                    .format(error))
+                raise Refusal(422, 'the book will not price a consolidated risk run: {}'.format(
+                    error), 'unpriced')
         return dict(answer, etag=etag)
 
     return polled(live, 'risk', risk)
@@ -2571,15 +2572,36 @@ def recording():
     return live
 
 
+class Refusal(HTTPException):
+    """A refusal the service gives with `code`, the short stable name of its kind, beside its
+    sentence."""
+
+    def __init__(self, status, detail, code):
+        super().__init__(status, detail)
+        self.code = code
+
+
+@app.exception_handler(StarletteHTTPException)
+def refusal_answered(request, refusal):
+    """Every refusal answers its status and its sentence as `detail` beside `code`, the short
+    stable name of its kind a client branches on (RFC 9457's `type`): its own (`Refusal`), else
+    that of the record refusal it was raised in place of (`SpineRefused.code`), else `refused`."""
+    cause = refusal.__context__
+    code = getattr(refusal, 'code', None) or (
+        cause.code if isinstance(cause, spine.SpineRefused) else spine.REFUSED)
+    return JSONResponse(status_code=refusal.status_code, headers=refusal.headers,
+                        content={'detail': refusal.detail, 'code': code})
+
+
 @app.exception_handler(spine.SpineRefused)
 def unreadable_record(request, refusal):
     """A record read that cannot open what the record holds - a crypto-shredded home, a key this
-    seat was never wrapped for - answers the spine's own sentence as a 422.
+    seat was never wrapped for - answers the spine's own sentence as a 422, with its kind.
 
     A READING NEVER 500s: the home is intact and the answer is unavailable to this reader, which
     is a fact about entitlement rather than a fault in the verb.
     """
-    return JSONResponse(status_code=422, content={'detail': str(refusal)})
+    return JSONResponse(status_code=422, content={'detail': str(refusal), 'code': refusal.code})
 
 
 @app.exception_handler(utils.UnpriceableSchedule)
@@ -2587,7 +2609,7 @@ def refused_document(request, refusal):
     """A valuation run on the request thread that the engine refuses BY NAME - a schedule it will
     not read - answers the engine's own sentence as a 422, the document being what needs fixing,
     never a 500."""
-    return JSONResponse(status_code=422, content={'detail': str(refusal)})
+    return JSONResponse(status_code=422, content={'detail': str(refusal), 'code': spine.REFUSED})
 
 
 @app.exception_handler(Exception)

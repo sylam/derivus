@@ -5771,6 +5771,41 @@ def test_a_seat_reads_what_it_may_do_and_where(recorded, desk):
     assert sign(RISK_SEAT).status_code == 200
 
 
+def test_a_refusal_names_its_kind_beside_its_sentence(recorded, desk, monkeypatch):
+    """A REFUSAL CARRIES ITS KIND, `code`, a short stable name beside its sentence, so a client
+    branches on the name and never on the words: an act no seat signs is `no_actor`, with no
+    deployment seat and under a document alike; a seat without the grant is `not_granted`, whether
+    the writer turns its fill away or the queue its risk read; a document opened on a desk that
+    records is `recorded`; and a refusal of no named kind - the record's own reserved name, an
+    unknown result - is `refused`.
+
+    Killing mutations: the writer's denial translated without its kind, which answers the fill
+    `refused`; the handler of the service's own refusals removed, which answers `recorded` with no
+    `code`; the unnamed act refused without its kind.
+    """
+    with_client(desk)
+
+    def kind(answer):
+        return answer.status_code, answer.json()['code'], answer.json()['detail']
+
+    monkeypatch.delenv('DV_SPINE_ACTOR')
+    assert kind(ticketed('CF-NONE', actor=None)) == (
+        422, 'no_actor', spine.NO_ACTOR.format(spine.SPINE_ACTOR))
+    monkeypatch.setenv('DV_SPINE_ACTOR', ACTOR)
+    entitle(recorded, [(ACTOR, 'admin', '*'), (ACTOR, 'validate', '*'),
+                       (DESK_FX, 'book', 'spine-desk/FX')])
+    assert kind(CLIENT.get('/book/seat')) == (422, 'no_actor', spine.UNNAMED)
+    for answer, verb in ((ticketed('CF-ROOT', actor=DESK_FX), 'book'),
+                         (CLIENT.get('/book/risk', params={'actor': DESK_FX}), 'validate')):
+        status, code, detail = kind(answer)
+        assert (status, code) == (422, 'not_granted') and 'holds no {} scope'.format(verb) in detail
+    assert kind(CLIENT.post('/book/open', json={'name': 'FOREIGN.json', 'document': {}}))[:2] == (
+        422, 'recorded')
+    assert kind(CLIENT.get('/book/seat', params={'actor': 'writer'})) == (
+        422, 'refused', spine.RESERVED.format('writer'))
+    assert kind(CLIENT.get('/results/nothing-here'))[:2] == (404, 'refused')
+
+
 def test_a_read_naming_its_seat_needs_no_deployment_seat_where_nothing_is_enforced(recorded, desk,
                                                                                    monkeypatch):
     """A READ NEVER RUNS UNDER ITS REQUESTER, and on a home declaring no capabilities document it
