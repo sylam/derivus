@@ -8,7 +8,7 @@ import {
   type BookDealOutcome,
 } from './api';
 import { bookClock, lagsBook } from './desk';
-import { NO_PAPER, type Grouping, type Paper } from './positions';
+import { NO_PAPER, under, type Grouping, type Paper } from './positions';
 import { ranAs } from './quote';
 import { pinnedAt, readRecord, reconciledRecord, type RecordHeld } from './spine';
 import { isObject } from './tokens';
@@ -478,8 +478,8 @@ export function heldBack(state: AppState, act: Act,
   const { read } = grants;
   const verb = read?.demands[act] ?? act;
   const held = read?.verbs[verb];
-  if (!read || !held || (node !== null && held.some((at) => node === at
-    || node.startsWith(`${at}/`) || (act === 'validate' && at.startsWith(`${node}/`))))) {
+  if (!read || !held || (node !== null && held.some((at) => under(node, at)
+    || (act === 'validate' && under(at, node))))) {
     return null;
   }
   return `Needs ${verb}${held.length ? ` over ${node ?? 'the whole firm'}` : ''}: ${read.seat} `
@@ -541,9 +541,7 @@ export function noneShown(state: AppState, whole = 'The record holds none of it 
   const book = String(state.doc?.Calc.Deals.Reference ?? '');
   const held = Object.values(read?.verbs ?? {});
   const sees = [...new Set(held.flatMap((at) => at ?? [book]))].sort();
-  if (!held.length || sees.some((node) => book === node || book.startsWith(`${node}/`))) {
-    return whole;
-  }
+  if (!held.length || sees.some((node) => under(book, node))) return whole;
   return `${read!.seat} is shown none of it, ${sees.length
     ? `seeing only what sits under ${sees.join(', ')}` : 'holding no grant at any node'}`;
 }

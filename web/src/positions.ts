@@ -110,6 +110,11 @@ export const netOf = (held: Position[]): number | undefined =>
 export const byId = (positions: Position[]): Map<string, Position> =>
   new Map(positions.map((position) => [positionId(position), position]));
 
+/** Whether a slash path - a deal's in the file, a node's in the book's tree - is `node` or sits
+ * under it. */
+export const under = (path: string, node: string): boolean =>
+  path === node || path.startsWith(`${node}/`);
+
 /** The node of the file at a deal path ('0/2/1'), or undefined where it holds none. */
 export function nodeAt(nodes: DealNode[], path: string): DealNode | undefined {
   let node: DealNode | undefined;

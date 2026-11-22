@@ -109,6 +109,12 @@ check('a node carries every position whose terms it holds first; a later clip an
       + 'every node of the terms mapped, which shows the net twice where the book prices it once',
       [...positions.byPath(POSITIONS)].map(([path, held]) => [path, held.map((p) => p.portfolio)]),
       [['1/0', ['desk/Rates/EM', 'desk']], ['2/0', ['desk/Rates']]]);
+check('a node reaches itself and every path under it, and none beside or above it',
+      'a path matched by prefix, which reads desk/FX-2 as under desk/FX and a grant over one as '
+      + 'reaching the other; a node not reaching itself; or the reach read upwards',
+      [positions.under('desk/FX/Options', 'desk/FX'), positions.under('desk/FX', 'desk/FX'),
+       positions.under('desk/FX-2', 'desk/FX'), positions.under('desk', 'desk/FX')],
+      [true, true, false, false]);
 
 check('a client is read by the name legal declared, else by the id the record holds',
       'the id shown where a name is declared, or a blank where none is',

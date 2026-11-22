@@ -9,7 +9,7 @@
 // module has no vocabulary for one on purpose.
 
 import { fieldsOf, levelOnAxis } from './blotter';
-import { clientName, positionName, type Entity, type Position } from './positions';
+import { clientName, positionName, under, type Entity, type Position } from './positions';
 import {
   COLLATERAL, axisText, curveOf, formatNumber, isObject, label, tenorLabel, token, uncollateralised,
   ungrouped,
@@ -267,15 +267,14 @@ export function markHolds(held: Position[], entities: Entity[]):
 /** The positions inside each marked row, by its deal path: a position the row's node holds, or one
  * any node beneath it does. */
 export function positionsUnder(marks: DealMark[], positions: Position[]): Map<string, Position[]> {
-  const under = new Map<string, Position[]>();
+  const inside = new Map<string, Position[]>();
   for (const mark of marks) {
     if (mark.deal_path === null) continue;
     const path = mark.deal_path;
-    const held = positions.filter((position) => position.deal_paths
-      .some((at) => at === path || at.startsWith(`${path}/`)));
-    if (held.length) under.set(path, held);
+    const held = positions.filter((position) => position.deal_paths.some((at) => under(at, path)));
+    if (held.length) inside.set(path, held);
   }
-  return under;
+  return inside;
 }
 
 /** An FX spot on its pair as the market quotes it. `FxRate.ZAR` is the base currency's price of
