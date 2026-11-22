@@ -1921,4 +1921,4 @@ def test_a_failure_the_service_has_no_refusal_for_reaches_a_model_as_its_type_an
         asyncio.run(mcp_server.price_candidate(deal={'.Deal': json.loads(dump(BOOKED))}))
     assert str(refused.value) == ('DV_Service answered 500 for POST /book/price: {"detail":'
                                   '"AttributeError: \'DeferredDeal\' object has no attribute '
-                                  '\'get\'"}')
+                                  '\'get\'","code":"error"}')

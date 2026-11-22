@@ -70,6 +70,7 @@ from itertools import count, islice
 from operator import getitem
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 import pandas as pd
@@ -2654,44 +2655,38 @@ class Refusal(HTTPException):
 
 
 @app.exception_handler(StarletteHTTPException)
+@app.exception_handler(RequestValidationError)
+@app.exception_handler(spine.SpineRefused)
+@app.exception_handler(utils.UnpriceableSchedule)
+@app.exception_handler(Exception)
 def refusal_answered(request, refusal):
-    """Every refusal answers its status and its sentence as `detail` beside `code`, the short
-    stable name of its kind a client branches on (RFC 9457's `type`): its own (`Refusal`), else
-    that of the record refusal it was raised in place of (`SpineRefused.code`), else `refused`."""
+    """Every answer that is no success: its status, its sentence as `detail` and `code`, the short
+    stable name of its kind a client branches on (RFC 9457's `type`) - its own (`Refusal`,
+    `SpineRefused`), else that of the record refusal it was raised in place of, else `refused`.
+
+    A refusal raised with a status answers it; a record read this seat cannot open (`SpineRefused`:
+    A READING NEVER 500s), a schedule the engine refuses by name and a request whose body or query
+    does not read answer 422. Anything else answers 500 with `code` `error`, its `detail` the
+    exception's type and message, and is logged with its traceback; Starlette raises it again once
+    the answer is sent, for the server and for a test client that asks to see it."""
+    if isinstance(refusal, StarletteHTTPException):
+        detail = refusal.detail
+    elif isinstance(refusal, RequestValidationError):
+        detail = 'the request did not read, so nothing was done: {}'.format('; '.join(
+            '{}: {}'.format('.'.join(map(str, error['loc'])), error['msg'])
+            for error in refusal.errors()))
+    elif isinstance(refusal, (spine.SpineRefused, utils.UnpriceableSchedule)):
+        detail = str(refusal)
+    else:
+        LOG.error('%s %s failed', request.method, request.url.path, exc_info=refusal)
+        return JSONResponse(status_code=500, content={'detail': '{}: {}'.format(
+            type(refusal).__name__, refusal), 'code': 'error'})
     cause = refusal.__context__
     code = getattr(refusal, 'code', None) or (
         cause.code if isinstance(cause, spine.SpineRefused) else spine.REFUSED)
-    return JSONResponse(status_code=refusal.status_code, headers=refusal.headers,
-                        content={'detail': refusal.detail, 'code': code})
-
-
-@app.exception_handler(spine.SpineRefused)
-def unreadable_record(request, refusal):
-    """A record read that cannot open what the record holds - a crypto-shredded home, a key this
-    seat was never wrapped for - answers the spine's own sentence as a 422, with its kind.
-
-    A READING NEVER 500s: the home is intact and the answer is unavailable to this reader, which
-    is a fact about entitlement rather than a fault in the verb.
-    """
-    return JSONResponse(status_code=422, content={'detail': str(refusal), 'code': refusal.code})
-
-
-@app.exception_handler(utils.UnpriceableSchedule)
-def refused_document(request, refusal):
-    """A valuation run on the request thread that the engine refuses BY NAME - a schedule it will
-    not read - answers the engine's own sentence as a 422, the document being what needs fixing,
-    never a 500."""
-    return JSONResponse(status_code=422, content={'detail': str(refusal), 'code': spine.REFUSED})
-
-
-@app.exception_handler(Exception)
-def unrefused(request, error):
-    """Whatever a request meets that no verb refuses by name answers 500, its `detail` the
-    exception's type and message, and is logged with its traceback. Starlette raises it again once
-    the answer is sent, for the server and for a test client that asks to see it."""
-    LOG.error('%s %s failed', request.method, request.url.path, exc_info=error)
-    return JSONResponse(status_code=500, content={'detail': '{}: {}'.format(
-        type(error).__name__, error)})
+    return JSONResponse(status_code=getattr(refusal, 'status_code', 422),
+                        headers=getattr(refusal, 'headers', None),
+                        content={'detail': detail, 'code': code})
 
 
 @app.get('/book/reconcile', summary='Where the book file and the record disagree')

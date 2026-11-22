@@ -616,18 +616,20 @@ failed with, and nothing else. A run that skipped a deal or a structure it could
 partly priced book is never answered as the book; a verb that values inline, `/book/risk` or a P&L
 read, refuses `422` in the same words. A node stated `Ignore: 'True'` is counted under `Ignored`
 and an expired deal nowhere, and neither fails the run. A request meeting a failure no verb refuses
-by name answers `500` with `{detail}` naming the exception's type and message, and the service
-logs it with its traceback.
+by name answers `500` with `{detail, code}`, `detail` naming the exception's type and message and
+`code` `error`, and the service logs it with its traceback.
 
 **A refusal names its kind.** Every refusal answers `{detail, code}`: its status, its sentence, and
 `code`, a short stable name a client branches on rather than the words — `no_actor` (an act no
 seat signs), `not_granted` (a seat without the grant the act asks), `unpriced` (`/book/risk` on a
 book that will not price), `recorded` (`/book/open` on a desk that keeps a record, nothing filed
 or served), the request field a refused credit curve names - `counterparty`, `spread` or
-`recovery` (`/book/survival`) - and `refused` for every other kind. **Held by**
+`recovery` (`/book/survival`) - and `refused` for every other kind, a body or a query that does
+not read among them, whose sentence names each part that did not. **Held by**
 `test_spine_engine.py::test_a_refusal_names_its_kind_beside_its_sentence`,
 `test_service.py::test_a_book_holding_a_deal_it_cannot_price_has_no_consolidated_risk`,
-`::test_a_refused_survival_curve_names_the_field_it_is_about`.
+`::test_a_refused_survival_curve_names_the_field_it_is_about`,
+`::test_a_failure_no_verb_refuses_answers_its_type_and_message`.
 
 **Generating a client.** The service publishes its own OpenAPI document at
 `http://localhost:8000/openapi.json`, with a summary and a description on every endpoint. An SPA

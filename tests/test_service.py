@@ -1016,18 +1016,19 @@ def test_a_what_if_prices_the_candidate_and_writes_nothing(book):
 
 def test_a_failure_no_verb_refuses_answers_its_type_and_message(book, caplog):
     """A request the service has no refusal for - a candidate posted in the wire's `{".Deal":
-    ...}` shape - answers 500 with the exception's type and message as its `detail`, read through a
-    client that does not raise what the server raised, and is logged with its traceback; the file
-    never moves.
+    ...}` shape - answers 500 with the exception's type and message as its `detail` and `code`
+    `error`, read through a client that does not raise what the server raised, and is logged with
+    its traceback; the file never moves.
 
-    Killing mutation: the handler removed, which answers the bare text `Internal Server Error`.
+    Killing mutations: the handler removed, which answers the bare text `Internal Server Error`;
+    the 500 answered without its `code`.
     """
     before = book.read_bytes()
     with caplog.at_level(logging.ERROR, logger='derivus.service'):
         answer = TestClient(service.app, raise_server_exceptions=False).post(
             '/book/price', content=dump({'deal': {'.Deal': BOOKED}}), headers=JSON)
-    assert (answer.status_code, answer.text) == (
-        500, '{"detail":"AttributeError: \'DeferredDeal\' object has no attribute \'get\'"}')
+    assert (answer.status_code, answer.json()) == (500, {
+        'detail': "AttributeError: 'DeferredDeal' object has no attribute 'get'", 'code': 'error'})
     assert [record.exc_info[0] for record in caplog.records
             if record.name == 'derivus.service'] == [AttributeError]
     assert book.read_bytes() == before

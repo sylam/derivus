@@ -5929,11 +5929,12 @@ def test_a_refusal_names_its_kind_beside_its_sentence(recorded, desk, monkeypatc
     deployment seat and under a document alike; a seat without the grant is `not_granted`, whether
     the writer turns its fill away or the queue its risk read; a document opened on a desk that
     records is `recorded`; and a refusal of no named kind - the record's own reserved name, an
-    unknown result - is `refused`.
+    unknown result, a body or a query that does not read - is `refused`, in a sentence.
 
     Killing mutations: the writer's denial translated without its kind, which answers the fill
     `refused`; the handler of the service's own refusals removed, which answers `recorded` with no
-    `code`; the unnamed act refused without its kind.
+    `code`; the unnamed act refused without its kind; the handler no longer taking a request that
+    does not read, which answers FastAPI's list of errors and no `code`.
     """
     with_client(desk)
 
@@ -5956,6 +5957,13 @@ def test_a_refusal_names_its_kind_beside_its_sentence(recorded, desk, monkeypatc
     assert kind(CLIENT.get('/book/seat', params={'actor': 'writer'})) == (
         422, 'refused', spine.RESERVED.format('writer'))
     assert kind(CLIENT.get('/results/nothing-here'))[:2] == (404, 'refused')
+    unread = 'the request did not read, so nothing was done: {}'.format
+    assert [kind(answer) for answer in (
+        CLIENT.post('/validate', json=[1]), CLIENT.get('/results/x/y', params={'offset': 'abc'}),
+        CLIENT.get('/book/activity', params={'limit': 'x'}))] == [
+        (422, 'refused', unread('body: Input should be a valid dictionary'))] + [
+        (422, 'refused', unread('query.{}: Input should be a valid integer, unable to parse string '
+                                'as an integer'.format(name))) for name in ('offset', 'limit')]
 
 
 def test_a_read_naming_its_seat_needs_no_deployment_seat_where_nothing_is_enforced(recorded, desk,
