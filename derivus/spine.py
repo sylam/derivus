@@ -1729,12 +1729,9 @@ def tiers_policy():
 def tolerances(lsn=None):
     """`{result class: epsilon}` the tolerance policy standing at `lsn` declares, or nothing where
     none stands - every difference then a departure (`policy.compare`)."""
-    def read(log):
-        policy = package().policy
-        return (policy.in_force(log, policy.TOLERANCE_POLICY, lsn)[1] or {}).get(
-            policy.TOLERANCE_SECTION, {})
-
-    return folded(read)
+    policy = package().policy
+    return folded(lambda log: policy.section_in_force(
+        log, policy.TOLERANCE_POLICY, policy.TOLERANCE_SECTION, lsn))
 
 
 def quote_at(lsn, quote_id):

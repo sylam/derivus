@@ -658,6 +658,12 @@ def tiers_in_force(log, lsn=None):
     return in_force(log, TIERS_POLICY, lsn)[1]
 
 
+def section_in_force(log, policy, section, lsn=None):
+    """What the `section` of the `policy` standing at `lsn` declares, empty where this home
+    declared none."""
+    return (in_force(log, policy, lsn)[1] or {}).get(section, {})
+
+
 def calculations_in_force(log, lsn=None):
     """`{calculation type: block}` the calculation policy standing at `lsn` declares, empty where
     this home declared none.
@@ -665,7 +671,7 @@ def calculations_in_force(log, lsn=None):
     Absence is neither a refusal nor a default: a home declaring no calculation policy has not
     said what an official run runs at, so each runs at what its own document states.
     """
-    return (in_force(log, CALCULATION_POLICY, lsn)[1] or {}).get(CALCULATION_SECTION, {})
+    return section_in_force(log, CALCULATION_POLICY, CALCULATION_SECTION, lsn)
 
 
 def limits_in_force(log, lsn=None):
@@ -675,4 +681,4 @@ def limits_in_force(log, lsn=None):
     Absence is neither a refusal nor a default: a home declaring no limits policy holds nobody's
     exposure against anything, so no reader claims a limit, a usage or a headroom.
     """
-    return (in_force(log, LIMITS_POLICY, lsn)[1] or {}).get(LIMITS_SECTION, {})
+    return section_in_force(log, LIMITS_POLICY, LIMITS_SECTION, lsn)
