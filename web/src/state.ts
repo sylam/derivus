@@ -8,7 +8,7 @@ import {
   type BookDealOutcome,
 } from './api';
 import { bookClock, lagsBook } from './desk';
-import { NO_PAPER, under, type Grouping, type Paper } from './positions';
+import { NO_PAPER, type Grouping, type Paper } from './positions';
 import { ranAs } from './quote';
 import { pinnedAt, readRecord, reconciledRecord, type RecordHeld } from './spine';
 import { isObject } from './tokens';
@@ -548,18 +548,14 @@ export const unread = (read: { data: unknown; error?: string | null }): string |
     : read.data === null ? 'reading the record…' : null);
 
 /** What a seat shown nothing of a thing on the record is told, once the read answered (`unread`) -
- * no position in a trade, no row of its history or of the record's strip - the record showing a
- * seat what sits under the nodes it holds a grant at: `whole`, that the record holds none, where it
- * is shown the whole book - a node at or above it, or no grants read - and else that the seat is
- * shown none, with what it sees. */
+ * no position in a trade, no row of its history or of the record's strip: `whole`, that the record
+ * holds none, where the service answers it is shown the whole book (`sees` null) or that is not
+ * read, and else that the seat is shown none, with the nodes it is shown. */
 export function noneShown(state: AppState, whole = 'The record holds none of it now'): string {
   const read = grantsRead(state)?.read;
-  const book = String(state.doc?.Calc.Deals.Reference ?? '');
-  const held = Object.values(read?.verbs ?? {});
-  const sees = [...new Set(held.flatMap((at) => at ?? [book]))].sort();
-  if (!held.length || sees.some((node) => under(book, node))) return whole;
-  return `${read!.seat} is shown none of it, ${sees.length
-    ? `seeing only what sits under ${sees.join(', ')}` : 'holding no grant at any node'}`;
+  if (!read?.sees) return whole;
+  return `${read.seat} is shown none of it, ${read.sees.length
+    ? `seeing only what sits under ${read.sees.join(', ')}` : 'holding no grant at any node'}`;
 }
 
 /** What the XVA table says where it shows nothing to act on: to a seat shown the whole book

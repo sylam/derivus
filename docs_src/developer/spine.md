@@ -1015,9 +1015,9 @@ seat gave itself (`quotes_shown`), one the seat is not shown answering as an id 
 nothing under. The seat a read is made as is its token's, another name refused, else the one it
 names (`spine.reader`), which `spine.sight` and the worklist read too.
 A trade's page tells a seat shown no position in it, no fill of it, no quote that landed at it or
-no row of its history that the record holds none only where the seat holds a grant at the book or
-above it, and else that the
-seat is shown none, with the nodes it sees; the record's strip says the same to a seat shown no
+no row of its history that the record holds none only where `GET /book/seat` answers that the
+seat is shown the whole book (`sees` null), and else that the seat is shown none, with the nodes it
+sees; the record's strip says the same to a seat shown no
 row (`noneShown` in `web/src/state.ts`). The book marks a node two positions hold at their net, and
 a screen showing one of them shows the risk answer's own share of that mark for the position
 (`per_position`, read by `markShown` in `web/src/trade.ts`), off a risk read of the book as it

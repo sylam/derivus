@@ -525,6 +525,8 @@ export type SettlementState = { fields: string[]; collateral_columns: string[] }
 export type SeatGrants = {
   seat: string; verbs: Record<string, string[] | null>; demands: Record<string, string>;
   may: Record<string, Record<string, string | null>>;
+  /** The nodes the seat is shown, sorted - none where it holds nothing - null for the whole book. */
+  sees: string[] | null;
 };
 
 /** `GET /book/close/check` - whether a close on `date` is legal, and the diary rows it waits on. */

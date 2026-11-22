@@ -527,21 +527,20 @@ check('a field naming no factor never walks the market',
       [walked, desk.factorNames(named(['FxRate']), COUNTED), walked], [0, ['ZAR'], 1]);
 
 // --- what the seat may do: one rule over GET /book/seat
-const verbs = (held) => ({ book: [], approve: [], mark: [], document: [], settle: [], confirm: [],
-                            collateral: [], validate: [], admin: [], ...held });
 // the map GET /book/seat answers where no capabilities document moves an act
 const DEMANDS = { fill: 'book', amendment: 'book', quote_filed: 'book', approval: 'approve',
                   entity_declared: 'document',
                   agreement_declared: 'document', official_close_declared: 'mark',
                   status_transition: 'settle', confirmed: 'confirm', collateral: 'collateral' };
-const seated = (grants, seat = 'sales-1', extra = {}, may = {}) => ({
+// a seat whose `GET /book/seat` answers `read` over a seat shown the whole book; null, unread
+const seated = (read, seat = 'sales-1', extra = {}) => ({
   source: { kind: 'book' }, record: { spine: { lsn: 1 } }, seat,
   doc: { Calc: { Deals: { Reference: 'HARBOURLINE' } } },
-  grants: grants && { asked: seat, read: { seat, verbs: verbs(grants), demands: DEMANDS, may },
-                      refused: null },
+  grants: read && { asked: seat, refused: null,
+                    read: { seat, verbs: {}, demands: DEMANDS, may: {}, sees: null, ...read } },
   ...extra });
-// a seat whose `GET /book/seat` answers `may`, its verdict per act and node
-const mays = (may, extra = {}) => seated({}, 'sales-1', extra, may);
+// one whose answer gives `may`, its verdict per act and node
+const mays = (may, extra = {}) => seated({ may }, 'sales-1', extra);
 check('the seat a client acts as is the one the service answers its acts are filed under, a '
       + "token's with no seat in the header's box; the box's own until that is read for it, and "
       + 'on a desk that asks no grants',
@@ -556,15 +555,14 @@ const NONE = 'The record holds none of it now';
 check('a seat shown no position in a trade is told the record holds none only where it is shown '
       + 'the whole book; a seat seeing part of it, another book or nothing is told it is shown '
       + 'none, and what it sees',
-      'the record said to hold none to a seat lacking sight of the node, which tells it a trade '
-      + 'on the record is not; a node matched by prefix, which reads a grant over HARBOUR as the '
-      + 'whole of HARBOURLINE; or a grant nothing narrows, or grants not yet read, taken for no '
-      + 'sight',
-      [state.noneShown(seated({ book: ['HARBOURLINE'] })), state.noneShown(seated({ validate: null })),
-       state.noneShown(seated(null)),
-       state.noneShown(seated({ book: ['HARBOURLINE/FX'], validate: ['HARBOURLINE/FX'] }, 'sales-9')),
-       state.noneShown(seated({ book: ['HARBOUR'] }, 'sales-9')), state.noneShown(seated({}, 'sales-9'))],
-      [NONE, NONE, NONE, 'sales-9 is shown none of it, seeing only what sits under HARBOURLINE/FX',
+      "the record said to hold none to a seat the service shows part of the book, which tells it "
+      + 'a trade on the record is not; a seat shown nothing read as shown the whole book; or '
+      + 'grants not yet read taken for no sight',
+      [state.noneShown(seated({})), state.noneShown(seated(null)),
+       state.noneShown(seated({ sees: ['HARBOURLINE/FX'] }, 'sales-9')),
+       state.noneShown(seated({ sees: ['HARBOUR'] }, 'sales-9')),
+       state.noneShown(seated({ sees: [] }, 'sales-9'))],
+      [NONE, NONE, 'sales-9 is shown none of it, seeing only what sits under HARBOURLINE/FX',
        'sales-9 is shown none of it, seeing only what sits under HARBOUR',
        'sales-9 is shown none of it, holding no grant at any node']);
 
@@ -576,10 +574,10 @@ check("a seat shown the whole book is told each place's own sentence - no fill o
       "the place's sentence dropped for the trade's, which tells the reader of an empty strip "
       + "that the record holds none of it now; or the place's sentence said to a seat shown "
       + 'none, which tells it nothing has been recorded on a record that holds the book',
-      [state.noneShown(seated({ book: ['HARBOURLINE'] }), YET), state.noneShown(seated(null), YET),
-       state.noneShown(seated({ book: ['HARBOURLINE/FX'] }, 'sales-9'), YET),
-       state.noneShown(seated({ book: ['HARBOURLINE'] }), NO_QUOTE),
-       state.noneShown(seated({ book: ['HARBOURLINE/FX'] }, 'sales-9'), NO_QUOTE)],
+      [state.noneShown(seated({}), YET), state.noneShown(seated(null), YET),
+       state.noneShown(seated({ sees: ['HARBOURLINE/FX'] }, 'sales-9'), YET),
+       state.noneShown(seated({}), NO_QUOTE),
+       state.noneShown(seated({ sees: ['HARBOURLINE/FX'] }, 'sales-9'), NO_QUOTE)],
       [YET, YET, 'sales-9 is shown none of it, seeing only what sits under HARBOURLINE/FX',
        NO_QUOTE, 'sales-9 is shown none of it, seeing only what sits under HARBOURLINE/FX']);
 check('a read of the record not answered yet is said as being read and a refused one in its '
@@ -597,17 +595,17 @@ check('an XVA table with nothing to act on says every run is done, and on a desk
       + 'that no trade waits, to a seat shown the whole book; a seat shown none of it is told that',
       'the sentence said whatever the seat is shown, which tells a seat shown no trade that sets '
       + 'never run have a run that is done; or the second seat named on a desk that has none',
-      [state.nothingWrong(seated({ book: ['HARBOURLINE'] })),
+      [state.nothingWrong(seated({})),
        state.nothingWrong(seated(null, 'sales-1', { record: { spine: null } })),
-       state.nothingWrong(seated({ book: ['HARBOURLINE/FX'] }, 'sales-9'))],
+       state.nothingWrong(seated({ sees: ['HARBOURLINE/FX'] }, 'sales-9'))],
       [`${DONE}, and no trade waits on a second seat`, DONE,
        'sales-9 is shown none of it, seeing only what sits under HARBOURLINE/FX']);
 check('a P&L answering no row says in its table\'s place that no position stood in the window and '
       + 'scope, to a seat shown the whole book; a seat shown none of it is told that',
       'the sentence said whatever the seat is shown, which tells a seat shown no position that '
       + 'the book held none; or an empty table left under a total of nothing',
-      [state.noPositions(seated({ book: ['HARBOURLINE'] })),
-       state.noPositions(seated({ book: ['HARBOURLINE/FX'] }, 'sales-9'))],
+      [state.noPositions(seated({})),
+       state.noPositions(seated({ sees: ['HARBOURLINE/FX'] }, 'sales-9'))],
       ['No position stood in this window and scope',
        'sales-9 is shown none of it, seeing only what sits under HARBOURLINE/FX']);
 
@@ -650,7 +648,7 @@ check('a read the grants gate waits on a desk that records until they are read f
       + 'files its denial; a plain desk made to wait on grants it never reads; or a grants read '
       + 'that failed read as one still owed, which leaves the risk unread for good',
       [state.grantsOwed(seated(null)), state.grantsOwed({ ...seated({}), seat: 'sales-9' }),
-       state.grantsOwed(seated({ validate: null })),
+       state.grantsOwed(seated({})),
        state.grantsOwed(seated(null, '', { grants: { asked: '', read: null, refused: NO_SEAT } })),
        state.grantsOwed(seated(null, 'sales-1', { grants: UNREAD })),
        state.grantsOwed(seated(null, 'sales-1', { record: { spine: null } })),
