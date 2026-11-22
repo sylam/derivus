@@ -74,14 +74,14 @@ export function markShown(marks: DealMark[], path: string, held: Map<string, Pos
 
 /** Why a trade's page reads no mark of the trade's `own` off the risk as its screen shows it
  * (`bookRisk`), null where it reads one: the line holding the seat from the read or the service's
- * refusal, that the book is pricing where nothing has answered, and else that the answer holds no
- * row of its own - the book marking a trade the record `shut` at nothing. */
-export function noMark(risk: { data: unknown; error: string | null }, own?: DealMark,
-                       shut = false): string | null {
+ * refusal, that the book is pricing where nothing has answered, and else `none`, that the answer
+ * holds no row of its own - the book marking a trade the record `shut` at nothing. */
+export function noMark(risk: { data: unknown; error: string | null }, own?: DealMark, shut = false,
+                       none = 'The risk answer holds no mark of this trade\'s own.'): string | null {
   if (risk.error) return risk.error;
   if (!risk.data) return 'pricing the book…';
   return own ? null : shut ? 'Closed: the record holds none of it, so the book marks it at nothing.'
-    : 'The risk answer holds no mark of this trade\'s own.';
+    : none;
 }
 
 /** Every row a read of the record answers - the whole record, or one trade's rows - a page at a

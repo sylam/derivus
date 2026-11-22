@@ -19,7 +19,7 @@ import {
 import { pinnedAt } from '../spine';
 import { bookRisk, marketOf, opened, riskNow, standing, useApp, useRead } from '../state';
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
-import { markOf, markShown, wholeRecord } from '../trade';
+import { markOf, markShown, noMark, wholeRecord } from '../trade';
 import type {
   ActivityRow, BookRisk, BookXva, Market, Schema, SettlementState, XvaSet,
 } from '../types';
@@ -302,9 +302,8 @@ function OnBook({ own, reads, rows, market, schema }: {
                 {closed ? `, ${closed} closed` : ''}</span>
               <span>
                 {mark ? <>marked <b>{markText(mark.value, risk!.currency)}</b>, read {stampText(risk!.as_of)}</>
-                  : reads.risk.error ? `no mark${reads.risk.joiner}${reads.risk.error}`
-                    : path === null ? 'no mark: nothing is booked under it'
-                      : risk ? 'no mark: the risk names no row for its set' : 'pricing the book for its mark…'}
+                  : `no mark${reads.risk.joiner}${noMark(reads.risk, mark, false, path === null
+                    ? 'nothing is booked under it' : 'the risk names no row for its set')}`}
               </span>
             </div>
             {trades.length > 0 && (

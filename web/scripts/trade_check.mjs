@@ -227,15 +227,19 @@ check('an unwind\'s price is set against the desk\'s mark of the units unwound, 
 const READ = { data: {}, error: null };
 check('a page reading no mark of a trade\'s own says why: the line holding the seat or the '
         + 'service\'s refusal, that the book is pricing, that the answer has no row of its own '
-        + 'or that the trade is closed - and nothing where one is read',
-      'a held seat told the book is pricing, a wait for a read that is never asked; or a mark '
-        + 'in hand still said to be missing',
+        + 'or that the trade is closed - and nothing where one is read; a netting set\'s page '
+        + 'says the same with its own sentence for no row',
+      'a held seat told the book is pricing, a wait for a read that is never asked; a mark in '
+        + 'hand still said to be missing; or a set told it has no row while the book prices',
       [trade.noMark({ data: null, error: 'Needs validate: sales-9 holds it nowhere.' }),
        trade.noMark({ data: null, error: null }), trade.noMark(READ),
-       trade.noMark(READ, undefined, true), trade.noMark(READ, MARKS[0])],
+       trade.noMark(READ, undefined, true), trade.noMark(READ, MARKS[0]),
+       trade.noMark(READ, undefined, false, 'nothing is booked under it'),
+       trade.noMark({ data: null, error: null }, undefined, false, 'nothing is booked under it')],
       ['Needs validate: sales-9 holds it nowhere.', 'pricing the book…',
        'The risk answer holds no mark of this trade\'s own.',
-       'Closed: the record holds none of it, so the book marks it at nothing.', null]);
+       'Closed: the record holds none of it, so the book marks it at nothing.', null,
+       'nothing is booked under it', 'pricing the book…']);
 
 // --- the way there and back
 const said = [];
