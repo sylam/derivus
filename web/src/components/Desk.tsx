@@ -69,7 +69,7 @@ export function LimitLine({ read, whose }: { read: LimitRead; whose?: string }) 
       {whose && <b>{whose}</b>}
       {read.figures.map((figure) => (
         <span key={figure.label}><span className="hint">{figure.label}</span>{' '}
-          <b className={figure.value < 0 ? 'neg' : undefined}>
+          <b className={signed('', figure.value)}>
             <Money value={figure.value} currency={read.currency} kind="whole" /></b></span>
       ))}
       {read.flag && <span className="chip error">{read.flag}</span>}
@@ -78,8 +78,10 @@ export function LimitLine({ read, whose }: { read: LimitRead; whose?: string }) 
   );
 }
 
-/** A figure's class (`value` on a stat tile, `n` in a table), a negative one in the loss colour. */
-const signed = (kind: string, value: number | null) => `${kind}${value !== null && value < 0 ? ' neg' : ''}`;
+/** A figure's class (`value` on a stat tile, `n` in a table, none in a line), a negative one in the
+ * loss colour. */
+const signed = (kind: string, value: number | null) =>
+  [kind, value !== null && value < 0 && 'neg'].filter(Boolean).join(' ') || undefined;
 
 /** A stat tile: its label and an optional amount (money by default) in its currency, signed in
  * colour (`signed`), its exact figure on the hover unless `title` says otherwise; null shows a

@@ -863,5 +863,11 @@ check("a stat tile draws its label, then its amount and currency, a negative in 
        '<div class="stat" title="to the desk"><div class="label">worth</div><div class="value">'
         + '3</div></div>',
        '<div class="stat"><div class="label">Realised</div><div class="value">—</div></div>']);
+check("a credit limit's line draws a negative figure in the loss colour, as a tile and a cell do",
+      'a headroom gone below zero drawn as room left, or the limit itself drawn as a loss',
+      draw('LimitLine', { read: { currency: 'USD', flag: null, notes: [], figures: [
+        { label: 'credit limit', value: 25000 }, { label: 'headroom', value: -5000 }] } })
+        .match(/<b[^>]*>/g),
+      ['<b>', '<b class="neg">']);
 
 done();
