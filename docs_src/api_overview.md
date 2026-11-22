@@ -413,7 +413,9 @@ answer 404.
 
 THE POLL IS `GET /book/status`. Its `etag` names the book's text, so a client fetches the book only
 where it moved, and under a spine home its `spine.paper` is the LSN of the last entity or agreement
-declaration standing, so a client holding the paper re-reads it only where that moved. A poll with
+declaration standing, so a client holding the paper re-reads it only where that moved, and its
+`spine.close` is `{market, stands}`: the market the record designates for the P&L, null where it
+designates none, and whether an official close is declared on it. A poll with
 nothing moved - the book's text, the files it names, the XVA file, the record and the day - parses
 and opens nothing, and so does one of `/book/risk`, which asks its seat's admission first all the
 same; `/book/xva` keeps its `funding` the same way and reads its rows on every ask.

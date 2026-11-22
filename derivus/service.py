@@ -2385,7 +2385,9 @@ def pin_of(document):
 
 def spine_block(document):
     """The record's position beside the file's, for the one read a client starts with: the LSN the
-    file was hydrated at and how far the log has moved since.
+    file was hydrated at and how far the log has moved since; and `close`, the market the record
+    designates for the P&L - null where it designates none - and whether an official close
+    `stands` declared on it, what every read of a marked close reads.
 
     NO DIVERGENCE HERE. Counting it means folding the whole log, which is linear in the history and
     this is the verb a client starts with, the MCP tool's first call and the web's poll; the two
@@ -2394,9 +2396,10 @@ def spine_block(document):
     """
     if not spine.configured():
         return None
-    pinned = pin_of(document)
+    pinned, market = pin_of(document), spine.designation(spine.PNL)
     block = {'lsn': None, 'head': None, 'events_behind': None, 'positions_behind': None,
-             'paper': spine.papered()}
+             'paper': spine.papered(), 'close': {
+                 'market': market, 'stands': market is not None and bool(spine.closes(market))}}
     return block if pinned is None else dict(block, **pinned, **behind(pinned))
 
 
@@ -5575,7 +5578,8 @@ def book_status():
 
     Under a configured home `spine` says which LSN the file was hydrated at and how far the record
     has moved since - in events, and in the fills and amendments among them - and `paper`, the LSN
-    of the last entity or agreement declaration standing, which moves when the paper does. What
+    of the last entity or agreement declaration standing, which moves when the paper does, and
+    `close`, the market designated for the P&L and whether a close stands on it. What
     the two disagree ABOUT is `/book/reconcile`, which folds the record and is asked for on purpose.
 
     A POLL WITH NOTHING MOVED IS A LOOKUP: the answer is kept on the book under its `poll_key`

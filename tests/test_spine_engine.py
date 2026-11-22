@@ -1592,6 +1592,39 @@ def test_a_status_poll_is_answered_anew_once_the_record_moves_and_the_paper_has_
     assert paper() == head(recorded) == started + 3
 
 
+def test_the_status_says_which_market_the_p_and_l_reads_and_whether_a_close_stands_on_it(
+        recorded, desk):
+    """`spine.close` is the market the `tiers` policy designates for the P&L and whether an
+    official close is declared on it: the facts a read of a marked close refuses on, as fields. A
+    record designating none reads no market and no close, a close standing on `official` all the
+    same; designating `desk-close`, which nothing is declared on, it reads that market and no
+    close; a close posted, one. The answer is kept under the poll's key and a second poll with
+    nothing moved is answered what was kept.
+
+    Killing mutations: the market read as the close verb reads it, `official` where none is
+    designated, where the first state reads a close standing; `stands` read as a market
+    designated, where the second does; `close` added beside the kept answer, where nothing kept
+    carries it.
+    """
+    def close():
+        return CLIENT.get('/book/status').json()['spine']['close']
+
+    def posted():
+        assert CLIENT.post('/book/close', json={'actor': ACTOR}).status_code == 200
+
+    posted()
+    assert close() == {'market': None, 'stands': False} and spine.closes('official')
+    declare(recorded, policy.TIERS_POLICY, tiers({'name': 'auto'},
+                                                 designations={spine.PNL: 'desk-close'}))
+    assert close() == {'market': 'desk-close', 'stands': False}
+    posted()
+    first = close()
+    kept = service.BOOK.polls.get(('status',) + service.poll_key(service.BOOK, service.xva_path()))
+    assert first == kept['spine']['close'] == {'market': 'desk-close', 'stands': True}
+    assert close() == first and service.BOOK.polls.get(('status',) + service.poll_key(
+        service.BOOK, service.xva_path())) is kept
+
+
 def test_a_risk_poll_with_nothing_moved_is_a_lookup_and_a_frame_that_moves_no_number_runs_nothing(
         recorded, desk):
     """`/book/risk` is kept at two levels. The first is the poll's key, read before anything is

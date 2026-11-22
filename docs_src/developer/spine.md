@@ -585,8 +585,12 @@ The risk asks admission before either of its two levels on every poll, and keeps
 the hash of all the run reads, so a frame that moves none of it runs nothing. The status's
 `spine.paper` is the LSN of the last entity or agreement declaration standing (`spine.papered`):
 what a client holding the paper re-reads it on, the web client its entities and agreements
-(`paperOwed` in `web/src/state.ts`), a booking moving its holdings alone. `GET /book/xva` reads its
-rows on every ask and keeps one part under the same key: `funding`, the two curves a recalc asked
+(`paperOwed` in `web/src/state.ts`), a booking moving its holdings alone. Its `close`, beside
+`paper`, is the market the `tiers` policy designates for the P&L, null where none is, and whether
+an official close `stands` declared on it (`service.spine_block`): what a read of a marked close
+needs, as fields, so a client tells "no close stands" without reading a refusal's words.
+`GET /book/xva` reads its rows on every ask and keeps one part under the same key: `funding`, the
+two curves a recalc asked
 now would fund its FVA at (`service.funded`), read through `spine.official_calculation` as the run
 reads them, a null for one the calculation does not state. The view does not go down with the
 policy: where the record refuses that calculation the rows answer as ever and `funding` carries two
@@ -605,6 +609,7 @@ ahead of the usage with it (`limitRead`). **Held by**
 `::test_the_limits_are_kept_under_the_poll_s_key_and_a_restated_one_is_read_at_once`,
 `test_service.py::test_a_status_poll_with_nothing_moved_is_a_lookup_and_all_it_reads_is_in_its_key`,
 `test_spine_engine.py::test_a_status_poll_is_answered_anew_once_the_record_moves_and_the_paper_has_its_own_stamp`,
+`::test_the_status_says_which_market_the_p_and_l_reads_and_whether_a_close_stands_on_it`,
 `::test_a_risk_poll_with_nothing_moved_is_a_lookup_and_a_frame_that_moves_no_number_runs_nothing`,
 `::test_the_consolidated_risk_and_the_explain_ask_the_queue_s_question`.
 
