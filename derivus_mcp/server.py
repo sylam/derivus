@@ -649,10 +649,6 @@ def book_deal(deal: dict | None = None, parent_reference: str | None = None,
     own reference as the `execution_reference`, which moves no number; closing it later is a
     booking of -1.
 
-    To book AT PAR or at a target margin, solve before you book: a linear payoff's value is affine
-    in its amount, so `price_candidate` twice at two trial amounts gives the exact amount that
-    lands the value on the target - then book that.
-
     The engine's FX convention is REPORTING units per one unit of the currency (`FxRate.ZAR`
     carries USD per ZAR), and an FX option's `Strike_Price` lives on that same axis - so a desk's
     'USDZAR call', the option paid when ZAR weakens, is authored as a PUT on ZAR with
@@ -713,9 +709,7 @@ async def price_candidate(deal: dict | None = None, parent_reference: str | None
                           quote_id: str | None = None, calculation_overrides: dict | None = None,
                           actor: str | None = None, wait_seconds: float = 120.0,
                           ctx: Context = None) -> dict:
-    """Price the book PLUS a candidate deal without booking anything - the what-if verb, and the
-    solving half of a par booking: price a trial amount, price a second, solve the affine
-    relation for the amount that lands the value on your target, then `book_deal` the answer.
+    """Price the book PLUS a candidate deal without booking anything - the what-if verb.
 
     The candidate is `deal` under `parent_reference`, or the `quote_id` `solve_structure` answered,
     priced as accepting that quote would book it; with neither, the book's own calculation runs

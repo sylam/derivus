@@ -73,13 +73,16 @@ def test_the_mcp_server_imports_neither_the_engine_nor_the_add_in():
 
 def test_every_tool_is_registered_and_carries_its_contract():
     """The docstring IS the contract a model reads, so an empty one is an undocumented verb; and
-    the read-only hints are what let a host run discovery without asking permission to write.
+    the read-only hints are what let a host run discovery without asking permission to write. A
+    par amount is taught one way, `solve_deal`'s, and no contract teaches it by trial pricings.
 
     Killing mutations: `read_book` registered without its read-only hint, which makes a host ask
     before a model may read the book; `patch_market_values`' example spot written in market terms,
-    `19.25`, which a model copies into a field held as the reporting currency per unit.
+    `19.25`, which a model copies into a field held as the reporting currency per unit; `book_deal`
+    teaching a par amount solved by two `price_candidate` calls again.
     """
     tools = {t.name: t for t in asyncio.run(mcp_server.MCP.list_tools())}
+    assert not [name for name, tool in tools.items() if 'trial amount' in tool.description]
     expected = {'list_instrument_types', 'describe_instrument_type', 'describe_calculation_type',
                 'describe_factor_type', 'describe_configuration', 'job_skeleton', 'desk_status',
                 'read_book', 'read_deal', 'book_deal', 'amend_deal', 'delete_deal',
