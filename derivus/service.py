@@ -120,9 +120,6 @@ SPOT_BACKOFF_SECONDS = 30.0
 #: a live one - the book's is a real market, ticked on the cadence.
 NO_LIVE_SPOT = "priced on the book's ticked spot - {}"
 
-#: `(monotonic stamp, note)` of the last live-spot attempt that REACHED the terminal and failed.
-_SPOT_FAILURE = (0.0, None)
-
 #: An SPA served from anywhere but the service itself cannot call it without this. Read when the
 #: middleware stack is built - the first request, long after `main` has parsed `--origin`.
 ORIGINS = ['*']
@@ -388,6 +385,9 @@ class ComputeExecutor:
         # arrival order breaks ties within a cost class, so the queue never compares two Jobs
         self.arrival = count()
         self.session, self.keyed = Context(), None
+        # `(monotonic stamp, note)` of the last live-spot attempt that REACHED the terminal and
+        # failed, which the quotes this worker runs skip the terminal on (`live_spot_crosses`)
+        self.spot_failure = (0.0, None)
         threading.Thread(target=self.work, daemon=True).start()
 
     def session_for(self, document, files):
@@ -461,6 +461,14 @@ class ComputeExecutor:
             if stored is not None:
                 stored.update(fields)
             return stored
+
+    def progressed(self, result_id, note, done=0, total=0):
+        """Where the job running under `result_id` has got to, `{done, total, note}`, carried on
+        its result as `progress` until the result it finishes with replaces it - a new dict, so a
+        reader holding the last one never sees it move."""
+        with self.lock:
+            self.results[result_id] = {'status': 'running', 'progress': {
+                'done': done, 'total': total, 'note': note}}
 
     def finish(self, job, result, canonical_result):
         """Attest a finished run where the record is owed one, and publish it. ONE transition.
@@ -758,11 +766,6 @@ def queued(job, cost_class=COST_CLASS['BaseValuation']):
     """Submit `job` onto `EXECUTOR` in `cost_class` and answer `{result_id, status}`."""
     return {'result_id': job.result_id, 'status': EXECUTOR.submit(job, cost_class)}
 
-#: Where a long job has got to, under the result id it will be filed as: `{done, total, note}`, and
-#: `/results/{result_id}` merges it while the job is queued or running. The worker thread is the only
-#: writer and drops its entry as the job leaves, so a reader tolerates absence.
-PROGRESS = {}
-
 
 def context_for(body):
     """The Context an endpoint works on: the posted document parsed, or a deep copy of the plan it
@@ -916,18 +919,16 @@ def results(result_id: str):
     No cells - a client reads the shapes here and fetches the one table it is showing from
     `/results/{result_id}/{table}`. A failed run carries the message and nothing else.
 
-    A job that publishes its own progress carries it under `progress` while it waits or runs, so
-    one poll loop serves a cell that wants a number and a screen that wants a bar.
+    A job that publishes its own progress carries it under `progress` while it runs
+    (`ComputeExecutor.progressed`), so one poll loop serves a cell that wants a number and a screen
+    that wants a bar.
     """
     result = EXECUTOR.result(result_id)
     if result is None:
         raise HTTPException(404, 'Unknown result {}'.format(result_id))
     tables = result.get('tables')
-    answer = result if tables is None else dict(
+    return result if tables is None else dict(
         result, tables={name: shape(table) for name, table in tables.items()})
-    # a done result carries its outcome instead, and the worker has already dropped the entry
-    progress = PROGRESS.get(result_id) if result['status'] in ('queued', 'running') else None
-    return answer if progress is None else dict(answer, progress=progress)
 
 
 @app.get('/results/{result_id}/{table:path}', summary='One table of a finished run, paged')
@@ -5918,7 +5919,14 @@ def market_fetch(source, mapped, document, pairs, note, surface={}, as_of=None):
     return Snapped(quotes, curves, spots, held, unrouted, as_of, [])
 
 
-class BloombergJob:
+class Progressing:
+    """A queued job minutes long, which says where it has got to on the result it runs under."""
+
+    def note(self, note, done=0, total=0):
+        EXECUTOR.progressed(self.result_id, note, done, total)
+
+
+class BloombergJob(Progressing):
     """A terminal round trip as ONE unit of queued work: the security map provisioned, every
     requested surface fetched and checked, every curve block the book carries re-valued off its own
     rows, the book's own spots re-crossed, and the lot installed and bootstrapped in one write.
@@ -5927,7 +5935,7 @@ class BloombergJob:
     and the service must serve every other verb on a machine that has never heard of it.
 
     The outcome is a book WRITE rather than tables, so it rides the run's Stats under `Bloomberg`,
-    as a solve's coordinates ride `Solved`. Progress rides `PROGRESS` under the result id.
+    as a solve's coordinates ride `Solved`, and progress rides the running result (`Progressing`).
 
     `routine` is the metronome's mode: the interactive verb PROVISIONS a workstation that has no
     security map and a cadence must not, so a routine job checks for the map before opening a
@@ -5937,9 +5945,6 @@ class BloombergJob:
     def __init__(self, book, scope, result_id, routine=False):
         self.book, self.scope, self.result_id = book, scope, result_id
         self.routine = routine
-
-    def note(self, note, done=0, total=0):
-        PROGRESS[self.result_id] = {'done': done, 'total': total, 'note': note}
 
     def outcome(self, started, **fields):
         """The write's account of itself, with the trip's wall time beside it - what a poller
@@ -5991,8 +5996,6 @@ class BloombergJob:
             # a name the terminal would not answer for is a named REFUSAL, never a job error: the
             # metronome reads `refused` off these Stats and a model reads it as the thing to fix
             return self.outcome(started, refused=[str(error)])
-        finally:
-            PROGRESS.pop(self.result_id, None)
 
 
 def submit_bloomberg(scope, routine=False, actor=None):
@@ -6278,14 +6281,14 @@ def verify_scope(request):
             if request.get(name) is not None}
 
 
-class VerifyJob:
+class VerifyJob(Progressing):
     """The vocabulary re-verified against the terminal as ONE unit of queued work: every map entry
     in scope re-probed for the drift its own evidence cannot show, every seed name the map has
     never heard of probed once and ledgered, and the map rewritten atomically.
 
     `derivus_bloomberg` is imported INSIDE `run_job`, the `BloombergJob` precedent. The outcome is
     a FILE write rather than tables, so it rides the run's Stats under `Securities`, and progress
-    rides `PROGRESS` under the result id the way a tick's does.
+    rides the running result the way a tick's does.
 
     THE LEDGER IS RE-ASKED and nothing already verified is: a rejection is one day's answer from
     one terminal, so every rejected name in scope is probed again and one that prices now lands in
@@ -6294,9 +6297,6 @@ class VerifyJob:
 
     def __init__(self, scope, result_id):
         self.scope, self.result_id = scope, result_id
-
-    def note(self, note, done=0, total=0):
-        PROGRESS[self.result_id] = {'done': done, 'total': total, 'note': note}
 
     def run_job(self):
         import datetime
@@ -6307,33 +6307,30 @@ class VerifyJob:
         started, as_of = time.perf_counter(), datetime.date.today()
         block, key = self.scope.get('block'), self.scope.get('key')
         named = set(self.scope.get('securities') or ())
-        try:
-            mapped, _ = desk_map()
-            scoped = scoped_map(mapped, block, key, named)
-            seeded = scoped_seed(desk_seed(), block, key)
-            covered = sorted(entry['security'] for entry in scoped['blocks'].values())
-            self.note('re-verifying {} entries'.format(len(covered)))
-            with BloombergSession(timeout_ms=30000) as session:
-                drifted = discover.recheck(
-                    scoped, session, as_of,
-                    on_batch=lambda done, total: self.note('re-verifying the map', done, total))
-                revived = discover.reprobe_rejected(
-                    mapped, seeded, session, as_of, securities=named,
-                    on_batch=lambda done, total: self.note('re-asking the ledger', done, total))
-                verdicts = []
-                if not named:
-                    mapped, verdicts = discover.extend(
-                        mapped, seeded, session, as_of,
-                        on_batch=lambda done, total: self.note('probing new names', done, total))
-            mapped['generated'] = mapped.get('generated') or as_of.isoformat()
-            return None, {'Results': {}, 'Stats': {'Securities': {
-                'written': True, 'map': write_desk_file('security_map.json', mapped),
-                'verified': covered, 'drifted': drifted, 'revived': revived,
-                'unknown': sorted(named - set(covered)),
-                'added': {item.candidate.security: item.verdict for item in verdicts},
-                'seconds': round(time.perf_counter() - started, 2)}}}
-        finally:
-            PROGRESS.pop(self.result_id, None)
+        mapped, _ = desk_map()
+        scoped = scoped_map(mapped, block, key, named)
+        seeded = scoped_seed(desk_seed(), block, key)
+        covered = sorted(entry['security'] for entry in scoped['blocks'].values())
+        self.note('re-verifying {} entries'.format(len(covered)))
+        with BloombergSession(timeout_ms=30000) as session:
+            drifted = discover.recheck(
+                scoped, session, as_of,
+                on_batch=lambda done, total: self.note('re-verifying the map', done, total))
+            revived = discover.reprobe_rejected(
+                mapped, seeded, session, as_of, securities=named,
+                on_batch=lambda done, total: self.note('re-asking the ledger', done, total))
+            verdicts = []
+            if not named:
+                mapped, verdicts = discover.extend(
+                    mapped, seeded, session, as_of,
+                    on_batch=lambda done, total: self.note('probing new names', done, total))
+        mapped['generated'] = mapped.get('generated') or as_of.isoformat()
+        return None, {'Results': {}, 'Stats': {'Securities': {
+            'written': True, 'map': write_desk_file('security_map.json', mapped),
+            'verified': covered, 'drifted': drifted, 'revived': revived,
+            'unknown': sorted(named - set(covered)),
+            'added': {item.candidate.security: item.verdict for item in verdicts},
+            'seconds': round(time.perf_counter() - started, 2)}}}
 
 
 def submit_verify(scope, actor=None):
@@ -6693,14 +6690,14 @@ def seeded_strip(source, seed, curve, conventions, as_of):
         for row in ir_curve.seeded_rows(seed, curve)), as_of, conventions))
 
 
-class SetupJob:
+class SetupJob(Progressing):
     """The market a trade needs, built as ONE unit of queued work: the want-list walked, only the
     names the map has never heard of discovered, the surface, each new currency's spot and each new
     curve fetched, and the lot installed and bootstrapped in one atomic write.
 
     `derivus_bloomberg` is imported INSIDE `run_job`, the `BloombergJob` precedent. The outcome is
     a book WRITE rather than tables, so it rides the run's Stats under `Setup`, and progress rides
-    `PROGRESS` under the result id the way a tick's does.
+    the running result the way a tick's does.
 
     NOTHING IS INSTALLED THAT WAS NOT WANTED and nothing is probed that the map already holds: the
     walk names the factors, the seed names the securities each is spelled by, and the map says
@@ -6722,9 +6719,6 @@ class SetupJob:
 
     def __init__(self, book, scope, result_id):
         self.book, self.scope, self.result_id = book, scope, result_id
-
-    def note(self, note, done=0, total=0):
-        PROGRESS[self.result_id] = {'done': done, 'total': total, 'note': note}
 
     def outcome(self, started, **fields):
         """The set-up's account of itself, with the trip's wall time beside it. Every answer
@@ -6827,8 +6821,6 @@ class SetupJob:
             # `Metronome.cause` and a polling model both read `refused` off these Stats
             return self.outcome(started, refused=[str(error)], not_supplied=not_supplied,
                                 discovered=discovered)
-        finally:
-            PROGRESS.pop(self.result_id, None)
 
     def install(self, started, document, seed, dated, as_of, factors, quotes, strips, spots,
                 discovered, not_supplied, held, rolled=None):
@@ -7081,7 +7073,7 @@ def spot_model_edit(document, pair, family):
                                      if key != 'Property_Aliases'})
 
 
-class SpotModelJob:
+class SpotModelJob(Progressing):
     """One pair's spot-model calibration as ONE unit of queued work.
 
     The XVA mosaic's pattern, for its reason: the fit is a least squares over a simulated walk and
@@ -7100,15 +7092,10 @@ class SpotModelJob:
     def run_job(self):
         started = time.perf_counter()
         # minutes behind one result id, so the worker says what it is doing
-        PROGRESS[self.result_id] = {
-            'done': 0, 'total': 1,
-            'note': 'fitting {} to {} against its own vega-weighted ladder'.format(
-                self.pair, self.family)}
-        try:
-            outcome = self.book.mutate(
-                lambda document, etag: spot_model_edit(document, self.pair, self.family))
-        finally:
-            PROGRESS.pop(self.result_id, None)
+        self.note('fitting {} to {} against its own vega-weighted ladder'.format(
+            self.pair, self.family), 0, 1)
+        outcome = self.book.mutate(
+            lambda document, etag: spot_model_edit(document, self.pair, self.family))
         return None, {'Results': {}, 'Stats': {'SpotModel': dict(
             outcome, seconds=round(time.perf_counter() - started, 2))}}
 
@@ -7592,20 +7579,6 @@ def spot_day(document, context, pair):
         '%Y-%m-%d')
 
 
-def spot_failure():
-    """The remembered live-spot failure while it is still believed, or None. Read before every
-    attempt, so a dead terminal is learned once rather than costing every quote its timeout."""
-    stamp, note = _SPOT_FAILURE
-    return note if note is not None and time.monotonic() - stamp < SPOT_BACKOFF_SECONDS else None
-
-
-def remember_spot_failure(note):
-    """Remember a live-spot failure that REACHED the terminal, and only those: a missing map costs a
-    stat and a dict lookup, and the home it names can change between two quotes."""
-    global _SPOT_FAILURE
-    _SPOT_FAILURE = (time.monotonic(), note)
-
-
 def live_spot_crosses(base_currency, currencies, host=None, port=None):
     """`({PAIR: cross}, None)` off this workstation's terminal, or `(None, note)` naming why not.
 
@@ -7618,9 +7591,13 @@ def live_spot_crosses(base_currency, currencies, host=None, port=None):
 
     `host`/`port` are the session's own endpoint arguments threaded through, so a workstation whose
     Desktop API is not on the default socket reaches this seam too.
+
+    A failure that REACHED the terminal is remembered on the executor (`spot_failure`) and every
+    attempt inside `SPOT_BACKOFF_SECONDS` of it answers that note, so a dead terminal is learned
+    once rather than costing every quote its timeout; a missing map costs a stat and is not kept.
     """
-    remembered = spot_failure()
-    if remembered is not None:
+    stamp, remembered = EXECUTOR.spot_failure
+    if remembered is not None and time.monotonic() - stamp < SPOT_BACKOFF_SECONDS:
         return None, remembered
     try:
         from derivus_bloomberg import security_map
@@ -7654,9 +7631,8 @@ def live_spot_crosses(base_currency, currencies, host=None, port=None):
             values = security_map.fetch_fx_spot(session, pairs.values())
     except Exception as error:
         # this one reached the terminal, so this is the one worth remembering
-        note = NO_LIVE_SPOT.format(error)
-        remember_spot_failure(note)
-        return None, note
+        EXECUTOR.spot_failure = (time.monotonic(), NO_LIVE_SPOT.format(error))
+        return None, EXECUTOR.spot_failure[1]
     return {pair: values[security] for pair, security in pairs.items()}, None
 
 

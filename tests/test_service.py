@@ -2784,8 +2784,11 @@ def test_a_stale_quote_refuses_the_tick_by_name(desk, monkeypatch):
 
 def test_progress_is_readable_while_the_fetch_runs(desk, monkeypatch):
     """A terminal round trip is minutes behind one `result_id`, so the job publishes progress and
-    `/results/{id}` merges it while the job waits or runs. Held on an Event, so the worker is
-    provably mid-provision at the poll; the entry is gone once the result carries its outcome."""
+    `/results/{id}` carries it while the job runs - on the running result the executor keeps.
+    Held on an Event, so the worker is provably mid-provision at the poll; the progress is gone
+    once the result carries its outcome, the finished result replacing the running one.
+
+    Killing mutation: `ComputeExecutor.progressed` writing nothing, and the poll reads no bar."""
     started, release = threading.Event(), threading.Event()
 
     def provision(source, as_of, on_batch=None):
