@@ -78,14 +78,34 @@ export function LimitLine({ read, whose }: { read: LimitRead; whose?: string }) 
   );
 }
 
-/** Table cell for an optional amount (whole units by default), a negative one in the loss
- * colour; null shows a dash under the hover `absent`, and nothing where none is given. */
-export function Amount({ value, currency, absent, kind = 'whole' }: {
-  value: number | null; currency?: string | null; absent?: string; kind?: Kind;
+/** A figure's class (`value` on a stat tile, `n` in a table), a negative one in the loss colour. */
+const signed = (kind: string, value: number | null) => `${kind}${value !== null && value < 0 ? ' neg' : ''}`;
+
+/** A stat tile: its label and an optional amount (money by default) in its currency, signed in
+ * colour (`signed`), its exact figure on the hover unless `title` says otherwise; null shows a
+ * dash. */
+export function Stat({ label, value, currency, title, kind = 'money' }: {
+  label: string; value: number | null; currency?: string | null; title?: string; kind?: Kind;
 }) {
   return (
-    <td className={`n${value !== null && value < 0 ? ' neg' : ''}`}
-        title={value === null ? undefined : String(value)}>
+    <div className="stat" title={title ?? (value === null ? undefined : String(value))}>
+      <div className="label">{label}</div>
+      <div className={signed('value', value)}>
+        {value === null ? '—' : <Money value={value} currency={currency} kind={kind} />}
+      </div>
+    </div>
+  );
+}
+
+/** Table cell for an optional amount (whole units by default), signed in colour (`signed`), its
+ * exact figure on the hover unless `title` says otherwise; null shows a dash under the hover
+ * `absent`, and nothing where none is given. */
+export function Amount({ value, currency, absent, title, kind = 'whole' }: {
+  value: number | null; currency?: string | null; absent?: string; title?: string; kind?: Kind;
+}) {
+  return (
+    <td className={signed('n', value)}
+        title={value === null ? undefined : title ?? String(value)}>
       {value !== null ? <Money value={value} currency={currency} kind={kind} />
         : absent && <span className="hint" title={absent}>—</span>}
     </td>

@@ -8,7 +8,7 @@ import {
   type BlotterRow, type Quoted, type Size,
 } from './blotter';
 import { PLUS, entityText, instantMs, peaks } from './desk';
-import type { Agreement, Entity } from './positions';
+import { under, type Agreement, type Entity } from './positions';
 import { formatNumber, isBlank, isObject } from './tokens';
 import type {
   Acceptance, ChargeAsk, DealNode, Descriptor, Increment, JobDoc, PendingQuote, Quote, QuoteGiven,
@@ -61,8 +61,8 @@ export type Draft = {
 /** Where a quote may say it books on a desk whose record declares a tree: the book, then every
  * node under it - none where it declares no node under the book, a ticket then stating nothing. */
 export function bookingNodes(nodes: string[], book: string): string[] {
-  const under = nodes.filter((node) => node.startsWith(`${book}/`)).sort();
-  return under.length ? [book, ...under] : [];
+  const below = nodes.filter((node) => node !== book && under(node, book)).sort();
+  return below.length ? [book, ...below] : [];
 }
 
 /** The ticket as `POST /book/structure` takes it: every parameter of the form stated, a blank

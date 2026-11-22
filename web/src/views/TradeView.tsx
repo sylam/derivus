@@ -21,7 +21,7 @@ import {
   tradeName, tradeSize, unwindAgainst, unwindFill, unwindWords, wholeRecord, type Price,
 } from '../trade';
 import type { ActivityRow, QuoteGiven } from '../types';
-import { Back, DealEditor, Money, OnStrip, Side, Value } from '../components/Desk';
+import { Back, DealEditor, OnStrip, Side, Stat, Value } from '../components/Desk';
 import { CreditCharge, TicketCard } from '../components/TicketCard';
 
 /** One trade's rows on the record, newest first, asked for by its path where the desk keeps one
@@ -279,24 +279,17 @@ function Worth({ path, reference, legs, shut }: {
     if (!risk.data) return <div className="hint">{noMark(risk)}</div>;
     const { own, inside } = markOf(risk.marks, path);
     const currency = risk.data.currency ?? '';
-    const stat = (label: string, value: number, title: string) => (
-      <div className="stat" title={title}>
-        <div className="label">{label}</div>
-        <div className={`value${value < 0 ? ' neg' : ''}`}>
-          <Money value={value} currency={currency} />
-        </div>
-      </div>
-    );
     return (
       <>
         <OnStrip computed={stampText(risk.data.as_of)} title={`risk etag ${risk.data.etag}`}
                  currency={currency} lagging={lagsBook(risk.clock, clockOf(state))}
                  loading={risk.loading} />
         <div className="stats">
-          {own && stat(`worth to the desk, ${favour(own.value)}`, own.value,
-                       'positive is worth that much to the desk')}
-          {inside && stat(`the net of ${inside.reference}, which holds it`, inside.value,
-                          'the netting set\'s value to the desk, this trade inside it')}
+          {own && <Stat label={`worth to the desk, ${favour(own.value)}`} value={own.value}
+                        currency={currency} title="positive is worth that much to the desk" />}
+          {inside && <Stat label={`the net of ${inside.reference}, which holds it`}
+                           value={inside.value} currency={currency}
+                           title="the netting set's value to the desk, this trade inside it" />}
         </div>
         {!own && <div className="note">{noMark(risk, own, shut)}</div>}
         {legs > 0 && (

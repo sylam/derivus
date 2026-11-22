@@ -578,8 +578,9 @@ export function leavingAsks(served: { etag: string; path: string; opened?: strin
   return `Edits made to ${served.opened} on this desk are lost unless it is downloaded first.`;
 }
 
-// the control that leaves a read-only copy for the book, by the label the header draws
-const LEAVE_COPY = 'Press "back to book" at the top to leave it';
+/** The label of the header's control that leaves an opened file or a read-only copy for the book. */
+export const BACK_TO_BOOK = 'back to book';
+const LEAVE_COPY = `Press "${BACK_TO_BOOK}" at the top to leave it`;
 
 /** What a screen reading the desk's own book says over a file the desk shows as a read-only copy:
  * the control that leaves the copy, and `shown`, what the screen then shows of the book. */

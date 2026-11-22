@@ -1,14 +1,14 @@
 import { useRef, useState } from 'react';
 import { getMarkedDays, getPnl } from '../api';
 import { declaredOn, unmarked } from '../client';
-import { Amount, Gated } from '../components/Desk';
+import { Amount, Gated, Stat } from '../components/Desk';
 import { EmptyState } from '../components/EmptyState';
 import {
   behind, explained, factorLabel, FIGURES, noPnl, noWindow, opensOn, pnlQuery, pnlRead,
   positionLabel, residualShare, revalues, type Pnl,
 } from '../pnl';
 import {
-  grantsOwed, heldBack, noPositions, readAs, spineOf, useApp, useRead,
+  heldBack, noPositions, readAs, runHeld, spineOf, useApp, useRead,
 } from '../state';
 import { formatNumber, type Kind } from '../tokens';
 import { entityText } from '../desk';
@@ -56,10 +56,10 @@ export function PnlView() {
   // read again whenever the seat, the window or the scope moves, or the reader asks, with the
   // book it was read at
   const query = pnlQuery(from, to, scope, explain);
-  const owed = grantsOwed(state);
-  const read = readAs(hold, useRead(recording && days?.days.length && !hold && !owed ? async () => ({
+  const waits = runHeld(state, hold);
+  const read = readAs(hold, useRead(recording && days?.days.length && !waits ? async () => ({
     asked: current.current, answer: await getPnl(query) }) : null,
-  [recording, days, pnlRead(state.seat, query), again, hold, owed]));
+  [recording, days, pnlRead(state.seat, query), again, waits]));
   const { answer, asked: readAt } = read.data ?? {};
   const { loading } = read;
   const error = marked.error ?? read.error;
@@ -139,14 +139,8 @@ export function PnlView() {
 
         <div className="stats">
           {(['pnl', 'realised', 'unrealised'] as const).map((figure) => (
-            <div className="stat" key={figure}>
-              <div className="label">{figure === 'pnl' ? 'P&L' : figure[0].toUpperCase() + figure.slice(1)}</div>
-              <div className={`value${(answer.total[figure] ?? 0) < 0 ? ' neg' : ''}`}>
-                {answer.total[figure] === null ? '—'
-                  : formatNumber(answer.total[figure] as number, 'money')}
-                {currency && <span className="unit">{currency}</span>}
-              </div>
-            </div>
+            <Stat key={figure} label={figure === 'pnl' ? 'P&L' : figure[0].toUpperCase() + figure.slice(1)}
+                  value={answer.total[figure] ?? null} currency={currency} />
           ))}
           <div className="stat">
             <div className="label">Window</div>
@@ -205,13 +199,7 @@ function Explained({ explain, currency }: { explain: NonNullable<Pnl['explain']>
       <h3>Explain</h3>
       <div className="stats">
         {explained(explain).map((line) => (
-          <div className="stat" key={line.label}>
-            <div className="label">{line.label}</div>
-            <div className={`value${(line.value ?? 0) < 0 ? ' neg' : ''}`}>
-              {line.value === null ? '—' : formatNumber(line.value, 'money')}
-              {currency && <span className="unit">{currency}</span>}
-            </div>
-          </div>
+          <Stat key={line.label} label={line.label} value={line.value} currency={currency} />
         ))}
         <div className="stat">
           <div className="label">Residual share</div>

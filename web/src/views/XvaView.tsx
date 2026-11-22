@@ -84,7 +84,7 @@ export function XvaView() {
     const agreements = agreementsOf(id, paper?.agreements ?? null, rows);
     const lines = creditLines(id, {
       sets: view.sets, agreements, rows, positions: paper?.positions ?? null,
-      marks: risk.data?.per_deal ?? null, calls: recording ? collateral.data?.calls ?? null
+      marks: risk.marks, calls: recording ? collateral.data?.calls ?? null
         : agreements.map((row) => statedHolding(row.terms, fieldsOf(schema, SET) ?? {}, market)),
     }, schema);
     const own = lines.filter((line) => !line.run?.note);

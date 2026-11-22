@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { BOOK_DOCUMENT, failure, getBook, openBook } from '../api';
-import { NO_BOOK, copyOnly, fileName, leavingAsks } from '../desk';
+import { BACK_TO_BOOK, NO_BOOK, copyOnly, fileName, leavingAsks } from '../desk';
 import { bookLoaded, useApp } from '../state';
 import type { JobDoc } from '../types';
 
@@ -78,7 +78,7 @@ export function DocumentLoader() {
           {state.source.opened && (
             <button className="ghost" onClick={() => leave(closeOpened)}
                     title={`serve the desk's own book again - an edit made to ${state.source.opened} here is kept only in a download of it`}>
-              back to book
+              {BACK_TO_BOOK}
             </button>
           )}
           <a className="ghost" href={BOOK_DOCUMENT} download
@@ -91,7 +91,7 @@ export function DocumentLoader() {
           <span className="source-chip local">local · {state.source.name}</span>
           <button className="ghost" onClick={backToBook}
                   title="leave this read-only copy and show the book the service serves">
-            back to book
+            {BACK_TO_BOOK}
           </button>
         </>
       )}

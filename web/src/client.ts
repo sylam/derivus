@@ -240,11 +240,11 @@ export type CreditLine = {
 };
 
 /** What the lines are read off: the projection's sets, the client's agreements (`agreementsOf`),
- * the file's rows, and - each null where it is not read - the record's positions, the risk's marks
- * and the calls on the marked close. */
+ * the file's rows, the risk's marks (`bookRisk`), none where it is not read, and - each null where
+ * it is not read - the record's positions and the calls on the marked close. */
 export type CreditReads = {
   sets: XvaSet[]; agreements: Agreement[]; rows: Map<string, BlotterRow>;
-  positions: Position[] | null; marks: DealMark[] | null; calls: CollateralCall[] | null;
+  positions: Position[] | null; marks: DealMark[]; calls: CollateralCall[] | null;
 };
 
 /** A client's lines: a set the book holds or held naming it, under its own agreement where one is
@@ -262,8 +262,7 @@ export function creditLines(id: string, reads: CreditReads, schema: Schema): Cre
       collateralised: signed ? termsReading(signed.terms, schema).collateralised : !!run?.collateralized,
       trades: heldUnder(path, reads.rows, held || null).filter((trade) => !trade.closed).length,
       pending: (held || []).filter((position) => position.pending !== 0).length,
-      value: path === null ? (run ? null : 0)
-        : reads.marks && (markOf(reads.marks, path).own?.value ?? null),
+      value: path === null ? (run ? null : 0) : markOf(reads.marks, path).own?.value ?? null,
       call: reads.calls?.find((call) => call.agreement === reference) ?? null,
       booked: run && reads.positions ? bookedSince(run, reads.positions) : null,
     };

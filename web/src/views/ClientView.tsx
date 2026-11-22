@@ -21,7 +21,7 @@ import { bookRisk, marketOf, opened, riskNow, standing, useApp, useRead } from '
 import { curveOf, formatNumber, tenorLabel, token } from '../tokens';
 import { markOf, markShown, markText, noMark, wholeRecord } from '../trade';
 import type {
-  ActivityRow, BookRisk, BookXva, Market, Schema, SettlementState, XvaSet,
+  ActivityRow, BookXva, Market, Schema, SettlementState, XvaSet,
 } from '../types';
 import { AgreementForm } from '../components/AgreementForm';
 import { CreditCard, SpreadTable } from '../components/CreditCard';
@@ -33,7 +33,7 @@ type Reads = {
   entities: Entity[] | null; agreements: Agreement[] | null; positions: Position[] | null;
   unstated: SettlementState | null;
   xva: { data: BookXva | null; error: string | null };
-  risk: { data: BookRisk | null; error: string | null; joiner: string };
+  risk: ReturnType<typeof bookRisk>;
 };
 
 /** One page per client: whether it is ready to trade, its agreements in a credit officer's words,
@@ -292,7 +292,7 @@ function OnBook({ own, reads, rows, market, schema }: {
         const trades = heldUnder(path, rows, held);
         const heldAt = byPath(held ?? []);
         const closed = trades.filter((trade) => trade.closed).length;
-        const mark = risk && path !== null ? markOf(risk.per_deal, path).own : undefined;
+        const mark = path !== null ? markOf(reads.risk.marks, path).own : undefined;
         return (
           <div key={agreement.agreement} className="agreement">
             <div className="pager">

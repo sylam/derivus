@@ -12,7 +12,7 @@ import { bookRisk, clockOf, marketOf, openTrade, useApp } from '../state';
 import { axisText, formatNumber } from '../tokens';
 import { tradeAt } from '../trade';
 import type { BookRisk, GreekRow } from '../types';
-import { Amount, OnStrip } from '../components/Desk';
+import { Amount, OnStrip, Stat } from '../components/Desk';
 
 /** The consolidated risk: the book's own mark and its whole-book gradient, counterparty-blind.
  *
@@ -282,10 +282,8 @@ function LadderCard({ ladder, unit }: { ladder: Ladder; unit: string }) {
                     onClick={() => summed && setOpened(opened === id ? null : id)}>
                   <td className="tenor">{tenorText(bucket.key, axes)}</td>
                   {bucket.nodes.length === 1 ? <Risk row={bucket.nodes[0]} /> : (
-                    <td className={`n${bucket.risk < 0 ? ' neg' : ''}`}
-                        title={`the ${bucket.nodes.length} nodes at this expiry summed`}>
-                      {formatNumber(bucket.risk, 'money')}
-                    </td>
+                    <Amount value={bucket.risk} kind="money"
+                            title={`the ${bucket.nodes.length} nodes at this expiry summed`} />
                   )}
                   {summed && (
                     <td className="n hint">{opened === id ? '▾' : '▸'} {bucket.nodes.length}</td>
@@ -327,12 +325,7 @@ function FactorCell({ factor, per, pair }: { factor: string; per?: string; pair?
 
 /** A row's risk per its move, the per-unit derivative it was read from on the hover. */
 function Risk({ row }: { row: GreekRow }) {
-  const value = riskOf(row);
-  return (
-    <td className={`n${value < 0 ? ' neg' : ''}`} title={perUnitText(row)}>
-      {formatNumber(value, 'money')}
-    </td>
-  );
+  return <Amount value={riskOf(row)} kind="money" title={perUnitText(row)} />;
 }
 
 /** The per-deal marks, the desk's side of each: one row per TOP-LEVEL trade, so a structure or a
@@ -357,13 +350,7 @@ function Marks({ risk, currency }: { risk: BookRisk; currency: string }) {
   return (
     <>
       <div className="stats">
-        <div className="stat">
-          <div className="label">Book MTM</div>
-          <div className={`value${risk.mtm < 0 ? ' neg' : ''}`} title={String(risk.mtm)}>
-            {formatNumber(risk.mtm, 'money')}
-            {currency && <span className="unit">{currency}</span>}
-          </div>
-        </div>
+        <Stat label="Book MTM" value={risk.mtm} currency={currency} />
         <div className="stat">
           <div className="label">Marked</div>
           <div className="value">

@@ -234,9 +234,11 @@ check('leaving an opened document asks first where its copy may hold edits made 
 // --- a screen that reads the desk's own book, with none of it to read
 const HEADER = readFileSync(new URL('../src/components/DocumentLoader.tsx', import.meta.url), 'utf8')
   .split(/\r?\n/).map((line) => line.trim());
+// a label the header draws as written, or by the `desk` constant holding it
 const pressed = ({ hint }) => {
   const control = /Press "([^"]+)" at the top/.exec(hint)?.[1];
-  return [control, HEADER.includes(control)];
+  const owner = Object.keys(desk).find((name) => desk[name] === control);
+  return [control, HEADER.includes(control) || HEADER.includes(`{${owner}}`)];
 };
 check('over a read-only copy of a file a screen names the control that leaves it for the book, and '
       + 'what it then shows; a desk serving no book names the control that opens a file; each by '
@@ -647,14 +649,17 @@ check('a read the grants gate waits on a desk that records until they are read f
 const WAIT = 'reading what this seat may do…';
 check('a run the queue admits waits in its button\'s place while the seat\'s grants are being '
       + 'read, then is held from a seat holding validate nowhere and offered to one holding it; a '
-      + 'desk keeping no record never waits',
+      + 'desk keeping no record never waits; a read given its own hold - a P&L between marked days, '
+      + 'none - waits on the grants alike, then is held by that hold alone',
       'the button offered before the grants are read, which a seat they hold from the run can '
-      + 'press and file a denial; the wait kept once they are read; or a plain desk made to wait',
+      + 'press and file a denial; the wait kept once they are read; a plain desk made to wait; or '
+      + "the hold given ignored, which holds a seat's P&L between marked days from it as a what-if",
       [state.runHeld(seated(null)),
        state.runHeld({ ...seated({ validate: ['HARBOURLINE'] }), seat: 'sales-9' }),
        state.runHeld(seated({})), state.runHeld(seated({ validate: ['HARBOURLINE'] })),
-       state.runHeld(seated(null, 'sales-1', { record: { spine: null } }))],
-      [WAIT, WAIT, 'Needs validate: sales-1 holds it nowhere.', null, null]);
+       state.runHeld(seated(null, 'sales-1', { record: { spine: null } })),
+       state.runHeld(seated(null), null), state.runHeld(seated({}), null)],
+      [WAIT, WAIT, 'Needs validate: sales-1 holds it nowhere.', null, null, WAIT, null]);
 const MOVED = { ...DEMANDS, approval: 'mark' };
 check('a control is judged by the verb its act demands under the map in force and says that verb: '
       + 'where a stored map moves the approval to mark the sign control is the marking seat\'s '
@@ -824,15 +829,30 @@ check("a control the seat is held from is said in its button's place, its label 
       [draw('Gated', { label: 'run', hold: HOLD }, 'Run'),
        draw('Gated', { label: 'run', hold: null }, 'Run'), draw('Gated', { label: 'run', hold: null })],
       [`<span class="hint">run</span><span>${HOLD}</span>`, 'Run', '']);
-check("an amount's cell draws a negative in the loss colour, the exact value on its hover, the "
-      + 'currency after the amount; one not known is a dash under what is missing, and an empty '
-      + 'cell where that is not said',
+check("an amount's cell draws a negative in the loss colour, the exact value on its hover unless its "
+      + 'title says what the figure is, the currency after the amount; one not known is a dash '
+      + 'under what is missing, and an empty cell where that is not said',
       'a gain drawn as a loss or a loss as a gain, on the P&L, the risk and the XVA table alike; '
-      + 'the rounded figure left without its exact value; or a zero drawn for an amount not known',
+      + 'the rounded figure left without its exact value, or a ladder\'s summed cell without what '
+      + 'it sums; or a zero drawn for an amount not known',
       [draw('Amount', { value: -1250.5, kind: 'money' }), draw('Amount', { value: 3, currency: 'USD' }),
-       draw('Amount', { value: null, absent: 'a set is unread' }), draw('Amount', { value: null })],
+       draw('Amount', { value: null, absent: 'a set is unread' }), draw('Amount', { value: null }),
+       draw('Amount', { value: -2, kind: 'money', title: '2 nodes summed' })],
       ['<td class="n neg" title="-1250.5">-1,250.50</td>',
        '<td class="n" title="3">3 <span class="unit">USD</span></td>',
-       '<td class="n"><span class="hint" title="a set is unread">—</span></td>', '<td class="n"></td>']);
+       '<td class="n"><span class="hint" title="a set is unread">—</span></td>', '<td class="n"></td>',
+       '<td class="n neg" title="2 nodes summed">-2</td>']);
+check("a stat tile draws its label, then its amount and currency, a negative in the loss colour and "
+      + 'the exact value on its hover unless its title says what the tile is; one not known is a dash',
+      "a loss drawn as a gain on the P&L's totals, its explain, the book's MTM and a trade's worth "
+      + 'alike; or a zero drawn for a total not known',
+      [draw('Stat', { label: 'P&L', value: -1250.5, currency: 'USD' }),
+       draw('Stat', { label: 'worth', value: 3, title: 'to the desk' }),
+       draw('Stat', { label: 'Realised', value: null, currency: 'USD' })],
+      ['<div class="stat" title="-1250.5"><div class="label">P&amp;L</div><div class="value neg">'
+        + '-1,250.50 <span class="unit">USD</span></div></div>',
+       '<div class="stat" title="to the desk"><div class="label">worth</div><div class="value">'
+        + '3</div></div>',
+       '<div class="stat"><div class="label">Realised</div><div class="value">—</div></div>']);
 
 done();
