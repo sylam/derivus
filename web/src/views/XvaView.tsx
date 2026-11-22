@@ -95,7 +95,7 @@ export function XvaView() {
       id, name: entityText(paper?.entities ?? null, id), lines, wrong: wrongWith(lines),
       spread: first && [first[0], first[1]], value: summed(own.map((line) => line.value)),
       after: summed(own.map((line) => exposureAfter(line, currency))),
-      limit: limitOf(id, view.limits, paper?.entities ?? null),
+      limit: limitOf(id, view.limits),
     };
   }));
   const acting = clients.filter((client) => client.wrong.length);

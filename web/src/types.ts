@@ -136,14 +136,17 @@ export type Increment = {
 };
 
 /** One credit limit held against the peak exposure of the netting sets drawn on it - the entity's
- * and those of every entity under it: `sets` summed into `usage` and `unrun` left out for want of
- * a run, `headroom` stated only where none is and negative where `breached`, and all three null
- * beside the `not_comparable` sentence. On a credit charge `usage`, `headroom` and `breached`
- * are with the trade, and `usage_without` is the usage without it. */
+ * and those of every entity under it, `clients` naming them all, itself included: `sets` summed
+ * into `usage` and `unrun` left out for want of a run, `headroom` stated only where none is and
+ * negative where `breached`, and all three null beside the `not_comparable` sentence. On a credit
+ * charge `usage`, `headroom` and `breached` are with the trade, `usage_without` is the usage
+ * without it and `breached_without` whether that is over the limit, null where not comparable. */
 export type CreditLimit = {
-  entity: string; name: string | null; limit: { amount: number; currency: string };
+  entity: string; name: string | null; clients: string[];
+  limit: { amount: number; currency: string };
   sets: number; unrun: number; usage: number | null; headroom: number | null;
   breached: boolean | null; not_comparable: string | null; usage_without?: number | null;
+  breached_without?: boolean | null;
 };
 
 /** Whose XVA increment is asked: a quote's pending trade, priced into the book as its acceptance

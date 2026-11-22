@@ -9,7 +9,7 @@ import {
   SURVIVAL, entityText, factorFamily, instantMs, peaks, plural, type Peak,
 } from './desk';
 import {
-  byPath, closed, entitiesUnder, type Agreement, type Entity, type Position,
+  byPath, closed, type Agreement, type Entity, type Position,
 } from './positions';
 import { standing, type Action } from './state';
 import {
@@ -429,8 +429,9 @@ export type LimitRead = {
 /** A credit limit read off one entry of the XVA read's `limits`, or of a credit charge's, which
  * states the usage without the trade ahead of the usage with it. Usage is said only of sets that
  * have run and headroom only where every set has; the flag says a breach, of a charge whether the
- * trade makes it; the notes say the entities `under` it that it covers, how many sets have no run
- * and that no headroom is stated for it, and the service's sentence where it is not comparable. */
+ * trade makes it (`breached_without`); the notes say the entities `under` it that it covers, how
+ * many sets have no run and that no headroom is stated for it, and the service's sentence where it
+ * is not comparable. */
 export function limitRead(entry: CreditLimit, under = 0): LimitRead {
   const { limit, sets, unrun, usage, headroom, usage_without: without } = entry;
   const charge = without !== undefined;
@@ -447,7 +448,7 @@ export function limitRead(entry: CreditLimit, under = 0): LimitRead {
         ? [{ label: charge ? 'headroom after it' : 'headroom', value: headroom }] : []),
     ],
     flag: !entry.breached ? null : !charge ? 'over its limit'
-      : (without ?? 0) > limit.amount ? 'over its limit with or without the trade'
+      : entry.breached_without ? 'over its limit with or without the trade'
         : 'the trade would take it over its limit',
     notes: [
       ...(under ? [`It covers the ${under === 1 ? 'entity' : `${under} entities`} under it.`] : []),
@@ -462,11 +463,10 @@ export function limitRead(entry: CreditLimit, under = 0): LimitRead {
 }
 
 /** The credit limit declared on entity `id` as its row and its page read it (`limitRead`), with
- * how many of `entities` are declared under it; undefined where none is declared on it. */
-export function limitOf(id: string, limits: CreditLimit[], entities: Entity[] | null):
-  LimitRead | undefined {
+ * how many entities under it its usage covers; undefined where none is declared on it. */
+export function limitOf(id: string, limits: CreditLimit[]): LimitRead | undefined {
   const entry = limits.find((row) => row.entity === id);
-  return entry && limitRead(entry, entitiesUnder(id, entities ?? []));
+  return entry && limitRead(entry, entry.clients.length - 1);
 }
 
 /** Who puts a failed run right, off the factor the engine could not find: a credit curve whoever

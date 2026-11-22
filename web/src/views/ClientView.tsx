@@ -185,7 +185,7 @@ function ClientPage({ id, lines, own, reads, rows, factor, market, schema }: {
       </div>
 
       <OnBook own={own} reads={reads} rows={rows} market={market} schema={schema} />
-      <XvaRows id={id} xva={reads.xva} positions={reads.positions} entities={reads.entities} />
+      <XvaRows id={id} xva={reads.xva} positions={reads.positions} />
       <Happened history={entities && history} />
     </div>
   );
@@ -388,11 +388,11 @@ function TradeRow({ trade, market, schema, recording, mark }: {
 
 /** The client's XVA rows - each the last run of a set naming it - with when each ran and, on a
  * desk that records, the trades booked under the set since off the record's `positions`. */
-function XvaRows({ id, xva, positions, entities }: {
-  id: string; xva: Reads['xva']; positions: Position[] | null; entities: Entity[] | null;
+function XvaRows({ id, xva, positions }: {
+  id: string; xva: Reads['xva']; positions: Position[] | null;
 }) {
   const sets = (xva.data?.sets ?? []).filter((set) => set.counterparty === id);
-  const limit = xva.data && limitOf(id, xva.data.limits, entities);
+  const limit = xva.data && limitOf(id, xva.data.limits);
   return (
     <section className="card">
       <h3>XVA</h3>
