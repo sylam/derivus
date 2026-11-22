@@ -2902,12 +2902,7 @@ def telling(rows):
     if not rows:
         return rows
     document = None if BOOK is None else BOOK.read()[0]
-
-    def opened(lsns):
-        return spine.folded(lambda log: {lsn: log.open_body(log.frame_at(lsn)) for lsn in lsns}
-                            ) if lsns else {}
-
-    bodies, standing, clients = opened([row['lsn'] for row in rows]), spine.standing(
+    bodies, standing, clients = spine.bodies([row['lsn'] for row in rows]), spine.standing(
         folds=folds()), client_names()
     holders = {row['instrument']: row for row in standing}
     booked = {entry['ticket']: entry['lsn'] for row in standing for entry in row['tickets']}
@@ -2917,9 +2912,9 @@ def telling(rows):
     # a verdict's trade is the event its ticket was booked by: in the page, else where it stands
     trades = {body['ticket']: lsn for lsn, body in bodies.items()
               if kinds[lsn] in ('fill', 'amendment') and body.get('ticket')}
-    signed = opened(sorted({booked[body['plan_hash']] for lsn, body in bodies.items()
-                            if kinds[lsn] in verdicts and body['plan_hash'] not in trades
-                            and body['plan_hash'] in booked}))
+    signed = spine.bodies(sorted({booked[body['plan_hash']] for lsn, body in bodies.items()
+                                  if kinds[lsn] in verdicts and body['plan_hash'] not in trades
+                                  and body['plan_hash'] in booked}))
     bodies.update(signed)
     trades.update((body['ticket'], lsn) for lsn, body in signed.items())
 
@@ -4083,8 +4078,7 @@ def book_worklist(actor: str = None):
         # and what holds this seat from signing it: its grant where it books, then four eyes
         if not found:
             return found
-        booked = spine.folded(lambda log: {row['lsn']: log.open_body(log.frame_at(row['lsn']))
-                                           for row in found})
+        booked = spine.bodies([row['lsn'] for row in found])
         entries, placed = {}, {}
         for position in rows:
             for entry in position['tickets']:

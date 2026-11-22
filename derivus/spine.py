@@ -1648,6 +1648,12 @@ def amendments(after=None, until=None):
     return folded(walk)
 
 
+def bodies(lsns):
+    """`{lsn: body}` - the body the record holds at each of `lsns`, sought in one open of it."""
+    return folded(lambda log: {lsn: log.open_body(log.frame_at(lsn)) for lsn in lsns}) if lsns \
+        else {}
+
+
 def stored(digest):
     """The bytes the store holds at `digest` - a job, a result or a values vector a reading cites,
     read on this box's own record."""
