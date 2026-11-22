@@ -872,6 +872,17 @@ check("a credit limit's line draws a negative figure in the loss colour, as a ti
         .match(/<b[^>]*>/g),
       ['<b>', '<b class="neg">']);
 
+// a table whose second column a screen replaces, every cell asked for once
+const replacing = [];
+const replaced = (await drawer('DataTable'))('DataTable', { columns: ['a', 'b'], index: [],
+  data: [[1, 2], [3, 4]], cell: (r, c) => { replacing.push([r, c]); return c === 1 ? 'x' : undefined; } });
+check('a table asks a screen once for each cell it may replace, and sets a heading right over its '
+      + 'numbers unless the screen replaced that column',
+      'the first row asked again for every heading, which builds each replaced cell of it twice per '
+      + 'paint; or a replaced column headed as numbers',
+      [replacing.length, [...replaced.matchAll(/<th( [^>]*)?>/g)].map(([, attributes]) => attributes ?? '')],
+      [4, [' class="n"', '']]);
+
 // a trade's cells, as each table draws them off its size and its levels
 const picked = (key, value) => ({ key, value, title: key });
 const SIZED = { side: picked('Buy_Sell', 'Pay'), amount: picked('Amount', 1e6),

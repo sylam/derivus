@@ -449,10 +449,6 @@ export function factorNames(descriptor: Descriptor | undefined, market: Market |
     .map((name) => name.slice(name.indexOf('.') + 1)))].sort();
 }
 
-export function marksTotal(rows: DealMark[]): number {
-  return rows.reduce((total, row) => total + row.value, 0);
-}
-
 // ---- the exports: a table's rows under its own heads, every number as itself --------------------
 
 /** The marks table's heads: on a desk that records, each row's clients and what waits in it too. */
@@ -514,14 +510,6 @@ export function readingExport(rows: GreekRow[], schema: Schema | null, market: M
 /** Relative, because one number reached by two roads - the same rows summed in a different order -
  * differs in its last bits. */
 const RECONCILE_TOLERANCE = 1e-9;
-
-/** Whether `mtm` is the sum of the per-deal rows, which the service promises it is on any book.
- * Checked rather than assumed: the marks table shows a total, and a total that did not agree with
- * the headline would be the one thing on the screen worth saying out loud. */
-export function reconciles(risk: BookRisk): boolean {
-  const scale = Math.max(1, Math.abs(risk.mtm));
-  return Math.abs(risk.mtm - marksTotal(risk.per_deal)) <= RECONCILE_TOLERANCE * scale;
-}
 
 /** What stands under the service's refusal to price the book's risk (its `code` `unpriced`): that
  * nothing was served, and who puts it right - the desk on its own book, its sender on a document

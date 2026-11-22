@@ -55,22 +55,23 @@ export function CalculationView() {
             (summary) => dispatch({ type: 'RUN_POLLED', summary }),
             (error) => dispatch({ type: 'RUN_FAILED', error }));
 
-  // on done: fetch every scalar table for the stat strip, and open the default table
+  // once a run is done: every scalar table for the stat strip, read once, and the default table
+  // opened - the summary is the run's, so the result's id is all this reads again on
   useEffect(() => {
     if (run.status !== 'done' || !run.summary?.tables || !run.resultId) return;
     const tables = run.summary.tables;
     const scalarNames = Object.keys(tables).filter((name) => isScalar(tables[name]));
     Promise.all(scalarNames.map(async (name) =>
       [name, (await getTable(run.resultId!, name)).data[0]] as const,
-    )).then((pairs) => dispatch({ type: 'SCALARS_LOADED', scalars: Object.fromEntries(pairs) }));
-    if (!run.table) {
-      const first = Object.keys(tables).filter((name) => !isScalar(tables[name]))
-        .sort((a, b) => tables[b].columns.length === 0 ? -1 : a.localeCompare(b))[0];
-      const preferred = tables['exposure_profile'] ? 'exposure_profile'
-        : tables['mtm'] ? 'mtm' : first;
-      if (preferred) dispatch({ type: 'TABLE_SELECTED', table: preferred });
-    }
-  }, [run.status, run.summary, run.resultId, run.table, dispatch]);
+    )).then((pairs) => dispatch({ type: 'SCALARS_LOADED', scalars: Object.fromEntries(pairs) }))
+      .catch((error) => dispatch({ type: 'RUN_FAILED', error: failure(error).error }));
+    const first = Object.keys(tables).filter((name) => !isScalar(tables[name]))
+      .sort((a, b) => tables[b].columns.length === 0 ? -1 : a.localeCompare(b))[0];
+    const preferred = tables['exposure_profile'] ? 'exposure_profile'
+      : tables['mtm'] ? 'mtm' : first;
+    if (preferred && !run.table) dispatch({ type: 'TABLE_SELECTED', table: preferred });
+    // the table picked and the summary landing with the status move nothing this reads anew
+  }, [run.status, run.resultId, dispatch]);
 
   // fetch the selected table's page
   useEffect(() => {

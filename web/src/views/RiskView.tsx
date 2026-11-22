@@ -2,8 +2,8 @@ import { Fragment, useMemo, useState } from 'react';
 import { EXPORTS, MARKED, saveCsv } from '../blotter';
 import {
   NO_BOOK, QUOTE_HEADS, bucketAxes, factorFamily, lagsBook, markHolds, marksExport,
-  marksHeads, marksTotal, offBook, onPair, perOf, perUnitText, placeText, plural, positionsUnder,
-  quoteView, quotesExport, readingExport, reconciles, riskOf, riskReading, sharedPer, sortGreeks,
+  marksHeads, offBook, onPair, perOf, perUnitText, placeText, plural, positionsUnder,
+  quoteView, quotesExport, readingExport, riskOf, riskReading, sharedPer, sortGreeks,
   stampText, tenorText, unpriced, valuationDay, type GreekKey, type Ladder,
 } from '../desk';
 import { EmptyState } from '../components/EmptyState';
@@ -335,8 +335,6 @@ function Risk({ row }: { row: GreekRow }) {
  * in it that wait on a second seat. A trade's row opens its page; a set's picks it here. */
 function Marks({ risk, currency }: { risk: BookRisk; currency: string }) {
   const { state, dispatch } = useApp();
-  const total = marksTotal(risk.per_deal);
-  const agrees = reconciles(risk);
   const recording = state.record.spine !== null;
   const positions = state.paper.data?.positions;
   // a position netted to nothing is inside no mark
@@ -428,19 +426,11 @@ function Marks({ risk, currency }: { risk: BookRisk; currency: string }) {
               <td>Book</td>
               <td />
               {recording && <><td /><td /></>}
-              <Amount value={total} kind="money" />
+              <Amount value={risk.mtm} kind="money" />
             </tr>
           </tbody>
         </table>
       </div>
-      {/* the service promises `mtm` IS this total; a disagreement is the one thing on this screen
-          worth interrupting a reader for */}
-      {!agrees && (
-        <div className="error-box">
-          The headline mark ({formatNumber(risk.mtm, 'money')}) is not the sum of the rows above
-          ({formatNumber(total, 'money')}). Read neither number until that is explained.
-        </div>
-      )}
     </>
   );
 }

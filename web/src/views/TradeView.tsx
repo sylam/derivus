@@ -430,8 +430,7 @@ function Unwind({ row, position, onVerdict }: {
   const count = Number(ungrouped(units.trim()));
   const at = Number(ungrouped(price.trim()));
   const cost: Price = { amount: at, currency: currency.trim(), day: day || undefined };
-  const typed = units.trim() !== '' && price.trim() !== '' && isFinite(count) && isFinite(at)
-    && (at === 0 || !!day);
+  const typed = units.trim() !== '' && price.trim() !== '' && isFinite(count) && isFinite(at);
   const size = tradeSize(row, state.schema);
   const client = clientName(state.paper.data?.entities ?? [], position.counterparty)
     || 'the client';

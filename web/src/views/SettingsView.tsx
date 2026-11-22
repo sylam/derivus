@@ -16,11 +16,11 @@ const WHICH: Record<NamedFile['key'], string> = {
 const HERE: Descriptor = { widget: 'Text', description: 'on this box', value: null };
 
 /** This workstation's first, where it reads the files a job names, which is no part of the
- * document and stands whether or not its market read; then the document's settings. What a seat
- * that may not write the paths or the market needs to change either is said once above them. */
+ * document and stands whether or not its market read; then the document's settings, read only.
+ * What a seat that may not write the paths needs to change them is said once above them. */
 export function SettingsView() {
   const { state } = useApp();
-  const hold = heldBack(state, 'paths') ?? heldBack(state, 'market_tick');
+  const hold = heldBack(state, 'paths');
   return (
     <div className="main">
       <div className="panel">

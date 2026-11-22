@@ -35,9 +35,10 @@ export function DataTable({ columns, index, data, cell }: {
     columns.every((c) => Array.isArray(c) && c.length >= 2);
   const hasIndex = index.length > 0;
   const rows = data.map((row) => (Array.isArray(row) ? row : [row]));
+  const replaced = rows.map((row, r) => row.map((_, c) => cell?.(r, c)));
   // a heading sits over its numbers, which are set right; a replaced cell sets its own
   const side = (c: number) =>
-    (typeof rows[0]?.[c] === 'number' && cell?.(0, c) === undefined ? 'n' : undefined);
+    (typeof rows[0]?.[c] === 'number' && replaced[0][c] === undefined ? 'n' : undefined);
 
   return (
     <div className="tablewrap">
@@ -69,12 +70,9 @@ export function DataTable({ columns, index, data, cell }: {
           {rows.map((row, r) => (
             <tr key={r}>
               {hasIndex && <td>{label(index[r])}</td>}
-              {row.map((value, c) => {
-                const override = cell?.(r, c);
-                return override === undefined
-                  ? <Cell key={c} value={value} column={columns[c]} />
-                  : <td key={c}>{override}</td>;
-              })}
+              {row.map((value, c) => (replaced[r][c] === undefined
+                ? <Cell key={c} value={value} column={columns[c]} />
+                : <td key={c}>{replaced[r][c]}</td>))}
             </tr>
           ))}
         </tbody>

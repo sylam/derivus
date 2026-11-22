@@ -1,15 +1,18 @@
-import { postValidate } from '../api';
+import { useState } from 'react';
+import { failure, postValidate } from '../api';
 import { useApp } from '../state';
 
 /** The one-line read on the loaded document: the book by type, both halves of the factor
  * universe, the calculation, the queue's cost class - `/describe`'s answer, which App refreshes
- * whenever the document moves. Validate on demand, messages verbatim: they are the engine's own
+ * whenever the document moves. Validate on demand - a refusal said in its place - messages
+ * verbatim: they are the engine's own
  * words and reformatting them would put a second author between the engine and the reader. A file
  * the book names that does not read on this box fails the job whole, so it is named first, with
  * the way to the card that maps it. */
 export function JobHeader() {
   const { state, dispatch } = useApp();
   const { doc, describe, validate } = state;
+  const [refused, setRefused] = useState<string | null>(null);
   if (!doc) return null;
 
   const dealCount = describe
@@ -48,11 +51,19 @@ export function JobHeader() {
       )}
       <button
         className="ghost"
-        onClick={async () => dispatch({ type: 'VALIDATED', validate: await postValidate(doc) })}
+        onClick={async () => {
+          setRefused(null);
+          try {
+            dispatch({ type: 'VALIDATED', validate: await postValidate(doc) });
+          } catch (error) {
+            setRefused(failure(error).error);
+          }
+        }}
       >
         validate
       </button>
-      {validate && (
+      {refused && <span className="bad">not validated: {refused}</span>}
+      {validate && !refused && (
         Object.keys(validate.deals).length === 0 && validate.factors.length === 0
           && validate.calculation.length === 0
           ? <span style={{ color: 'var(--good)' }}>✓ validates clean</span>

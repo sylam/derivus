@@ -7,7 +7,7 @@ import {
   isEditableScalar, isObject, kindOf, label, offsetText, onScreen, sharedSections, token, ungrouped,
 } from '../tokens';
 import type { Descriptor, Schema, Section } from '../types';
-import { axisNames, quotesNormal } from '../vols';
+import { quotesNormal } from '../vols';
 import { CurveChart } from './CurveChart';
 import { DataTable } from './DataTable';
 import { JsonView } from './JsonView';
@@ -27,7 +27,7 @@ export function FieldView({ value, descriptor, normal }: {
   if (curve) {
     const arity = curve.data[0]?.length ?? 0;
     if (arity === 2) {
-      return <CurveChart data={curve.data} axes={axisNames(descriptor?.description, 2)} />;
+      return <CurveChart data={curve.data} description={descriptor?.description} />;
     }
     if (arity === 3 || arity === 4) {
       return <VolSurface data={curve.data} descriptor={descriptor} normal={normal} />;
