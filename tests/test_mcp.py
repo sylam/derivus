@@ -1243,7 +1243,7 @@ def test_the_credit_limits_reach_a_model_as_the_record_declares_them(book, recor
     """
     limit = {'amount': 5_000_000.0, 'currency': 'USD'}
     assert mcp_server.describe_credit_limits() == {'limits': None, 'blob': None, 'lsn': None}
-    with pytest.raises(ToolError, match="a limit is declared on 'LEI-A', and that is no legal"):
+    with pytest.raises(ToolError, match="a limit's entity 'LEI-A' is no legal entity the record"):
         mcp_server.declare_credit_limits({'LEI-A': limit}, actor='subject-desk-one')
     assert mcp_server.describe_credit_limits()['lsn'] is None
 

@@ -729,7 +729,9 @@ The `limits` policy declares the limits: per legal entity an amount above zero a
 is an amount of. The record checks the shape and never whether it holds the entity
 (`policy.parse_limits`). The declaring verb judges that: `spine.declare_limits`, behind
 `POST /book/limits` and the `declare_credit_limits` tool, refuses by name a limit on an entity the
-record does not hold before anything appends, a limit on one being a rule nothing enforces.
+record does not hold before anything appends, a limit on one being a rule nothing enforces
+(`spine.declared_entities`, the check an agreement's entity and a survival curve's counterparty
+meet).
 `GET /book/limits` answers the document in force with its blob and its position. The last
 declaration stands whole. A document limiting a group on its parent and one member on its own, as
 `DV_Spine declare limits` takes it and as the route takes its one section beside `actor`:

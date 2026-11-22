@@ -6126,9 +6126,9 @@ def test_a_limit_is_declared_on_a_legal_entity_the_record_holds_and_on_no_other(
     started, limit = head(recorded), {'amount': 5_000_000.0, 'currency': 'USD'}
     assert CLIENT.get('/book/limits').json() == {'limits': None, 'blob': None, 'lsn': None}
     for limits, said in (
-            ({'LEI-GHOST': limit}, "a limit is declared on 'LEI-GHOST', and that is no legal "
-                                   'entity the record declares - it declares LEI-A'),
-            ({'LEI-A': limit, 'LEI-GHOST': limit}, "a limit is declared on 'LEI-GHOST', and"),
+            ({'LEI-GHOST': limit}, "a limit's entity 'LEI-GHOST' is no legal entity the record "
+                                   'declares - it declares LEI-A: declare the entity first'),
+            ({'LEI-A': limit, 'LEI-GHOST': limit}, "a limit's entity 'LEI-GHOST' is no legal"),
             ({'LEI-A': dict(limit, amount=0)}, "the limit on 'LEI-A' is the amount 0"),
             (None, 'limits is NoneType')):
         refused = limits_declared(limits)

@@ -3483,22 +3483,12 @@ def diary_rows(job, lsn, files=None):
         PnL.held_legs(job_children(job), set(units)))
 
 
-def declared_entity(field, entity):
-    """`{entity: row}` for every legal entity the record declares, or the 422 saying `field` names
-    none of them."""
-    declared = {row['entity']: row for row in spine.entities()}
-    if entity not in declared:
-        raise HTTPException(422, '{} {!r} is no legal entity the record declares - it declares {}: '
-                                 'declare the entity first'.format(
-                                     field, entity, ', '.join(sorted(declared)) or 'none'))
-    return declared
-
-
 def clients_under(entity, declared=None):
     """`entity` and every entity declared under it, however deep - the client a view groups.
-    `declared` is the record's `{entity: row}` where the caller holds it."""
+    `declared` is the record's `{entity: row}` where the caller holds it; where it does not, an
+    entity the record does not declare is refused by name, a 422."""
     parents = {name: row.get('parent') for name, row in (
-        declared_entity('client', entity) if declared is None else declared).items()}
+        spine.declared_entities('client', [entity]) if declared is None else declared).items()}
     found, grew = {entity}, True
     while grew:
         grew = False
@@ -3652,7 +3642,7 @@ def book_agreement_declared(request: dict):
     """
     recorded()
     agreement, entity = request.get('agreement'), request.get('entity')
-    declared_entity('entity', entity)
+    spine.declared_entities('entity', [entity])
     terms = agreement_terms(request.get('terms'), agreement, entity)
     filed = spine.declare_agreement(agreement, entity, request.get('kind'), terms,
                                     actor_name=request.get('actor'))
@@ -4659,7 +4649,7 @@ def credit_limits(*_):
         return []
     with spine.one_read(folds()):
         limits = spine.limits()
-        declared = {row['entity']: row for row in spine.entities()} if limits else {}
+        declared = spine.declared_entities() if limits else {}
     return [{'entity': entity, 'name': (declared.get(entity) or {}).get('name'), 'limit': limit,
              'clients': sorted(clients_under(entity, declared))}
             for entity, limit in sorted(limits.items())]
@@ -4957,7 +4947,7 @@ def book_survival(request: dict):
     rows = spread if isinstance(spread, list) else [{'tenor': '1Y', 'spread': spread}]
     marking(request, 'survival_curve')
     if spine.configured():
-        declared_entity('counterparty', counterparty)
+        spine.declared_entities('counterparty', [counterparty])
     if not (isinstance(counterparty, str) and counterparty):
         raise HTTPException(422, 'counterparty {!r} names nobody: a survival curve is written for '
                                  'the counterparty a netting set names'.format(counterparty))

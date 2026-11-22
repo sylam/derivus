@@ -1330,21 +1330,12 @@ def declare_calculations(calculations, actor_name=None, effective_time=None):
 
 def declare_limits(limits, actor_name=None, effective_time=None):
     """Declare the `limits` policy, `{legal entity: {amount, currency}}`: the credit limit each
-    entity's exposure is held against, an entity the record does not hold refused by name, a limit
-    on one being a rule nothing enforces."""
-    def judge(stated):
-        held = {row['entity'] for row in entities()}
-        if set(stated) - held:
-            raise SpineRefused(
-                'a limit is declared on {}, and that is no legal entity the record declares - it '
-                'declares {}: a limit on an entity nobody declared is a rule nothing enforces, so '
-                'declare the entity first'.format(
-                    ', '.join(map(repr, sorted(set(stated) - held))),
-                    ', '.join(sorted(held)) or 'none'))
-
+    entity's exposure is held against, an entity the record does not hold refused by name
+    (`declared_entities`), a limit on one being a rule nothing enforces."""
     policy = package().policy
-    return declare_policy(policy.LIMITS_POLICY, policy.LIMITS_SECTION, limits, judge, actor_name,
-                          effective_time)
+    return declare_policy(policy.LIMITS_POLICY, policy.LIMITS_SECTION, limits,
+                          lambda stated: declared_entities("a limit's entity", stated),
+                          actor_name, effective_time)
 
 
 def limits():
@@ -1384,6 +1375,19 @@ def entities(lsn=None):
     """Every legal entity the record declares at `lsn`: its name and the parent it is grouped
     under."""
     return _rows('entities', lsn)
+
+
+def declared_entities(field=None, named=()):
+    """`{entity: row}` for every legal entity the record declares, or `SpineRefused` naming each
+    of `named`, the entities `field` states, that is none of them."""
+    declared = {row['entity']: row for row in entities()}
+    strangers = sorted(set(named) - set(declared))
+    if strangers:
+        raise SpineRefused(
+            '{} {} is no legal entity the record declares - it declares {}: declare the entity '
+            'first'.format(field, ', '.join(map(repr, strangers)),
+                           ', '.join(sorted(declared)) or 'none'))
+    return declared
 
 
 def holder_of(address, book, folds=None):
