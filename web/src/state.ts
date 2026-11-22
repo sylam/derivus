@@ -22,7 +22,7 @@ import type {
 /** `opened` names the job file the served book was opened from, where it was opened from one. */
 export type Source =
   | { kind: 'book'; etag: string; path: string; opened?: string }
-  | { kind: 'local'; name: string };
+  | { kind: 'local'; name: string; note: string | null };
 
 export type RunState = {
   status: 'idle' | 'submitting' | 'queued' | 'running' | 'done' | 'error';

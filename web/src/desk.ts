@@ -591,12 +591,11 @@ export const offBook = (shown: string): { title: string; hint: string } => ({
     + `shows ${shown}.`,
 });
 
-/** What a file opened on a desk that records is, null on one that keeps no record, where it is
- * served as the book: a read-only copy the service is not asked to open, said as the state it is -
- * the desk's book is what its record holds - with the control that leaves the copy. */
-export const copyOnly = (recording: boolean, name: string): string | null => (recording
-  ? `This desk's book is what its record holds, so ${name} is shown as a read-only copy and not `
-    + `opened on the desk. ${LEAVE_COPY}.` : null);
+/** What a file the service would not open is said as over its read-only copy where the desk
+ * records (`code` `recorded`): the service's own sentence, a state of the desk and no error, with
+ * the control that leaves the copy. Null for any other refusal, which says for itself. */
+export const recordedCopy = (refused: { error: string; code: string | null }): string | null =>
+  (refused.code === 'recorded' ? `${refused.error} ${LEAVE_COPY}.` : null);
 
 /** What a screen says where the desk serves no book: what the reader can do, then who gives the
  * desk a book of its own. */
