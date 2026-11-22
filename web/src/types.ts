@@ -311,8 +311,8 @@ export type DealMark = {
  * record's share rule - `unit` a unit's, `value` its `quantity`'s, the positions on a deal adding
  * to its mark - both none where the deal has no mark or nets to nothing. */
 export type PositionMark = {
-  deal_path: string; portfolio: string; agreement: string; quantity: number; unit: number | null;
-  value: number | null;
+  deal_path: string; portfolio: string; agreement: string | null; quantity: number;
+  unit: number | null; value: number | null;
 };
 
 export type BookRisk = {
@@ -519,6 +519,9 @@ export type WorkRow = {
 /** What an agreement's terms never state, `GET /book/agreements` names: the netting set's `fields`
  * and the `collateral_columns` of its collateral tables - settlement state, not paper. */
 export type SettlementState = { fields: string[]; collateral_columns: string[] };
+
+/** The stable name of a refusal's kind, beside its sentence on every refusal the service words. */
+export type RefusalCode = 'no_actor' | 'not_granted' | 'unpriced' | 'recorded' | 'refused';
 
 /** `GET /book/seat` - the seat a request's acts are filed under, per verb the nodes it holds it
  * at, each reaching every path under it and null where nothing narrows it, `demands`, the verb

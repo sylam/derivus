@@ -10,7 +10,8 @@ import type {
   CalculationOutcome, ChargeAsk, PendingQuote, QuoteGiven,
   CalculationsAnswer, CloseVerdict, CurveOutcome, CurvesAnswer, Decided, DescribeResult, JobDoc,
   PathMaps,
-  PathsAnswer, Reconcile, Recorded, ResultSummary, Schema, SeatGrants, SecuritiesAnswer,
+  PathsAnswer, Reconcile, Recorded, RefusalCode, ResultSummary, Schema, SeatGrants,
+  SecuritiesAnswer,
   SeedOutcome, SettlementState, TablePage, ValidateResult, Worklist, XvaProfile,
 } from './types';
 
@@ -43,8 +44,8 @@ const seated = (path: string) => {
 /** A refusal: its status, the service's sentence, and its kind's stable name (`code`) or null. */
 export class ApiError extends Error {
   status: number;
-  code: string | null;
-  constructor(status: number, message: string, code: string | null = null) {
+  code: RefusalCode | null;
+  constructor(status: number, message: string, code: RefusalCode | null = null) {
     super(message);
     this.status = status;
     this.code = code;
@@ -59,7 +60,7 @@ export const NO_SEAT = 'No seat is set, and this desk files every act under the 
  * `code`. Anything that is not an `ApiError` - the network being down - reads as itself. The one
  * rewording is a seat named by nobody (`no_actor`), which the desk fixes in its own box. */
 export function failure(error: unknown):
-  { status: number | null; error: string; code: string | null } {
+  { status: number | null; error: string; code: RefusalCode | null } {
   if (!(error instanceof ApiError)) return { status: null, code: null, error: String(error) };
   return { status: error.status, code: error.code,
            error: error.code === 'no_actor' ? NO_SEAT : error.message || `HTTP ${error.status}` };
@@ -84,7 +85,7 @@ async function send(method: string, path: string, body?: unknown): Promise<Respo
     try { said = JSON.parse(text) ?? {}; } catch { /* not JSON: the body is the message */ }
     throw new ApiError(response.status,
       typeof said.detail === 'string' ? said.detail : text.slice(0, 500) || response.statusText,
-      typeof said.code === 'string' ? said.code : null);
+      typeof said.code === 'string' ? said.code as RefusalCode : null);
   }
   return response;
 }

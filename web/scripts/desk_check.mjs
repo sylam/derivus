@@ -790,20 +790,23 @@ const refusing = async (status, body) => {
   return api.getBook().then(() => 'answered', api.failure);
 };
 const said = (detail, code) => JSON.stringify({ detail, code });
+// a request the service's framework would not parse, which names no kind
+const UNPARSED = JSON.stringify({ detail: [{ loc: ['body', 'date'], msg: 'field required' }] });
 check('a refusal is told apart by the code the service sends beside its sentence, never by its '
       + 'words: a seat named by nobody is told to set one, any other refusal says its own sentence '
-      + 'and keeps its code, and a body that is no envelope reads as itself',
+      + 'and keeps its code, and a body that is no envelope, or names no kind, reads as itself',
       'the code dropped from the error thrown, which leaves the risk screen unable to say who puts '
       + 'an unpriced book right; the rewording keyed on the words, which tells a seat its own '
       + 'sentence in words the service did not send; or the JSON envelope printed at the reader',
       [await refusing(422, said('the request names no seat', 'no_actor')),
        await refusing(422, said('no actor for this act', 'refused')),
        await refusing(422, said('the book will not price: no curve', 'unpriced')),
-       await refusing(500, 'Internal Server Error')],
+       await refusing(500, 'Internal Server Error'), await refusing(422, UNPARSED)],
       [{ status: 422, code: 'no_actor', error: api.NO_SEAT },
        { status: 422, code: 'refused', error: 'no actor for this act' },
        { status: 422, code: 'unpriced', error: 'the book will not price: no curve' },
-       { status: 500, code: null, error: 'Internal Server Error' }]);
+       { status: 500, code: null, error: 'Internal Server Error' },
+       { status: 422, code: null, error: UNPARSED }]);
 
 const NETTED = { Calc: { Deals: { Deals: { Children: [
   { Instrument: { '.Deal': { Object: 'NettingCollateralSet', Credit_Support_Amounts: {

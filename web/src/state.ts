@@ -15,8 +15,8 @@ import { isObject } from './tokens';
 import { tradeAt } from './trade';
 import type {
   ActivityPage, BookMarket, BookResponse, BookRisk, BookXva, DealNode, DescribeResult, JobDoc,
-  Market, PathsAnswer, Reconcile, ResultSummary, Schema, SeatGrants, SpineBlock, TablePage,
-  ValidateResult, Worklist,
+  Market, PathsAnswer, Reconcile, RefusalCode, ResultSummary, Schema, SeatGrants, SpineBlock,
+  TablePage, ValidateResult, Worklist,
 } from './types';
 
 /** `opened` names the job file the served book was opened from, where it was opened from one. */
@@ -58,7 +58,7 @@ export type Fetched<T> = {
  * two would always read stale. */
 export type Clocked<T> = Fetched<T> & { clock: string | null };
 /** The risk, a failure keeping the refusal's `code` (`desk.unpriced`). */
-export type RiskState = Clocked<BookRisk> & { code: string | null };
+export type RiskState = Clocked<BookRisk> & { code: RefusalCode | null };
 
 /** What the RECORD answers this client, off the one poll the app already runs. The slice and both
  * its transitions live in `web/src/spine.ts`, where they are arithmetic a node check drives:
@@ -143,7 +143,7 @@ export type Action =
   // the desk views: one fetch each, off the etag the book poll already moves
   | { type: 'RISK_FETCHING' }
   | { type: 'RISK_LOADED'; risk: BookRisk; clock: string }
-  | { type: 'RISK_FAILED'; error: string; status: number | null; code: string | null }
+  | { type: 'RISK_FAILED'; error: string; status: number | null; code: RefusalCode | null }
   | { type: 'XVA_FETCHING' }
   | { type: 'XVA_LOADED'; xva: BookXva; clock: string }
   | { type: 'XVA_FAILED'; error: string; status: number | null }

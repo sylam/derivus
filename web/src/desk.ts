@@ -15,7 +15,8 @@ import {
   ungrouped,
 } from './tokens';
 import type {
-  BookRisk, BookXva, DealMark, DealNode, Descriptor, GreekRow, JobDoc, Market, Schema, XvaSet,
+  BookRisk, BookXva, DealMark, DealNode, Descriptor, GreekRow, JobDoc, Market, RefusalCode,
+  Schema, XvaSet,
 } from './types';
 import { axisNames } from './vols';
 
@@ -561,7 +562,7 @@ export function reconciles(risk: BookRisk): boolean {
  * nothing was served, and who puts it right - the desk on its own book, its sender on a document
  * `opened` here from another system. Undefined for any other refusal - a seat's - which says for
  * itself. */
-export function unpriced(code: string | null, opened?: string): string | undefined {
+export function unpriced(code: RefusalCode | null, opened?: string): string | undefined {
   if (code !== 'unpriced') return undefined;
   return `Nothing was cached and nothing partial was served. ${opened
     ? `${opened} came from another system and will not price as it was sent: its sender puts it `
@@ -594,7 +595,7 @@ export const offBook = (shown: string): { title: string; hint: string } => ({
 /** What a file the service would not open is said as over its read-only copy where the desk
  * records (`code` `recorded`): the service's own sentence, a state of the desk and no error, with
  * the control that leaves the copy. Null for any other refusal, which says for itself. */
-export const recordedCopy = (refused: { error: string; code: string | null }): string | null =>
+export const recordedCopy = (refused: { error: string; code: RefusalCode | null }): string | null =>
   (refused.code === 'recorded' ? `${refused.error} ${LEAVE_COPY}.` : null);
 
 /** What a screen says where the desk serves no book: what the reader can do, then who gives the
