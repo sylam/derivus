@@ -6781,7 +6781,8 @@ def test_the_xva_view_names_the_curves_a_credit_run_would_fund_at_and_keeps_the_
         return CLIENT.get('/book/xva').json()['funding']
 
     def kept():
-        return service.BOOK.polls.get(('funding',) + service.poll_key(service.BOOK))
+        view = service.BOOK.polls.get(('xva',) + service.poll_key(service.BOOK, service.xva_path()))
+        return view and view['funding']
 
     assert kept() is None and funding() == {'cost': 'FUND', 'benefit': 'FUND'}
     first = kept()
@@ -6924,7 +6925,8 @@ def test_the_limits_are_kept_under_the_poll_s_key_and_a_restated_one_is_read_at_
     itself), where the book keeps nothing under the key.
     """
     def kept():
-        return service.BOOK.polls.get(('limits',) + service.poll_key(service.BOOK))
+        view = service.BOOK.polls.get(('xva',) + service.poll_key(service.BOOK, service.xva_path()))
+        return view and view['limits']
 
     entity_declared('CPTY_A')
     assert policy_posted('limits', {'CPTY_A': usd(100_000.0)}).status_code == 200

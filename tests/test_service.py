@@ -1968,6 +1968,48 @@ def test_a_status_poll_with_nothing_moved_is_a_lookup_and_all_it_reads_is_in_its
     assert status()['etag'] == amended['etag'] and len(service.BOOK.polls.entries) == count
 
 
+def test_an_xva_poll_with_nothing_moved_is_a_lookup_and_a_row_landing_is_read_at_once(file_book):
+    """`GET /book/xva` keeps its rows, its funding and its limits on the book under `poll_key` over
+    the XVA file's stamp, so a second poll with nothing moved is answered off what the first kept
+    and the file is not parsed: a row restated with the file's size and modified time held reads
+    as kept. Each set's `recalc` is read beside the kept rows. A row landing in the file moves the
+    key and is read at the next poll.
+
+    Killing mutation: the rows read off the file on every poll, outside the key, which reads the
+    restated row on the poll a lookup answers.
+    """
+    xva = service.xva_path()
+
+    def rested():
+        stamp = time.time_ns() - 60_000_000_000
+        os.utime(xva, ns=(stamp, stamp))
+        return stamp
+
+    def cva():
+        return {entry['reference']: entry['cva'] for entry in CLIENT.get('/book/xva').json()['sets']}
+
+    def kept():
+        return service.BOOK.polls.get(('xva',) + service.poll_key(service.BOOK, xva))
+
+    service.write_row('GONE', {'status': 'done', 'cva': 1.5})
+    stamp = rested()
+    assert kept() is None and cva()['GONE'] == 1.5
+    view = kept()
+    assert [entry['reference'] for entry in view['sets']][-1] == 'GONE'
+    assert cva()['GONE'] == 1.5 and kept() is view
+
+    text = open(xva, encoding='utf-8').read()
+    with open(xva, 'w', encoding='utf-8', newline='') as handle:
+        handle.write(text.replace('"cva": 1.5', '"cva": 2.5'))
+    os.utime(xva, ns=(stamp, stamp))
+    assert cva()['GONE'] == 1.5, 'a poll with nothing moved parsed the XVA file'
+
+    service.write_row('MORE', {'status': 'done', 'cva': 0.5})
+    rested()
+    assert kept() is None and {name: cva()[name] for name in ('GONE', 'MORE')} == {
+        'GONE': 2.5, 'MORE': 0.5}
+
+
 def test_the_curve_verb_refuses_by_name_and_the_file_stands_still(book, monkeypatch):
     """THREE REFUSALS, each naming the thing to fix, each writing nothing.
 

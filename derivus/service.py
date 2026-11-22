@@ -4733,13 +4733,17 @@ def projection_entry(row, **book):
     entry = dict({'reference': None, 'deal_path': None, 'counterparty': row.get('counterparty'),
                   'collateralized': row.get('collateralized'), 'note': None}, **book)
     entry.update({key: row.get(key) for key in XVA_COLUMNS + ('error',)},
-                 status=row.get('status', 'never run'), recalc=None)
-    # the row names the run that PRODUCED it, never one still running: a pending id is the book's
-    pending = live_book().xva_pending.get(entry['reference'])
-    outcome = EXECUTOR.result(pending) if pending is not None else None
-    if outcome is not None and outcome['status'] in ('queued', 'running'):
-        entry['recalc'] = {'result_id': pending, 'status': outcome['status']}
+                 status=row.get('status', 'never run'))
     return entry
+
+
+def recalc_of(reference):
+    """`{result_id, status}` of the recalc of the set `reference` still queued or running, else
+    None: a row names the run that PRODUCED it, never one still running, whose id is the book's."""
+    pending = live_book().xva_pending.get(reference)
+    outcome = EXECUTOR.result(pending) if pending is not None else None
+    return ({'result_id': pending, 'status': outcome['status']}
+            if outcome is not None and outcome['status'] in ('queued', 'running') else None)
 
 
 @app.get('/book/xva', summary='The XVA projection - the last run per netting set, as it stands')
@@ -4776,19 +4780,28 @@ def book_xva_view():
 
     `limits` is one entry per legal entity the record's `limits` policy declares a credit limit
     for (`limit_usage`): the limit, the `usage` these rows' peak exposures add up to against the
-    entity and every entity under it, `clients`, and the `headroom` left. The limits are kept
-    under the poll's key and the sums are of the rows this answer carries, so a restated limit
-    reads at once and nothing runs. Empty where none is declared and where the desk keeps no
-    record.
+    entity and every entity under it, `clients`, and the `headroom` left. The sums are of the rows
+    this answer carries, so a restated limit reads at once and nothing runs. Empty where none is
+    declared and where the desk keeps no record.
+
+    A POLL WITH NOTHING MOVED IS A LOOKUP: the rows, `funding` and the limits are kept on the book
+    under its `poll_key` over the XVA file (`xva_view`), and each set's `recalc` is read beside
+    them on every poll.
     """
-    live = live_book()
-    entries = xva_entries(live.read()[0])
-    return {'as_of': as_of(), 'sets': entries, 'funding': polled(live, 'funding', funded),
-            'limits': [limit_usage(limit, draws_on(limit, entries))
-                       for limit in polled(live, 'limits', credit_limits)]}
+    view = polled(live_book(), 'xva', xva_view, xva_path())
+    sets = [dict(entry, recalc=recalc_of(entry['reference'])) for entry in view['sets']]
+    return {'as_of': as_of(), 'sets': sets, 'funding': view['funding'],
+            'limits': [limit_usage(limit, draws_on(limit, sets)) for limit in view['limits']]}
 
 
-def funded(document, _):
+def xva_view(document, _):
+    """`{sets, funding, limits}` - what `GET /book/xva` reads of `document`, the XVA file and the
+    record: the rows joined with the book's sets (`xva_entries`), the curves a recalc asked now
+    funds at (`funded`) and the credit limits declared (`credit_limits`)."""
+    return {'sets': xva_entries(document), 'funding': funded(document), 'limits': credit_limits()}
+
+
+def funded(document):
     """`{cost, benefit}` - the curves a credit run of `document` asked now funds its FVA at, off
     the calculation that run reads (`spine.official_calculation`), None for one it does not
     state. Where the record refuses that calculation both are None beside `refused`, its sentence
@@ -4811,11 +4824,11 @@ NOT_COMPARABLE = ('this limit is stated in {} and the exposure against it is rep
                   'the currency the exposure is reported in')
 
 
-def credit_limits(*_):
+def credit_limits():
     """`[{entity, name, limit, clients}]` - each credit limit the record declares (`spine.limits`)
     by entity: the entity's name, the limit `{amount, currency}` and `clients`, the entity and
     every entity under it by the parent chain, whose netting sets all draw on it. Empty where none
-    is declared and where no record is kept. Read off the record alone, so `polled` keeps it."""
+    is declared and where no record is kept."""
     if not spine.configured():
         return []
     with spine.one_read(folds()):
@@ -4829,14 +4842,12 @@ def credit_limits(*_):
 def limits_against(terms):
     """`[(limit, draws)]` - each credit limit the netting set `terms` names (`xva_pair`) draws on,
     its counterparty's and that of every entity above it, with what every OTHER set draws on it
-    as the XVA rows stand: what a credit charge of that set is held against. Empty where none is
-    declared for them."""
-    live = live_book()
-    limits = [limit for limit in polled(live, 'limits', credit_limits)
-              if terms['counterparty'] in limit['clients']]
-    entries = xva_entries(live.read()[0]) if limits else ()
-    return [(limit, [draw for draw in draws_on(limit, entries)
-                     if draw[0] != terms['netting_set']]) for limit in limits]
+    as the XVA rows stand (`xva_view`): what a credit charge of that set is held against. Empty
+    where none is declared for them."""
+    view = polled(live_book(), 'xva', xva_view, xva_path())
+    return [(limit, [draw for draw in draws_on(limit, view['sets'])
+                     if draw[0] != terms['netting_set']])
+            for limit in view['limits'] if terms['counterparty'] in limit['clients']]
 
 
 def pfe_column(columns):
