@@ -890,9 +890,9 @@ def test_a_market_resolves_by_name_and_a_private_one_resolves_for_its_owner(reco
 
     standing = spine.resolve_market('official')
     assert standing == {'name': 'official', 'values_hash': context.values_hash(),
-                        'lsn': standing['lsn'], 'values': standing['values']}
+                        'lsn': standing['lsn']}
     assert other.values_hash() != context.values_hash()
-    other.patch_market(standing['values'])
+    other.patch_market(spine.read_values(blob(recorded, standing['values_hash'])))
     assert other.values_hash() == context.values_hash(), \
         'the resolved market did not read back as the market it names'
 

@@ -1847,12 +1847,11 @@ def _route(log, plan_hash, terms, booker, lsn=None, folds=None):
 
 
 def resolve_market(name, actor=None, process=None):
-    """The values vector standing under the market `name`: `{name, values_hash, lsn, values}`.
+    """The values vector standing under the market `name`: `{name, values_hash, lsn}`, its bytes
+    the store's under `values_hash`, which `read_values` turns into what `patch_market` takes.
 
-    The composition nothing performed before - the `markets` fold names it, the store holds the
-    bytes, `read_values` turns them back into what `patch_market` takes. A name nobody declared
-    REFUSES rather than falling back on the book's own market, which is the whole point of binding a
-    process to a market by name.
+    A name nobody declared REFUSES rather than falling back on the book's own market, which is the
+    whole point of binding a process to a market by name.
 
     A NAME IS RESOLVED TO ITS LATEST DECLARATION, across the declarations of the name and the
     official close standing on it alike - a close is one way of declaring what a market stands on,
@@ -1873,7 +1872,7 @@ def resolve_market(name, actor=None, process=None):
     def fold(log):
         spine = package()
         # the fold's own state rather than its rows: the rows drop the as-of key the merge orders by
-        markets = spine.projections.fold(log, spine.projections.PROJECTORS['markets'])
+        markets = _state(log, spine.projections.PROJECTORS['markets'])
         standing = [rows[name] for rows in (markets['names'], markets['closes']) if name in rows]
         if not standing:
             raise SpineRefused(
@@ -1905,8 +1904,7 @@ def resolve_market(name, actor=None, process=None):
         latest = max(standing, key=lambda row: (row['as_of'], row['lsn']))
         # the POSITION of the declaration in force, so a file struck on this board names where the
         # board was declared and replays to it rather than to whatever the name answers later
-        return {'name': name, 'values_hash': latest['values_hash'], 'lsn': latest['lsn'],
-                'values': read_values(log.store.get(latest['values_hash']))}
+        return {'name': name, 'values_hash': latest['values_hash'], 'lsn': latest['lsn']}
 
     return folded(fold)
 

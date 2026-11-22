@@ -615,7 +615,7 @@ what a client holding the paper re-reads it on, the web client its entities and 
 (`paperOwed` in `web/src/state.ts`), a booking moving its holdings alone. Its `close`, beside
 `paper`, is the market the `tiers` policy designates for the P&L, null where none is, and whether
 an official close `stands` declared on it (`service.spine_block`), and whether the book is
-`marked` on it for its own base day (`service.book_marks_on`, read only where a close stands):
+`marked` on it for its own base day (`service.pnl_marks`, read only where a close stands):
 what a read of a marked close needs, as fields, so a client tells "no close stands" and "not
 marked" without reading a refusal's words.
 `GET /book/xva` reads its rows on every ask and keeps one part under the same key: `funding`, the
@@ -933,7 +933,11 @@ market stands on its latest close by day, so a past day restated never unseats a
 on the close standing under the market designated for `pnl`, as a standing run named
 `marks:<book>@<cut>`. A day behind the last marked refuses - marks run forward, so a struck day never
 moves - and the marks close the day where they read the book, so a ticket booked while the run waits
-is the next day's. **Held by** `test_pnl.py::test_a_ticket_booked_while_the_marks_wait_is_the_next_day_s_and_marks_run_forward`.
+is the next day's. Every read of the marks - the marks, the P&L, the calls, the worklist, the status
+- takes the designated market, its closes and the book's marks on them from one place
+(`service.pnl_marks`), the closes walked once a request; the market resolves to a position and a
+hash, its vector read only by the one that patches it. **Held by** `test_pnl.py::test_a_ticket_booked_while_the_marks_wait_is_the_next_day_s_and_marks_run_forward`,
+`test_spine_engine.py::test_a_market_resolves_by_name_and_a_private_one_resolves_for_its_owner`.
 
 **The files a job names.** A job names its market data file and its calendar by path and a job
 standing alone runs off what they hold; the record declares their content. `file_declared`

@@ -2473,7 +2473,7 @@ def spine_block(document):
     file was hydrated at and how far the log has moved since; and `close`, the market the record
     designates for the P&L - null where it designates none - whether an official close `stands`
     declared on it, what every read of a marked close reads, and whether the book is `marked` on
-    it for its own base day (`book_marks_on`), read only where a close stands.
+    it for its own base day (`pnl_marks`).
 
     NO DIVERGENCE HERE. Counting it means folding the whole log, which is linear in the history and
     this is the verb a client starts with, the MCP tool's first call and the web's poll; the two
@@ -2482,12 +2482,11 @@ def spine_block(document):
     """
     if not spine.configured():
         return None
-    pinned, market = pin_of(document), spine.designation(spine.PNL)
-    closes = spine.closes(market)
+    pinned, (market, closes, marks) = pin_of(document), pnl_marks(document, designated=False)
     block = {'lsn': None, 'head': None, 'events_behind': None, 'positions_behind': None,
              'paper': spine.papered(), 'close': {
-                 'market': market, 'stands': bool(closes), 'marked': bool(closes) and (
-                     spine.base_day(document) in book_marks_on(book_name(document), closes))}}
+                 'market': market['name'], 'stands': bool(closes),
+                 'marked': spine.base_day(document) in marks}}
     return block if pinned is None else dict(block, **pinned, **behind(pinned, book_name(document)))
 
 
@@ -3233,15 +3232,14 @@ def book_marks(request: dict):
     """
     document, _ = recording().read()
     book = book_name(document)
-    market = spine.designated_market(spine.PNL)
-    close = next((row for row in spine.closes(market['name']) if row['lsn'] == market['lsn']), None)
+    market, closes, marks = pnl_marks(document)
+    close = next((row for row in closes if row['lsn'] == market['lsn']), None)
     if close is None:
         raise HTTPException(422, 'the market designated for {} is {!r}, and it stands on a '
                                  'declaration that is not a close - a book is marked at a close, so '
                                  'declare one (declare_close) and mark again'.format(
                                      spine.PNL, market['name']))
     day = spine.base_day(document)
-    marks = book_marks_on(book, spine.closes(market['name']))
     if marks and day < max(marks):
         raise HTTPException(422, 'the book was last marked for {} and stands at {} - marks run '
                                  'forward, a day already struck never moves, and a day behind the '
@@ -3270,9 +3268,7 @@ def book_marked_days():
     """`{market, days}` - every day the book was marked on the market the desk designated for
     `pnl`, oldest first, each with the position of its marks: the days `GET /book/pnl` runs
     between. Refused where no market is designated. 404 where no home is configured."""
-    document, _ = recording().read()
-    market = spine.designated_market(spine.PNL)
-    marks = book_marks_on(book_name(document), spine.closes(market['name']))
+    market, _, marks = pnl_marks(recording().read()[0])
     return {'market': market['name'],
             'days': [{'day': day, 'lsn': marks[day]['lsn']} for day in sorted(marks)]}
 
@@ -3281,6 +3277,18 @@ def book_marks_on(book, closes):
     """`{day: marks}` - the latest standing marks of `book` on each of `closes` (`PnL.marked`),
     each marks job's day kept on the served book."""
     return PnL.marked(book, closes, spine.attestations(), spine.stored, live_book().days)
+
+
+def pnl_marks(document, designated=True):
+    """`(market, closes, marks)` - the market the record designates for the P&L
+    (`spine.designated_market`, refused where it designates none; with `designated` False only
+    its `name`, None where none is), every close declared on it, and the marks of the book
+    `document` names on them (`book_marks_on`, read only where a close stands): the closes walked
+    once for a request."""
+    market = (spine.designated_market(spine.PNL) if designated
+              else {'name': spine.designation(spine.PNL)})
+    closes = spine.closes(market['name'])
+    return market, closes, book_marks_on(book_name(document), closes) if closes else {}
 
 
 def marked_instruments(book, since, head=None):
@@ -3340,8 +3348,7 @@ def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreemen
     if portfolio is not None and not spine.under(portfolio, book):
         raise HTTPException(422, 'portfolio {!r} is not under book {!r} - a portfolio is a path '
                                  'whose top node is the book'.format(portfolio, book))
-    market = spine.designated_market(spine.PNL)
-    marks = book_marks_on(book, spine.closes(market['name']))
+    market, closes, marks = pnl_marks(document)
     days = sorted(marks)
     end_day = None if end is None else read_day(end)
     start_day = read_day(start) if start is not None else max(
@@ -3360,7 +3367,7 @@ def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreemen
     scope = {'portfolio': portfolio or book, 'agreement': agreement,
              'clients': None if client is None else clients_under(client),
              'sight': spine.sight(actor)}
-    answer, last_days = valued_between(first, last, document, marks, market['name'], scope)
+    answer, last_days = valued_between(first, last, document, marks, closes, scope)
     terms = PnL.held_terms(document, {row['instrument'] for row in answer['rows']}, spine.stored)
     for row in answer['rows']:
         row['reference'] = terms[row['instrument']].get('Reference')
@@ -3374,9 +3381,9 @@ def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreemen
                    for side, marks_of in (('start', first), ('end', last))})
 
 
-def valued_between(first, last, document, marks, market, scope, through=False, close_mkt=None):
+def valued_between(first, last, document, marks, closes, scope, through=False, close_mkt=None):
     """`(answer, last_days)` - `PnL.pnl` over `scope` between the marks `first` and `last` of the
-    book `document` names, `marks` every one it has on `market`: each close's spots, the business
+    book `document` names, `marks` every one it has on `closes`: each close's spots, the business
     days its marks cut, what the record held and moved at each end, and every payment the window's
     positions meet (`window_payments`), with the last day of each instrument that has one. `through`
     holds a position whose last day is `last`'s through it rather than closing it there, as a
@@ -3386,7 +3393,7 @@ def valued_between(first, last, document, marks, market, scope, through=False, c
     calculation = first['document']['Calc']['Calculation']
     reporting = calculation.get('Currency')
     base = structures.base_currency(close_mkt if close_mkt is not None else close_market(first))
-    for marks_of in (first, last):
+    for marks_of in (first, last) if first is not last else (first,):
         marks_of['rates'] = PnL.rates(marks_of.pop('values', None) or json.loads(
             spine.stored(marks_of['values_hash']).decode('utf-8')), reporting, base)
     days = sorted(marks)
@@ -3401,14 +3408,14 @@ def valued_between(first, last, document, marks, market, scope, through=False, c
     def between(after, until):
         return [fill for fill in spine.fills(after=after, until=until) if fill['book'] == book]
 
-    closes = PnL.rates_on(spine.closes(market), spine.stored, reporting, base)
+    struck = PnL.rates_on(closes, spine.stored, reporting, base)
 
     def rates(day, lsn):
         # the day being lived has no close struck on it: the book as it stands prices it, as it
         # prices what that day paid, and a day between it and the last marks has its own close
         live = (last.get('live') and day >= last['day'] and day > days[-1]
                 and lsn >= last['lsn'])
-        return last['rates'] if live else closes(day, lsn)
+        return last['rates'] if live else struck(day, lsn)
 
     ends = {first['lsn'], last['lsn']}
     costs = {lsn: spine.costs(lsn) for lsn in ends}
@@ -3639,20 +3646,20 @@ def book_collateral(date: str = None, actor: str = None):
     Refused where the day has no marks. 404 where no home is configured.
     """
     document, _ = recording().read()
-    market = spine.designated_market(spine.PNL)['name']
-    marks = book_marks_on(book_name(document), spine.closes(market))
+    market, closes, marks = pnl_marks(document)
     day = read_day(date) if date is not None else spine.base_day(document)
     if day not in marks:
         raise HTTPException(422, (NO_MARKS + 'a call is read on a marked close, so mark the book '
                                              'at it (mark_book)').format(
-                                                 day, market, ', '.join(sorted(marks)) or 'none'))
-    return collateral_calls(document, marks, day, market, spine.sight(actor))
+                                                 day, market['name'], ', '.join(sorted(marks))
+                                                 or 'none'))
+    return collateral_calls(document, marks, day, closes, spine.sight(actor))
 
 
-def collateral_calls(document, marks, day, market, sight, verb=None, positions=None,
+def collateral_calls(document, marks, day, closes, sight, verb=None, positions=None,
                      filed=False):
     """`{date, marks, lsn, calls}` - the calls on the marks of `day`, `marks` every one the book of
-    `document` has on `market`, of the agreements a seat whose `sight` this is reads where it holds
+    `document` has on `closes`, of the agreements a seat whose `sight` this is reads where it holds
     `verb` (`Collateral.seen` over `positions`, the ones standing where None): the exposure the P&L
     over that close alone, every position held through it (`valued_between`), the paper and the
     `cash` fold the record's at its head, a balance held as of the day - or every movement filed,
@@ -3665,7 +3672,7 @@ def collateral_calls(document, marks, day, market, sight, verb=None, positions=N
     if agreements:
         close = PnL.loaded(marks[day], spine.stored)
         mkt = close_market(close)
-        valued, _ = valued_between(close, close, document, marks, market, {
+        valued, _ = valued_between(close, close, document, marks, closes, {
             'portfolio': book_name(document), 'agreement': None, 'clients': None, 'sight': None},
             through=True, close_mkt=mkt)
         calls = Collateral.calls(close, valued, agreements, movements, None if filed else day,
@@ -4028,9 +4035,7 @@ def book_worklist(actor: str = None):
     names = named_trades(document, {row['instrument'] for row in rows if row['tickets']})
     clients = client_names()
     confirmed_rows = {row['subject']: row for row in spine.lifecycle()['confirmations']}
-    market = spine.designation(spine.PNL)
-    closes = spine.closes(market)
-    marks = book_marks_on(book, closes)
+    market, closes, marks = pnl_marks(document, designated=False)
     see = sighted(document, sight, demands['status_transition'], rows)
 
     def row(kind, what, key, lsn, when):
@@ -4094,7 +4099,7 @@ def book_worklist(actor: str = None):
 
     # a seat that posts collateral nowhere pays nothing for calls it cannot see
     due = [] if day not in marks or sight is not None and sight[demands['collateral']] == [] else (
-        collateral_calls(document, marks, day, market, sight, demands['collateral'], rows,
+        collateral_calls(document, marks, day, closes, sight, demands['collateral'], rows,
                          filed=True)['calls'])
 
     def called(call):
@@ -4124,7 +4129,7 @@ def book_worklist(actor: str = None):
                                     entry['execution_reference'], traded(position, entry))),
         'calls': [called(call) for call in due if call['direction'] or call['unknown']],
         'unmarked': [row('unmarked', 'the close of {} on {} is not marked'.format(
-            close['date'], market), close['date'], close['lsn'], close['date'])
+            close['date'], market['name']), close['date'], close['lsn'], close['date'])
             for close in {close['date']: close for close in closes}.values()
             if close['date'] >= max(marks, default='')
             and close['values_hash'] != marks.get(close['date'], {}).get('values_hash')
