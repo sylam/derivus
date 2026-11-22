@@ -426,7 +426,6 @@ OPERATOR_SECOND = {
     'the record is not installed': 'the deployment sets a home and lacks the package that keeps it',
     "to the desk's own seat": 'a recording desk with no seat of its own, which the operator sets',
     'does not read as a key set': 'the deployment names a key set that will not read, at start',
-    'no security map in': 'the scheduled tick on a workstation never verified, read in its log',
     'is not admitted to read the': 'a replica pulling the store, whose reader runs the replica',
     'the capabilities blob is not': 'met declaring a capabilities document, a command line act',
     'a spine home is log/ and blobs/': 'the home configured is not a home, the deployment\'s',
@@ -1945,8 +1944,9 @@ def test_the_curve_verb_refuses_by_name_and_the_file_stands_still(book, monkeypa
     a bootstrap that complains, which refuses the WHOLE write the way a tick's does: the
     `HullWhite2FactorModelParameters` entry configured beside the curve has a block it cannot fit.
 
-    Killing mutation: a bootstrap's ERROR left uncaptured, which writes a market the bootstrap
-    complained about.
+    Killing mutations: a bootstrap's ERROR left uncaptured, which writes a market the bootstrap
+    complained about; the session's own error carried into the unquoted row's refusal, which tells
+    a desk to install the SDK.
     """
     monkeypatch.setitem(sys.modules, 'blpapi', None)
     before = book.read_bytes()
@@ -1954,6 +1954,7 @@ def test_the_curve_verb_refuses_by_name_and_the_file_stands_still(book, monkeypa
     unquoted = set_up_curve(rows=[dict(CURVE_ROWS[0], quote=None)] + CURVE_ROWS[1:])
     assert unquoted.status_code == 422
     assert '3M' in unquoted.json()['detail'] and 'no terminal' in unquoted.json()['detail']
+    assert 'Install' not in unquoted.json()['detail'], 'a desk was told to install the SDK'
     assert book.read_bytes() == before
 
     unreadable = set_up_curve(rows=[dict(row, tenor='3Q') if row['tenor'] == '5Y' else row
@@ -2898,8 +2899,11 @@ def test_a_routine_tick_refuses_an_unprovisioned_home_and_leaves_the_book_alone(
 
     `DV_HOME` names a directory with no `security_map.json`. The beat submits through the real
     queue, the job refuses BEFORE it opens a session - which is what makes this reachable with no
-    terminal - naming the home it looked in and the verb that fixes it. The book's bytes stand
-    still, and the second beat is the failure discipline: exactly ONE warning carrying that cause.
+    terminal - saying which seat's act verifies the securities, in the sentence a quote's live
+    spot says it in, and naming no path on the service's own disk. The book's bytes stand still,
+    and the second beat is the failure discipline: exactly ONE warning carrying that cause.
+
+    Killing mutation: the refusal naming the home it looked in, or a command for it again.
     """
     import logging
 
@@ -2917,8 +2921,8 @@ def test_a_routine_tick_refuses_an_unprovisioned_home_and_leaves_the_book_alone(
 
     assert result['status'] == 'done'
     assert outcome['written'] is False
-    assert any(str(home) in message and 'tick_market_from_bloomberg' in message
-               for message in outcome['refused'])
+    assert outcome['refused'] == [service.UNPROVISIONED.format('a routine tick')]
+    assert 'holding mark' in outcome['refused'][0] and str(home) not in outcome['refused'][0]
     assert desk.read_bytes() == before
 
     # the next beat judges the one that refused: ONE warning line, and it carries the cause
@@ -2928,7 +2932,7 @@ def test_a_routine_tick_refuses_an_unprovisioned_home_and_leaves_the_book_alone(
     warned = [record.getMessage() for record in caplog.records
               if record.name == 'derivus.service' and record.levelno == logging.WARNING]
 
-    assert len(warned) == 1 and str(home) in warned[0]
+    assert len(warned) == 1 and outcome['refused'][0] in warned[0]
     assert metronome.failures == 1
     assert desk.read_bytes() == before
 
@@ -5612,7 +5616,7 @@ def test_a_quote_with_no_map_prices_on_the_book_and_names_the_spot_it_used(quoti
 
     assert quote['spot']['source'] == 'book'
     note = quote['spot']['note']
-    assert 'no security map' in note and 'tick_market_from_bloomberg' in note, note
+    assert 'no security map' in note and 'holding mark' in note, note
     assert str(tmp_path) not in note, 'the note leaks a path on the service\'s own disk'
     assert quote['spot']['value_market'] == USDZAR
 

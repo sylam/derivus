@@ -4892,14 +4892,11 @@ QUOTE_NOT_A_PATCH = ('{} is a Market Prices block - post it under `quotes`, whic
                      'curve from it - so it would leave the written price factors stale against '
                      'their own quotes with nothing to re-solve them')
 
-#: What a ROUTINE tick refuses on when this workstation has never been verified. The metronome
-#: does not provision - that is a person's act, minutes of terminal time - so it says so, names
-#: the home it looked in, and keeps beating.
-UNPROVISIONED = ('no security map in {} - a routine tick never provisions. Run '
-                 'tick_market_from_bloomberg once (or DV_Bloomberg discover) on a Bloomberg terminal '
-                 "to verify this workstation's securities, and the cadence picks up from the next "
-                 'beat. A B-PIPE host cannot discover: copy the security_map.json built on a '
-                 'terminal workstation into that home')
+#: What a routine tick and a quote's live spot say where this workstation has never been
+#: verified. Neither provisions - that is a person's act, minutes of terminal time - so each says
+#: which seat's act it is, and the cadence keeps beating.
+UNPROVISIONED = ('this desk has no security map, and {} never verifies its securities - a seat '
+                 'holding mark does, by ticking the market from a Bloomberg terminal once')
 
 
 def bootstrap_selection(market, outcome, patch):
@@ -5403,10 +5400,9 @@ def live_rows(rows, as_of, conventions):
             priced = {row.label: row for row in price_rows(session, blank, as_of, conventions)}
     except BloombergFXError as error:
         raise InvalidQuote(
-            'no quote was stated for {} and this workstation has no terminal to price them off '
-            '({}) - state a `quote` on every row, or set the curve up on the workstation whose '
-            'terminal prices the securities they name'.format(
-                ', '.join(row.label for row in blank), error))
+            'no quote was stated for {} and no terminal priced them here - state a `quote` on '
+            'every row, or set the curve up on the workstation whose terminal prices the '
+            'securities they name'.format(', '.join(row.label for row in blank))) from error
     return tuple(priced.get(row.label, row) for row in rows)
 
 
@@ -5956,7 +5952,7 @@ class BloombergJob(Progressing):
     def run_job(self):
         import datetime
 
-        from derivus_bloomberg import discover, security_map
+        from derivus_bloomberg import discover
         from derivus_bloomberg.errors import BloombergFXError
         from derivus_bloomberg.session import BloombergSession
 
@@ -5965,7 +5961,7 @@ class BloombergJob(Progressing):
         document, _ = self.book.read()
         try:
             if self.routine and discover.provisioned() is None:
-                return self.outcome(started, refused=[UNPROVISIONED.format(security_map.home())])
+                return self.outcome(started, refused=[UNPROVISIONED.format('a routine tick')])
             self.note('provisioning the security map')
             with BloombergSession(timeout_ms=30000) as session:
                 def on_batch(done, total):
@@ -7606,9 +7602,7 @@ def live_spot_crosses(base_currency, currencies, host=None, port=None):
     try:
         path = provisioned()
         if path is None:
-            return None, NO_LIVE_SPOT.format(
-                'this desk has no security map, and a quote never provisions one - '
-                'tick_market_from_bloomberg verifies its securities on a Bloomberg terminal')
+            return None, NO_LIVE_SPOT.format(UNPROVISIONED.format('a quote'))
         pairs, unrouted = spot_routes(security_map.load(path), base_currency, currencies)
     except Exception as error:
         return None, NO_LIVE_SPOT.format(error)
