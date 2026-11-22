@@ -105,21 +105,36 @@ OFFICIAL_RUNS = ('CreditMonteCarlo',)
 LIMITS_SECTION = 'limits'
 
 
+def _refuser(where):
+    """The refusal a parser goes on with: `MalformedEvent` naming `where`."""
+    def refuse(sentence):
+        raise MalformedEvent('{}: {}'.format(where, sentence))
+    return refuse
+
+
+def json_object(document, what, shape, refuse):
+    """Refuse `document`, told as `what`, unless it is a JSON object: `shape` spells one."""
+    if not isinstance(document, dict):
+        refuse('{} is {}, not a JSON object - it is {}'.format(
+            what, type(document).__name__, shape))
+
+
+def closed_at(document, what, fields, refuse):
+    """Refuse an object `document`, told as `what`, carrying a key beyond `fields`: it is closed
+    at the field level, a key nothing reads being a rule nobody enforces."""
+    surplus = sorted(set(document) - set(fields))
+    if surplus:
+        refuse('{} carries {} beyond {} - the document is closed at the field level; drop the key '
+               'or version the document shape'.format(what, ', '.join(surplus), ', '.join(fields)))
+
+
 def _section(document, where, policy, section, key, value):
     """`(entries, refuse)` - the one section of a single-section `policy` document, checked, and
     the refusal its parser goes on with: the document a JSON object closed at `section`, the
     section an object of `key` -> `value`, empty where the policy states nothing."""
-    def refuse(sentence):
-        raise MalformedEvent('{}: {}'.format(where, sentence))
-
-    if not isinstance(document, dict):
-        refuse('a {} policy is {}, not a JSON object - it is {{"{}": {{{}: {}}}}}'.format(
-            policy, type(document).__name__, section, key, value))
-    surplus = sorted(set(document) - {section})
-    if surplus:
-        refuse('a {} policy carries {} beyond {} - the document is closed at the field level; '
-               'drop the key or version the document shape'.format(
-                   policy, ', '.join(surplus), section))
+    refuse, what = _refuser(where), 'a {} policy'.format(policy)
+    json_object(document, what, '{{"{}": {{{}: {}}}}}'.format(section, key, value), refuse)
+    closed_at(document, what, [section], refuse)
     entries = document.get(section)
     if not isinstance(entries, dict):
         refuse('{} is {}, not an object of {} -> {} - a policy stating nothing says so with an '
@@ -159,12 +174,8 @@ def parse_firmness(document, where):
     `plan_seconds` aged a book that moves by booking rather than by clock, and the equality that
     catches a moved book needs no window at all.
     """
-    def refuse(sentence):
-        raise MalformedEvent('{}: {}'.format(where, sentence))
-
-    if not isinstance(document, dict):
-        refuse('a firmness policy is {}, not a JSON object - it is {{"{}": seconds}}'.format(
-            type(document).__name__, PILLAR_SECONDS))
+    refuse, what = _refuser(where), 'a firmness policy'
+    json_object(document, what, '{{"{}": seconds}}'.format(PILLAR_SECONDS), refuse)
     retired = sorted(set(document) & set(FIRMNESS_RETIRED))
     if retired:
         refuse('a firmness policy carries {} - the board moving between a quote and its acceptance '
@@ -172,11 +183,7 @@ def parse_firmness(document, where):
                'the plan hash rather than by a clock. Declare {} instead, which is how old the '
                'board a quote was struck on may have been'.format(
                    ', '.join(retired), PILLAR_SECONDS))
-    surplus = sorted(set(document) - {PILLAR_SECONDS})
-    if surplus:
-        refuse('a firmness policy carries {} beyond {} - the document is closed at the field level; '
-               'a window nobody reads is a staleness rule nobody enforces'.format(
-                   ', '.join(surplus), PILLAR_SECONDS))
+    closed_at(document, what, [PILLAR_SECONDS], refuse)
     if PILLAR_SECONDS not in document:
         return {}
     window = document[PILLAR_SECONDS]
@@ -227,19 +234,11 @@ def parse_tiers(document, where):
     are hashed, so one workflow is ONE BLOB however the operator spelled it and two desks declaring
     the same rules do not get two governance histories of one decision.
     """
-    def refuse(sentence):
-        raise MalformedEvent('{}: {}'.format(where, sentence))
-
-    if not isinstance(document, dict):
-        refuse('a tiers policy is {}, not a JSON object - it is {{"{}": [tier, ...], "{}": '
-               '{{process: market}}}}'.format(
-                   type(document).__name__, TIERS_SECTION, DESIGNATIONS_SECTION))
-    _unstaled(document, 'a tiers policy', refuse)
-    surplus = sorted(set(document) - {TIERS_SECTION, DESIGNATIONS_SECTION})
-    if surplus:
-        refuse('a tiers policy carries {} beyond {} and {} - the document is closed at the field '
-               'level; drop the key or version the document shape'.format(
-                   ', '.join(surplus), TIERS_SECTION, DESIGNATIONS_SECTION))
+    refuse, what = _refuser(where), 'a tiers policy'
+    json_object(document, what, '{{"{}": [tier, ...], "{}": {{process: market}}}}'.format(
+        TIERS_SECTION, DESIGNATIONS_SECTION), refuse)
+    _unstaled(document, what, refuse)
+    closed_at(document, what, [TIERS_SECTION, DESIGNATIONS_SECTION], refuse)
     tiers = document.get(TIERS_SECTION)
     if not isinstance(tiers, list) or not tiers:
         refuse('{} is {!r}, not a non-empty ORDERED list - the FIRST tier whose every declared '
@@ -273,11 +272,7 @@ def _tier(tier, position, named, refuse):
         refuse('{} names the seat {!r} - an automatic approval is the hub\'s own act, filed in '
                'the writer\'s voice, so a tier is automatic unless it declares four_eyes true; '
                'drop the seat'.format(at, tier['seat']))
-    surplus = sorted(set(tier) - set(TIER_FIELDS))
-    if surplus:
-        refuse('{} carries {} beyond {} - the document is closed at the field level; a check nobody '
-               'reads is a bound nobody enforces'.format(
-                   at, ', '.join(surplus), ', '.join(TIER_FIELDS)))
+    closed_at(tier, at, TIER_FIELDS, refuse)
     if 'four_eyes' in tier and not isinstance(tier['four_eyes'], bool):
         refuse('{} declares four_eyes {!r}: it is true or false, and a value that is neither says '
                'nothing about whether the approver may be the booker'.format(

@@ -40,6 +40,7 @@ from os.path import commonprefix
 
 from .canon import canonical_bytes
 from .errors import CapabilityDenied, CollisionRefusal, MissingBlobRefusal
+from .policy import closed_at, json_object
 from .verbs import CONFIRMED, HELD
 from .vocabulary import (
     ADMIN, COLLATERAL, CONFIRM, EVENT_VERB, FIRM_CLASS, RECOVERY, VERBS, is_path, is_text)
@@ -173,14 +174,9 @@ def _shape(document, where, stored=False):
     def refuse(sentence):
         raise CapabilityDenied('{}: {}'.format(where, sentence))
 
-    if not isinstance(document, dict):
-        refuse('the capabilities document is {}, not a JSON object - it is {{"grants": [...], '
-               '"read": [...], "verbs": {{act: verb}}}}'.format(type(document).__name__))
-    surplus = sorted(set(document) - set(DOCUMENT_SECTIONS) - {MAP_SECTION})
-    if surplus:
-        refuse('the capabilities document carries {} beyond grants, read, verbs - the document is '
-               'closed at the field level; drop the key or version the document shape'.format(
-                   ', '.join(surplus)))
+    what = 'the capabilities document'
+    json_object(document, what, '{"grants": [...], "read": [...], "verbs": {act: verb}}', refuse)
+    closed_at(document, what, DOCUMENT_SECTIONS + (MAP_SECTION,), refuse)
     verbs, mapped = VERBS + (RETIRED_VERBS if stored else ()), document.get(MAP_SECTION, {})
     if not isinstance(mapped, dict) or any(act not in MAPPED and not stored or verb not in verbs
                                            for act, verb in mapped.items()):
