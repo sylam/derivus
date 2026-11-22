@@ -2,8 +2,8 @@ import { useState, type ReactNode } from 'react';
 import { getBookCollateral, getXvaProfile } from '../api';
 import { EXPORTS, SET, fieldsOf, rowsByPath, saveCsv, toRows } from '../blotter';
 import {
-  LIMIT_USAGE, RUNS, WRONG, actionFirst, agreementsOf, bookedText, closeRead, creditExport,
-  creditLines, exposureAfter, fundedAt, limitOf, openClient, paperText, runSum, statedHolding,
+  LIMIT_USAGE, RUNS, WRONG, actionFirst, actsOf, actsText, agreementsOf, bookedText, closeRead,
+  creditExport, creditLines, exposureAfter, fundedAt, limitOf, openClient, paperText, runSum, statedHolding,
   summed, unmarked, wrongWith, type CreditLine, type LimitRead, type Wrong,
 } from '../client';
 import { EmptyState } from '../components/EmptyState';
@@ -98,10 +98,7 @@ export function XvaView() {
       limit: limitOf(id, view.limits),
     };
   }));
-  const acting = clients.filter((client) => client.wrong.length);
-  const counts = (Object.keys(WRONG) as (keyof typeof WRONG)[]).map((kind) =>
-    [kind, clients.flatMap((client) => client.wrong).filter((wrong) => wrong.kind === kind).length] as const)
-    .filter(([, count]) => count);
+  const acting = clients.filter((client) => actsOf(client).length);
   const close = unmarked(collateral.error);
   const marked = (unread?: string) => closeRead(collateral.data?.date, !!close, unread);
   const reads = { currency, recording, noClose: !!close, collateralError: collateral.error,
@@ -127,7 +124,7 @@ export function XvaView() {
           {acting.length ? (
             <span className="hint">
               <b>{plural(acting.length, 'client')}</b> of {clients.length} to act on:{' '}
-              {counts.map(([kind, count]) => `${count} ${WRONG[kind]}`).join(' · ')}
+              {actsText(clients)}
             </span>
           ) : (
             <span className="hint">
@@ -222,7 +219,7 @@ function ClientRows({ client, reads, opened, onOpen }: {
     <td className="opener"><span>{line === shown ? '×' : '⋯'}</span></td>);
   return (
     <>
-      <tr className={`${one ? 'pick' : ''}${client.wrong.length ? ' acting' : ''}`}
+      <tr className={`${one ? 'pick' : ''}${actsOf(client).length ? ' acting' : ''}`}
           onClick={() => one && onOpen(one.reference)}>
         <td>
           <button className="ghost" title="open this client's page"

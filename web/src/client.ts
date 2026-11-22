@@ -355,10 +355,11 @@ export const paperText = (line: CreditLine): string => (line.paper === null ? 'n
 
 /** The credit table as its export writes it, its heads first: a row per set under its client, a
  * client with none a row of its own; every amount the number itself, its currency in a column
- * beside it and a peak's day in the next; a PFE column per percentile the runs kept; and the
- * service's note on a set that has left the book. A client's sums are left to the reader. */
+ * beside it and a peak's day in the next; a PFE column per percentile the runs kept; the
+ * service's note on a set that has left the book; and the client's credit limit, with the usage
+ * and the headroom it states (`limitRead`). A client's sums are left to the reader. */
 export function creditExport(
-  clients: { name: string; spread?: [number, number]; lines: CreditLine[] }[],
+  clients: { name: string; spread?: [number, number]; lines: CreditLine[]; limit?: LimitRead }[],
   currency: string): unknown[][] {
   const kept = (line?: CreditLine) => peaks(line?.run?.peaks ?? null);
   const quantiles = [...new Set(clients.flatMap((client) => client.lines)
@@ -369,23 +370,26 @@ export function creditExport(
       'Waiting on a second seat', 'Value to the desk', 'After collateral', 'Ccy', 'Collateral held',
       'Call', 'Collateral ccy', 'Peak EE', 'Peak EE day',
       ...quantiles.flatMap((quantile) => [`Peak PFE ${quantile}`, `Peak PFE ${quantile} day`]),
-      'CVA', 'FVA', 'Run ccy', 'Run', 'Note'],
-    ...clients.flatMap(({ name, spread, lines }) => (lines.length ? lines : [undefined]).map((line) => {
+      'CVA', 'FVA', 'Run ccy', 'Run', 'Note', 'Credit limit', 'Limit usage', 'Headroom',
+      'Limit ccy'],
+    ...clients.flatMap(({ name, spread, lines, limit }) => (lines.length ? lines : [undefined]).map((line) => {
       const held = line?.collateralised && typeof line.call?.balance === 'number' ? line.call : null;
       return [name, line?.reference, spread && spread[1] * 1e4, spread && tenorLabel(spread[0]),
         line && paperText(line), line?.trades, line?.pending, line?.value,
         line && exposureAfter(line, currency), line && currency, held?.balance, held?.call,
         held?.currency, ...peak(kept(line).ee),
         ...quantiles.flatMap((quantile) => peak(kept(line).pfe.find((at) => at.quantile === quantile))),
-        line?.run?.cva, line?.run?.fva, line?.run?.currency, line?.run?.as_of, line?.run?.note];
+        line?.run?.cva, line?.run?.fva, line?.run?.currency, line?.run?.as_of, line?.run?.note,
+        limit?.limit, limit?.usage, limit?.headroom, limit?.currency];
     })),
   ];
 }
 
-/** What a row says to act on, worst first. */
+/** What a row says to act on, worst first, and last a client over its credit limit - a breach is
+ * reported. */
 export const WRONG = {
   failed: 'run failed', unpapered: 'trading with no agreement in force',
-  pending: 'waiting on a second seat', unrun: 'never run',
+  pending: 'waiting on a second seat', unrun: 'never run', breached: 'over its limit',
 } as const;
 
 /** One thing to act on under a set, in business words, and who puts it right. */
@@ -418,11 +422,12 @@ export const LIMIT_USAGE = 'A credit limit is held against the peak exposure of 
   + "drawn on it, each at its run's highest PFE percentile, added: a breach is reported here, and "
   + 'nothing is blocked.';
 
-/** One credit limit as a screen reads it: its amounts in the limit's `currency` in reading order,
- * the flag where usage is over it, and what is said after. */
+/** One credit limit as a screen reads it: in the limit's `currency`, the limit, the usage and the
+ * headroom where each is stated, and those amounts in reading order; the flag where usage is over
+ * it, and what is said after. */
 export type LimitRead = {
-  currency: string; figures: { label: string; value: number }[]; flag: string | null;
-  notes: string[];
+  currency: string; limit: number; usage: number | null; headroom: number | null;
+  figures: { label: string; value: number }[]; flag: string | null; notes: string[];
 };
 
 /** A credit limit read off one entry of the XVA read's `limits`, or of a credit charge's, which
@@ -434,19 +439,19 @@ export type LimitRead = {
 export function limitRead(entry: CreditLimit, under = 0): LimitRead {
   const { limit, sets, unrun, usage, headroom, usage_without: without } = entry;
   const charge = without !== undefined;
-  const summed = usage !== null && (sets > 0 || !unrun);
+  const stated = sets > 0 || !unrun ? usage : null;
   return {
-    currency: limit.currency,
+    currency: limit.currency, limit: limit.amount, usage: stated, headroom,
     figures: [
       { label: 'credit limit', value: limit.amount },
-      ...(summed && charge && without !== null
+      ...(stated !== null && charge && without !== null
         ? [{ label: 'usage without the trade', value: without }] : []),
-      ...(summed ? [{ label: charge ? 'with it' : `usage of ${plural(sets, 'set')}`,
-                      value: usage }] : []),
+      ...(stated !== null ? [{ label: charge ? 'with it' : `usage of ${plural(sets, 'set')}`,
+                               value: stated }] : []),
       ...(headroom !== null
         ? [{ label: charge ? 'headroom after it' : 'headroom', value: headroom }] : []),
     ],
-    flag: !entry.breached ? null : !charge ? 'over its limit'
+    flag: !entry.breached ? null : !charge ? WRONG.breached
       : entry.breached_without ? 'over its limit with or without the trade'
         : 'the trade would take it over its limit',
     notes: [
@@ -492,14 +497,29 @@ export function wrongWith(lines: CreditLine[]): Wrong[] {
       text: `${plural(pending, 'trade')} under it waiting on a second seat` },
     trades > 0 && (!run || run.status === 'never run') && {
       kind: 'unrun' as const, reference, text: 'no XVA run yet', who: RECALC },
-  ].filter((wrong): wrong is Wrong => !!wrong))
+  ].filter((wrong): wrong is Exclude<typeof wrong, false> => !!wrong))
     .sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
 }
 
-/** Clients in the order a credit officer works them: those with something to act on, then the
- * largest exposure after collateral, an unread one last, then by name. */
-export function actionFirst<T extends { name: string; wrong: Wrong[]; after: number | null }>(
-  rows: T[]): T[] {
-  return [...rows].sort((a, b) => Number(!a.wrong.length) - Number(!b.wrong.length)
+/** What a client's row has to act on (`WRONG`): what is wrong under its sets (`wrongWith`), then
+ * its credit limit where usage is over it. */
+export const actsOf = (client: { wrong: Wrong[]; limit?: LimitRead }): (keyof typeof WRONG)[] =>
+  [...client.wrong.map((wrong) => wrong.kind), ...(client.limit?.flag ? ['breached' as const] : [])];
+
+/** What the clients have to act on (`actsOf`), counted kind by kind in `WRONG`'s order, each in its
+ * own words: '2 run failed · 1 over its limit'. */
+export function actsText(clients: { wrong: Wrong[]; limit?: LimitRead }[]): string {
+  const acts = clients.flatMap(actsOf);
+  return Object.entries(WRONG)
+    .map(([kind, words]) => [acts.filter((act) => act === kind).length, words])
+    .filter(([count]) => count).map(([count, words]) => `${count} ${words}`).join(' · ');
+}
+
+/** Clients in the order a credit officer works them: those with something to act on (`actsOf`),
+ * then the largest exposure after collateral, an unread one last, then by name. */
+export function actionFirst<T extends {
+  name: string; wrong: Wrong[]; limit?: LimitRead; after: number | null;
+}>(rows: T[]): T[] {
+  return [...rows].sort((a, b) => Number(!actsOf(a).length) - Number(!actsOf(b).length)
     || (b.after ?? -1) - (a.after ?? -1) || a.name.localeCompare(b.name));
 }

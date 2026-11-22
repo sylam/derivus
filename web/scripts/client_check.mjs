@@ -515,13 +515,27 @@ check('trades booked under a set since its run are a fact of its run, never some
       client.wrongWith([{ reference: 'S', paper: 'ISDA', run: RUNS[0], trades: 1, pending: 0,
                           booked: 3 }]), []);
 
-check('clients with something to act on come first, then the largest exposure after collateral, an '
-      + 'unread one last, then by name',
-      'the clients to act on sorted last; or an unread exposure read as the largest',
+const OVER = client.limitOf('OVER', LIMITS);
+check('clients with something to act on - a client over its credit limit among them - come first, '
+      + 'then the largest exposure after collateral, an unread one last, then by name',
+      'the clients to act on sorted last; a breached limit not counted as something to act on, '
+      + 'which sorts a client over its limit among those with nothing to do; or an unread exposure '
+      + 'read as the largest',
       client.actionFirst([{ name: 'B', wrong: [], after: 10 }, { name: 'A', wrong: [], after: null },
                           { name: 'C', wrong: [{}], after: 0 }, { name: 'D', wrong: [], after: 50 },
-                          { name: 'E', wrong: [], after: 10 }]).map((row) => row.name),
-      ['C', 'D', 'B', 'E', 'A']);
+                          { name: 'F', wrong: [], after: 0, limit: OVER },
+                          { name: 'E', wrong: [], after: 10, limit: client.limitOf('WITHIN', LIMITS) }])
+        .map((row) => row.name),
+      ['C', 'F', 'D', 'B', 'E', 'A']);
+check("the table's head counts what the clients have to act on kind by kind, worst first, each in "
+      + 'its own words, a client over its credit limit counted last as over its limit',
+      'a breach left out of the count, which tells a credit officer there is nothing to act on '
+      + 'while a client is over its limit; or the kinds counted in the order the clients come',
+      [client.actsText([{ wrong: [], limit: OVER },
+                        { wrong: [{ kind: 'unrun' }, { kind: 'failed' }], limit: OVER },
+                        { wrong: [{ kind: 'failed' }], limit: client.limitOf('WITHIN', LIMITS) }]),
+       client.actsText([{ wrong: [], limit: client.limitOf('OTHER', LIMITS) }])],
+      ['2 run failed · 1 never run · 2 over its limit', '']);
 
 // ---- the credit table's export: a row per set, every number as itself ---------------------------
 
@@ -529,28 +543,34 @@ const RAN_AT = '2026-11-19T22:27:28.743+02:00';
 const PEAKED = { ...KES_LINES[0], run: { ...RUNS[0], cva: 1234567.891, fva: 0.1 + 0.2, peaks: {
   EE: { value: 2500000.5, day: '2027-02-16' }, PFE_95: { value: 9000000.25, day: '2027-05-16' } } } };
 const SHEET = client.creditExport([
-  { name: 'Kestrel (KES)', spread: [1, 0.015], lines: [PEAKED, KES_LINES[1], KES_LINES[3]] },
-  { name: 'Marrick (MAR)', lines: [] }], 'USD');
+  { name: 'Kestrel (KES)', spread: [1, 0.015], lines: [PEAKED, KES_LINES[1], KES_LINES[3]],
+    limit: OVER },
+  { name: 'Marrick (MAR)', lines: [], limit: client.limitOf('UNRUN', LIMITS) },
+  { name: 'Ostrava (OST)', lines: [] }], 'USD');
 check("the credit table exports a row per set under its client, a client with none a row of its own: "
       + "every amount the number itself, its currency and a peak's day in columns of their own, a "
-      + 'PFE column per percentile kept, and the note of a set that left the book',
+      + 'PFE column per percentile kept, the note of a set that left the book, and the client\'s '
+      + 'credit limit with the usage and headroom it states, in its currency',
       'an amount written as displayed - `formatNumber` over a CVA - which exports 1,234,567.89 as '
       + "text a spreadsheet cannot add and rounds what it keeps; a currency left in its amount's "
-      + 'cell; or a column written for one row and not the next, every value after it under the '
-      + 'wrong head',
+      + 'cell; a column written for one row and not the next, every value after it under the '
+      + 'wrong head; the limit left out, which exports a breach as nothing; or a headroom written '
+      + 'where a set has no run',
       [SHEET[0], SHEET.slice(1), SHEET.every((line) => line.length === SHEET[0].length)],
       [['Client', 'Netting set', 'Spread bp', 'Spread tenor', 'Paper', 'Trades',
         'Waiting on a second seat', 'Value to the desk', 'After collateral', 'Ccy', 'Collateral held',
         'Call', 'Collateral ccy', 'Peak EE', 'Peak EE day', 'Peak PFE 95', 'Peak PFE 95 day', 'CVA',
-        'FVA', 'Run ccy', 'Run', 'Note'],
+        'FVA', 'Run ccy', 'Run', 'Note', 'Credit limit', 'Limit usage', 'Headroom', 'Limit ccy'],
        [['Kestrel (KES)', 'ISDA-KES', 0.015 * 1e4, '1Y', 'uncollateralised', 2, 1, 1000, 1000, 'USD',
          null, null, null, 2500000.5, '2027-02-16', 9000000.25, '2027-05-16', 1234567.891,
-         0.30000000000000004, 'USD', RAN_AT, null],
+         0.30000000000000004, 'USD', RAN_AT, null, 25000, 30000, -5000, 'USD'],
         ['Kestrel (KES)', 'CSA-KES', 0.015 * 1e4, '1Y', 'collateralised', 1, 0, null, null, 'USD',
-         400, null, 'EUR', null, null, null, null, 10, 1, 'USD', null, null],
+         400, null, 'EUR', null, null, null, null, 10, 1, 'USD', null, null, 25000, 30000, -5000, 'USD'],
         ['Kestrel (KES)', 'KES-GONE', 0.015 * 1e4, '1Y', 'no agreement', 0, 0, null, null, 'USD',
-         null, null, null, null, null, null, null, null, 1, 'USD', RAN_AT, 'left the book'],
-        ['Marrick (MAR)', ...Array(21).fill(null)]],
+         null, null, null, null, null, null, null, null, 1, 'USD', RAN_AT, 'left the book', 25000,
+         30000, -5000, 'USD'],
+        ['Marrick (MAR)', ...Array(21).fill(null), 50000, 30000, null, 'USD'],
+        ['Ostrava (OST)', ...Array(25).fill(null)]],
        true]);
 
 done();
