@@ -2314,7 +2314,7 @@ def named_trades(document, instruments):
 
 def client_names():
     """`{entity: name}` for every legal entity the record declares."""
-    return {row['entity']: row['name'] for row in spine.entities()}
+    return {entity: row['name'] for entity, row in spine.declared_entities().items()}
 
 
 def terms_moved(document):
