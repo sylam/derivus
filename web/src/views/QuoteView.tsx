@@ -7,16 +7,15 @@ import { Navigator } from '../components/Navigator';
 import { offBook, stampText } from '../desk';
 import { NO_PAPER, nodeAt } from '../positions';
 import {
-  bookingNodes, clients, clientText, directions, type Draft, draftOf, firmSeconds, firmText,
-  ticketFields, keep,
-  type Kept, landedAt, requestOf, salesName, salesNames, solving, STANDS, standsAt, type Verdict,
-  verdictOf,
+  bookingNodes, clients, clientText, directions, type Draft, draftOf, firmText, ticketFields, keep,
+  type Kept, landedAt, requestOf, salesName, salesNames, solving, STANDS, type Verdict, verdictOf,
 } from '../quote';
 import {
   acceptHeld, actingSeat, openTrade, runHeld, useApp, useQueued, useQuoteList, useQuotes,
+  useStanding,
 } from '../state';
 import { formatNumber } from '../tokens';
-import type { PendingQuote, Quote, QuoteGiven, StructureType } from '../types';
+import type { PendingQuote, Quote, QuoteGiven, QuoteRead, StructureType } from '../types';
 import { TicketCard } from '../components/TicketCard';
 
 /** The page listing the desk's quotes, and the one a new ticket is written on. */
@@ -59,12 +58,8 @@ export function QuoteView() {
   const [opened, setOpened] = useState<string[]>([]);
   const [again, setAgain] = useState(0);
   const listed = useQuoteList(again);
-  // where each quote stands is read against this browser's clock, again every half minute
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(timer);
-  }, []);
+  const rows = listed.data?.quotes ?? [];
+  const stands = useStanding(rows, listed.data?.as_of);
 
   if (!doc || !schema) return null;
   const structures = schema.Structure?.types ?? {};
@@ -76,8 +71,6 @@ export function QuoteView() {
                        hint="This service publishes no structures to quote." />;
   }
 
-  const rows = listed.data?.quotes ?? [];
-  const window = firmSeconds(doc, schema);
   const open = (id: string, from?: string) => {
     if (from) setLinks((standing) => keep(standing, id, from));
     setOpened((standing) => [id, ...standing]);
@@ -95,7 +88,7 @@ export function QuoteView() {
       screen="quote" side={<OpenById onOpen={(id) => open(id)} />}
       pages={[
         { id: LIST, label: "the desk's quotes",
-          content: <QuoteList listed={listed} window={window} now={now} /> },
+          content: <QuoteList listed={listed} stands={stands} /> },
         { id: NEW, label: 'new quote', accent: true,
           content: <QuoteForm onQuoted={(id) => open(id)} /> },
         ...opened.filter((id) => !rows.some((row) => row.quote_id === id))
@@ -103,20 +96,22 @@ export function QuoteView() {
         ...rows.map((row) => ({
           id: row.quote_id, label: `${salesName(schema, row.structure)} · ${
             row.netting_set ?? 'root'}`,
-          hint: standsAt(row, window, now).word, content: ticket(row.quote_id),
+          hint: stands(row), content: ticket(row.quote_id),
         })),
       ]}
     />
   );
 }
 
-const CHIP: Record<string, string> = { booked: 'done', firm: 'running', lapsed: 'error' };
+const CHIP: Record<string, string> = {
+  booked: 'done', firm: 'running', lapsed: 'error', refused: 'error',
+};
 
-/** Where a quote stands as its row says it: a word, the time its window closes or closed, and
- * the trade a booked one booked - where the file holds it now, opening its page. */
-function Stands({ row, window, now }: { row: QuoteGiven; window: number | null; now: number }) {
+/** Where a quote stands, `word` as its read says it now: a word, the time its window closes or
+ * closed, and the trade a booked one booked - where the file holds it now, opening its page. */
+function Stands({ row, word }: { row: QuoteGiven; word: QuoteGiven['stands'] }) {
   const { state, dispatch } = useApp();
-  const { word, until } = standsAt(row, window, now);
+  const until = row.firm_until;
   const children = state.doc?.Calc.Deals?.Deals?.Children ?? [];
   const at = row.booked ? landedAt(children, row.booked) : undefined;
   const named = row.booked && (row.booked.reference ?? (at === undefined
@@ -144,9 +139,9 @@ function Stands({ row, window, now }: { row: QuoteGiven; window: number | null; 
 
 /** The desk's quotes, newest first: when and by whom, what it is and for whom, its net with its
  * currency, and where it stands - a row opening its ticket. */
-function QuoteList({ listed, window, now }: {
-  listed: { data: { quotes: QuoteGiven[] } | null; error: string | null }; window: number | null;
-  now: number;
+function QuoteList({ listed, stands }: {
+  listed: { data: (QuoteRead & { quotes: QuoteGiven[] }) | null; error: string | null };
+  stands: (row: QuoteGiven) => QuoteGiven['stands'];
 }) {
   const { state, dispatch } = useApp();
   const paper = state.paper.data ?? NO_PAPER;
@@ -180,14 +175,16 @@ function QuoteList({ listed, window, now }: {
                     <td>{clientText(row.netting_set, paper.entities, paper.agreements)}</td>
                     <td className="n">{formatNumber(row.net, 'money')}</td>
                     <td>{row.currency}</td>
-                    <td><Stands row={row} window={window} now={now} /></td>
+                    <td><Stands row={row} word={stands(row)} /></td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
-        <div className="hint">{firmText(window, state.record.spine !== null)}</div>
+        {listed.data && (
+          <div className="hint">{firmText(listed.data, state.record.spine !== null)}</div>
+        )}
       </div>
     </section>
   );

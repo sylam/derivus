@@ -380,7 +380,7 @@ rather than `1.0`, so a consumer can tell "did not run" from "ran and decided no
 | `scope` | `'vol'` | the book the residual is measured in; the only value accepted |
 | `bucket_limit` | none | an `abs(risk after)` per bucket past which nothing is tightened |
 | `min_ticket_bp` | 0.0 | a floor under the edge, in bp of notional, crossed to the report currency |
-| `firm_seconds` | 600 | how long a quote stays acceptable; read by `/book/quote` |
+| `firm_seconds` | 600 | how long a quote stays acceptable; read by `/book/quote` and the quote reads |
 
 - **Measurement.** The mid candidate is composed and `mirror`ed — the seam the booking uses, so the
   risk measured and the trade booked cannot disagree by a sign — and the book's vol risk is read with
@@ -443,6 +443,15 @@ acceptance also checks the plan and the board's age and reports the market's mov
 [The Spine](spine.md). **Held by** `test_service.py`'s `test_a_quoted_collar_is_filed_pending_and_books_at_zero`,
 `test_a_quote_for_a_client_books_under_the_clients_netting_set`,
 `test_a_quote_is_firm_only_for_the_window_the_book_declares`.
+
+**Read** (`GET /book/quotes`, `GET /book/quote/{id}`): each quote with where it stands at the read
+(`standing`) - `booked`, `accepted`, `refused` where the policy will not read, else `firm` until
+`firm_until` or `lapsed` - measured by `firmness`, the helper the acceptance refuses by, to the
+read's own `as_of`, beside the window (`firm_seconds`) or the policy's refusal (`policy_refused`).
+A client renders them and flips a firm quote to lapsed between reads once the time from `as_of` to
+`firm_until` has passed, comparing no service stamp to its own clock. **Held by**
+`test_service.py::test_a_quote_read_says_where_each_quote_stands_by_the_window_the_acceptance_refuses_by`,
+`web/scripts/quote_check.mjs`.
 
 **Composition.** `compose` puts the legs inside the deal block under `Children`, because a quote is
 filed and hashed whole; `schema.splice_deal`, which a booking goes through, lifts them onto the node

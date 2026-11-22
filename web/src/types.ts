@@ -110,9 +110,23 @@ export type Quote = {
   files?: { sheet: string | null; sheet_note?: string; quote: string };
 };
 
+/** What a read of the desk's quotes says beside them: its own stamp, which where each stands is
+ * measured to, and the desk's firm window - null where it declares none - or why its quote policy
+ * will not read. */
+export type QuoteRead = { as_of: string; firm_seconds: number | null; policy_refused: string | null };
+
+/** Where a quote stands at the read that carried it: booked or accepted as the acceptance wrote
+ * it, refused while the desk's quote policy will not read, firm until `firm_until` or lapsed past
+ * it, or quoted where the desk declares no window. */
+export type Standing = {
+  stands: 'booked' | 'accepted' | 'refused' | 'firm' | 'lapsed' | 'quoted';
+  firm_until: string | null;
+};
+
 /** `GET /book/quote/{id}`: the pending trade as filed - and, once accepted, where it was filed and
- * where it landed (`booked.lsn` null on a desk keeping no record). */
-export type PendingQuote = {
+ * where it landed (`booked.lsn` null on a desk keeping no record) - and where it stands at the
+ * read. */
+export type PendingQuote = QuoteRead & Standing & {
   quote: Quote; deal: Record<string, unknown>; quoted_at: string | null;
   quoted_by: string | null; portfolio?: string;
   accepted?: { lsn: number; ticket: string } | null;
@@ -156,10 +170,10 @@ export type CreditLimit = {
 export type ChargeAsk = { quote_id: string } | { deal_path: string; reference?: string };
 
 /** One row of `GET /book/quotes`, newest first: what was quoted, for whom, its net, who quoted it
- * and when, and - once the acceptance wrote them - `accepted` and where it was `booked`, beside the
- * `reference` of the trade it booked. */
+ * and when, where it stands at the read, and - once the acceptance wrote them - `accepted` and
+ * where it was `booked`, beside the `reference` of the trade it booked. */
 export type QuoteGiven = Pick<Quote, 'quote_id' | 'structure' | 'variation' | 'netting_set' | 'net'
-  | 'currency'> & Pick<PendingQuote, 'quoted_at' | 'quoted_by' | 'accepted'> & {
+  | 'currency'> & Pick<PendingQuote, 'quoted_at' | 'quoted_by' | 'accepted'> & Standing & {
   booked?: { lsn: number | null; deal_path: string; reference?: string | null } | null;
 };
 

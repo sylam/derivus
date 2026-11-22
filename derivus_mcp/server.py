@@ -1440,12 +1440,15 @@ def list_quotes(actor: str | None = None) -> dict:
     """Every quote this desk has given, newest first, one row each - enough to pick one without
     opening it: `quote_id`, the `structure` and the `variation` it was dealt as, the client's
     `netting_set`, the `net` in its `currency`, when it was given (`quoted_at`) and by whom
-    (`quoted_by`), and where it stands - `accepted` and `booked` null while it is only quoted,
-    `booked.deal_path` where the trade landed once it is on the book and `booked.reference` the
-    trade's own reference, which still finds it after a node ahead of it is deleted moves the path.
-    Whether a quote is still firm is the book's `Quote Policy`, which `book_quote` reads when it is
-    asked. `actor` is the seat reading, which is shown a client's quote as it is shown a position,
-    where it holds a grant at the node the quote books under, and every quote it gave itself."""
+    (`quoted_by`), `accepted` and `booked` null while it is only quoted, `booked.deal_path` where
+    the trade landed once it is on the book and `booked.reference` the trade's own reference, which
+    still finds it after a node ahead of it is deleted moves the path - and where it stands as of
+    the read's `as_of`: `stands` is `booked`, `accepted`, `firm` until `firm_until`, `lapsed` past
+    it (`book_quote` refuses it: re-quote), `quoted` where the book declares no window
+    (`firm_seconds` null), or `refused` where its `Quote Policy` will not read, `policy_refused`
+    saying why. `actor` is the seat reading, which is shown a client's quote as it is shown a
+    position, where it holds a grant at the node the quote books under, and every quote it gave
+    itself."""
     return service().call('GET', '/book/quotes', params=_stated(actor=actor))
 
 

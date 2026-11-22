@@ -10,14 +10,14 @@ import {
 import { rowsByPath, toRows } from './blotter';
 import { bookClock, lagsBook } from './desk';
 import { NO_PAPER, type Grouping, type Paper } from './positions';
-import { ranAs } from './quote';
+import { firmFor, ranAs } from './quote';
 import { pinnedAt, readRecord, reconciledRecord, type RecordHeld } from './spine';
 import { isObject } from './tokens';
 import { tradeAt } from './trade';
 import type {
   ActivityPage, BookMarket, BookResponse, BookRisk, BookXva, DescribeResult, JobDoc,
   Market, PathsAnswer, Reconcile, RefusalCode, ResultSummary, Schema, SeatGrants, SpineBlock,
-  TablePage, ValidateResult, Worklist,
+  Standing, TablePage, ValidateResult, Worklist,
 } from './types';
 
 /** `opened` names the job file the served book was opened from, where it was opened from one. */
@@ -650,6 +650,23 @@ export function useQueued<R, T>(
 export function useQuoteList(again?: number) {
   const { state } = useApp();
   return useRead(state.source?.kind === 'book' ? getQuotes : null, [clockOf(state), again]);
+}
+
+/** Where each quote of one read stands now, by its id: as the read said, a firm one lapsing once
+ * the time its window had left at the read's own stamp has passed since the read (`firmFor`). */
+export function useStanding(rows: (Standing & { quote_id: string })[], asOf: string | undefined) {
+  const [lapsed, setLapsed] = useState<string[]>([]);
+  useEffect(() => {
+    setLapsed([]);
+    const timers = rows.flatMap((row) => {
+      const left = firmFor(row, asOf);
+      return left === undefined ? []
+        : [setTimeout(() => setLapsed((was) => [...was, row.quote_id]), left)];
+    });
+    return () => timers.forEach(clearTimeout);
+  }, [asOf]);
+  return (row: Standing & { quote_id: string }): Standing['stands'] =>
+    (lapsed.includes(row.quote_id) ? 'lapsed' : row.stands);
 }
 
 /** The pending trade each quote id names, read again where the book or the record moves. */

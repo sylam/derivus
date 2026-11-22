@@ -1,16 +1,16 @@
 // Quote ticket card and its expandable leg table.
 
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { askCharge } from '../api';
 import { dateOf } from '../blotter';
 import { fundedAt, limitRead } from '../client';
-import { instantMs, lagsBook, stampText } from '../desk';
+import { lagsBook, stampText } from '../desk';
 import { NO_PAPER } from '../positions';
 import {
-  STANDS, chargeAsk, chargeLines, clientText, firmSeconds, firmText, onMarketAxis, salesName,
-  solvedNumbers, spreadText, standsAt, ticketLegs, type TicketLeg,
+  STANDS, chargeAsk, chargeLines, clientText, firmText, onMarketAxis, salesName, solvedNumbers,
+  spreadText, ticketLegs, type TicketLeg,
 } from '../quote';
-import { clockOf, runHeld, useApp, useQueued } from '../state';
+import { clockOf, runHeld, useApp, useQueued, useStanding } from '../state';
 import { formatNumber } from '../tokens';
 import { tradeAt } from '../trade';
 import type { ChargeAsk, Increment, PendingQuote, Schema } from '../types';
@@ -28,16 +28,8 @@ export function TicketCard({ pending }: { pending: PendingQuote }) {
   const surface = first.FX_Volatility;
   const spot = onMarketAxis(quote.spot.value_market, quote.params.pair, surface);
   const forward = onMarketAxis(quote.forward, quote.params.pair, surface);
-  const window = firmSeconds(state.doc, schema);
-  const { word, until } = standsAt(pending, window, Date.now());
-  // Repaint when the firm window lapses so the badge flips without a poll.
-  const [, lapse] = useState(0);
-  useEffect(() => {
-    if (word !== 'firm') return;
-    const timer = setTimeout(() => lapse((count) => count + 1),
-                             instantMs(until)! - Date.now() + 50);
-    return () => clearTimeout(timer);
-  }, [word, until]);
+  const standing = { ...pending, quote_id: quote.quote_id };
+  const word = useStanding([standing], pending.as_of)(standing);
   const delivery = dateOf(first.Delivery_Date);
   const nodes = state.doc?.Calc.Deals?.Deals?.Children ?? [];
   const charge = chargeAsk(pending, nodes, state.tab === 'trade'
@@ -86,10 +78,10 @@ export function TicketCard({ pending }: { pending: PendingQuote }) {
             <div className="label">outright forward{delivery ? ` to ${delivery}` : ''}</div>
             <div className="value">{level(forward, quote.forward)}</div>
           </div>
-          {until && (
+          {pending.firm_until && (
             <div className={`stat${word === 'lapsed' ? ' warn' : ''}`}>
               <div className="label">{word === 'lapsed' ? STANDS.lapsed : 'firm until'}</div>
-              <div className="value">{stampText(until)}</div>
+              <div className="value">{stampText(pending.firm_until)}</div>
             </div>
           )}
         </div>
@@ -109,7 +101,7 @@ export function TicketCard({ pending }: { pending: PendingQuote }) {
         <div className="ticketline">
           <span>quoted by <b>{pending.quoted_by ?? 'no seat named'}</b> at{' '}
             {stampText(pending.quoted_at)}</span>
-          <span className="hint">{firmText(window, state.record.spine !== null)}</span>
+          <span className="hint">{firmText(pending, state.record.spine !== null)}</span>
         </div>
         {charge && <CreditCharge key={JSON.stringify(charge)} ask={charge} />}
       </div>

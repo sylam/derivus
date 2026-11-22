@@ -267,28 +267,31 @@ check('a quote quoted again starts from its ticket as priced, every cell the rec
        ZARUSD.params, ZARUSD.params, 'USD']);
 
 // --- the firm window and the acceptance
-const SCHEMA = { 'Quote Policy': { fields: { firm_seconds: { widget: 'Float', value: 600 } } } };
-const policy = (block) => ({ Calc: { Calculation: {}, ...(block ? { 'Quote Policy': block } : {}) } });
-check('the firm window is the policy\'s own, its convention where it states none, none without one',
-      'a stated window of 0 read as unstated, which shows ten minutes on a desk refusing every '
-      + 'acceptance',
-      [quote.firmSeconds(policy({ firm_seconds: 0 }), SCHEMA),
-       quote.firmSeconds(policy({}), SCHEMA), quote.firmSeconds(policy(null), SCHEMA)],
-      [0, 600, null]);
-
-check('a quote is firm until its stamp plus the window, its zone offset applied',
-      'the window added in milliseconds, or the offset ignored on a non-UTC stamp',
-      [quote.firmUntil('2026-11-19T18:14:08.613+00:00', 600),
-       quote.firmUntil('2026-11-19T20:14:08.613+02:00', 600)],
-      ['2026-11-19T18:24:08.613Z', '2026-11-19T18:24:08.613Z']);
-
-check('what holds between a quote and its acceptance is said per desk',
+const READ = { as_of: '2026-11-19T20:14:08.613+02:00', firm_seconds: 600, policy_refused: null };
+const POLICY = "Quote Policy: firm_seconds 'ten' - a quote is firm for a NUMBER of seconds";
+check('what holds between a quote and its acceptance is said per desk as the read says it, and a '
+        + "policy that will not read in the service's words",
       'the record ignored, which tells a recording desk a quote stays bookable whatever the book '
-      + 'did since',
-      [quote.firmText(600, true), quote.firmText(null, true), quote.firmText(null, false)],
+        + 'did since; or a policy that will not read shown as no window, which offers an '
+        + 'acceptance the service refuses',
+      [quote.firmText(READ, true), quote.firmText({ ...READ, firm_seconds: null }, true),
+       quote.firmText({ ...READ, firm_seconds: null }, false),
+       quote.firmText({ ...READ, firm_seconds: null, policy_refused: POLICY }, false)],
       ['This desk holds a quote firm for 600 seconds; an older one is refused, and is quoted again.',
        'This desk declares no firm window: a quote books while the book has not moved under it.',
-       'This desk declares no firm window: a quote stays bookable until it is booked.']);
+       'This desk declares no firm window: a quote stays bookable until it is booked.', POLICY]);
+
+check('a quote a read found firm stays firm for the time from the read\'s own stamp to its '
+        + 'window\'s close, both the service\'s and each offset applied - and nothing lapses that '
+        + 'the read did not find firm',
+      'the close measured to this browser\'s clock, which is another machine\'s; the offset of '
+        + 'either stamp ignored, which moves the flip by two hours; or a lapsed quote given a '
+        + 'time to lapse in',
+      [quote.firmFor({ stands: 'firm', firm_until: '2026-11-19T18:24:08.613+00:00' }, READ.as_of),
+       quote.firmFor({ stands: 'firm', firm_until: '2026-11-19T18:14:09.113Z' }, READ.as_of),
+       quote.firmFor({ stands: 'lapsed', firm_until: '2026-11-19T18:24:08.613Z' }, READ.as_of),
+       quote.firmFor({ stands: 'quoted', firm_until: null }, READ.as_of)],
+      [600_000, 500, undefined, undefined]);
 
 const SIZE = "the 'desk-auto' tier caps max_notional at 5000000 USD and this ticket is "
   + '6560000.0 of it - book it under a tier that admits the size, or split the clip';
@@ -337,24 +340,7 @@ check('a re-quote made here is kept with the quote it changes, once, the newest 
 
 // --- the desk's quotes
 const AT = '2026-11-19T22:51:18.078+00:00';
-const NOW = Date.parse('2026-11-19T22:53:00.078Z');
 const given = (extra) => ({ quoted_at: AT, accepted: null, booked: null, ...extra });
-check('a quote stands booked, accepted, firm until its window closes, past it, or simply quoted '
-        + 'where the book declares no window',
-      'a booked quote read against the window, which shows the desk\'s own trade as lapsed; a '
-        + 'quote stating no time read as firm, which the acceptance refuses as aged; or the window '
-        + 'read as open at its closing instant\'s far side',
-      [quote.standsAt(given({ booked: { lsn: 30, deal_path: '0/2' } }), 60, NOW),
-       quote.standsAt(given({ accepted: { lsn: 28, ticket: 't' } }), 600, NOW),
-       quote.standsAt(given(), 600, NOW), quote.standsAt(given(), 60, NOW),
-       quote.standsAt(given(), 102, NOW), quote.standsAt(given({ quoted_at: null }), 600, NOW),
-       quote.standsAt(given(), null, NOW)],
-      [{ word: 'booked' }, { word: 'accepted' },
-       { word: 'firm', until: '2026-11-19T23:01:18.078Z' },
-       { word: 'lapsed', until: '2026-11-19T22:52:18.078Z' },
-       { word: 'firm', until: '2026-11-19T22:53:00.078Z' }, { word: 'lapsed', until: undefined },
-       { word: 'quoted' }]);
-
 const LISTED = [given({ quote_id: 'q3' }), given({ quote_id: 'q2', booked: { lsn: 30, deal_path: '0/20' } }),
                 given({ quote_id: 'q1', booked: { lsn: null, deal_path: '0/2' } }),
                 given({ quote_id: 'q4',

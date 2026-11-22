@@ -5811,7 +5811,8 @@ def test_a_pending_quote_and_its_sheet_are_read_back_by_id(quoting, tmp_path):
     pending = CLIENT.get('/book/quote/{}'.format(quote['quote_id'])).json()
     sheet = CLIENT.get('/book/quote/{}/sheet'.format(quote['quote_id']))
 
-    assert pending == json.loads((tmp_path / 'tmp' / (quote['quote_id'] + '.json')).read_text())
+    filed = json.loads((tmp_path / 'tmp' / (quote['quote_id'] + '.json')).read_text())
+    assert {key: pending[key] for key in filed} == filed and pending['stands'] == 'quoted'
     assert pending['deal'] == quote['deal'] and pending['quoted_at']
     assert sheet.status_code == 200 and sheet.content[:2] == b'PK'
     assert sheet.headers['content-type'] == service.QUOTE_SHEET_MIME
@@ -9065,13 +9066,18 @@ def test_the_desks_quotes_are_listed_newest_first_with_where_each_stands(quoting
         return {'quote_id': quote['quote_id'], 'structure': 'ZeroCostCollar', 'variation': 'floor',
                 'netting_set': quote['netting_set'], 'net': quote['net'], 'currency': 'USD',
                 'quoted_at': filed['quoted_at'], 'quoted_by': seat, 'accepted': None,
-                'booked': landed}
+                'booked': landed, 'stands': 'booked' if landed else 'quoted', 'firm_until': None}
+
+    def listed():
+        read = CLIENT.get('/book/quotes').json()
+        assert (read['firm_seconds'], read['policy_refused']) == (None, None) and read['as_of']
+        return read['quotes']
 
     collar = 'ZeroCostCollar-' + first['quote_id'][:8]
     newer, older = row(second, 'desk-b', None), row(first, 'desk-a', {
         'lsn': None, 'deal_path': booked['deal_path'], 'reference': collar})
     assert newer['quoted_at'] > older['quoted_at'] and older['netting_set'] == CLIENT_SET
-    assert CLIENT.get('/book/quotes').json() == {'quotes': [newer, older]}
+    assert listed() == [newer, older]
 
     ahead = set_paths(quoting_client)[CLIENT_SET] + '/0'
     assert CLIENT.post('/book/deals', json={'action': 'delete', 'deal_path': ahead,
@@ -9079,7 +9085,7 @@ def test_the_desks_quotes_are_listed_newest_first_with_where_each_stands(quoting
     references = {node['Instrument']['.Deal']['Reference']: deal_path for deal_path, node in
                   service.walk_job_deals(json.loads(quoting_client.read_text()))}
     assert (references[collar], references['BEHIND']) == (ahead, booked['deal_path'])
-    assert CLIENT.get('/book/quotes').json() == {'quotes': [newer, older]}
+    assert listed() == [newer, older]
 
 
 def test_the_desks_quotes_are_listed_by_the_instant_each_was_given(quoting, tmp_path):
@@ -9191,6 +9197,55 @@ def test_a_quote_is_firm_only_for_the_window_the_book_declares(quoting, tmp_path
     node = deal_at(json.loads(quoting.read_text()), booked['deal_path'])
     assert [child['Instrument']['.Deal']['Buy_Sell'] for child in node['Children']] == [
         {'Buy': 'Sell', 'Sell': 'Buy'}[leg['buy_sell']] for leg in quote['legs']]
+
+
+def test_a_quote_read_says_where_each_quote_stands_by_the_window_the_acceptance_refuses_by(
+        quoting, tmp_path):
+    """Both quote reads answer where each quote stands at the read, measured to the read's own
+    `as_of` by the helper the acceptance refuses by. One quote given now, a copy given 700s before
+    it and one stating no time: under a 600s window the first is firm until its stamp plus 600s,
+    the copy lapsed 100s before the first was given - and its acceptance refused as the read said -
+    and the unstamped lapsed with no time to close at. A window that will not read answers the
+    acceptance's own refusal on every read and every open quote stands `refused`; no window, every
+    quote `quoted` with nothing to close.
+
+    Killing mutations: the window's close measured from the read's stamp rather than the quote's,
+    which moves every `firm_until`; and the policy's refusal left out of where a quote stands,
+    which reads a quote firm that every acceptance refuses.
+    """
+    given = quote_of('ZeroCostCollar', COLLAR)
+    filed = json.loads((tmp_path / 'tmp' / (given['quote_id'] + '.json')).read_text())
+    at = datetime.datetime.fromisoformat(filed['quoted_at'])
+    stamp = lambda seconds: (at + datetime.timedelta(seconds=seconds)).isoformat(  # noqa: E731
+        timespec='milliseconds')
+    # authored here: no verb gives a quote at an instant of the caller's choosing
+    for name, quoted_at in (('aged', stamp(-700)), ('unstamped', None)):
+        (tmp_path / 'tmp' / (name + '.json')).write_text(
+            json.dumps(dict(filed, quoted_at=quoted_at)), newline='\n')
+
+    def stands():
+        read = CLIENT.get('/book/quotes').json()
+        assert read['as_of'] and read['firm_seconds'] == CLIENT.get('/book/quote/aged').json()[
+            'firm_seconds']
+        return read['policy_refused'], {row['quote_id']: (row['stands'], row['firm_until'])
+                                        for row in read['quotes']}
+
+    declare_policy(quoting, firm_seconds=600)
+    assert stands() == (None, {given['quote_id']: ('firm', stamp(600)),
+                               'aged': ('lapsed', stamp(-100)), 'unstamped': ('lapsed', None)})
+    one = CLIENT.get('/book/quote/aged').json()
+    assert (one['stands'], one['firm_until'], one['firm_seconds']) == ('lapsed', stamp(-100), 600)
+    refused = CLIENT.post('/book/quote', json={'quote_id': 'aged'})
+    assert refused.status_code == 422 and 'was given 70' in refused.json()['detail']
+
+    declare_policy(quoting, firm_seconds='ten minutes')
+    said = CLIENT.post('/book/quote', json={'quote_id': given['quote_id']}).json()['detail']
+    assert stands() == (said, dict.fromkeys((given['quote_id'], 'aged', 'unstamped'),
+                                            ('refused', None)))
+
+    declare_policy(quoting)
+    assert stands() == (None, dict.fromkeys((given['quote_id'], 'aged', 'unstamped'),
+                                            ('quoted', None)))
 
 
 def test_a_curve_authored_before_it_carried_its_definition_reads_back_with_a_note(tmp_path):

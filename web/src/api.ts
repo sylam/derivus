@@ -7,7 +7,7 @@ import type { Agreement, Entity, Position } from './positions';
 import type {
   Acceptance, ActivityPage, BookCollateral, BookMarket, BookMarkets, BookResponse, BookRisk,
   BookStatus, BookXva,
-  CalculationOutcome, ChargeAsk, PendingQuote, QuoteGiven,
+  CalculationOutcome, ChargeAsk, PendingQuote, QuoteGiven, QuoteRead,
   CalculationsAnswer, CloseVerdict, CurveOutcome, CurvesAnswer, Decided, DescribeResult, JobDoc,
   PathMaps,
   PathsAnswer, Reconcile, Recorded, RefusalCode, ResultSummary, Schema, SeatGrants,
@@ -237,8 +237,8 @@ export const askCharge = (of: ChargeAsk) =>
   call<{ result_id: string; status: string }>('POST', '/book/price',
                                               signed({ ...of, xva_increment: true }));
 // ---- the desk's quotes ----
-// every quote the desk has given, newest first, with where each stands
-export const getQuotes = () => call<{ quotes: QuoteGiven[] }>('GET', '/book/quotes');
+// every quote the desk has given, newest first, with where each stands at the read
+export const getQuotes = () => call<QuoteRead & { quotes: QuoteGiven[] }>('GET', '/book/quotes');
 // ---- a trade's own page ----
 // a signed change of the position the file's node at `dealPath` is held in, at a price - an unwind
 // is a fill toward nothing - answered with the booking fields an acceptance answers

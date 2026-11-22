@@ -7423,8 +7423,7 @@ def quotes_shown(actor):
     return lambda pending: bool(spine.visible([pending], sight)) or pending.get('quoted_by') == seat
 
 
-@app.get('/book/quote/{quote_id}', summary='The pending trade filed under a quote id')
-def book_quote_shown(quote_id: str, actor: str = None):
+def shown_quote(quote_id, actor):
     """The pending trade as `book_quote_pending` reads it, to the seat `actor` reading where it is
     shown it (`quotes_shown`); one the seat is not shown answers as an id the desk holds nothing
     under."""
@@ -7434,16 +7433,34 @@ def book_quote_shown(quote_id: str, actor: str = None):
     return pending
 
 
+def standing(pending, read):
+    """Where a quote stands at a `quote_read`: `{stands, firm_until}` - `booked` or `accepted` as
+    the acceptance wrote them, `refused` where the book's policy will not read, else its
+    `firmness`, with the stamp its window closes at."""
+    word, until, _ = firmness(pending, read)
+    held = ('booked' if pending.get('booked') else 'accepted' if pending.get('accepted')
+            else 'refused' if read['policy_refused'] else None)
+    return {'stands': held or word, 'firm_until': None if held else until}
+
+
+@app.get('/book/quote/{quote_id}', summary='The pending trade filed under a quote id')
+def book_quote_shown(quote_id: str, actor: str = None):
+    """`shown_quote`, with where it stands at this read (`standing`) beside the read's own
+    `as_of`, `firm_seconds` and `policy_refused` (`quote_read`)."""
+    read, pending = quote_read(), shown_quote(quote_id, actor)
+    return dict(pending, **read, **standing(pending, read))
+
+
 @app.get('/book/quotes', summary='Every quote the desk has given, newest first')
 def book_quotes(actor: str = None):
-    """`{quotes}` - one row per pending file under `DV_HOME/tmp`, newest first: its `quote_id`, the
-    `structure` and the `variation` it was dealt as, the client's `netting_set`, the `net` in its
-    `currency`, `quoted_at` and `quoted_by`, and where it stands - `accepted` and `booked` as the
-    acceptance wrote them, both null while it is only quoted, `booked` also naming the `reference`
-    of the deal it booked, which a path a node ahead of it moves does not. Whether it is still firm
-    is the book's `Quote Policy`, read by the acceptance and never here. `actor` is the seat
-    reading, which is shown the quotes `quotes_shown` shows it."""
-    directory, shown, rows = quote_dir(), quotes_shown(actor), []
+    """`{as_of, firm_seconds, policy_refused, quotes}` (`quote_read`) - one row per pending file
+    under `DV_HOME/tmp`, newest first: its `quote_id`, the `structure` and the `variation` it was
+    dealt as, the client's `netting_set`, the `net` in its `currency`, `quoted_at` and
+    `quoted_by`, `accepted` and `booked` as the acceptance wrote them, both null while it is only
+    quoted, `booked` also naming the `reference` of the deal it booked, which a path a node ahead
+    of it moves does not - and where it stands at this read, `stands` and `firm_until`
+    (`standing`). `actor` is the seat reading, which is shown the quotes `quotes_shown` shows it."""
+    read, directory, shown, rows = quote_read(), quote_dir(), quotes_shown(actor), []
     for name in os.listdir(directory) if os.path.isdir(directory) else ():
         if name.endswith('.json'):
             pending = book_quote_pending(name[:-len('.json')])
@@ -7455,23 +7472,24 @@ def book_quotes(actor: str = None):
                 **{key: quoted.get(key) for key in ('structure', 'variation', 'netting_set', 'net',
                                                     'currency')},
                 **{key: pending.get(key) for key in ('quoted_at', 'quoted_by', 'accepted')},
-                booked=booked and dict(booked, reference=pending['deal']['Reference'])))
+                booked=booked and dict(booked, reference=pending['deal']['Reference']),
+                **standing(pending, read)))
     # newest first by the instant given, an unstamped one last: a stamp carries its own offset
-    aged = [(quote_age(row['quoted_at']), row) for row in rows]
-    return {'quotes': [row for _, row in sorted(aged, key=lambda pair: (pair[0] is None,
-                                                                        pair[0] or 0.0))]}
+    aged = [(quote_age(row['quoted_at'], read['as_of']), row) for row in rows]
+    return dict(read, quotes=[row for _, row in sorted(aged, key=lambda pair: (pair[0] is None,
+                                                                               pair[0] or 0.0))])
 
 
 @app.get('/book/quote/{quote_id}/sheet', summary='The quote sheet, as the .xlsx a client is sent')
 def book_quote_sheet(quote_id: str, actor: str = None):
     """The sheet beside the pending trade, streamed as the spreadsheet itself - so a client of this
     service hands a salesperson the file rather than a path on the service's own disk - to the
-    seat `actor` the quote is shown to (`book_quote_shown`).
+    seat `actor` the quote is shown to (`shown_quote`).
 
     The sheet is the `quote` extra's and genuinely optional: where `xlsxwriter` was not installed
     when the quote was given, this is a 404 carrying the quote's own `sheet_note`, which names the
     install. The quote is still there and still approvable."""
-    pending = book_quote_shown(quote_id, actor)
+    pending = shown_quote(quote_id, actor)
     path = os.path.join(quote_dir(), quote_id + '.xlsx')
     if not os.path.isfile(path):
         raise HTTPException(404, 'quote {} has no sheet: {}'.format(
@@ -7498,6 +7516,39 @@ def quote_age(stamp, until=None):
     given = given if given.tzinfo else given.replace(tzinfo=datetime.timezone.utc)
     ended = ended if ended.tzinfo else ended.replace(tzinfo=datetime.timezone.utc)
     return (ended - given).total_seconds()
+
+
+def quote_read():
+    """What the desk's quotes are measured by, at a read and at an acceptance alike: `as_of`, the
+    stamp they are measured to, and the live book's `Quote Policy` (`structures.read_policy`) -
+    `firm_seconds`, how long a quote stays acceptable, None where the book declares no policy, or
+    `policy_refused`, the sentence an acceptance refuses in where the policy will not read."""
+    def window(document, _):
+        try:
+            policy = structures.read_policy(document)
+        except ValueError as error:
+            return None, str(error)
+        return None if policy is None else policy['firm_seconds'], None
+
+    seconds, refused = polled(live_book(), 'quote window', window)
+    return {'as_of': as_of(), 'firm_seconds': seconds, 'policy_refused': refused}
+
+
+def firmness(pending, read):
+    """Where a quote stands against the window of a `quote_read`, as `(word, until, age)`:
+    `quoted` where there is no window, else `firm` while its age at the read's `as_of` is inside it
+    and `lapsed` past it, an age nobody can establish being past it; `until` the stamp the window
+    closes at and `age` the quote's seconds (`quote_age`). What the acceptance refuses by and every
+    quote read answers."""
+    import datetime
+
+    seconds, age = read['firm_seconds'], quote_age(pending.get('quoted_at'), read['as_of'])
+    if seconds is None:
+        return 'quoted', None, age
+    closes = None if age is None else datetime.datetime.fromisoformat(
+        pending['quoted_at']) + datetime.timedelta(seconds=seconds)
+    return ('lapsed' if age is None or age > seconds else 'firm',
+            closes and closes.isoformat(timespec='milliseconds'), age)
 
 
 def board_age(document, quoted_at):
@@ -7943,28 +7994,24 @@ def book_quote(request: dict):
 
     # the window is read off the BOOK as it stands now, not off the quote: the mandate is the
     # desk's, and it is about the QUOTE rather than about the book the trade lands in
-    document, _ = live.read()
-    try:
-        policy = structures.read_policy(document)
-    except ValueError as error:
-        raise HTTPException(422, str(error))
-    if policy is not None:
-        firm = policy['firm_seconds']
-        age = quote_age(pending.get('quoted_at'))
-        if age is None:
-            raise HTTPException(422, 'quote {} carries no quoted_at - it was filed before quotes '
-                                     'were stamped, so its age cannot be established, and an '
-                                     'unknown age is not an age inside a window: {} holds a quote '
-                                     'firm for {:.0f}s - re-quote: the market has had an unknown '
-                                     'number of seconds to move'.format(
-                                         quote_id, structures.Structure.POLICY.name, firm))
-        if age > firm:
-            # the age to a tenth: a zero-second window refused at 0.1s must name an age a desk can
-            # tell from the window it broke
-            raise HTTPException(422, 'quote {} was given {:.1f}s ago and {} holds a quote firm '
-                                     'for {:.0f}s - re-quote: the market has had {:.1f} seconds '
-                                     'to move'.format(quote_id, age,
-                                                      structures.Structure.POLICY.name, firm, age))
+    read = quote_read()
+    if read['policy_refused']:
+        raise HTTPException(422, read['policy_refused'])
+    (word, _, age), firm = firmness(pending, read), read['firm_seconds']
+    if word == 'lapsed' and age is None:
+        raise HTTPException(422, 'quote {} carries no quoted_at - it was filed before quotes '
+                                 'were stamped, so its age cannot be established, and an '
+                                 'unknown age is not an age inside a window: {} holds a quote '
+                                 'firm for {:.0f}s - re-quote: the market has had an unknown '
+                                 'number of seconds to move'.format(
+                                     quote_id, structures.Structure.POLICY.name, firm))
+    if word == 'lapsed':
+        # the age to a tenth: a zero-second window refused at 0.1s must name an age a desk can
+        # tell from the window it broke
+        raise HTTPException(422, 'quote {} was given {:.1f}s ago and {} holds a quote firm '
+                                 'for {:.0f}s - re-quote: the market has had {:.1f} seconds '
+                                 'to move'.format(quote_id, age,
+                                                  structures.Structure.POLICY.name, firm, age))
 
     quoted = pending.get('quote') or {}
     parent, models = quoted.get('netting_set'), quoted.get('valuation_configuration')
@@ -7985,7 +8032,7 @@ def book_quote(request: dict):
         baseline = live_book().baseline(book, etag)
         materialised(book, parent)
         # a declared window not refused above holds the quote firm
-        verdict = check_pins(pending, book, quote_id, policy is not None)
+        verdict = check_pins(pending, book, quote_id, firm is not None)
         # no _validated: the model pin edits the book after the verdict, so the verdict is not its
         written, outcome = quote_edit(book, pending, baseline)
         if not written:

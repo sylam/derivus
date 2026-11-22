@@ -12,7 +12,7 @@ import { under, type Agreement, type Entity } from './positions';
 import { formatNumber, isBlank, isObject } from './tokens';
 import type {
   Acceptance, ChargeAsk, DealNode, Descriptor, Increment, JobDoc, PendingQuote, Quote, QuoteGiven,
-  QuotedLeg, ResultSummary, Schema, Section, Stepped, StructureType,
+  QuoteRead, QuotedLeg, ResultSummary, Schema, Section, Standing, Stepped, StructureType,
 } from './types';
 
 // ---- the ticket asked for -----------------------------------------------------------------------
@@ -284,26 +284,21 @@ export function chargeLines(answer: Increment): ChargeLine[] {
 
 // ---- how long it stands, and what an acceptance says -------------------------------------------
 
-/** How long this desk holds a quote firm, in seconds: its `Quote Policy`'s `firm_seconds`, the
- * declared convention where the block states none; null where the book declares no policy. */
-export function firmSeconds(doc: JobDoc | null, schema: Schema | null): number | null {
-  const policy = doc?.Calc['Quote Policy'];
-  if (!isObject(policy)) return null;
-  return Number(policy.firm_seconds ?? schema?.['Quote Policy']?.fields.firm_seconds?.value);
+/** How long a quote a read found firm stays firm after that read, in ms: from the read's own stamp
+ * to the close of its window, two stamps of the service's clock - none where it was not firm. */
+export function firmFor(row: Standing, asOf: string | undefined): number | undefined {
+  const [until, at] = [instantMs(row.firm_until), instantMs(asOf)];
+  return row.stands === 'firm' && until !== undefined && at !== undefined ? until - at : undefined;
 }
 
-/** When a quote given at `quotedAt` - a service stamp - stops being firm, as a UTC stamp. */
-export function firmUntil(quotedAt: string | null, seconds: number): string | undefined {
-  const given = instantMs(quotedAt);
-  return given === undefined ? undefined : new Date(given + seconds * 1000).toISOString();
-}
-
-/** What holds on this desk between a quote and its acceptance: the declared window, else - where
- * the desk records - the book not moving under it, else nothing at all. */
-export function firmText(seconds: number | null, recording: boolean): string {
-  if (seconds !== null) {
-    return `This desk holds a quote firm for ${formatNumber(seconds, 'whole')} seconds; an older `
-      + 'one is refused, and is quoted again.';
+/** What holds on this desk between a quote and its acceptance, as a read says it: the declared
+ * window, else - where the desk records - the book not moving under it, else nothing at all; or
+ * why the desk's quote policy will not read, in the service's words. */
+export function firmText(read: QuoteRead, recording: boolean): string {
+  if (read.policy_refused) return read.policy_refused;
+  if (read.firm_seconds !== null) {
+    return `This desk holds a quote firm for ${formatNumber(read.firm_seconds, 'whole')} seconds; `
+      + 'an older one is refused, and is quoted again.';
   }
   return recording ? 'This desk declares no firm window: a quote books while the book has not '
     + 'moved under it.' : 'This desk declares no firm window: a quote stays bookable until it is '
@@ -333,24 +328,11 @@ export function verdictOf(answer: Acceptance): Verdict {
 // ---- the desk's quotes --------------------------------------------------------------------------
 
 /** Where a quote stands, in words. */
-export const STANDS: Record<string, string> = {
+export const STANDS: Record<Standing['stands'], string> = {
   booked: 'booked as', accepted: 'accepted, not booked', firm: 'firm',
   lapsed: 'past its firm window', quoted: 'quoted, with no firm window',
+  refused: "not acceptable while the desk's quote policy will not read",
 };
-
-/** Where a quote stands at `now`: booked; accepted on the record and not booked; else firm until the
- * book's window closes or past it, `until` saying when - one stating no time it was quoted at is
- * aged, as the acceptance reads it - and only quoted where the book declares no window. */
-export function standsAt(row: Pick<QuoteGiven, 'quoted_at' | 'accepted' | 'booked'>,
-                         seconds: number | null, now: number):
-  { word: 'booked' | 'accepted' | 'firm' | 'lapsed' | 'quoted'; until?: string } {
-  if (row.booked) return { word: 'booked' };
-  if (row.accepted) return { word: 'accepted' };
-  if (seconds === null) return { word: 'quoted' };
-  const until = firmUntil(row.quoted_at, seconds);
-  const end = instantMs(until);
-  return { word: end !== undefined && end >= now ? 'firm' : 'lapsed', until };
-}
 
 /** Whether a quote's booking is the trade at `path` under `reference`: by the reference the booking
  * names, which a node deleted ahead of the trade does not move - the trade now at its path under

@@ -5798,8 +5798,8 @@ def test_a_read_naming_a_seat_its_token_does_not_prove_is_refused(desk, tmp_path
     signed = dict(JSON, authorization='Bearer ' + test_spine_identity.rs256(
         idp.rsa_key, test_spine_identity.claims(exp=now + 300.0, iat=now - 10.0, nbf=now - 10.0)))
     for named in (None, test_spine_identity.SUBJECT):
-        assert CLIENT.get('/book/quotes', headers=signed, params={'actor': named}).json() == {
-            'quotes': []}
+        assert CLIENT.get('/book/quotes', headers=signed, params={'actor': named}).json()[
+            'quotes'] == []
     other = CLIENT.get('/book/quotes', headers=signed, params={'actor': 'subject-other'})
     assert (other.status_code, other.json()['detail']) == (
         422, spine.NOT_THE_BEARER.format('subject-other', test_spine_identity.SUBJECT))
