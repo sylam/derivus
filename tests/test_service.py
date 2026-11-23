@@ -8351,7 +8351,8 @@ def test_an_edit_to_either_named_file_is_a_new_run_and_the_request_parses_neithe
     under the first id; the worker reading the files off their paths rather than the bytes its
     stamp hashed (`session.held` unset), which prices EQ_3 at 140.25 under the id stamped at 130,
     a CVA of 2,198.56 where the stamped file's is 1,907.27; a load on the request thread, or a
-    set's holding read off a fresh `market_of` on a poll miss, either of which raises on the broken
+    set's holding read off the file again on a poll miss, bypassing the book's kept market
+    (`structures.market_of` in place of `service.market_of`), either of which raises on the broken
     file; the `Stats` check removed, which lands the set done without its deal.
     """
     def ids(queued):
