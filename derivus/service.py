@@ -4481,7 +4481,7 @@ class XvaJob:
 
     The row is written on completion EITHER WAY. A failed run - commonly a counterparty the market
     data carries no `SurvivalProb` block for - lands `status: 'failed'` with the engine's own
-    wording, and the factor it wanted with what supplies it under `missing` (`failed`), because a
+    wording, and the factor it wanted under `missing` (`failed`), because a
     desk reads why a number is missing off the same file the numbers are in. The
     error still travels to the result store, so `/results/{result_id}` is never told otherwise. A
     run that skipped a deal is a failed run (`utils.run_whole`): a dropped deal must never read as
@@ -4516,10 +4516,9 @@ class XvaJob:
 
     def failed(self, error, factor=None):
         """The row of a run that failed saying `error`, and where it failed for want of the price
-        factor `factor` (`utils.MissingFactor`), `missing`: that factor with what would supply it,
-        as the dependency verbs answer it (`dependency_answer`)."""
-        return self.row(status='failed', error=error, missing=factor and dependency_answer(
-            self.document, [], [factor])['factors'][0])
+        factor `factor` (`utils.MissingFactor`), its name under `missing` - the run's fact, which
+        the XVA read joins with what supplies it (`xva_view`)."""
+        return self.row(status='failed', error=error, missing=factor)
 
     @staticmethod
     def adjustments(results, stored=False):
@@ -4801,7 +4800,8 @@ def book_xva_view():
 def xva_view(document, _):
     """`{sets, funding, limits, lacks_refused}` - what `GET /book/xva` reads of `document`, the XVA
     file and the record: the rows joined with the book's sets (`xva_entries`), each with what its
-    terms read in the book's market (`terms_read`), the curves a recalc asked now funds at
+    terms read in the book's market (`terms_read`) and a failed row's `missing` factor with what
+    supplies it (`dependency_answer`), the curves a recalc asked now funds at
     (`funded`), the credit limits declared (`credit_limits`), and what refused the walk of the
     sets' gaps, null where it was asked."""
     entries = xva_entries(document)
@@ -4809,6 +4809,12 @@ def xva_view(document, _):
                                            for _, node in netting_sets(document)])
     for entry, read in zip(entries, reads):
         entry.update(read)
+    # a failed row names the factor its run wanted; who supplies it is the desk's vocabulary now
+    wanted = sorted({entry['missing'] for entry in entries if entry['missing']})
+    supplied = {} if not wanted else {
+        row['factor']: row for row in dependency_answer(document, [], wanted)['factors']}
+    for entry in entries:
+        entry['missing'] = supplied.get(entry['missing'])
     return {'sets': entries, 'funding': funded(document), 'limits': credit_limits(),
             'lacks_refused': refused}
 
