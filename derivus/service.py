@@ -2395,13 +2395,12 @@ def client_names():
 
 def terms_moved(document):
     """`[{agreement, deal_path, fields}]` - every netting set of the file materialising a declared
-    agreement whose paper is not the terms legal declared, with the fields the two disagree on."""
-    declared = {row['agreement']: paper(row['terms']) for row in spine.agreements()}
-    found = []
+    agreement whose paper is not the terms legal declared (`spine.off_paper`), with the fields the
+    two disagree on."""
+    declared, found = spine.off_paper(document), []
     for path, node in netting_sets(document):
         held = paper(node['Instrument']['.Deal'])
-        terms = declared.get(held.get('Reference'))
-        fields = [] if terms is None else moved_fields(held, terms)
+        fields = moved_fields(held, declared.get(held.get('Reference'), held))
         if fields:
             found.append({'agreement': held['Reference'], 'deal_path': path, 'fields': fields})
     return found

@@ -764,7 +764,7 @@ def compiled_job(document, lsn=None, strict=True, runs=None, folds=None, market=
         return document
     with (contextlib.nullcontext() if READ.get() is not None else one_read(folds, market)):
         held = nets(positions_of(book_name(document), lsn))
-        papers = _papers(document, lsn)
+        papers = off_paper(document, lsn)
         balances = {} if runs is False else _balances(document, papers, lsn, folds)
         if (runs or document['Calc']['Calculation'].get('Object')) == BaseValuation.__name__:
             balances = {}
@@ -869,7 +869,7 @@ def paper(block):
     return stated
 
 
-def _papers(document, lsn=None):
+def off_paper(document, lsn=None):
     """`{agreement: paper}` - the terms declared at `lsn` for each netting set of `document`
     materialising an agreement whose paper is not those terms; folded only where a set is."""
     sets = [node['Instrument']['.Deal'] for _, node in netting_sets(document)]
