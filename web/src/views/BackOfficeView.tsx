@@ -340,9 +340,11 @@ function Clearing({ list, row, day }: { list: List; row: WorkRow; day: string })
 }
 
 /** The book's day's close behind the check's own verdict: legal, and declaring it is one act; not,
- * and what it waits on is listed. The close refuses an illegal day in its own words besides. */
+ * and what it waits on is listed. A seat that may not declare it is told which seat does, over the
+ * firm whose fact a close is (`clearsNone`); the close refuses an illegal day in its own words. */
 function CloseCheck({ check }: { check: CloseVerdict }) {
-  const hold = heldBack(useApp().state, 'official_close_declared', null);
+  const hold = clearsNone(useApp().state, 'official_close_declared', 'declare the close',
+                          'the firm');
   const [refused, setRefused] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
 

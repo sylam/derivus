@@ -632,16 +632,21 @@ check('nothing is held back off a desk that records, before the grants of the se
 const SETTLES = (fx) => mays({ status_transition: { HARBOURLINE: SAID.book, 'HARBOURLINE/fx': fx } });
 check('a list the seat clears none of says so in plain words where every node refuses its act, '
       + 'naming the verb a seat clearing it holds; one it clears at any node, or an act no node '
-      + 'judges, says nothing; a refused read says its own words',
+      + 'judges, says nothing; a refused read says its own words; the close, a fact of the '
+      + 'firm, says which seat declares it over the firm',
       "the record's denial shown on the list, which quotes a denial nothing filed and names an "
-      + 'event type; a list the seat clears at one node said to be none of its; or a refused read '
-      + 'said as a plain no',
+      + 'event type; a list the seat clears at one node said to be none of its; a refused read '
+      + "said as a plain no; or the deed and its scope dropped, which sends a book's mark to "
+      + "declare the firm's close",
       [state.clearsNone(SETTLES(SAID.book), 'status_transition'),
        state.clearsNone(SETTLES(null), 'status_transition'), state.clearsNone(mays(MAY), 'confirmed'),
        state.clearsNone(seated(null, '', { grants: { asked: '', read: null, refused: NO_SEAT } }),
-                        'status_transition')],
+                        'status_transition'),
+       state.clearsNone(mays({ official_close_declared: { HARBOURLINE: SAID.firm,
+                                                          'HARBOURLINE/fx': SAID.firm } }),
+                        'official_close_declared', 'declare the close', 'the firm')],
       ['sales-1 does not clear these: a seat holding settle over this book does', null, null,
-       NO_SEAT]);
+       NO_SEAT, 'sales-1 does not declare the close: a seat holding mark over the firm does']);
 const UNREAD = { asked: 'sales-1', read: null, refused: null };
 check('a read the grants gate waits on a desk that records until they are read for the seat on '
       + 'screen - none read yet, or those of the seat typed before - and no longer once they are, '
