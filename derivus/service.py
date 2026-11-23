@@ -6476,7 +6476,8 @@ WRITTEN_BY = {'SurvivalProb': 'the CVA desk writes it from its spread, or its Su
 
 
 def supply_of(factor, base_currency, seed, mapped):
-    """`(the seed entry that would supply this factor, the note saying why none would)`.
+    """`(the seed entry that would supply this factor, the note saying who supplies it)` - the
+    entry None where the seed would not, the note then saying why.
 
     A curve is supplied by its own `rates` entry, a spot by the `fx_spot` pair that routes its
     currency against the book's base, a surface by the `fx_vol` pair its two currencies spell.
@@ -6512,7 +6513,7 @@ def supply_of(factor, base_currency, seed, mapped):
              'verified': len(scoped_map(mapped, block, key, ())['blocks'])}
     if block == 'rates':
         entry['conventions'] = bool((seed['rates'][key] or {}).get('conventions'))
-    return entry, None
+    return entry, "a seat holding mark sets it up off the desk's {} entry {}".format(block, key)
 
 
 def around(document, *nodes):
@@ -6587,16 +6588,16 @@ def pair_factors(document, pair):
 
 def dependency_answer(document, resolved, missing, seed=None, mapped=None, **named):
     """The walk as the JSON both dependency verbs answer: every factor with its status, and for a
-    missing one the seed entry that would supply it - `supply` null with a `note` where none
-    would, never a guess. A job that has already read the vocabulary threads it in."""
+    missing one the seed entry that would supply it - `supply` null where none would, never a
+    guess - and the `note` saying who supplies it. A job that has already read the vocabulary
+    threads it in."""
     seed = desk_seed() if seed is None else seed
     mapped = desk_map()[0] if mapped is None else mapped
     base = structures.base_currency(market_of(document))
     rows = []
     for factor in missing:
         supply, note = supply_of(factor, base, seed, mapped)
-        rows.append(dict({'factor': factor, 'status': 'missing', 'supply': supply},
-                         **({} if note is None else {'note': note})))
+        rows.append({'factor': factor, 'status': 'missing', 'supply': supply, 'note': note})
     rows += [{'factor': factor, 'status': 'resolved', 'supply': None} for factor in resolved]
     return dict(named, base_currency=base, factors=rows)
 

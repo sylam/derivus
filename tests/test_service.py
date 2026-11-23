@@ -3694,11 +3694,13 @@ def test_the_walk_names_what_a_trade_needs(book, vocabulary):
     and how many a terminal has verified. Nothing is priced and nothing is written.
 
     A factor type this desk's vocabulary spells nothing for is reported as honestly: `supply` null
-    and a note, never a guess at an equity's ticker.
+    and a note, never a guess at an equity's ticker; one the seed supplies carries the note saying
+    who sets it up off which entry.
 
     Killing mutations: the walk reading the whole book instead of the candidate - `InterestRate.ZAR`
     and `FxRate.ZAR` are the book's own cashflow's; the pair looked up in one spelling only, which
-    leaves `FxRate.JPY` unsuppliable because the seed spells `USDJPY` and not `JPYUSD`.
+    leaves `FxRate.JPY` unsuppliable because the seed spells `USDJPY` and not `JPYUSD`; a supplied
+    factor's note left for a client to word.
     """
     before = book.read_bytes()
     answer = dependencies(deal=XCCY)
@@ -3709,6 +3711,8 @@ def test_the_walk_names_what_a_trade_needs(book, vocabulary):
         'FxRate.EUR', 'FxRate.JPY', 'InterestRate.EUR', 'InterestRate.JPY']
     assert rows['InterestRate.EUR']['supply'] == {
         'block': 'rates', 'key': 'EUR', 'securities': 24, 'verified': 0, 'conventions': True}
+    assert rows['InterestRate.EUR']['note'] == (
+        "a seat holding mark sets it up off the desk's rates entry EUR")
     # the pair is the one that ROUTES the currency against the base, either spelling of it
     assert rows['FxRate.EUR']['supply'] == {
         'block': 'fx_spot', 'key': 'EURUSD', 'securities': 1, 'verified': 0}

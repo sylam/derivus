@@ -394,9 +394,9 @@ export type XvaSet = {
   quasi_seed: number | null;
   /** The engine's own wording, and a string only where `status` is 'failed'. */
   error: string | null;
-  /** Where the run failed for want of a price factor, that factor and what would supply it: the
-   * seed's entry, or `note` saying why none would. */
-  missing: { factor: string; supply: { block: string; key: string } | null; note?: string } | null;
+  /** Where the run failed for want of a price factor, that factor, the seed's entry that would
+   * supply it, null where none would, and `note`, who supplies it. */
+  missing: { factor: string; supply: { block: string; key: string } | null; note: string } | null;
   /** What the set's terms say the bank holds, in the book's reporting `currency` at the market's
    * spots - `balance` null where they cannot cross it - and null on a row whose set left the book. */
   held: { currency: string; balance: number | null } | null;

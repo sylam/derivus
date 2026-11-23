@@ -1098,10 +1098,10 @@ def book_dependencies(deal_path: str = None, deal: dict = None,
 
     Every factor comes back with a `status`. A `missing` one carries `supply`: the vocabulary
     `block` and `key` this desk seeds it under, how many `securities` the seed spells for it and
-    how many a terminal has `verified`, plus `conventions` for a curve. `supply` null with a `note`
-    means this desk's vocabulary spells nothing for that factor - an equity or a commodity - and
-    the market for it is authored by hand, or written as the note says (`declare_survival_curve`
-    writes a counterparty's `SurvivalProb`).
+    how many a terminal has `verified`, plus `conventions` for a curve, and a `note` saying who
+    supplies it. `supply` null means this desk's vocabulary spells nothing for that factor - an
+    equity or a commodity - and the market for it is authored by hand, or written as the note says
+    (`declare_survival_curve` writes a counterparty's `SurvivalProb`).
 
     A `deal` the booking verb would refuse is refused HERE in its words rather than walked, so a
     misspelt type is never answered "nothing is missing". `setup_market` acts on this answer."""

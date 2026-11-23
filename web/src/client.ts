@@ -454,11 +454,9 @@ export function limitOf(id: string, limits: CreditLimit[]): LimitRead | undefine
 }
 
 /** Who puts a failed run right, off the factor its row says it wanted (`XvaSet.missing`): the
- * service's note where nothing the desk seeds supplies it, else the seed's entry that does. */
+ * service's note saying who supplies it. */
 export function fixedBy(missing: XvaSet['missing']): string {
-  return !missing ? `read its sentence, then ${RECALC}` : `${missing.factor}: ${missing.note
-    ?? `a seat holding mark sets it up off the desk's ${missing.supply?.block} entry ${
-      missing.supply?.key}`}`;
+  return !missing ? `read its sentence, then ${RECALC}` : `${missing.factor}: ${missing.note}`;
 }
 
 /** What is wrong under a client's lines, worst first - a set that has left the book reads its last
