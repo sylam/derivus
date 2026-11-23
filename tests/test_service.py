@@ -6895,6 +6895,18 @@ def test_each_set_row_names_the_factors_its_terms_name_that_the_market_lacks(tmp
         service.BOOK = None
 
 
+def test_a_projection_file_that_does_not_parse_refuses_by_name(desk_xva, tmp_path):
+    """A BROKEN PROJECTION IS NOT NO PROJECTION: an `xva.json` that does not parse is refused, 422
+    naming the file, rather than read as no XVA at all.
+
+    Killing mutation: the parse's `ValueError` left unanswered, a 500.
+    """
+    (tmp_path / 'xva.json').write_text('{"sets": ', newline='\n')
+    answer = CLIENT.get('/book/xva')
+    assert answer.status_code == 422 and answer.json()['detail'].startswith(
+        "the desk's XVA projection, xva.json, is not readable as one"), answer.text
+
+
 def test_a_survival_curve_is_written_from_the_cva_desk_s_spread(recorded, tmp_path):
     """`POST /book/survival` writes `SurvivalProb.<counterparty>` from the spread and the recovery
     the CVA desk states, each spread a hazard s/(1-R), the last one's line run on to fifty years.

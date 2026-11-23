@@ -4372,10 +4372,7 @@ def read_projection():
     thread reading it. A file that is there but not JSON refuses BY NAME: "no XVA at all" and "the
     file is broken" are different facts."""
     try:
-        with open(xva_path(), encoding='utf-8') as handle:
-            return json.load(handle)
-    except FileNotFoundError:
-        return {'sets': {}}
+        return desk_file(XVA_FILE, {'sets': {}})
     except ValueError as error:
         raise HTTPException(422, "the desk's XVA projection, {}, is not readable as one ({}), so "
                                  'no XVA row is read from it'.format(XVA_FILE, error))
