@@ -8309,16 +8309,17 @@ def test_an_edit_to_either_named_file_is_a_new_run_and_the_request_parses_neithe
     nothing its id names: the set lands done at the number a fresh context reads off the file as
     its stamp hashed it, EQ_3 at 130 where the file says 140.25 by the time the worker runs, and
     with the file put back and the book moved every set reads the fresh context's number. The
-    request parses neither: a market data file that is not JSON still queues every set, and each
-    row lands failed in the parser's words. A deal on an equity nothing carries is skipped by the
-    engine, and its set lands failed naming it, never done at a smaller CVA.
+    request parses neither: a market data file that is not JSON still queues every set, each row
+    lands failed in the parser's words, and the read after those writes answers what each set's
+    terms read in the market as it did before the file broke. A deal on an equity nothing carries
+    is skipped by the engine, and its set lands failed naming it, never done at a smaller CVA.
 
     KILLING MUTATIONS: either digest dropped from the stamp, which serves the first run's numbers
     under the first id; the worker reading the files off their paths rather than the bytes its
     stamp hashed (`session.held` unset), which prices EQ_3 at 140.25 under the id stamped at 130,
-    a CVA of 2,198.56 where the stamped file's is 1,907.27; a load on the request thread, which
-    raises on the broken file; the `Stats` check removed, which lands the set done without its
-    deal.
+    a CVA of 2,198.56 where the stamped file's is 1,907.27; a load on the request thread, or a
+    set's holding read off a fresh `market_of` on a poll miss, either of which raises on the broken
+    file; the `Stats` check removed, which lands the set done without its deal.
     """
     def ids(queued):
         return {entry['result_id'] for entry in queued}
@@ -8377,11 +8378,14 @@ def test_an_edit_to_either_named_file_is_a_new_run_and_the_request_parses_neithe
         assert (failed['status'], failed['cva']) == ('failed', None)
         assert 'Deals Skipped' in failed['error'] and 'OPT_GONE' in failed['error'], failed['error']
 
+        read = {reference: (row['held'], row['lacks']) for reference, row in xva_rows().items()}
         market.write_text('not a market')
         answer = CLIENT.post('/book/xva', content=json.dumps({}), headers=JSON)
         assert answer.status_code == 200 and len(answer.json()['queued']) == 10
         service.EXECUTOR.queue.join()
         assert {row['status'] for row in xva_rows().values()} == {'failed'}
+        assert {reference: (row['held'], row['lacks'])
+                for reference, row in xva_rows().items()} == read
         assert all('Expecting value' in row['error'] for row in xva_rows().values())
     finally:
         service.BOOK = None

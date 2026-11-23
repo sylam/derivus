@@ -1173,7 +1173,7 @@ def test_the_agreements_read_names_the_factors_each_names_that_the_market_lacks(
     yen names that curve and the yen's spot beside it, sorted - so a screen reads the gaps rather
     than walking the schema for them.
 
-    Killing mutation: the walk taken over the book rather than the set (`lacking` walking
+    Killing mutation: the walk taken over the book rather than the set (`terms_read` walking
     `document` whole), which names the book's own wants, none, against every agreement.
     """
     terms = netting_set(CLIENT_SET, 'LEI-A')['Instrument']['.Deal']

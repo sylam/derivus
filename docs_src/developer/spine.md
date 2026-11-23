@@ -698,7 +698,7 @@ names for a run's tables. No screen shows a
 set's own `Funding_Rate`, the term of its collateral adjustment: every view of a deal's fields
 leaves it out (`onScreen` in `web/src/tokens.ts`), a set stating it keeps it through an edit, and
 the curve it names is still among what its terms lack where the market does not carry it: the
-engine's walk of each set's terms alone, every set over one load (`service.lacking`), `lacks` on
+engine's walk of each set's terms alone, every set over one load (`service.terms_read`), `lacks` on
 each agreement and on each XVA row, which a client's readiness reads. Each posts under the
 acting seat and shows a refusal in the service's own words. **Held by** what they read,
 `test_pnl.py::test_the_worklist_names_what_waits_and_each_row_leaves_when_its_fact_lands`,
