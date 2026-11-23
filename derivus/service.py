@@ -597,8 +597,9 @@ class Book:
         # each file the book names parsed once per content, for every context a request builds
         # over it (`load`): the newest of the market data and the calendar and the ones before
         self.parses = utils.LRUCache(4)
-        # the market a document prices on by its `market_stamp`, pickled as the parses are
-        self.markets = utils.LRUCache(4)
+        # the market a document prices on by its `market_stamp`, pickled as the parses are, and what
+        # netting sets' terms lack in it (`lacking`) by the same stamp and the terms
+        self.markets, self.lacks = utils.LRUCache(4), utils.LRUCache(4)
         # what a poll was last answered, by the read and its `poll_key`
         self.polls = utils.LRUCache(8)
         # each pending quote file's row of `/book/quotes` by its path, with the stamp it was read at
@@ -4926,15 +4927,21 @@ def lacking(document, sets):
     """For each netting set's terms among `sets`, the price factors they name that `document`'s
     market holds no block for, the counterparty's credit curve among them: the engine's walk of
     each set alone, nothing under it, over ONE load of the document holding them all
-    (`Config.factor_universe`). A `Calculation` its declarations refuse refuses the read, 422 in
+    (`Config.factor_universe`), kept on the book (`Book.lacks`) under the document's
+    `market_stamp` and the terms: a file the book names is read where its market moves, never by
+    a poll whose book has not. A `Calculation` its declarations refuse refuses the read, 422 in
     their words: the walk cannot be asked of it."""
-    config = load(around(document, *(
-        {'Instrument': {'.Deal': terms}} for terms in sets))).current_cfg
-    refused = config.calculation_refusals()
-    if refused:
-        raise HTTPException(422, '; '.join(refused))
-    return [config.factor_universe(children=[node])['missing']
-            for node in config.deals['Deals']['Children']]
+    key = content_hash({'market': market_stamp(document), 'sets': sets})
+    kept = BOOK.lacks.get(key)
+    if kept is None:
+        config = load(around(document, *(
+            {'Instrument': {'.Deal': terms}} for terms in sets))).current_cfg
+        refused = config.calculation_refusals()
+        if refused:
+            raise HTTPException(422, '; '.join(refused))
+        kept = BOOK.lacks.put(key, [config.factor_universe(children=[node])['missing']
+                                    for node in config.deals['Deals']['Children']])
+    return kept
 
 
 def stated_holding(terms, market, reporting):
