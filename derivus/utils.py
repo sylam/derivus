@@ -727,6 +727,26 @@ class CalibrationStale(Exception):
     `Config.bootstrap()` publishes a fresh one under the same slot and the same EXECUTE runs."""
 
 
+def unpriced(shared, instrument, error, counted=None):
+    """`instrument` - a structure's, or a deal's - among what the run `shared` could not value
+    (`shared.unpriced`), the `error` it could not be valued for stamped on it (`unpriced_because`)
+    and counted once under `counted` where that names a count, however many batches meet it."""
+    held = getattr(shared, 'unpriced', None)
+    if held is not None and instrument not in held:
+        held.add(instrument)
+        instrument.unpriced_because = error
+        if counted:
+            shared.calc_stats[counted] = shared.calc_stats.get(counted, 0) + 1
+
+
+def missing_among(unpriced):
+    """The `MissingFactor` the first of `unpriced` by reference could not be valued for, None where
+    none was: the cause a refusal of the run is raised from, so its reader reads the factor."""
+    return next((instrument.unpriced_because for instrument in sorted(
+        unpriced, key=lambda instrument: str(instrument.field.get('Reference')))
+        if isinstance(getattr(instrument, 'unpriced_because', None), MissingFactor)), None)
+
+
 def is_fatal_pricing_error(e):
     """Exceptions a deal-level guard must NOT swallow into a scalar-0 mark: the machine running out
     of memory, a schedule the calculation never bound, and a schedule the engine refused BY NAME.
@@ -3135,14 +3155,16 @@ class CapturedErrors(logging.Handler):
 def run_whole(run_job):
     """`run_job()`'s answer, or a refusal naming what the run skipped: a run whose `Stats` count
     anything under a name ending `Skipped` priced part of its book, and a part is never answered
-    as the book. The refusal carries the counts and what the run said at ERROR on this thread."""
+    as the book. The refusal carries the counts and what the run said at ERROR on this thread, and
+    is raised from the price factor what it could not value wanted (`missing_among`)."""
     with CapturedErrors() as captured:
         answer = run_job()
     skipped = ', '.join('{} {}'.format(count, name) for name, count in sorted(
         answer[1].get('Stats', {}).items()) if name.endswith('Skipped'))
     if skipped:
         raise UnpriceableSchedule('the run skipped what it could not price ({}): {}'.format(
-            skipped, '; '.join(dict.fromkeys(captured.messages))))
+            skipped, '; '.join(dict.fromkeys(captured.messages)))) from missing_among(
+            getattr(answer[0], 'unpriced', ()))
     return answer
 
 

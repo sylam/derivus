@@ -948,11 +948,7 @@ class Deal(object):
                 deal_data.Instrument.field.get("Reference"), e.args))
             if utils.is_fatal_pricing_error(e):
                 raise
-            unpriced = getattr(shared, 'unpriced', None)
-            if unpriced is not None and self not in unpriced:
-                unpriced.add(self)
-                self.unpriced_because = e
-                shared.calc_stats['Deals Skipped'] = shared.calc_stats.get('Deals Skipped', 0) + 1
+            utils.unpriced(shared, self, e, 'Deals Skipped')
             return 0.0 * shared.one
 
     def sum_children(self, accum, shared, time_grid, deal_data, child_dependencies):

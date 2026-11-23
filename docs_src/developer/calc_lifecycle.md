@@ -423,7 +423,11 @@ batch find one, and the memory held, `Device_Memory` reporting the process's res
     the service, a structure quote, a solve's iterate or a replay pin answers with refuses one
     counting a skip, by name (`utils.run_whole`).
     `Device_Memory` reports the peak, warning past the device; a run that valued nothing refuses,
-    naming each structure it could not value with its reason, one its compile refused among them.
+    naming each structure and deal it could not value with its reason, one its compile refused
+    among them: a deal the compile drops joins what the run could not value (`utils.unpriced`,
+    the one place every guard records one). Either refusal is raised from the price factor the
+    first of those wanted (`utils.missing_among`, a `utils.MissingFactor`), which a failed run's
+    `missing` names.
     **Held by** `tests/test_fork_pricing_failures.py`,
     `tests/test_autocall_json.py::test_a_note_a_past_print_called_is_expired_and_left_out`,
     `tests/test_service.py::test_a_run_that_skipped_a_deal_is_an_error_naming_it`,
@@ -432,7 +436,8 @@ batch find one, and the memory held, `Device_Memory` reporting the process's res
     `::test_a_book_holding_a_deal_it_cannot_price_has_no_consolidated_risk`,
     `tests/test_structures.py::test_a_book_deal_the_risk_step_cannot_price_refuses_the_quote`,
     `::test_a_leg_that_cannot_compile_refuses_the_quote`,
-    `tests/test_multi_gpu.py::test_a_run_reports_what_it_held_and_warns_where_it_passed_the_device`.
+    `tests/test_multi_gpu.py::test_a_run_reports_what_it_held_and_warns_where_it_passed_the_device`,
+    `tests/test_service.py::test_a_deal_its_compile_skips_names_itself_and_the_factor_it_wanted_in_its_set_s_row`.
 
 !!! warning "Invariant — `t_Buffer` per batch, `t_PreCalc` per calculation"
     `t_Buffer` is cleared by `reset` and by every fork. `t_PreCalc` holds what every batch reads

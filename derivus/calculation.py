@@ -97,15 +97,17 @@ class DealStructure(object):
             {base_date} if len(time_grid.scenario_dates) == 1 else reval_dates)
 
     def add_deal_to_structure(self, base_date, deal, static_offsets, stochastic_offsets,
-                              all_factors, all_tenors, time_grid, calendars, stats, unit,
+                              all_factors, all_tenors, time_grid, calendars, shared, unit,
                               valuation_options=None, exclude=True):
-        """Compile `deal` into this structure, the history fold first. A deal the compile cannot
-        read is skipped and counted, or kept and marked at zero on every date where `exclude` is
-        False, the exception stamped on it either way (`unpriced_because`, which the diary reads);
-        a framework fault or a schedule refused by name (`utils.is_fatal_pricing_error`) is counted
-        and stamped too, and raised, never swallowed. A deal its own history ended
-        (`utils.InstrumentExpired`) has expired: stamped, left out under either switch and never
-        counted, as one whose last date is behind the base date is left out."""
+        """Compile `deal` into this structure, the history fold first; `shared` is the
+        calculation, which counts it. A deal the compile cannot read is skipped and counted, and is
+        among what the run could not value (`utils.unpriced`), or kept and marked at zero on every
+        date where `exclude` is False, the exception stamped on it either way (`unpriced_because`,
+        which the diary reads); a framework fault or a schedule refused by name
+        (`utils.is_fatal_pricing_error`) is counted and stamped too, and raised, never swallowed. A
+        deal its own history ended (`utils.InstrumentExpired`) has expired: stamped, left out under
+        either switch and never counted, as one whose last date is behind the base date is left
+        out."""
         try:
             deal = deal.resolve_history(base_date, calendars, valuation_options or {})
             deal_time_dep = self.calc_time_dependency(base_date, deal, time_grid)
@@ -114,7 +116,7 @@ class DealStructure(object):
             factor_dep = utils.bind_schedules(deal.calc_dependencies(
                 base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                 calendars), unit)
-            stats['Deals loaded'] = stats.setdefault('Deals loaded', 0) + 1
+            shared.calc_stats['Deals loaded'] = shared.calc_stats.get('Deals loaded', 0) + 1
         except utils.InstrumentExpired as e:
             logging.warning('skipping expired deal {0}'.format(e))
             deal.unpriced_because = e
@@ -124,28 +126,19 @@ class DealStructure(object):
             logging.error('{0} {1} {2} - {3}'.format(
                 deal.field['Object'], deal.field.get('Reference'), e.args,
                 'Skipped' if exclude or fatal else 'kept at zero'))
-            stats['Deals Skipped'] = stats.setdefault('Deals Skipped', 0) + 1
+            shared.calc_stats['Deals Skipped'] = shared.calc_stats.get('Deals Skipped', 0) + 1
             deal.unpriced_because = e
             if fatal:
                 raise
             if exclude:
+                # counted above on every compile, as a recompiled book recounts it
+                utils.unpriced(shared, deal, e)
                 return
             deal_time_dep, factor_dep = utils.DealTimeDependencies(
                 time_grid.mtm_time_grid, np.arange(time_grid.mtm_time_grid.size)), None
         self.dependencies.append(utils.DealDataType(
             Instrument=deal, Factor_dep=factor_dep, Time_dep=deal_time_dep,
             Calc_res={} if self.store_results else None))
-
-    @staticmethod
-    def unpriced(shared, structure, error):
-        """A structure the run could not value, counted once under `Structs Skipped` however many
-        batches meet it."""
-        instrument = structure.obj.Instrument
-        unpriced = getattr(shared, 'unpriced', None)
-        if unpriced is not None and instrument not in unpriced:
-            unpriced.add(instrument)
-            instrument.unpriced_because = error
-            shared.calc_stats['Structs Skipped'] = shared.calc_stats.get('Structs Skipped', 0) + 1
 
     def structures(self):
         """Every structure beneath this one, depth first."""
@@ -194,7 +187,7 @@ class DealStructure(object):
                 # set's deals out of the report with it
                 if utils.is_fatal_pricing_error(e):
                     raise
-                self.unpriced(shared, struct, e)
+                utils.unpriced(shared, struct.obj.Instrument, e, 'Structs Skipped')
 
     def deals(self):
         """Every deal beneath this structure, sub-structures first - the order `report` lists
@@ -225,7 +218,8 @@ class DealStructure(object):
                     struct = structure.resolve_structure(shared, time_grid)
                     if (struct != struct).any():
                         logging.critical('Netting set contains NANS! Please Investigate! - skipping for now')
-                        self.unpriced(shared, structure, 'its value holds NaN')
+                        utils.unpriced(shared, structure.obj.Instrument, 'its value holds NaN',
+                                       'Structs Skipped')
                         continue
                     if structure.obj.Instrument.accum_dependencies and hasattr(shared, 'save_cashflows'):
                         shared.save_cashflows(structure.obj.Calc_res, time_grid)
@@ -260,7 +254,7 @@ class DealStructure(object):
                 # named refusal, and swallowing one leaves the structure marking at its accumulation
                 if utils.is_fatal_pricing_error(e):
                     raise
-                self.unpriced(shared, self, e)
+                utils.unpriced(shared, self.obj.Instrument, e, 'Structs Skipped')
             finally:
                 if mark is not None:
                     utils.BoundarySet.claim(shared, mark)
@@ -682,7 +676,7 @@ class Calculation(object):
 
             output.add_deal_to_structure(
                 self.base_date, instrument, self.static_factors, self.stoch_factors, self.all_factors,
-                self.all_tenors, self.time_grid, self.config.holidays, self.calc_stats, unit,
+                self.all_tenors, self.time_grid, self.config.holidays, self, unit,
                 valuation_options, exclude)
 
 
@@ -1611,7 +1605,8 @@ class CreditMonteCarlo(Calculation):
             raise utils.UnpriceableSchedule(
                 'Nothing in the book was valued ({}), so the run has nothing to report: {}'.format(
                     skipped, '; '.join(sorted('{} - {}'.format(x.field.get('Reference'), x.unpriced_because)
-                                              for x in self.unpriced))))
+                                              for x in self.unpriced)))) from utils.missing_among(
+                self.unpriced)
         for result, data in output.items():
             if result == 'scenarios':
                 def frame(values, index, scenarios, key=None):

@@ -351,9 +351,11 @@ class PlanCache(utils.LRUCache):
 
 
 def missing_factor(error):
-    """The price factor a run failed for want of (`utils.MissingFactor`), None where it failed
-    for anything else."""
-    return error.factor if isinstance(error, utils.MissingFactor) else None
+    """The price factor a run failed for want of: its own `utils.MissingFactor`, or the one the
+    refusal of a run that could not value a deal is raised from (`utils.missing_among`) - None
+    where it failed for anything else."""
+    cause = error if isinstance(error, utils.MissingFactor) else error.__cause__
+    return cause.factor if isinstance(cause, utils.MissingFactor) else None
 
 
 class ComputeExecutor:

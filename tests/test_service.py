@@ -6861,6 +6861,33 @@ def test_an_unknown_set_refuses_by_name_and_a_missing_survival_curve_lands_in_th
         service.BOOK = None
 
 
+def test_a_deal_its_compile_skips_names_itself_and_the_factor_it_wanted_in_its_set_s_row(
+        tmp_path, monkeypatch):
+    """A DEAL THE COMPILE SKIPS IS AMONG WHAT THE RUN COULD NOT VALUE, by name and cause. A set
+    whose only option names a vol surface the market lacks lands failed, its error naming the
+    option and `Cannot find` the surface, and `missing` the surface; a set holding that option
+    beside one the market prices lands failed for the skip, naming both the same way.
+
+    Killing mutations: the surface's lookup raising a bare `Exception`, which names no factor; the
+    compile guard leaving the skipped deal out of what the run could not value, which leaves the
+    lone option's refusal naming nothing and both rows no factor.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    unread = dict(VANILLA, Reference='OPT_V', Equity_Volatility='NOVOL')
+    xva_book(tmp_path, [netting_set('NS_V', 'CPTY_A', [unread]),
+                        netting_set('NS_P', 'CPTY_B', [dict(VANILLA, Reference='OPT_P'),
+                                                       dict(unread, Reference='OPT_PV')])])
+    try:
+        recalc()
+        rows = xva_rows()
+    finally:
+        service.BOOK = None
+    assert 'OPT_V - Cannot find EquityPriceVol.NOVOL' in rows['NS_V']['error'], rows['NS_V']
+    assert "OPT_PV ('Cannot find EquityPriceVol.NOVOL',)" in rows['NS_P']['error'], rows['NS_P']
+    assert [(rows[reference]['status'], rows[reference]['missing']['factor'])
+            for reference in ('NS_V', 'NS_P')] == [('failed', 'EquityPriceVol.NOVOL')] * 2
+
+
 def test_a_set_holds_what_its_terms_state_in_the_reporting_currency_the_base_at_one(
         tmp_path, monkeypatch):
     """WHAT A SET'S TERMS SAY IT HOLDS, read on every XVA row with nothing run: its
