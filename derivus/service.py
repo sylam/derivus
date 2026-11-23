@@ -4931,12 +4931,6 @@ def book_xva_profile(reference: str):
             'profile': row['profile']}
 
 
-#: What the bootstrap has to say for itself: `Config.bootstrap` reports a family that could not run
-#: or wrote nothing off its blocks at ERROR and carries on, so a market update captures that
-#: channel and refuses the write when anything landed on it - a book must never carry a market
-#: its own bootstrap complained about.
-CapturedErrors = utils.CapturedErrors
-
 #: What a tick cannot do without, in the one wording both market verbs refuse in.
 NO_BOOTSTRAPPER = ('the book declares no Bootstrapper Configuration - nothing can turn quotes '
                    'into price factors')
@@ -5039,12 +5033,9 @@ def market_edit(document, quotes, patch, bootstrap=None, authored=(), reading=Co
     context.patch_market(patch)
     only = bootstrap_selection(params, outcome, patch) if wants_bootstrap and not retire else None
     if wants_bootstrap:
-        captured = CapturedErrors()
-        logging.getLogger().addHandler(captured)
-        try:
+        # `Config.bootstrap` reports a family that could not run at ERROR and carries on
+        with utils.CapturedErrors() as captured:
             context.bootstrap(only)
-        finally:
-            logging.getLogger().removeHandler(captured)
         if captured.messages:
             return False, {'written': False, 'refused': captured.messages}
     written = as_json(params['Price Factors'])

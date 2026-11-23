@@ -4276,26 +4276,24 @@ class NettingSetCalculation(Calculation):
                                                  device=utils.calculation_device())
         calc.calc_stats = self.calc_stats
         calc.params = declared_defaults(ScenarioValuation, self.valuation)
-        heard = utils.CapturedErrors()
-        logging.getLogger().addHandler(heard)
         try:
-            self.config.params['Price Factors'] = dict(factors, **(over or {}))
-            self.shared = calc.update_factors(calc.params, self.valuation['Base_Date'])
-            calc.netting_sets = DealStructure(Aggregation('root'), store_results=True)
-            for agreement, node in self.trades:
-                try:
-                    calc.set_deal_structures([dict(agreement, Children=[node])], calc.netting_sets,
-                                             self.shared.one, deal_level_mtm=True)
-                except utils.UnpriceableSchedule:
-                    # a census names the trade and values the rest: its compile attached nothing
-                    # and stamped and counted the deal it refused
-                    continue
-            self.built = {deal.Instrument.resolved_from or deal.Instrument: deal for deal in itertools.chain(
-                calc.netting_sets.deals(), (structure.obj for structure in calc.netting_sets.structures()))}
-            self.results = [getattr(self.built.get(node['Instrument']), 'Calc_res', {}) for _, node in self.trades]
-            values = self.value([{}])[0]
+            with utils.CapturedErrors() as heard:
+                self.config.params['Price Factors'] = dict(factors, **(over or {}))
+                self.shared = calc.update_factors(calc.params, self.valuation['Base_Date'])
+                calc.netting_sets = DealStructure(Aggregation('root'), store_results=True)
+                for agreement, node in self.trades:
+                    try:
+                        calc.set_deal_structures([dict(agreement, Children=[node])], calc.netting_sets,
+                                                 self.shared.one, deal_level_mtm=True)
+                    except utils.UnpriceableSchedule:
+                        # a census names the trade and values the rest: its compile attached nothing
+                        # and stamped and counted the deal it refused
+                        continue
+                self.built = {deal.Instrument.resolved_from or deal.Instrument: deal for deal in itertools.chain(
+                    calc.netting_sets.deals(), (structure.obj for structure in calc.netting_sets.structures()))}
+                self.results = [getattr(self.built.get(node['Instrument']), 'Calc_res', {}) for _, node in self.trades]
+                values = self.value([{}])[0]
         finally:
-            logging.getLogger().removeHandler(heard)
             self.config.params['Price Factors'] = factors
         # the engine says so in so many words, wherever it skips a deal or a structure
         skipped = [(deal, said) for deal, said in heard.said if 'skipp' in said.lower()]

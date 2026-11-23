@@ -3085,6 +3085,7 @@ class CapturedErrors(logging.Handler):
     `/book/price` logging a CRITICAL inside a tick's window turned a good tick into
     `written: False` with a foreign run's message as the reason. `record.thread` against the
     constructing thread's ident is the whole filter, so single-threaded behaviour is byte-identical.
+    A `with` block holds it on the root logger for the block's span.
     """
 
     def __init__(self):
@@ -3100,17 +3101,20 @@ class CapturedErrors(logging.Handler):
         if record.thread == self.thread:
             self.said.append((record.name, record.getMessage()))
 
+    def __enter__(self):
+        logging.getLogger().addHandler(self)
+        return self
+
+    def __exit__(self, *raised):
+        logging.getLogger().removeHandler(self)
+
 
 def run_whole(run_job):
     """`run_job()`'s answer, or a refusal naming what the run skipped: a run whose `Stats` count
     anything under a name ending `Skipped` priced part of its book, and a part is never answered
     as the book. The refusal carries the counts and what the run said at ERROR on this thread."""
-    captured = CapturedErrors()
-    logging.getLogger().addHandler(captured)
-    try:
+    with CapturedErrors() as captured:
         answer = run_job()
-    finally:
-        logging.getLogger().removeHandler(captured)
     skipped = ', '.join('{} {}'.format(count, name) for name, count in sorted(
         answer[1].get('Stats', {}).items()) if name.endswith('Skipped'))
     if skipped:
