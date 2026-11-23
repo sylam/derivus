@@ -248,7 +248,7 @@ export function CurvesView() {
       ...[...counterparties.filter((row) => !row.factor), ...counterparties.filter((row) => row.factor)]
         .map(({ id, factor, title }) => ({
           id: CREDIT + id, folder: factor ? 'credit curves' : 'no credit curve yet', label: title,
-          content: <CreditCard {...credit} id={id} title={title} factor={factor} />,
+          content: <CreditCard {...credit} id={id} title={title} />,
         })),
       { id: CREDIT, label: 'a credit curve for another counterparty', accent: true,
         content: <CreditCard {...credit} title="another counterparty" /> },

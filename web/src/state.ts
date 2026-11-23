@@ -15,7 +15,7 @@ import { pinnedAt, readRecord, reconciledRecord, type RecordHeld } from './spine
 import { isObject } from './tokens';
 import { readOn, recordKey, tradeAt, type RecordRows } from './trade';
 import type {
-  ActivityPage, BookMarket, BookResponse, BookRisk, BookXva, DescribeResult, JobDoc,
+  ActivityPage, BookMarket, BookResponse, BookRisk, BookXva, DescribeResult, HeldSpreads, JobDoc,
   Market, PathsAnswer, QuoteGiven, Reconcile, RefusalCode, ResultSummary, Schema, SeatGrants,
   SpineBlock, Standing, TablePage, ValidateResult, Worklist,
 } from './types';
@@ -255,10 +255,12 @@ export function reducer(state: AppState, action: Action): AppState {
       };
     // no market is the service saying the one held is still current: its etag and stamp move
     case 'MARKET_LOADED': {
-      const market = action.market.market ?? state.market.data?.market ?? null;
+      const { market, spreads } = action.market.market ? action.market
+        : state.market.data ?? action.market;
       return {
         ...state,
-        market: { data: { ...action.market, market }, error: null, status: null, loading: false },
+        market: { data: { ...action.market, market, spreads }, error: null, status: null,
+                  loading: false },
       };
     }
     case 'MARKET_FAILED':
@@ -414,6 +416,11 @@ export function marketOf(state: AppState): Market | null {
   if (state.source?.kind === 'book') return state.market.data?.market ?? null;
   return state.doc?.Calc.MergeMarketData?.ExplicitMarketData ?? {};
 }
+
+/** The credit curve `factor` of the live book's market as `GET /book/market` reads it back to
+ * spreads; undefined where it holds none and off the live book. */
+export const heldSpreads = (state: AppState, factor: string): HeldSpreads | undefined =>
+  (state.source?.kind === 'book' ? state.market.data?.spreads?.[factor] : undefined);
 
 /** Whether `record` holds a key at every step of `path` - a section, an entry and any key below
  * it. Asked of the document's explicit block, it is what makes an entry the block's. */

@@ -11,10 +11,10 @@
 import { MARKED, levelOnAxis, rowsByPath, toRows } from './blotter';
 import { clientName, positionName, under, type Entity, type Position } from './positions';
 import {
-  axisText, curveOf, formatNumber, isObject, label, tenorLabel, token, ungrouped,
+  axisText, formatNumber, isObject, label, tenorLabel, token, ungrouped,
 } from './tokens';
 import type {
-  BookRisk, BookXva, DealMark, Descriptor, GreekRow, JobDoc, Market, RefusalCode,
+  BookRisk, BookXva, DealMark, Descriptor, GreekRow, HeldSpreads, JobDoc, Market, RefusalCode,
   Schema, XvaSet,
 } from './types';
 import { axisNames } from './vols';
@@ -306,30 +306,9 @@ export function onPair(row: GreekRow, market: Market | null): GreekRow & { pair?
 /** The price-factor family a counterparty's credit curve is filed under, `SurvivalProb.<id>`. */
 export const SURVIVAL = 'SurvivalProb';
 
-/** A credit curve as the spreads a credit officer types, with the survival to each tenor: `-ln S(t)`
- * over `t` is the average hazard to each tenor, and the spread is that hazard times one less the
- * recovery. The knot at nought states no hazard, and a last knot at the spread before it only runs
- * that spread on: both are left off. */
-export function spreads(curve: number[][], recovery: number): [number, number, number][] {
-  const read = curve.filter(([tenor]) => tenor > 0).map(([tenor, hazard]): [number, number, number] =>
-    [tenor, (hazard / tenor) * (1 - recovery), Math.exp(-hazard)]);
-  const [before, last] = read.slice(-2);
-  return last && Math.abs(last[1] - before[1]) <= RECONCILE_TOLERANCE * Math.abs(before[1])
-    ? read.slice(0, -1) : read;
-}
-
-/** The recovery a credit curve `factor` states, else its field's declared default. */
-export const recoveryOf = (factor: unknown, schema: Schema | null): number =>
-  Number(token(factor, 'Recovery_Rate') ?? schema?.Factor.types[SURVIVAL]?.Recovery_Rate?.value);
-
-/** A credit curve `factor` as the book holds it, read back as its `spreads` at its recovery
- * (`recoveryOf`); undefined where it holds no curve. */
-export function heldSpreads(factor: unknown, schema: Schema | null):
-  { recovery: number; rows: [number, number, number][] } | undefined {
-  const curve = curveOf(token(factor, 'Curve'));
-  const recovery = recoveryOf(factor, schema);
-  return curve && { recovery, rows: spreads(curve.data, recovery) };
-}
+/** The recovery a credit curve is written at where none is stated, its field's declared default. */
+export const recoveryConvention = (schema: Schema | null): number =>
+  Number(schema?.Factor.types[SURVIVAL]?.Recovery_Rate?.value);
 
 /** A credit curve as the officer types it: the recovery, and one flat spread - the first row's - or
  * a spread in basis points per tenor. */
@@ -356,12 +335,12 @@ export function spreadRequest(counterparty: string, form: SpreadForm): SpreadReq
   };
 }
 
-/** The form a counterparty's curve opens in: the factor's spreads read back (`heldSpreads`) - one
- * alone a flat spread - else one blank row, at its recovery. */
-export function spreadForm(factor: unknown, schema: Schema | null): SpreadForm {
-  const rows = (heldSpreads(factor, schema)?.rows ?? []).map(([tenor, spread]) => ({
-    tenor: tenorLabel(tenor), spread: String(+(spread * 1e4).toPrecision(12)) }));
-  return { recovery: String(recoveryOf(factor, schema)), flat: rows.length < 2,
+/** The form a counterparty's curve opens in: the spreads the book holds (`HeldSpreads`) at their
+ * recovery - one alone a flat spread - else one blank row at the convention's. */
+export function spreadForm(held: HeldSpreads | undefined, schema: Schema | null): SpreadForm {
+  const rows = (held?.rows ?? []).map(([tenor, spread]) => ({
+    tenor: tenorLabel(tenor), spread: String(+spread.toPrecision(12)) }));
+  return { recovery: String(held?.recovery ?? recoveryConvention(schema)), flat: rows.length < 2,
            rows: rows.length ? rows : [{ tenor: '', spread: '' }] };
 }
 
@@ -506,10 +485,6 @@ export function readingExport(rows: GreekRow[], schema: Schema | null, market: M
     ...reading.units.map((row) =>
       [row.factor, placeText(row, schema), undefined, riskOf(row), perOf(row), currency])];
 }
-
-/** Relative, because one number reached by two roads - the same rows summed in a different order -
- * differs in its last bits. */
-const RECONCILE_TOLERANCE = 1e-9;
 
 /** What stands under the service's refusal to price the book's risk (its `code` `unpriced`): that
  * nothing was served, and who puts it right - the desk on its own book, its sender on a document

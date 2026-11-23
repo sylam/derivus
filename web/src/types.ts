@@ -213,10 +213,17 @@ export type JobDoc = {
   };
 };
 
+/** A credit curve read back as the spreads `POST /book/survival` takes: the recovery it is read at,
+ * and per tenor in years the spread in basis points and the survival to it. */
+export type HeldSpreads = { recovery: number; rows: [number, number, number][] };
+
 /** `GET /book/market`: the market the book prices on - the file it names with its explicit block
- * merged over it - the etag of the document it was read off, and the stamp the market is named by.
- * `market` is null where the stamp asked with is that one: the market held is still current. */
-export type BookMarket = { etag: string; stamp: string; market: Market | null };
+ * merged over it - with each credit curve in it as `HeldSpreads` by factor, the etag of the
+ * document it was read off, and the stamp the market is named by. `market` and `spreads` are null
+ * where the stamp asked with is that one: the market held is still current. */
+export type BookMarket = {
+  etag: string; stamp: string; market: Market | null; spreads: Record<string, HeldSpreads> | null;
+};
 
 export type TableShape = { rows: number; columns: unknown[] };
 

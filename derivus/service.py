@@ -5180,6 +5180,15 @@ def marking(request, attempted):
 #: credit Monte Carlo reads no default past a curve's last knot.
 SURVIVAL_HORIZON = 50.0
 
+#: The recovery a survival curve is written and read at where none is stated, its declared default.
+RECOVERY = declared_fields(riskfactors.SurvivalProb)['Recovery_Rate'].default
+
+
+def run_on(knot):
+    """The knot at `SURVIVAL_HORIZON` on the line from nought through `knot`: a written curve's
+    last hazard run on."""
+    return [SURVIVAL_HORIZON, knot[1] / knot[0] * SURVIVAL_HORIZON]
+
 
 @app.post('/book/survival', summary="Write a counterparty's survival curve from its credit spread")
 def book_survival(request: dict):
@@ -5189,8 +5198,9 @@ def book_survival(request: dict):
     unstated.
     Each spread is a hazard s/(1-R), so the curve - minus the log of survival, ACT/365, linear - is
     [[0, 0], [T, sT/(1-R)]] per row, T its tenor and a year for a flat spread, and runs on the last
-    row's line to `SURVIVAL_HORIZON`, which the answer names as `horizon`: a flat spread is a flat
-    hazard to fifty years. Nothing here looks a spread up.
+    row's line to `SURVIVAL_HORIZON` (`run_on`), which the answer names as `horizon`: a flat spread
+    is a flat hazard to fifty years. Nothing here looks a spread up; `survival_spreads` reads a
+    curve back.
 
     Under a home the seat holds `mark` over the book (`marking`) and the counterparty is an entity
     the record declares. A counterparty that names nobody or no declared entity, a spread that is
@@ -5198,9 +5208,8 @@ def book_survival(request: dict):
     sentence of their own, the first three opening with the field they are about and what it
     stated, which is their `code`. One atomic write, as every market verb.
     """
-    convention = declared_fields(riskfactors.SurvivalProb)['Recovery_Rate'].default
     live, counterparty, recovery = live_book(), request.get('counterparty'), request.get(
-        'recovery', convention)
+        'recovery', RECOVERY)
     spread = request.get('spread')
     rows = spread if isinstance(spread, list) else [{'tenor': '1Y', 'spread': spread}]
     marking(request, 'survival_curve')
@@ -5221,7 +5230,7 @@ def book_survival(request: dict):
                                spread), 'spread')
     if not (type(recovery) in (int, float) and 0.0 <= recovery < 1.0):
         raise Refusal(422, 'recovery {!r} is outside [0, 1): it is the share of a claim recovered '
-                           'on default, {} by convention'.format(recovery, convention), 'recovery')
+                           'on default, {} by convention'.format(recovery, RECOVERY), 'recovery')
 
     def edit(document, etag):
         base = pd.Timestamp(spine.base_day(document))
@@ -5233,7 +5242,7 @@ def book_survival(request: dict):
             raise ValueError('the tenors {} do not rise - a term structure is one spread per '
                              'tenor, shortest first'.format([row['tenor'] for row in rows]))
         if points[-1][0] < SURVIVAL_HORIZON:
-            points.append([SURVIVAL_HORIZON, points[-1][1] / points[-1][0] * SURVIVAL_HORIZON])
+            points.append(run_on(points[-1]))
         factor = 'SurvivalProb.' + counterparty
         document['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault(
             'Price Factors', {})[factor] = as_json(
@@ -5243,6 +5252,24 @@ def book_survival(request: dict):
 
     with refusals():
         return live.mutate(edit)
+
+
+def survival_spreads(factors):
+    """`{factor: {recovery, rows}}` - each `SurvivalProb` curve among the wire `factors` read back
+    as the spreads `book_survival` writes it from: the recovery it states, else `RECOVERY`, and
+    per knot past nought `[tenor, spread, survival]`, the spread in basis points of the average
+    hazard H/T times 1 - R and the survival exp(-H). A last knot its `run_on` is left off."""
+    read = {}
+    for name, factor in factors.items():
+        if name.partition('.')[0] == 'SurvivalProb':
+            recovery = factor.get('Recovery_Rate', RECOVERY)
+            knots = [knot for knot in factor['Curve']['.Curve']['data'] if knot[0] > 0.0]
+            if len(knots) > 1 and knots[-1] == run_on(knots[-2]):
+                knots.pop()
+            read[name] = {'recovery': recovery, 'rows': [
+                [tenor, hazard / tenor * (1.0 - recovery) * 1e4, math.exp(-hazard)]
+                for tenor, hazard in knots]}
+    return read
 
 
 def bootstrapper_entry(document, entry, fields):
@@ -5895,13 +5922,15 @@ def status_of(document, etag):
 def book_market_view(stamp: str = None):
     """The market data the live book PRICES on, in wire form: the sections of the market data file
     it names with its explicit block merged over them (`market_of`), `Correlations` aside - what
-    every reader here answers a market question off, where `GET /book` serves the document. `stamp`
-    is the `market_stamp` of what it is read from; a client naming the current one is answered no
-    market, and none is built."""
+    every reader here answers a market question off, where `GET /book` serves the document - and
+    each credit curve in it read back as spreads (`survival_spreads`). `stamp` is the
+    `market_stamp` of what it is read from; a client naming the current one is answered no market
+    and no spreads, and none is built."""
     document, etag = live_book().read()
     current = market_stamp(document)
-    return JSONResponse({'etag': etag, 'stamp': current,
-                         'market': None if stamp == current else market_of(document, stamp=current)})
+    market = None if stamp == current else market_of(document, stamp=current)
+    return JSONResponse({'etag': etag, 'stamp': current, 'market': market,
+                         'spreads': market and survival_spreads(market['Price Factors'])})
 
 
 @app.post('/book/date', summary="Set the book's calculation date - curves re-rolled, re-solved")

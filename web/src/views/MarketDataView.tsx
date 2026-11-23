@@ -3,9 +3,11 @@ import { HeldCurve } from '../components/CreditCard';
 import { DescriptorPanel, type AmendField } from '../components/FieldView';
 import { Navigator } from '../components/Navigator';
 import { Whose } from '../components/Whose';
-import { SURVIVAL, factorFamily, fileName, spotQuoted, stampText } from '../desk';
+import { factorFamily, fileName, spotQuoted, stampText } from '../desk';
 import { marketsView } from '../spine';
-import { blockHint, heldBack, marketOf, spineOf, useApp, useRead, written } from '../state';
+import {
+  blockHint, heldBack, heldSpreads, marketOf, spineOf, useApp, useRead, written,
+} from '../state';
 import { curveOf, formatNumber, isObject } from '../tokens';
 import type { Market, Schema } from '../types';
 
@@ -31,7 +33,7 @@ function FactorBlock({ schema, name, block, priceModels, process, live, market }
         title={name} fields={fields} values={block} onAmend={onPatch}
         editable={(_, descriptor) => descriptor.bind === 'value'}
         beside={(key) => fields?.[key]?.bind === 'value'
-          && <ReadAs name={name} value={block[key]} block={block} market={market} />} />
+          && <ReadAs name={name} value={block[key]} market={market} />} />
       <ProcessPanel schema={schema} factorName={name} process={process}
                     priceModels={priceModels} />
       {(schema.Interpolation_factor_map[type] ?? []).length > 0 && (
@@ -159,9 +161,8 @@ function RecordMarkets() {
 
 /** A factor's value as a desk reads it, beside the box holding it as the engine does: an FX spot
  * on its pair as the market quotes it, a credit curve as the spreads a credit officer typed. */
-function ReadAs({ name, value, block, market }: {
-  name: string; value: unknown; block: Record<string, unknown>; market: Market;
-}) {
+function ReadAs({ name, value, market }: { name: string; value: unknown; market: Market }) {
+  const held = heldSpreads(useApp().state, name);
   const spot = typeof value === 'number' ? spotQuoted(name, value, market) : undefined;
   if (spot) {
     return (
@@ -172,12 +173,11 @@ function ReadAs({ name, value, block, market }: {
       </span>
     );
   }
-  if (factorFamily(name) !== SURVIVAL || !curveOf(value)) return null;
+  if (!held || !curveOf(value)) return null;
   return (
     <div className="readas">
-      <div>the curve is the cumulative hazard; as the spreads a credit officer types, each its
-        average hazard to the tenor times one less the recovery:</div>
-      <HeldCurve factor={block} />
+      <div>the curve is the cumulative hazard; as the spreads a credit officer types:</div>
+      <HeldCurve held={held} />
     </div>
   );
 }

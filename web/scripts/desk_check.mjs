@@ -399,53 +399,33 @@ check('the desk reading exports as one table: every spot on its pair at its leve
        ['FXVol.EUR.USD.rho', '0.4Y', null, 17851.2, 'per unit', 'USD'],
        ['EquityPrice.NOLEVEL', '', null, 42, 'per unit', 'USD']]);
 
-// --- a credit curve stated as spreads and read back as them. `POST /book/survival`'s own answers
-// on a book valued 2026-11-16: 1Y/3Y/5Y at 100/150/200bp and a recovery of 0.35, and flat 21bp
-// and 120bp at the convention's 0.4, each run on to fifty years
-const BASE = '2026-11-16';
-const ROUTE_ROWS = [[0, 0], [1, 0.015384615384615384], [3.0027397260273974, 0.06929399367755532],
-                    [5.002739726027397, 0.15393045310853531], [50, 1.5384615384615385]];
-const ROUTE_21 = [[0, 0], [1, 0.0035], [50, 0.17500000000000002]];
-const ROUTE_120 = [[0, 0], [1, 0.02], [50, 1.0]];
-const LAB = [[0, 0], [1, 0.03833333333333334], [3.0027397260273974, 0.13512328767123288],
-             [5.002739726027397, 0.2501369863013699], [50, 2.5]];
-const readBack = (curve, recovery) => desk.spreads(curve, recovery).map(([tenor, spread, survival]) =>
-  [Number(tenor.toFixed(4)), Number((spread * 1e4).toFixed(6)), Number(survival.toFixed(6))]);
-check('a credit curve reads as the spreads typed, each with the survival to its tenor',
-      'the average hazard shown as the spread, 383bp where 230bp was typed; the cumulative -ln S '
-      + 'taken for the hazard, which reads the 5Y at 1,501bp; the knot at nought divided by '
-      + 'nought; the knot the curve runs on to read as a 50Y nobody typed; that knot left only '
-      + 'where it equals the spread before it to the last bit, which reads a flat 21bp back as a '
-      + '1Y and a 50Y; or the survival read as exp of the spread',
-      [readBack(LAB, 0.4), readBack(ROUTE_21, 0.4)],
-      [[[1, 230, 0.962392], [3.0027, 270, 0.873608], [5.0027, 300, 0.778694]],
-       [[1, 21, 0.996506]]]);
+// --- a credit curve stated as spreads, and the form a restatement opens in. `GET /book/market`'s
+// read-back of `POST /book/survival`'s curves on a book valued 2026-11-16: 1Y/3Y/5Y at 100/150/200bp
+// and a recovery of 0.35, and flat 120bp at the convention's 0.4
+const SERVED_ROWS = { recovery: 0.35, rows: [[1, 100.0, 0.9847331232494916],
+  [3.0027397260273974, 150.0, 0.9330523282659905], [5.002739726027397, 200.0, 0.8573316436889203]] };
+const SERVED_120 = { recovery: 0.4, rows: [[1, 120.0, 0.9801986733067553]] };
 const TERM = { recovery: '0.35', flat: false, rows: [
   { tenor: '1Y', spread: '100' }, { tenor: ' 3Y', spread: '150' }, { tenor: '', spread: '' },
   { tenor: '5Y', spread: '200' }] };
 const FLAT = { recovery: '0.4', flat: true, rows: [{ tenor: '2Y', spread: '120' },
                                                   { tenor: '5Y', spread: '300' }] };
-const factor = (curve, recovery) => ({ Recovery_Rate: recovery, Curve: { '.Curve': {
-  meta: [], data: curve } } });
-// the survival curve's declaration, as far as a read-back turns on it
+// the survival curve's declaration, as far as a blank form turns on it
 const CREDIT = { Factor: { types: { SurvivalProb: { Recovery_Rate: { value: 0.4 } } } } };
-check('a curve the service wrote reads back as the spreads typed, and the form a restatement opens '
-      + 'in posts them again: a row nothing is typed on, a grouped or a mistyped number each sent '
-      + 'as what it reads as',
-      'a spread read in percent, or the recovery left out of the read-back; a row nothing is '
-      + 'typed on posted; a flat spread posted as a row, or restated as two; a grouped or a '
-      + "mistyped number sent as anything but what it reads as; or a curve restated at the "
-      + "declared recovery rather than its own",
-      [desk.spreadRequest(' MARRICK ', TERM),
-       readBack(ROUTE_ROWS, 0.35).map(([, spread]) => spread),
-       desk.spreadForm(factor(ROUTE_ROWS, 0.35), CREDIT),
+check('the form a restatement opens in posts the spreads the service read back again: a row '
+      + 'nothing is typed on, a grouped or a mistyped number each sent as what it reads as, and a '
+      + "blank form at the recovery's declared default",
+      'a spread scaled from what was served, or a tenor shown as its years; a row nothing is typed '
+      + 'on posted; a flat spread posted as a row, or restated as two; a grouped or a mistyped '
+      + 'number sent as anything but what it reads as; or a curve restated at the declared recovery '
+      + 'rather than its own',
+      [desk.spreadRequest(' MARRICK ', TERM), desk.spreadForm(SERVED_ROWS, CREDIT),
        desk.spreadRequest('ALDERBY-AM', FLAT),
-       desk.spreadForm(factor(ROUTE_120, 0.4), CREDIT), desk.spreadForm(undefined, CREDIT),
+       desk.spreadForm(SERVED_120, CREDIT), desk.spreadForm(undefined, CREDIT),
        desk.spreadRequest('X', { recovery: 'forty', flat: false, rows: [
          { tenor: '1Y', spread: '1,250' }, { tenor: '2Y', spread: '2,5' }] })],
       [{ counterparty: 'MARRICK', recovery: 0.35, spread: [
         { tenor: '1Y', spread: 100 }, { tenor: '3Y', spread: 150 }, { tenor: '5Y', spread: 200 }] },
-       [100, 150, 200],
        { recovery: '0.35', flat: false, rows: [{ tenor: '1Y', spread: '100' },
          { tenor: '3Y', spread: '150' }, { tenor: '5Y', spread: '200' }] },
        { counterparty: 'ALDERBY-AM', recovery: 0.4, spread: 120 },
@@ -453,15 +433,20 @@ check('a curve the service wrote reads back as the spreads typed, and the form a
        { recovery: '0.4', flat: true, rows: [{ tenor: '', spread: '' }] },
        { counterparty: 'X', recovery: 'forty', spread: [{ tenor: '1Y', spread: 1250 },
          { tenor: '2Y', spread: '2,5' }] }]);
-check("a curve read back stating no recovery reads at its field's declared default, and one "
-      + 'holding no curve reads nothing',
-      'the recovery read off the factor alone, which reads every spread NaN where the factor '
-      + 'leaves it to its default; or a factor with no curve read as an empty one',
-      [desk.heldSpreads({ Curve: factor(ROUTE_120).Curve }, CREDIT)?.recovery,
-       desk.heldSpreads({ Curve: factor(ROUTE_120).Curve }, CREDIT)?.rows.map(([tenor, spread]) =>
-         [tenor, Number((spread * 1e4).toFixed(6))]),
-       desk.heldSpreads({ Recovery_Rate: 0.35 }, CREDIT)],
-      [0.4, [[1, 120]], undefined]);
+const served = (market, spreads) => ({ type: 'MARKET_LOADED', market: { etag: market ? 'e1' : 'e2',
+                                        stamp: market ? 's1' : 's2', market, spreads } });
+const marketed = state.reducer(state.reducer(state.INITIAL, book('e1')), served(
+  { 'Price Factors': {} }, { 'SurvivalProb.KESTREL': SERVED_120 }));
+check("the spreads served with a market stand while the service answers no market, the one held "
+      + 'being current, and none is read off the live book',
+      'the spreads taken from an answer with no market, which empties every credit curve on screen '
+      + "at each poll the market has not moved in; or a document opened from a file read with the "
+      + "live book's spreads",
+      [state.heldSpreads(state.reducer(marketed, served(null, null)), 'SurvivalProb.KESTREL'),
+       state.heldSpreads(state.reducer(marketed, served(null, null)), 'SurvivalProb.MARRICK'),
+       state.heldSpreads({ ...marketed, source: { kind: 'local', name: 'job.json', note: null } },
+                         'SurvivalProb.KESTREL')],
+      [SERVED_120, undefined, undefined]);
 const ASKED = desk.spreadRequest('KESTREL', FLAT);
 check("a refusal of a credit curve reads beside the box of the request field its code names, any "
       + 'other - the tenors, a seat without the grant, none named - by the write',

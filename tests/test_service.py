@@ -7183,6 +7183,47 @@ def test_a_written_survival_curve_names_the_horizon_it_runs_on_to(book, monkeypa
         'curve': curve([0.0, 0.0], [ten, 0.01 * ten / 0.6], [sixty, 0.012 * sixty / 0.6])}
 
 
+def test_a_credit_curve_reads_back_on_the_market_as_the_spreads_it_was_written_from(
+        book, monkeypatch):
+    """`GET /book/market` serves each credit curve read back as the spreads `POST /book/survival`
+    takes. 150bp flat at the convention's 40% reads back as 150bp at a year surviving
+    exp(-0.015/0.6); 100, 150 and 200bp at 1Y, 3Y and 5Y at 35% as those three at 1, 1,095/365
+    and 1,826/365 years, each surviving exp(-sT/0.65); neither shows the knot it runs on to at
+    fifty years. A curve stating no recovery reads at the convention, and one whose last knot is
+    no run-on keeps it: 0.02 at a year and 0.2 at ten read 120bp at both.
+
+    Killing mutations: the run-on knot kept, which reads a flat 150bp back as a 1Y and a 50Y; a
+    last knot dropped wherever its spread is the one before it, which ends the ten-year curve at a
+    year.
+    """
+    monkeypatch.delenv('DV_SPINE_HOME', raising=False)
+
+    def spreads(counterparty, spread, **body):
+        CLIENT.post('/book/survival', content=dump(dict(body, counterparty=counterparty,
+                                                         spread=spread)), headers=JSON)
+        return CLIENT.get('/book/market').json()['spreads']['SurvivalProb.' + counterparty]
+
+    def rows(recovery, *typed):
+        return {'recovery': recovery, 'rows': [
+            [pytest.approx(tenor, rel=1e-12), pytest.approx(spread, rel=1e-12),
+             pytest.approx(np.exp(-spread / 1e4 * tenor / (1.0 - recovery)), rel=1e-12)]
+            for tenor, spread in typed]}
+
+    three, five = ((BASE + pd.DateOffset(years=years) - BASE).days / 365.0 for years in (3, 5))
+    assert spreads('CPTY_A', 150.0) == rows(0.4, (1.0, 150.0))
+    assert spreads('CPTY_B', [{'tenor': '1Y', 'spread': 100.0}, {'tenor': '3Y', 'spread': 150.0},
+                              {'tenor': '5Y', 'spread': 200.0}], recovery=0.35) == rows(
+        0.35, (1.0, 100.0), (three, 150.0), (five, 200.0))
+
+    document = json.loads(book.read_text())
+    document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'][
+        'SurvivalProb.CPTY_C'] = json.loads(dump({'Curve': utils.Curve(
+            [], [[0.0, 0.0], [1.0, 0.02], [10.0, 0.2]])}))
+    book.write_text(json.dumps(document, indent=2), newline='\n')
+    assert CLIENT.get('/book/market').json()['spreads']['SurvivalProb.CPTY_C'] == rows(
+        0.4, (1.0, 120.0), (10.0, 120.0))
+
+
 #: Every verb that writes market data or its set-up, a body it would act on, and the act its denial
 #: names. The terminal verbs' bodies refuse on their own past the seat, so none can ever queue.
 MARKET_WRITES = (
@@ -9220,7 +9261,7 @@ def test_the_market_read_is_kept_by_what_it_is_read_from(file_book):
     assert len(service.BOOK.markets.entries) == 1
     stamp = answer['stamp']
     held = CLIENT.get('/book/market', params={'stamp': stamp}).json()
-    assert held == {'etag': answer['etag'], 'stamp': stamp, 'market': None}
+    assert held == {'etag': answer['etag'], 'stamp': stamp, 'market': None, 'spreads': None}
 
     amended = CLIENT.post('/book/deals', json={'action': 'amend', 'deal_path': '0',
                                                'fields': {'Amount': 2e6}}).json()

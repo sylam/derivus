@@ -9,11 +9,11 @@ import {
 import { EmptyState } from '../components/EmptyState';
 import { TimeSeriesChart } from '../components/TimeSeriesChart';
 import {
-  OPEN_FILE, PLUS, SURVIVAL, ageOf, reportCurrency, entityText, heldSpreads, lagsBook, offBook,
+  OPEN_FILE, PLUS, SURVIVAL, ageOf, reportCurrency, entityText, lagsBook, offBook,
   peaks, plural, replayRows, stampText, tableReading, valuationDay, xvaTotals, type Peak,
 } from '../desk';
 import {
-  bookRisk, clockOf, marketOf, nothingWrong, spineOf, unread, useApp, useRead,
+  bookRisk, clockOf, heldSpreads, marketOf, nothingWrong, spineOf, unread, useApp, useRead,
 } from '../state';
 import { formatNumber, tenorLabel } from '../tokens';
 import { Amount, LimitLine, Money, OnStrip } from '../components/Desk';
@@ -150,7 +150,7 @@ type Reads = {
  * Null until the projection, the book and the paper are read. */
 export function useCredit() {
   const { state } = useApp();
-  const { xva, doc, schema } = state;
+  const { xva, doc } = state;
   const recording = state.record.spine !== null;
   const risk = bookRisk(state);
   // a collateral call is read on the book's day marked: what is missing is known before asking
@@ -159,11 +159,10 @@ export function useCredit() {
   const collateral = useRead(spine && !close ? getBookCollateral : null,
                              [clockOf(state), state.seat, close?.title]);
   const paper = recording ? state.paper.data : null;
-  if (!xva.data || !doc || !schema || (recording && !paper)) return null;
+  if (!xva.data || !doc || (recording && !paper)) return null;
 
   const view = xva.data;
   const currency = risk.data?.currency ?? reportCurrency(doc);
-  const factors = marketOf(state)?.['Price Factors'] ?? {};
   const rows = rowsByPath(toRows(doc.Calc.Deals.Deals.Children, [], undefined));
   const client = (id: string): Client => {
     const agreements = agreementsOf(id, paper?.agreements ?? null, rows, view.sets);
@@ -173,7 +172,7 @@ export function useCredit() {
         : view.sets.flatMap((set) => (set.held ? [{ ...set.held, agreement: set.reference }] : [])),
     });
     const own = lines.filter((line) => !line.run?.note);
-    const [first] = heldSpreads(factors[`${SURVIVAL}.${id}`], schema)?.rows ?? [];
+    const [first] = heldSpreads(state, `${SURVIVAL}.${id}`)?.rows ?? [];
     return {
       id, name: entityText(paper?.entities ?? null, id), lines, wrong: wrongWith(lines),
       spread: first && [first[0], first[1]], value: summed(own.map((line) => line.value)),
@@ -257,7 +256,7 @@ function ClientRows({ client, reads, opened, onOpen }: {
           </button>
           {one && <div className="hint mono">{one.reference}</div>}
         </td>
-        <td className="n">{spread ? <>{formatNumber(spread[1] * 1e4, 'whole')}
+        <td className="n">{spread ? <>{formatNumber(spread[1], 'whole')}
           <div className="hint">{tenorLabel(spread[0])}</div></> : <span className="hint">no curve</span>}</td>
         {one ? <LineCells line={one} reads={reads} /> : (
           <>

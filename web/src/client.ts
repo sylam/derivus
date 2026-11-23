@@ -356,7 +356,7 @@ export function creditExport(
       'Limit ccy'],
     ...clients.flatMap(({ name, spread, lines, limit }) => (lines.length ? lines : [undefined]).map((line) => {
       const held = line?.collateralised && typeof line.call?.balance === 'number' ? line.call : null;
-      return [name, line?.reference, spread && spread[1] * 1e4, spread && tenorLabel(spread[0]),
+      return [name, line?.reference, spread && spread[1], spread && tenorLabel(spread[0]),
         line && paperText(line), line?.trades, line?.pending, line?.value,
         line && exposureAfter(line, currency), line && currency, held?.balance, held?.call,
         held?.currency, ...peak(kept(line).ee),

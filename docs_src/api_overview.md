@@ -544,13 +544,18 @@ the base currency and date, the factors, the quotes, the configuration - off the
 with the explicit block merged over them, and a verb that writes the market writes into the block
 what it moved, the factors a patch states and the ones its bootstrap changed, and never a factor of
 the file's that stood still. `GET /book/market` answers that market itself, which the web client's
-market screens show, an entry the document's own block states marked as the block's.
+market screens show, an entry the document's own block states marked as the block's, and under
+`spreads` each `SurvivalProb` curve read back as the spreads `POST /book/survival` writes it from:
+`{recovery, rows: [[tenor, spread, survival]]}`, the tenor in years, the spread in basis points
+of the average hazard to it times one less the recovery, and the knot a written curve runs on to
+at fifty years left off. **Held by**
+`tests/test_service.py::test_a_credit_curve_reads_back_on_the_market_as_the_spreads_it_was_written_from`.
 `POST /book/market` with `retire: [[section, key, ...]]` deletes such an entry by its path, so the
 file's stands again, and re-bootstraps the market; the system date retired moves the calculation's
 date back with it, as `POST /book/date` does. The answer carries the `stamp` of what the market is
 read from - the document less its deals, the files it names by content, the day - and
-`GET /book/market?stamp=` naming the current one answers `market: null`, so a client polling it
-re-reads the market only where the stamp moved.
+`GET /book/market?stamp=` naming the current one answers `market` and `spreads` null, so a client
+polling it re-reads the market only where the stamp moved.
 
 **A document from another system.** `POST /book/open` `{name, document}` files a job document
 another system wrote in `DV_HOME/inbox/` under the base name of `name` and serves that copy as the

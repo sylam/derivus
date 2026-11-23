@@ -3,10 +3,11 @@
 import { useEffect, useState } from 'react';
 import { failure, stateSurvival } from '../api';
 import {
-  SURVIVAL, heldSpreads, recoveryOf, refusedAt, spreadForm, spreadRequest, type SpreadForm,
+  SURVIVAL, recoveryConvention, refusedAt, spreadForm, spreadRequest, type SpreadForm,
 } from '../desk';
-import { actingSeat, heldBack, useApp, written } from '../state';
+import { actingSeat, heldBack, heldSpreads, useApp, written } from '../state';
 import { formatNumber, tenorLabel } from '../tokens';
+import type { HeldSpreads } from '../types';
 import { Gated } from './Desk';
 import { Whose } from './Whose';
 
@@ -20,9 +21,8 @@ const HOLDS = {
 };
 
 /** A counterparty's credit curve as the book holds it (`heldSpreads`): the recovery it is read at,
- * and each tenor's spread with the survival to it - nothing where the factor holds no curve. */
-export function HeldCurve({ factor }: { factor: unknown }) {
-  const held = heldSpreads(factor, useApp().state.schema);
+ * and each tenor's spread with the survival to it - nothing where the market holds no curve. */
+export function HeldCurve({ held }: { held?: HeldSpreads }) {
   if (!held) return null;
   return (
     <>
@@ -36,7 +36,7 @@ export function HeldCurve({ factor }: { factor: unknown }) {
           {held.rows.map(([tenor, spread, survival]) => (
             <tr key={tenor}>
               <td>{tenorLabel(tenor)}</td>
-              <td className="n">{formatNumber(spread * 1e4, 'basis')}</td>
+              <td className="n">{formatNumber(spread, 'basis')}</td>
               <td className="n">{formatNumber(100 * survival, 'percent')}</td>
             </tr>
           ))}
@@ -47,20 +47,20 @@ export function HeldCurve({ factor }: { factor: unknown }) {
 }
 
 /** Counterparty credit curve panel and flat or per-tenor spread entry form. */
-export function CreditCard({ id, title, factor, recording }: {
-  id?: string; title: string; factor?: unknown; recording: boolean;
+export function CreditCard({ id, title, recording }: {
+  id?: string; title: string; recording: boolean;
 }) {
   const { state, dispatch } = useApp();
   const hold = heldBack(state, 'survival_curve');
+  const held = id === undefined ? undefined : heldSpreads(state, `${SURVIVAL}.${id}`);
   const [name, setName] = useState(id ?? '');
-  const [form, setForm] = useState(() => spreadForm(factor, state.schema));
+  const [form, setForm] = useState(() => spreadForm(held, state.schema));
   const [said, setSaid] = useState<{ at: string; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
-  const incoming = JSON.stringify(factor ?? null);
-  useEffect(() => setForm(spreadForm(factor, state.schema)), [incoming]);
+  const incoming = JSON.stringify(held ?? null);
+  useEffect(() => setForm(spreadForm(held, state.schema)), [incoming]);
 
   const request = spreadRequest(name, form);
-  const stated = heldSpreads(factor, state.schema);
   const edit = (change: Partial<SpreadForm>) => { setSaid(null); setForm({ ...form, ...change }); };
   const row = (at: number, cell: Partial<SpreadForm['rows'][number]>) =>
     edit({ rows: form.rows.map((held, i) => (i === at ? { ...held, ...cell } : held)) });
@@ -93,14 +93,14 @@ export function CreditCard({ id, title, factor, recording }: {
           {id && <Whose path={['Price Factors', `${SURVIVAL}.${id}`]} />}
           <span>{recording ? HOLDS.record : HOLDS.plain}</span>
         </div>
-        <HeldCurve factor={factor} />
-        {!stated && id && (
+        <HeldCurve held={held} />
+        {!held && id && (
           <div className="note">No credit curve yet: a CVA against this counterparty has no default
             to read.</div>
         )}
       </section>
       <section className="card credit">
-        <h3>{stated ? 'Restate the curve' : 'State the curve'}</h3>
+        <h3>{held ? 'Restate the curve' : 'State the curve'}</h3>
         <Gated hold={hold}>
         {!id && (
           <div className="statusrow">
@@ -116,7 +116,7 @@ export function CreditCard({ id, title, factor, recording }: {
           <input value={form.recovery} inputMode="decimal"
                  onChange={(event) => edit({ recovery: event.target.value })} />
           <span className="hint">the factor's convention is {
-            String(recoveryOf(undefined, state.schema))}</span>
+            String(recoveryConvention(state.schema))}</span>
           {refusal('recovery')}
         </div>
         <div className="statusrow">

@@ -16,9 +16,10 @@ import {
   positionName, statusText, type Agreement, type Entity, type Position,
 } from '../positions';
 import {
-  bookRisk, marketOf, opened, readAs, riskNow, standing, unread, useApp, useRecordRows,
+  bookRisk, heldSpreads, marketOf, opened, readAs, riskNow, standing, unread, useApp,
+  useRecordRows,
 } from '../state';
-import { curveOf, formatNumber, token } from '../tokens';
+import { formatNumber } from '../tokens';
 import { markOf, markShown, markText, noMark } from '../trade';
 import type { ActivityRow, Market, Schema, SettlementState } from '../types';
 import { AgreementForm } from '../components/AgreementForm';
@@ -65,7 +66,6 @@ export function ClientView() {
     unstated: held?.unstated ?? null, positions: held?.positions ?? null, risk,
   };
   const market = marketOf(state);
-  const factors = market?.['Price Factors'] ?? {};
   const rows = rowsByPath(toRows(doc.Calc.Deals.Deals.Children, schema.Instrument.containers,
                                  baseDateOf(doc, market)));
   // every entity legal declares, every counterparty a netting set names, and the one opened
@@ -86,8 +86,7 @@ export function ClientView() {
                  id, folder: ready(lines) ? 'ready to trade' : 'not ready to trade',
                  label: entityText(reads.entities, id),
                  content: <ClientPage id={id} lines={lines} own={own} reads={reads} rows={rows}
-                                      factor={factors[`${SURVIVAL}.${id}`]} market={market}
-                                      schema={schema} />,
+                                      market={market} schema={schema} />,
                }))} />
   );
 }
@@ -96,9 +95,9 @@ export function ClientView() {
 const FIXES = { entity: 'declare it on Paper', agreement: 'declare an agreement',
                 curve: 'state the curve' };
 
-function ClientPage({ id, lines, own, reads, rows, factor, market, schema }: {
+function ClientPage({ id, lines, own, reads, rows, market, schema }: {
   id: string; lines: Line[]; own: Agreement[]; reads: Reads; rows: Map<string, BlotterRow>;
-  factor: unknown; market: Market | null; schema: Schema;
+  market: Market | null; schema: Schema;
 }) {
   const { state, dispatch } = useApp();
   const [form, setForm] = useState<{ agreement?: Partial<Agreement>; curve?: boolean } | null>(null);
@@ -179,9 +178,9 @@ function ClientPage({ id, lines, own, reads, rows, factor, market, schema }: {
               <span className="hint">The Curves tab's credit form, opened here</span>
               <button className="ghost" onClick={() => setForm(null)}>close the form</button>
             </div>
-            <CreditCard id={id} title={name} factor={factor} recording={!!entities} />
+            <CreditCard id={id} title={name} recording={!!entities} />
           </>
-        ) : <CurveRead id={id} factor={factor} restate={() => setForm({ curve: true })} />}
+        ) : <CurveRead id={id} restate={() => setForm({ curve: true })} />}
       </div>
 
       <OnBook own={own} reads={reads} rows={rows} market={market} schema={schema} />
@@ -248,16 +247,16 @@ function Terms({ terms }: { terms: Term[] }) {
 }
 
 /** The client's credit curve as the book holds it, read back as the Curves tab reads it. */
-function CurveRead({ id, factor, restate }: { id: string; factor: unknown; restate: () => void }) {
-  const curve = curveOf(token(factor, 'Curve'));
+function CurveRead({ id, restate }: { id: string; restate: () => void }) {
+  const held = heldSpreads(useApp().state, `${SURVIVAL}.${id}`);
   return (
     <section className="card credit">
       <h3>Credit curve — {SURVIVAL}.{id}</h3>
-      <HeldCurve factor={factor} />
-      {!curve && (
+      <HeldCurve held={held} />
+      {!held && (
         <div className="note">No credit curve yet: a CVA against {id} has no default to read.</div>
       )}
-      <div><button className="ghost" onClick={restate}>{curve ? 'restate it' : 'state it'}</button></div>
+      <div><button className="ghost" onClick={restate}>{held ? 'restate it' : 'state it'}</button></div>
     </section>
   );
 }
