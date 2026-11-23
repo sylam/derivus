@@ -13,7 +13,7 @@ import { NO_PAPER, type Grouping, type Paper } from './positions';
 import { firmFor, pendingKey, ranAs } from './quote';
 import { pinnedAt, readRecord, reconciledRecord, type RecordHeld } from './spine';
 import { isObject } from './tokens';
-import { readOn, tradeAt, type RecordRows } from './trade';
+import { readOn, recordKey, tradeAt, type RecordRows } from './trade';
 import type {
   ActivityPage, BookMarket, BookResponse, BookRisk, BookXva, DescribeResult, JobDoc,
   Market, PathsAnswer, QuoteGiven, Reconcile, RefusalCode, ResultSummary, Schema, SeatGrants,
@@ -589,12 +589,14 @@ export function useRead<T>(read: (() => Promise<T>) | null, keys: unknown[]) {
 }
 
 /** The rows each of `questions` to the record answers (`readOn`), held with each one's cursor: a
- * moved `head` reads on from the cursors and appends, and other questions start from nothing. One
- * read at a time, each from the rows the last one left. */
-export function useRecordRows(questions: About[] | null, head: number | null) {
+ * moved `head` reads on from the cursors and appends, and other questions, another seat or the
+ * book moved under a path (`paths`, `recordKey`) start from nothing. One read at a time, each from
+ * the rows the last one left. */
+export function useRecordRows(questions: About[] | null, head: number | null, paths = '') {
+  const { state } = useApp();
   const held = useRef<RecordRows | null>(null);
   const queue = useRef<Promise<unknown>>(Promise.resolve());
-  const key = JSON.stringify(questions);
+  const key = recordKey(questions ?? [], state.seat, paths);
   const read = useRead(questions ? () => {
     const next = queue.current.catch(() => null).then(async () => (held.current = await readOn(
       held.current, key, questions.map((about) => (since: number) => getBookActivity(since, about)))));

@@ -105,6 +105,13 @@ const on = await trade.readOn(whole, 'trade 0', [grown.read]);
 check('a moved head reads the same question on from its cursor and appends what is new',
       'the rows read again from the first event on every head move, three pages for ten events',
       [on.rows[0].length, on.rows[0].at(-1).lsn, on.since, grown.asked], [460, 460, [460], [450]]);
+const keyed = (seat, paths) => trade.recordKey([{ deal_path: '0/1' }], seat, paths);
+check("a held read of the record is the seat's own and its paths' own: another seat, or the book "
+        + 'moved under a path, is another question and starts from nothing',
+      "the key left to the questions alone, which appends the rows another seat is shown, or a "
+        + "renumbered path's new trade, to the rows held",
+      [keyed('fx-desk', 'e1'), keyed('sales-1', 'e2'), keyed('sales-1', 'e1')]
+        .map((key) => key === keyed('sales-1', 'e1')), [false, false, true]);
 const other = reader(RECORD);
 const asked = await trade.readOn(on, 'trade 1', [other.read]);
 check('another question starts from nothing',

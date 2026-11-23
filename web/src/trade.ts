@@ -100,6 +100,11 @@ export async function readOn(held: RecordRows | null, key: string,
   return { key, rows: read.map((one) => one.rows), since: read.map((one) => one.since) };
 }
 
+/** What a held read of the record is keyed on: its questions, the seat asking, which is shown
+ * its own rows, and the book's text a path is read against (`paths`), a delete renumbering them. */
+export const recordKey = (questions: unknown[], seat: string, paths = ''): string =>
+  JSON.stringify([questions, seat, paths]);
+
 /** What happened to a trade, newest first, off the rows the record answers for it. */
 export const historyOf = (rows: ActivityRow[]): ActivityRow[] =>
   [...rows].sort((a, b) => b.lsn - a.lsn);

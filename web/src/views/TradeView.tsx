@@ -28,8 +28,10 @@ import { CreditCharge, TicketCard } from '../components/TicketCard';
  * and read on from where the last read stopped whenever the record's `head` moves
  * (`useRecordRows`), as a read (`unread`): the service's own sentence where it is refused, and no
  * rows until the read of this path lands. */
-function useHistory(path: string | undefined, recording: boolean, head: number | null) {
-  const read = useRecordRows(recording && path !== undefined ? [{ deal_path: path }] : null, head);
+function useHistory(path: string | undefined, recording: boolean, head: number | null,
+                    paths: string) {
+  const read = useRecordRows(recording && path !== undefined ? [{ deal_path: path }] : null, head,
+                             paths);
   return { ...read, data: read.data && historyOf(read.data[0]) };
 }
 type History = ReturnType<typeof useHistory>;
@@ -49,7 +51,8 @@ export function TradeView() {
   const trade = picked === undefined ? undefined : tradeAt(children, picked);
   const row = trade && rows.get(trade.path);
   const recording = spineOf(state) !== null;
-  const history = useHistory(trade?.path, recording, state.record.spine?.head_lsn ?? null);
+  const history = useHistory(trade?.path, recording, state.record.spine?.head_lsn ?? null,
+                             state.source?.kind === 'book' ? state.source.etag : '');
   const paper = state.paper.data ?? NO_PAPER;
   const held = (trade && byPath(paper.positions).get(trade.path)) || [];
   const units = netOf(held);
