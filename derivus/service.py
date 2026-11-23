@@ -4926,12 +4926,15 @@ def lacking(document, sets):
     """For each netting set's terms among `sets`, the price factors they name that `document`'s
     market holds no block for, the counterparty's credit curve among them: the engine's walk of
     each set alone, nothing under it, over ONE load of the document holding them all
-    (`Config.factor_universe`) - each None where the book's calculation refuses the walk, so a
-    read whose rows carry it never goes down with the calculation."""
+    (`Config.factor_universe`). A `Calculation` its declarations refuse refuses the read, 422 in
+    their words: the walk cannot be asked of it."""
     config = load(around(document, *(
         {'Instrument': {'.Deal': terms}} for terms in sets))).current_cfg
-    walked = [config.factor_universe(children=[node]) for node in config.deals['Deals']['Children']]
-    return [None if 'calculation' in universe else universe['missing'] for universe in walked]
+    refused = config.calculation_refusals()
+    if refused:
+        raise HTTPException(422, '; '.join(refused))
+    return [config.factor_universe(children=[node])['missing']
+            for node in config.deals['Deals']['Children']]
 
 
 def stated_holding(terms, market, reporting):

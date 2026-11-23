@@ -6895,6 +6895,27 @@ def test_each_set_row_names_the_factors_its_terms_name_that_the_market_lacks(tmp
         service.BOOK = None
 
 
+def test_a_calculation_its_declarations_refuse_refuses_the_set_rows_in_their_words(
+        tmp_path, monkeypatch):
+    """THE WALK CANNOT BE ASKED OF A REFUSED CALCULATION, so the XVA read, whose rows carry what
+    each set's terms lack, refuses 422 in the calculation's own words rather than answering rows
+    that lack nothing.
+
+    Killing mutation: the refusal answered as nothing lacked, which reads a broken book as whole.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    book = xva_book(tmp_path, [netting_set('NS_A', 'CPTY_A', [])])
+    document = json.loads(book.read_text())
+    document['Calc']['Calculation']['Greeks'] = 'Maybe'
+    book.write_text(json.dumps(document), newline='\n')
+    try:
+        answer = CLIENT.get('/book/xva')
+    finally:
+        service.BOOK = None
+    assert (answer.status_code, answer.json()['detail']) == (
+        422, "Greeks is 'Maybe', not one of All, First, No"), answer.text
+
+
 def test_a_projection_file_that_does_not_parse_refuses_by_name(desk_xva, tmp_path):
     """A BROKEN PROJECTION IS NOT NO PROJECTION: an `xva.json` that does not parse is refused, 422
     naming the file, rather than read as no XVA at all.
