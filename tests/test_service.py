@@ -6236,6 +6236,35 @@ def test_a_book_holding_a_deal_it_cannot_price_has_no_consolidated_risk(quoting,
             "InterestRate.ZAR-SWAP - Skipped", 'unpriced'), (path.name, answer.json())
 
 
+def test_a_book_whose_value_no_factor_reaches_answers_its_risk_or_names_what_it_skipped(tmp_path):
+    """NOTHING MOVES A BOOK NO FACTOR REACHES, AND THAT IS ITS RISK. `/book/risk` over a book whose
+    one cash flow paid last week answers no mark and no greek, and over one whose one cash flow
+    discounts on a curve the market lacks names the skip - whatever `Greeks` the book's own block
+    states, the read running its own.
+
+    Killing mutation: `pricing.greeks` differentiating a value no leaf reaches, which answers both
+    422 in the backward's words, `element 0 of tensors does not require grad`.
+    """
+    answers = []
+    for name, deal in (('paid', dict(CASHFLOW, Payment_Date=BASE - pd.DateOffset(days=5))),
+                       ('unread', dict(CASHFLOW, Discount_Rate='GBP'))):
+        path = tmp_path / (name + '.json')
+        path.write_text(json.dumps(json.loads(dump(job(deals=(deal,), Greeks='Yes'))), indent=2),
+                        newline='\n')
+        service.BOOK = service.Book(str(path))
+        try:
+            answers.append(CLIENT.get('/book/risk'))
+        finally:
+            service.BOOK = None
+    paid, unread = answers
+    assert paid.status_code == 200 and (
+        paid.json()['mtm'], paid.json()['per_deal'], paid.json()['greeks']) == (0.0, [], []), paid.text
+    assert (unread.status_code, unread.json()['detail']) == (
+        422, 'the book will not price a consolidated risk run: the run skipped what it could not '
+             'price (1 Deals Skipped): FixedCashflowDeal CF1 Cannot find InterestRate.GBP - '
+             'Skipped'), unread.text
+
+
 def curve_book(path, bootstrapper=True):
     """A book reading ONE curve - a four-year swap forecasting and discounting on `USD-3M` - whose
     block is solved against `USD-OIS`, the multi-curve world's own quotes and true curves standing

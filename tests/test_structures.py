@@ -1302,9 +1302,9 @@ def test_a_clients_first_quote_on_a_book_of_one_empty_set_is_the_quote_without_i
     stands at the full two-way, `scale = 1` exactly. The legs and their vegas are priced alone, off
     the book's deal tree, so the two quotes differ by 0, to the bit.
 
-    Killing mutation: `vol_risk` reading a tree as empty only when it has no node at all (`not
-    schema.job_children(run)`) - the set's greeks run has nothing to differentiate and the quote
-    raises "element 0 of tensors does not require grad".
+    Killing mutation: `pricing.greeks` differentiating a value no leaf reaches - the set's greeks
+    run has nothing to differentiate and the quote raises "element 0 of tensors does not require
+    grad".
     """
     ask = params(floor=SPOT * 0.95)
     for_client = with_policy(two_sided_book)

@@ -1746,14 +1746,12 @@ def vol_risk(book, nodes, surface):
     Descriptors are SUMMED across every published block - one JSON number can feed two chains, and
     each family's partial is correct while neither is the answer.
 
-    A tree pricing no trade (`schema.live_deals`) has no value to differentiate and its risk is a
-    zero vector, so it never reaches a run; a run that skipped a deal refuses by name
-    (`utils.run_whole`), the risk of part of a book not being the book's.
+    A tree pricing no trade has a value no quote moves, and no risk (`pricing.greeks`); a run that
+    skipped a deal refuses by name (`utils.run_whole`), the risk of part of a book not being the
+    book's.
     """
     from .config import CustomJsonEncoder
     run = risk_document(book, nodes, surface)
-    if not schema.live_deals(schema.job_children(run)):
-        return {}
     context = book.context().load_json((json.dumps(run, cls=CustomJsonEncoder), 'risk'))
     context.bootstrap()
     utils.run_whole(context.run_job)

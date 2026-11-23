@@ -1575,7 +1575,10 @@ def greeks(shared, deal_data, mtm):
     """Report `Greeks_First`, and `Greeks_Second` when `Greeks: 'All'` asked for it - in that
     order, because the second-order report labels its axes off the first-order index
     (`Calculation.gradients_as_df`); and beside them the forward-skew reserve, which is a number
-    about the fit this portfolio was priced off rather than a derivative of it."""
+    about the fit this portfolio was priced off rather than a derivative of it. A value no factor
+    reaches - every deal paid, expired or skipped - moves with nothing, and reports none."""
+    if not mtm.requires_grad:
+        return
     greeks_calc = SensitivitiesEstimator(mtm, shared.calc_greeks, create_graph=shared.gamma)
     deal_data.Calc_res['Greeks_First'] = greeks_calc.report_grad()
     reserve = skew_reserve(shared, deal_data.Calc_res['Greeks_First'])
