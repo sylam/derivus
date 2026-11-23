@@ -402,7 +402,9 @@ export function seatClock(state: AppState): string | null {
  * own, on the seat's clock. Null off the live book. */
 export function paperAt(state: AppState): { paper: string; holdings: string } | null {
   const holdings = seatClock(state);
-  return holdings === null ? null : { paper: String(spineOf(state)?.paper), holdings };
+  // an agreement's `lacks` is read in the book's market, so the paper is owed again where it moves
+  return holdings === null ? null
+    : { paper: `${spineOf(state)?.paper}@${state.market.data?.stamp ?? ''}`, holdings };
 }
 
 /** The market a screen shows: for the live book what `GET /book/market` answered, the file it

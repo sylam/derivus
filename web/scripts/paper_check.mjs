@@ -183,24 +183,27 @@ check('a booking re-reads the holdings on a screen showing them and the paper on
       [[false, false], [false, true], [false, true], [true, false], [true, true], [true, true],
        [false, false], [false, false]]);
 
-const seen = (seat, etag = 'e1', paper = 27) => ({
-  source: { kind: 'book', etag }, seat,
+const seen = (seat, etag = 'e1', paper = 27, stamp = 'm1') => ({
+  source: { kind: 'book', etag }, seat, market: { data: { stamp } },
   record: { spine: { lsn: 5, events_behind: 0, positions_behind: 0, paper } } });
 const asSales = paperAt(seen('sales-1'));
 check('what a seat holds is read for that seat: another seat named owes the holdings again and '
-      + 'the paper not, as a booking does; a declaration owes the paper; a file opened here is '
-      + 'held against nothing',
+      + 'the paper not, as a booking does; a declaration owes the paper, and so does a move of the '
+      + "book's market, which the agreements' gaps are read in; a file opened here is held against "
+      + 'nothing',
       'the holdings keyed on the clock alone, which leaves the positions of the seat before on '
-      + 'screen until the clock moves; or the paper keyed on the seat too, which reads it again '
-      + 'at every change of the seat box',
+      + 'screen until the clock moves; the paper keyed on the seat too, which reads it again '
+      + "at every change of the seat box; or the paper keyed on its declarations alone, which "
+      + "leaves an agreement's gaps as the market stood before",
       [asSales, paperOwed('portfolio', HELD, asSales, paperAt(seen('fx-desk'))),
        paperOwed('portfolio', HELD, asSales, paperAt(seen('sales-1', 'e2'))),
        paperOwed('portfolio', HELD, asSales, paperAt(seen('sales-1', 'e1', 41))),
        paperOwed('portfolio', HELD, asSales, paperAt(seen('sales-1'))),
+       paperOwed('paper', HELD, asSales, paperAt(seen('sales-1', 'e2', 27, 'm2'))),
        paperAt({ source: { kind: 'local', name: 'a.json' }, seat: 'sales-1',
                  record: { spine: null } })],
-      [{ paper: '27', holdings: 'e1@5/0/0|sales-1' }, { paper: false, holdings: true },
+      [{ paper: '27@m1', holdings: 'e1@5/0/0|sales-1' }, { paper: false, holdings: true },
        { paper: false, holdings: true }, { paper: true, holdings: false },
-       { paper: false, holdings: false }, null]);
+       { paper: false, holdings: false }, { paper: true, holdings: false }, null]);
 
 done();
