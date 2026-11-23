@@ -394,6 +394,9 @@ export type XvaSet = {
   quasi_seed: number | null;
   /** The engine's own wording, and a string only where `status` is 'failed'. */
   error: string | null;
+  /** Where the run failed for want of a price factor, that factor and what would supply it: the
+   * seed's entry, or `note` saying why none would. */
+  missing: { factor: string; supply: { block: string; key: string } | null; note?: string } | null;
   /** A recalc in flight for this set: {result_id, status: 'queued' | 'running'}. */
   recalc: { result_id: string; status: string } | null;
   /** The run's largest `EE` and each `PFE_<percentile>`, each with the day it first falls on -

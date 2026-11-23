@@ -8,7 +8,7 @@ The generic `get_*` layer in `instruments.py` is the **only** place a factor nam
 
 ## The code tuple
 
-`calc_factor_index(field, static_offsets, stochastic_offsets, all_tenors={})` is the atom. It returns `tuple([stoch_bool, field(=Factor), subtype] + all_tenors.get(field, []))`, static checked first, else raises `Exception('Cannot find <name>')`. The slots are named constants in `utils.py`:
+`calc_factor_index(field, static_offsets, stochastic_offsets, all_tenors={})` is the atom. It returns `tuple([stoch_bool, field(=Factor), subtype] + all_tenors.get(field, []))`, static checked first, else raises `utils.MissingFactor` - a `KeyError` carrying the name as `factor`, said `Cannot find <name>` - which a failed XVA row and `/results` answer under `missing`. The slots are named constants in `utils.py`:
 
 | index | constant | meaning |
 | --- | --- | --- |

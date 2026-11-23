@@ -506,13 +506,17 @@ check("a client's sums are over every one of its book's sets or none - an unread
       [null, 3, { currency: 'USD', value: 10 }, { currency: 'USD', value: null },
        { currency: null, value: null }]);
 
-check('a failed run names who puts it right off the factor the engine could not find: a credit curve '
-      + "whoever marks, any other factor the market's owner",
-      "every failure sent to the market's owner, which leaves a missing credit curve with nobody "
-      + 'who marks one; or a sentence naming no factor given an owner it does not name',
-      ['Cannot find SurvivalProb.KES', 'Cannot find InterestRate.ZAR-OIS', 'skipped a deal']
-        .map((error) => client.ownerOf(error).split(':')[0]),
-      ['no credit curve', 'a market factor is missing', "the engine's sentence names no factor"]);
+check("a failed run names who puts it right off the factor its row says it wanted: the service's note "
+      + "where the desk seeds nothing for it, else the seed's entry that supplies it, and the sentence "
+      + 'itself where the row names no factor',
+      "the note dropped for the seed's entry, which sends a missing credit curve to a set-up that "
+      + 'cannot build one; or a row naming no factor given one',
+      [{ factor: 'SurvivalProb.KES', supply: null, note: 'the CVA desk writes it from its spread' },
+       { factor: 'InterestRate.ZAR-OIS', supply: { block: 'rates', key: 'ZAR-OIS' } }, null]
+        .map((missing) => client.fixedBy(missing)),
+      ['SurvivalProb.KES: the CVA desk writes it from its spread',
+       "InterestRate.ZAR-OIS: a seat holding mark sets it up off the desk's rates entry ZAR-OIS",
+       'read its sentence, then a recalc asked for through the chat']);
 
 check("what is wrong under a client's sets, worst first: a failed run, trades no agreement covers, "
       + 'trades waiting on a second seat, trades never run - nothing of a set that left the book or of '

@@ -371,7 +371,8 @@ def test_a_block_naming_no_discount_curve_is_judged_so_and_solves_nothing(family
         ['Discount_Rate is required'], ['Discount_Rate is required'], []]
     with pytest.raises(Exception) as unnamed:
         world.bootstrapped({world.BLOCK: blank})
-    assert (type(unnamed.value), str(unnamed.value)) == (Exception, 'Cannot find InterestRate.')
+    assert (type(unnamed.value), str(unnamed.value)) == (
+        utils.MissingFactor, 'Cannot find InterestRate.')
     with pytest.raises(KeyError, match="'Discount_Rate'"):
         world.bootstrapped({world.BLOCK: omitted})
     assert np.array_equal(world.curve(world.bootstrapped({world.BLOCK: omitted}, entries=entry)),

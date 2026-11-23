@@ -229,7 +229,7 @@ def calc_factor_index(field, static_offsets, stochastic_offsets, all_tenors={}):
     elif stochastic_offsets.get(field) is not None:
         return tuple([True, field, stochastic_offsets[field].factor.get_subtype()] + all_tenors.get(field, []))
     else:
-        raise Exception('Cannot find {}'.format(utils.check_tuple_name(field)))
+        raise utils.MissingFactor(utils.check_tuple_name(field))
 
 
 def calc_factor_code_chain(head, fieldname, static_offsets, stochastic_offsets, all_tenors={}):
@@ -523,7 +523,7 @@ def get_vol_factor(factor_type, fieldname, static_offsets, stochastic_offsets, a
         subtype = stochastic_offsets[factor_name].factor.get_subtype()
         return check_surface_type(subtype, stochastic_offsets[factor_name].factor, True)
     else:
-        raise Exception('Cannot find {}'.format(utils.check_tuple_name(factor_name)))
+        raise utils.MissingFactor(utils.check_tuple_name(factor_name))
 
 
 def get_spot_model_params_factor(spot_model, name, all_factors, static_offsets, stochastic_offsets):

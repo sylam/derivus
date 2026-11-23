@@ -487,13 +487,12 @@ export function limitOf(id: string, limits: CreditLimit[]): LimitRead | undefine
   return entry && limitRead(entry, entry.clients.length - 1);
 }
 
-/** Who puts a failed run right, off the factor the engine could not find: a credit curve whoever
- * marks states, any other factor the market's owner adds. */
-export function ownerOf(error: string | null): string {
-  const factor = /Cannot find (\S+)/.exec(error ?? '')?.[1];
-  return !factor ? "the engine's sentence names no factor: read it, then " + RECALC
-    : factor.startsWith(`${SURVIVAL}.`) ? `no credit curve: whoever marks states ${factor}`
-      : `a market factor is missing: the market's owner adds ${factor}`;
+/** Who puts a failed run right, off the factor its row says it wanted (`XvaSet.missing`): the
+ * service's note where nothing the desk seeds supplies it, else the seed's entry that does. */
+export function fixedBy(missing: XvaSet['missing']): string {
+  return !missing ? `read its sentence, then ${RECALC}` : `${missing.factor}: ${missing.note
+    ?? `a seat holding mark sets it up off the desk's ${missing.supply?.block} entry ${
+      missing.supply?.key}`}`;
 }
 
 /** What is wrong under a client's lines, worst first - a set that has left the book reads its last
@@ -503,7 +502,7 @@ export function wrongWith(lines: CreditLine[]): Wrong[] {
   return lines.filter((line) => !line.run?.note).flatMap(({
     reference, paper, run, trades, pending }) => [
     run?.status === 'failed' && { kind: 'failed' as const, reference,
-      text: run.error ?? 'its last run failed', who: ownerOf(run.error) },
+      text: run.error ?? 'its last run failed', who: fixedBy(run.missing) },
     trades > 0 && paper === null && { kind: 'unpapered' as const, reference,
       who: 'legal declares the agreement on Paper',
       text: `${plural(trades, 'trade')} under ${reference}, which no agreement in force covers` },

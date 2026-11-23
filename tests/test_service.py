@@ -6807,7 +6807,12 @@ def test_an_unknown_set_refuses_by_name_and_a_missing_survival_curve_lands_in_th
     one would have to diff the answer to find out.
 
     A counterparty with no `SurvivalProb` block is the other kind: the ENGINE has the objection, so
-    the row lands `failed` carrying its wording. One set failing is one row, not a lost projection.
+    the row lands `failed` carrying its wording, and under `missing` the factor it wanted and who
+    supplies it - the seed none, the CVA desk from its spread - as `/results` names the factor. One
+    set failing is one row, not a lost projection.
+
+    Killing mutation: `missing_factor` answering None, which leaves the row and the result naming
+    no factor and a desk parsing the sentence for it.
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path))
     xva_book(tmp_path, [netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')]),
@@ -6830,6 +6835,12 @@ def test_an_unknown_set_refuses_by_name_and_a_missing_survival_curve_lands_in_th
         assert rows['NS_GHOST']['cva'] is None
         assert rows['NS_GHOST']['fva'] is None, 'a failed run filed a funding number anyway'
         assert 'GHOST' in rows['NS_GHOST']['error']
+        assert rows['NS_GHOST']['missing'] == {
+            'factor': 'SurvivalProb.GHOST', 'status': 'missing', 'supply': None,
+            'note': 'this desk seeds no SurvivalProb - the CVA desk writes it from its spread, or '
+                    'its SurvivalProbPrices block of CDS quotes bootstraps it'}
+        assert CLIENT.get('/results/{}'.format(rows['NS_GHOST']['result_id'])).json()[
+            'missing'] == 'SurvivalProb.GHOST'
         assert rows['NS_A'] == standing, "a failed set took another set's row with it"
     finally:
         service.BOOK = None

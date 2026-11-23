@@ -350,6 +350,12 @@ class PlanCache(utils.LRUCache):
         return None if kept is None else deepcopy(kept)
 
 
+def missing_factor(error):
+    """The price factor a run failed for want of (`utils.MissingFactor`), None where it failed
+    for anything else."""
+    return error.factor if isinstance(error, utils.MissingFactor) else None
+
+
 class ComputeExecutor:
     """One worker thread over one priority queue, and the result store it alone writes.
 
@@ -515,7 +521,8 @@ class ComputeExecutor:
                 with self.lock:
                     # a run that produced nothing attests nothing, and the promotion goes with it
                     self.standing.pop(job.result_id, None)
-                    self.results[job.result_id] = {'status': 'error', 'error': str(error)}
+                    self.results[job.result_id] = {'status': 'error', 'error': str(error),
+                                                   'missing': missing_factor(error)}
             self.queue.task_done()
 
 
@@ -967,7 +974,8 @@ def results(result_id: str):
     reproduce from, and every table it produced named with its row count and column labels.
 
     No cells - a client reads the shapes here and fetches the one table it is showing from
-    `/results/{result_id}/{table}`. A failed run carries the message and nothing else.
+    `/results/{result_id}/{table}`. A failed run carries the message and `missing`, the price
+    factor it failed for want of, null where it failed for anything else (`missing_factor`).
 
     A job that publishes its own progress carries it under `progress` while it runs
     (`ComputeExecutor.progressed`), so one poll loop serves a cell that wants a number and a screen
@@ -4470,7 +4478,8 @@ class XvaJob:
 
     The row is written on completion EITHER WAY. A failed run - commonly a counterparty the market
     data carries no `SurvivalProb` block for - lands `status: 'failed'` with the engine's own
-    wording, because a desk reads why a number is missing off the same file the numbers are in. The
+    wording, and the factor it wanted with what supplies it under `missing` (`failed`), because a
+    desk reads why a number is missing off the same file the numbers are in. The
     error still travels to the result store, so `/results/{result_id}` is never told otherwise. A
     run that skipped a deal is a failed run (`utils.run_whole`): a dropped deal must never read as
     a smaller CVA.
@@ -4492,15 +4501,22 @@ class XvaJob:
         content hash of the set's document, `values_hash` that of the digests of the market data
         and calendar files it names, and `currency` the one the run reported in.
 
-        Both adjustment columns, `peaks` and `profile` (`exposure`) are in the BASE dict as nulls,
-        so a row is never filed missing one: a failure path states its error and nothing else, and
-        every row the file carries has the same keys whatever happened to it."""
-        row = dict.fromkeys(XVA_COLUMNS + ('profile',))
+        Both adjustment columns, `peaks`, `profile` (`exposure`) and `missing` (`failed`) are in
+        the BASE dict as nulls, so a row is never filed missing one: a failure path states its error
+        and nothing else, and every row the file carries has the same keys whatever happened to it."""
+        row = dict.fromkeys(XVA_COLUMNS + ('profile', 'missing'))
         row.update({key: self.stamp[key] for key in XVA_COLUMNS if key in self.stamp},
                    counterparty=self.counterparty, collateralized=self.collateralized,
                    currency=self.document['Calc']['Calculation'].get('Currency'),
                    result_id=self.result_id, as_of=as_of())
         return dict(row, **fields)
+
+    def failed(self, error, factor=None):
+        """The row of a run that failed saying `error`, and where it failed for want of the price
+        factor `factor` (`utils.MissingFactor`), `missing`: that factor with what would supply it,
+        as the dependency verbs answer it (`dependency_answer`)."""
+        return self.row(status='failed', error=error, missing=factor and dependency_answer(
+            self.document, [], [factor])['factors'][0])
 
     @staticmethod
     def adjustments(results, stored=False):
@@ -4525,7 +4541,7 @@ class XvaJob:
         projection whose file was lost one request away from whole rather than one CMC.
         """
         if result['status'] != 'done':
-            return self.row(status='failed', error=result.get('error'))
+            return self.failed(result.get('error'), result.get('missing'))
         return self.row(status='done', **self.adjustments(result['tables'], stored=True),
                         **exposure(result['tables']['exposure_profile']))
 
@@ -4537,7 +4553,7 @@ class XvaJob:
             landed = dict(self.adjustments(out['Results']),
                           **exposure(as_json(out['Results']['exposure_profile'])))
         except Exception as error:
-            write_row(self.reference, self.row(status='failed', error=str(error)))
+            write_row(self.reference, self.failed(str(error), missing_factor(error)))
             raise
         write_row(self.reference, self.row(status='done', **landed))
         return None, out
@@ -4711,7 +4727,7 @@ def projection_entry(row, **book):
     row = row or {}
     entry = dict({'reference': None, 'deal_path': None, 'counterparty': row.get('counterparty'),
                   'collateralized': row.get('collateralized'), 'note': None}, **book)
-    entry.update({key: row.get(key) for key in XVA_COLUMNS + ('error',)},
+    entry.update({key: row.get(key) for key in XVA_COLUMNS + ('error', 'missing')},
                  status=row.get('status', 'never run'))
     return entry
 

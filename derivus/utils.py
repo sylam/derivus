@@ -665,6 +665,18 @@ class InstrumentExpired(Exception):
         self.message = message
 
 
+class MissingFactor(KeyError):
+    """A price factor the engine looked up that the market holds no block for, `factor` its flat
+    name, said `Cannot find <factor>`."""
+
+    def __init__(self, factor):
+        super().__init__('Cannot find {}'.format(factor))
+        self.factor = factor
+
+    def __str__(self):
+        return self.args[0]
+
+
 class ScheduleLifecycleError(Exception):
     """A schedule was touched out of order: priced before `bind` copied it to the device, or edited
     after. Either says the calculation did not reach it, which is a framework fault rather than a
