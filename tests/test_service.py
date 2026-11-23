@@ -6731,10 +6731,11 @@ def test_a_set_reads_collateralised_exactly_as_a_run_prices_it(tmp_path):
     """A set's `Collateralized` is declared text and a run collateralises it on `'True'` alone, so
     the XVA list reads a set authored `'True'` collateralised and those authored `'true'`, blank or
     a JSON `true` - which the run prices uncollateralised - not, the row saying what the run prices;
-    and the job's description names the one set its run collateralises.
+    and the job's description, which refuses the blank set by name, names the one set its run
+    collateralises among the other three.
 
     Killing mutations: the text read case-insensitively, which calls the `'true'` set
-    collateralised; the description naming every netting set, which names all four.
+    collateralised; the description naming every netting set, which names all three.
     """
     document = json.loads(dump(job(deals=())))
     document['Calc']['Deals']['Deals']['Children'] = [
@@ -6752,6 +6753,10 @@ def test_a_set_reads_collateralised_exactly_as_a_run_prices_it(tmp_path):
     finally:
         service.BOOK = None
     assert sets == {'UPPER': True, 'LOWER': False, 'BLANK': False, 'JSON': False}
+    refused = CLIENT.post('/describe', content=dump(document), headers=JSON)
+    assert (refused.status_code, refused.json()['detail']) == (
+        422, 'BLANK: Collateralized is required'), refused.text
+    del document['Calc']['Deals']['Deals']['Children'][2]
     described = CLIENT.post('/describe', content=dump(document), headers=JSON).json()
     assert described['collateralized_sets'] == ['UPPER'], described
 
