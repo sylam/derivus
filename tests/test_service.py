@@ -1106,29 +1106,29 @@ def test_a_calculation_override_is_judged_against_its_own_declarations(book):
         declared.json()['result_id'])).json()['status'] == 'done'
 
 
-def test_a_calendar_rewritten_on_disk_is_not_answered_from_the_diary_s_cache(tmp_path):
-    """The diary compile reads the calendar the book names, so its cache is keyed by that file's
-    bytes as well as the deals and the calculation: a holiday added to the calendar under the
-    same path moves the diary's etag and the diary is compiled anew.
+def test_a_book_pointed_at_another_calendar_is_not_answered_from_the_diary_s_cache(tmp_path):
+    """The diary compile reads the calendar the book names, so its cache is keyed by the calendar
+    the book names as well as the deals and the calculation: the book pointed at a calendar with a
+    holiday added moves the diary's etag and the diary is compiled anew.
 
     Killing mutation: the diary keyed by the deals and the calculation alone, which answers the
     old calendar's compile under the old etag.
     """
-    calendar = tmp_path / 'calendars.xml'
-
-    def written(holidays):
+    def written(name, holidays):
+        calendar = tmp_path / name
         calendar.write_text('<Calendars>\n  <Calendar Location="Testland" Weekends="Saturday '
                             'and Sunday" Holidays="{}"/>\n</Calendars>\n'.format(holidays))
+        return str(calendar)
 
-    written('')
     document = json.loads(dump(job()))
-    document['Calc']['CalendDataFile'] = str(calendar)
+    document['Calc']['CalendDataFile'] = written('calendars.xml', '')
     path = tmp_path / 'book.json'
     path.write_text(json.dumps(document, indent=2), newline='\n')
     service.BOOK = service.Book(str(path))
     try:
         before = CLIENT.get('/book/diary').json()['etag']
-        written('2025-01-01|New Year')
+        document['Calc']['CalendDataFile'] = written('holidays.xml', '2025-01-01|New Year')
+        path.write_text(json.dumps(document, indent=2), newline='\n')
         after = CLIENT.get('/book/diary').json()['etag']
     finally:
         service.BOOK = None
@@ -1137,33 +1137,35 @@ def test_a_calendar_rewritten_on_disk_is_not_answered_from_the_diary_s_cache(tmp
 
 def test_the_risk_is_kept_under_today_beside_all_it_reads(book):
     """A market stating no `Base_Date` is read as of today (`Context.load_config`), so the
-    consolidated risk is kept under the hash of the whole `Calc`, the digest of the market file it
-    names - none here - and today's date, worked by hand below, and a new day is a new key.
+    consolidated risk is kept under the hash of the whole `Calc`, which names the files it reads,
+    and today's date, worked by hand below, and a new day is a new key.
 
     Killing mutation: the risk keyed without the day, which serves yesterday's vector.
     """
     document = json.loads(book.read_text())
-    hand = derivus.content_hash({'calc': document['Calc'], 'files': {'MarketDataFile': None},
+    hand = derivus.content_hash({'calc': document['Calc'],
                                  'today': datetime.date.today().isoformat()})
     assert CLIENT.get('/book/risk').json()['etag'] == hand
 
 
-def test_a_calendar_rewritten_on_disk_refits_the_quotes_the_risk_is_read_in(book, tmp_path):
-    """The quote-space refit reads the calendar the book names, so it is kept under that file's
-    bytes beside the market's: the rand curve set up from its rows, its deposit and FRA paying on
-    a calendar the book names, and that calendar rewritten with a holiday on each of their dates,
-    the served book's risk is the one a book served afresh reads - the deposit's derivative moves
-    from about 3,031 to 2,995 per unit of its quote.
+def test_a_book_pointed_at_another_calendar_refits_the_quotes_the_risk_is_read_in(book, tmp_path):
+    """The quote-space refit reads the calendar the book names, so it is kept under that calendar
+    beside the market: the rand curve set up from its rows, its deposit and FRA paying on a
+    calendar the book names, and the book pointed at a calendar with a holiday on each of their
+    dates, the served book's risk is the one a book served afresh reads - the deposit's derivative
+    moves from about 3,031 to 2,995 per unit of its quote.
 
-    Killing mutation: the refit kept under the market alone, which reads the old calendar's fit.
+    Killing mutation: the refit kept under the market section alone, which reads the old
+    calendar's fit.
     """
     assert set_up_curve().status_code == 200
-    calendar = tmp_path / 'calendars.xml'
 
-    def written(days):
+    def written(name, days):
+        calendar = tmp_path / name
         calendar.write_text('<Calendars>\n  <Calendar Location="Testland" Weekends="Saturday and '
                             'Sunday" Holidays="{}"/>\n</Calendars>\n'.format(
                                 ', '.join(day + '|H' for day in days)))
+        return str(calendar)
 
     def risk():
         answer = CLIENT.get('/book/risk')
@@ -1177,15 +1179,17 @@ def test_a_calendar_rewritten_on_disk_refits_the_quotes_the_risk_is_read_in(book
     for point in points:
         if point['DealType'] in dated:
             point['Deal'][dated[point['DealType']]] = 'Testland'
-    written([])
-    document['Calc']['CalendDataFile'] = str(calendar)
+    document['Calc']['CalendDataFile'] = written('calendars.xml', [])
     book.write_text(json.dumps(document, indent=4), newline='\n')
     assert CLIENT.post('/book/market', json={'bootstrap': 'Yes'}).json()['written'] is True
     before = risk()
 
-    written(sorted({value['.Timestamp'][:10] for point in points if point['DealType'] in dated
-                    for value in point['Deal'].values()
-                    if isinstance(value, dict) and '.Timestamp' in value} - {str(BASE.date())}))
+    document = json.loads(book.read_text())
+    document['Calc']['CalendDataFile'] = written('holidays.xml', sorted({
+        value['.Timestamp'][:10] for point in points if point['DealType'] in dated
+        for value in point['Deal'].values()
+        if isinstance(value, dict) and '.Timestamp' in value} - {str(BASE.date())}))
+    book.write_text(json.dumps(document, indent=4), newline='\n')
     served = risk()
     service.BOOK = service.Book(str(book))
     fresh = risk()
@@ -1947,19 +1951,18 @@ def test_the_status_counts_the_trades_a_book_holds(tmp_path, monkeypatch):
 
 def test_a_status_poll_with_nothing_moved_is_a_lookup_and_all_it_reads_is_in_its_key(file_book):
     """`GET /book/status` is kept on the book under `poll_key`, worked by hand: the text's hash,
-    the book it names, the sha256 of the market data file it names and of no calendar, the XVA
-    file with its stamp - none yet - no record on a desk keeping none, and today. A second poll is
-    answered what the first was kept as, its `terminal` read beside it. Each thing the answer reads
-    is in that key, so moving it is a new answer: the market data file restated a day on with its
-    size and modified time held; `paths.json` mapping its name to a file a day further on; a row
-    landing in the XVA file; and an edit of the book. An XVA file inside a clock tick of its last
-    write has no stamp, and a poll over it keeps nothing.
+    the book it names, the XVA file with its stamp - none yet - no record on a desk keeping none,
+    and today. A file the book names is read-only, so its name in the text is its content and the
+    key reads no file. A second poll is answered what the first was kept as, its `terminal` read
+    beside it. Each thing the answer reads is in that key, so moving it is a new answer: the book
+    pointed at another market data file a day on; a row landing in the XVA file; and an edit of
+    the book. An XVA file inside a clock tick of its last write has no stamp, and a poll over it
+    keeps nothing.
 
-    Killing mutations: an answer never kept, where the lookup finds none; a named file keyed by
-    its name and not its bytes, where the key by hand differs and the market's day would stay
-    2024-06-28 through both moves; the XVA file's stamp left out, where its row never shows; the
-    day left out, where the key by hand has one part more; the tick not waited for, where a file
-    written this instant is stamped.
+    Killing mutations: an answer never kept, where the lookup finds none; the etag left out of the
+    key, where the book pointed at another file still reads 2024-06-28; the XVA file's stamp left
+    out, where its row never shows; the day left out, where the key by hand has one part more; the
+    tick not waited for, where a file written this instant is stamped.
     """
     book, market = file_book
 
@@ -1973,33 +1976,28 @@ def test_a_status_poll_with_nothing_moved_is_a_lookup_and_all_it_reads_is_in_its
 
     xva = service.xva_path()
     key = service.poll_key(service.BOOK, xva)
-    assert key == (derivus.content_hash(book.read_text()), 'service', (
-        ('CalendDataFile', None),
-        ('MarketDataFile', hashlib.sha256(market.read_bytes()).hexdigest())), ((xva, ()),), None,
-        datetime.date.today().isoformat())
+    assert key == (derivus.content_hash(book.read_text()), 'service', ((xva, ()),), None,
+                   datetime.date.today().isoformat())
     first = status()
     kept = service.BOOK.polls.get(('status',) + key)
     assert kept == {name: value for name, value in first.items() if name != 'terminal'}
     assert status() == first and service.BOOK.polls.get(('status',) + key) is kept
     assert first['base_date'] == '2024-06-28'
 
-    held, text = os.stat(market), market.read_text()
+    text = market.read_text()
     assert text.count('"Base_Date": {".Timestamp": "2024-06-28') == 1
-    market.write_text(text.replace('"Base_Date": {".Timestamp": "2024-06-28',
-                                   '"Base_Date": {".Timestamp": "2024-06-29'))
-    os.utime(market, ns=(held.st_atime_ns, held.st_mtime_ns))
+    other = market.with_name('other.json')
+    other.write_text(text.replace('"Base_Date": {".Timestamp": "2024-06-28',
+                                  '"Base_Date": {".Timestamp": "2024-06-29'))
+    document = json.loads(book.read_text())
+    document['Calc']['MergeMarketData']['MarketDataFile'] = str(other)
+    book.write_text(json.dumps(document, indent=2), newline='\n')
     assert status()['base_date'] == '2024-06-29'
-
-    market.with_name('other.json').write_text(text.replace(
-        '"Base_Date": {".Timestamp": "2024-06-28', '"Base_Date": {".Timestamp": "2024-06-30'))
-    (market.parent / derivus.PATHS_FILE).write_text(json.dumps(
-        {'path_transform': {}, 'file_transform': {'market.json': 'other.json'}}))
-    assert status()['base_date'] == '2024-06-30'
 
     service.write_row('GONE', {'status': 'done', 'cva': 1.5})
     rested(xva)
     assert [(row['reference'], row['cva']) for row in status()['xva']] == [('GONE', 1.5)]
-    assert service.poll_key(service.BOOK, xva)[3] == ((xva, (
+    assert service.poll_key(service.BOOK, xva)[2] == ((xva, (
         os.stat(xva).st_mtime_ns, os.stat(xva).st_size)),)
 
     amended = CLIENT.post('/book/deals', json={'action': 'amend', 'deal_path': '0',
@@ -8666,38 +8664,13 @@ def test_a_spot_model_fitted_on_a_book_naming_a_file_is_the_fit_on_its_explicit_
         'Price Factors': ['LogVar2FJModelParameters.ZAR']}
 
 
-def test_the_risk_of_a_book_naming_a_file_rewritten_inside_one_tick_is_read_anew(file_book):
-    """`/book/risk` is cached on what it reads, the bytes of the file the book names among them:
-    the file rewritten with its size and modified time held, the ZAR spot moved from 18.5 to
-    18.6, moves the etag and the mark by the spot's own ratio. Before, the cache was keyed on the
-    file's path and served the first mark. Every book's risk etag moves with the landing, since
-    the cache key now carries the files' digests.
-
-    KILLING MUTATION: `risk_etag` without the files' digests, which serves the cached mark.
-    """
-    _, market = file_book
-    before = CLIENT.get('/book/risk').json()
-    held, text = os.stat(market), market.read_text()
-    assert text.count('"Spot": 18.5') == 1
-    market.write_text(text.replace('"Spot": 18.5', '"Spot": 18.6'))
-    os.utime(market, ns=(held.st_atime_ns, held.st_mtime_ns))
-    after = CLIENT.get('/book/risk').json()
-    assert after['etag'] != before['etag']
-    assert after['mtm'] / before['mtm'] == pytest.approx(18.6 / 18.5, rel=1e-12)
-
-
 def test_the_book_parses_the_file_it_names_once_per_content(file_book):
     """A request's context is its own and the parse of the file is the BOOK's: three rounds of the
     status, the curve verb and the dependency walk, each read on contexts of its own, leave ONE
-    parse in `Book.parses`, the same bytes after every round; the file rewritten with its size and
-    modified time held, its ZAR 5Y quote moved from 8.55 to 8.56, is parsed anew and the curve
-    verb reads the new quote.
+    parse in `Book.parses`, the same bytes after every round.
 
-    KILLING MUTATIONS: a parse cache per request, which leaves the book's empty; the parse kept by
-    the file's path, which reads 8.55 after the rewrite.
+    KILLING MUTATION: a parse cache per request, which leaves the book's empty.
     """
-    _, market = file_book
-
     def five_year():
         rows = CLIENT.get('/book/curve').json()['curves']['InterestRatePrices.ZAR']['rows']
         return next(row['quote'] for row in rows if row['tenor'] == '5Y')
@@ -8709,13 +8682,6 @@ def test_the_book_parses_the_file_it_names_once_per_content(file_book):
         assert CLIENT.get('/book/dependencies').status_code == 200
         kept.append(list(service.BOOK.parses.entries.values()))
     assert len(kept[0]) == 1 and all(entry[0] is kept[0][0] for entry in kept)
-
-    held, text = os.stat(market), market.read_text()
-    assert text.count('"Quoted_Market_Value": 8.55') == 1
-    market.write_text(text.replace('"Quoted_Market_Value": 8.55', '"Quoted_Market_Value": 8.56'))
-    os.utime(market, ns=(held.st_atime_ns, held.st_mtime_ns))
-    assert five_year() == 8.56
-    assert len(service.BOOK.parses.entries) == 2
 
 
 def zar_fx_front(market):
@@ -9057,20 +9023,16 @@ def test_a_desk_that_records_refuses_to_open_a_document(recorded, book, tmp_path
 
 def test_the_market_read_is_kept_by_what_it_is_read_from(file_book):
     """The market a book prices on is built once per what it is read from - the document's `Calc`
-    less its deals, the bytes of the file it names and the day - and kept on the book: three rounds
+    less its deals, which names the file it reads, and the day - and kept on the book: three rounds
     of the status and the market leave ONE market in `Book.markets`, and a client naming the stamp
     it holds is answered no market under the same stamp and etag. A deal amended moves the book's
-    etag and not the stamp; the file rewritten with its size and modified time held, its ZAR spot
-    moved from 18.5 to 18.6, moves the stamp and the market reads 18.6; the spot patched to 19.0 in
-    the book's block moves it again and the market reads 19.0.
+    etag and not the stamp; the spot patched to 19.0 in the book's block moves it and the market
+    reads 19.0.
 
     KILLING MUTATIONS: the market built on every read, which keeps none in `Book.markets`; `stamp`
     not read, which answers the market whole; the stamp over the deals too, which the amendment
-    moves; the stamp without the files' digests, which the rewrite leaves standing; the stamp of
-    the files alone, which answers a block a verb moved with the market before it, refusing the
-    world's own configure.
+    moves; the stamp without the block, which answers the market before the patch.
     """
-    _, market = file_book
     for _ in range(3):
         assert CLIENT.get('/book/status').status_code == 200
         answer = CLIENT.get('/book/market').json()
@@ -9084,17 +9046,10 @@ def test_the_market_read_is_kept_by_what_it_is_read_from(file_book):
     assert amended['written'] is True and amended['etag'] != answer['etag']
     assert CLIENT.get('/book/market', params={'stamp': stamp}).json()['market'] is None
 
-    held, text = os.stat(market), market.read_text()
-    market.write_text(text.replace('"Spot": 18.5', '"Spot": 18.6'))
-    os.utime(market, ns=(held.st_atime_ns, held.st_mtime_ns))
-    rewritten = CLIENT.get('/book/market', params={'stamp': stamp}).json()
-    assert rewritten['stamp'] != stamp
-    assert rewritten['market']['Price Factors']['FxRate.ZAR']['Spot'] == 18.6
-
     assert CLIENT.post('/book/market', json={'patch': {'FxRate.ZAR': {'Spot': 19.0}}}).json()[
         'written'] is True
-    patched = CLIENT.get('/book/market', params={'stamp': rewritten['stamp']}).json()
-    assert patched['stamp'] != rewritten['stamp']
+    patched = CLIENT.get('/book/market', params={'stamp': stamp}).json()
+    assert patched['stamp'] != stamp
     assert patched['market']['Price Factors']['FxRate.ZAR']['Spot'] == 19.0
 
 

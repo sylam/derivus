@@ -1768,14 +1768,15 @@ def vol_risk(book, nodes, surface):
 
 def book_risk(book, surface, cache):
     """The book's OWN vol risk, kept in `cache` - an LRU the caller owns - under a hash of
-    everything the run reads; `None` caches nothing. The book alone is the half of the measurement
-    that does not depend on what is quoted, so a standing book pays one greeks run per quote."""
+    everything the run reads, each file by the name the book gives it; `None` caches nothing. The
+    book alone is the half of the measurement that does not depend on what is quoted, so a
+    standing book pays one greeks run per quote."""
     if cache is None:
         return vol_risk(book, [], surface)
     from . import content_hash
     calc = book.document['Calc']
     etag = content_hash({'deals': calc['Deals']['Deals'], 'market': calc['MergeMarketData'],
-                         'files': book.context().files(book.document),
+                         'calendar': calc.get('CalendDataFile'),
                          'calculation': calc['Calculation'], 'surface': surface})
     found = cache.get(etag)
     return found if found is not None else cache.put(etag, vol_risk(book, [], surface))

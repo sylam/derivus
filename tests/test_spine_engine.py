@@ -1606,7 +1606,7 @@ def test_a_status_poll_is_answered_anew_once_the_record_moves_and_the_paper_has_
 
     log, started = recorded / 'log', head(recorded)
     key = service.poll_key(service.BOOK, service.xva_path())
-    assert spine.platter() == key[4] == (str(recorded),) + tuple(
+    assert spine.platter() == key[3] == (str(recorded),) + tuple(
         (name, (log / name).stat().st_size) for name in sorted(os.listdir(log)))
     assert paper() == 0 and service.BOOK.polls.get(('status',) + key)['spine']['paper'] == 0
     terms = netting_set(CLIENT_SET, 'LEI-A')['Instrument']['.Deal']

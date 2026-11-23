@@ -605,14 +605,17 @@ filed under; a premium due on no day is never instructed.
 
 `GET /book/status` and `GET /book/risk` are polled, so each answer is kept on the served book
 (`Book.polls`) under `service.poll_key`, read before anything is parsed or opened: the text's hash
-and the book it names (`Book.named`), the sha256 of each file it names, the service's own files a
-read names with their modification time and size - the XVA file for the status, keyed only once a
-clock tick has passed since its last write - `spine.platter`, and today. `spine.platter` is the
+and the book it names (`Book.named`), the service's own files a read names with their
+modification time and size - the XVA file for the status, keyed only once a clock tick has passed
+since its last write - `spine.platter`, and today. A file the book names is a read-only input: a
+new market is a new file the text names, a remap through `POST /paths`, which opens the book
+anew, or an event on the record, so no key reads a named file. `spine.platter` is the
 home and the size of each log segment: a segment is appended to and never rewritten, so it moves
 exactly when a frame lands and costs no open. A poll with nothing moved is a lookup
 (`service.polled`), and an answer is kept only where its key still stands once it is worked out.
 The risk asks admission before either of its two levels on every poll, and keeps its second level,
-the hash of all the run reads, so a frame that moves none of it runs nothing. The status's
+the hash of its `Calc` and the day (`service.risk_etag`), so a frame that moves none of it runs
+nothing. The status's
 `spine.paper` is the LSN of the last entity or agreement declaration standing (`spine.papered`):
 what a client holding the paper re-reads it on, the web client its entities and agreements
 (`paperOwed` in `web/src/state.ts`), a booking moving its holdings alone. Its `close`, beside

@@ -179,20 +179,13 @@ def beside(context, job):
     return other
 
 
-#: The section of a job's `Calc` naming each file a load reads.
-FILE_SECTIONS = {'MarketDataFile': 'MergeMarketData', 'CalendDataFile': 'CalendDataFile'}
-
-
-def stamp(document, *sections, today=False, reading=Context):
+def stamp(document, *sections, today=False):
     """The hash of what an answer worked out from `document` read: the named sections of its
-    `Calc` - every one where none is named - with the sha256 of each file they name, as a context
-    `reading` makes reads it, and with `today` the day a base date no file states reads as
-    (`Context.load_config`)."""
+    `Calc` - every one where none is named - and with `today` the day a base date no file states
+    reads as (`Context.load_config`). A file a section names is a read-only input, a new market
+    being a new file named, so its name stands for its content and no file is read."""
     calc = document['Calc']
-    named = sections or tuple(calc)
-    read = {'calc': {key: calc[key] for key in named if key in calc},
-            'files': {key: digest for key, digest in reading().files(document).items()
-                      if FILE_SECTIONS[key] in named}}
+    read = {'calc': {key: calc[key] for key in sections or calc if key in calc}}
     return content_hash(dict(read, today=time.strftime('%Y-%m-%d')) if today else read)
 
 
@@ -577,7 +570,7 @@ class Book:
         self.path = path
         self.lock = threading.Lock()
         self._cache = (None, 0, None, None)  # (stamp and size, read at, etag, last parsed text)
-        self._named = (None, {})  # the book that text names and the file its `Calc` names per key
+        self._named = (None,)  # the book that text names
         self._verdict = (None, None)  # (etag, verdict) - the last validate of that text
         # the consolidated risk by `risk_etag`, and the book-alone vol risk a quote measures
         # against by `structures.book_risk`'s hash: a standing book pays one greeks run for each
@@ -657,14 +650,14 @@ class Book:
 
     @staticmethod
     def facts(document):
-        """`(book, files)` of a document: the book it names and the file its `Calc` names under
-        each key - what is asked of the text between its parses. A text that is no job names none."""
+        """`(book,)` of a document: the book it names - what is asked of the text between its
+        parses. A text that is no job names none."""
         job = isinstance(document, dict) and isinstance(document.get('Calc'), dict)
-        return (book_name(document), Context.named(document)) if job else (None, {})
+        return (book_name(document) if job else None,)
 
     def named(self):
-        """`(etag, book, files)` of the text as it stands (`facts`), with nothing parsed where it
-        has not moved."""
+        """`(etag, book)` of the text as it stands (`facts`), with nothing parsed where it has not
+        moved."""
         with self.lock:
             return (self._current(),) + self._named
 
@@ -1051,17 +1044,15 @@ def settled(path):
 
 def poll_key(live, *own):
     """What a poll of the book `live` is keyed on before anything is parsed or opened:
-    `(etag, book, files, stamps, platter, day)` - the text's hash and the book it names
-    (`Book.named`), the sha256 of each file it names as this box reads it, each of the service's
-    `own` files with its stamp (`settled`), where the record stands (`spine.platter`) and today.
+    `(etag, book, stamps, platter, day)` - the text's hash and the book it names (`Book.named`),
+    each of the service's `own` files with its stamp (`settled`), where the record stands
+    (`spine.platter`) and today. A file the book names is read-only, so the text names its content.
     None while one of `own` is inside a tick of its last write."""
-    etag, book, named = live.named()
+    etag, book = live.named()
     stamps = tuple((path, settled(path)) for path in own)
     if any(stamp is None for _, stamp in stamps):
         return None
-    reader = Context()
-    files = tuple(sorted((key, name and reader.digest(name)[1]) for key, name in named.items()))
-    return etag, book, files, stamps, spine.platter(), time.strftime('%Y-%m-%d')
+    return etag, book, stamps, spine.platter(), time.strftime('%Y-%m-%d')
 
 
 def polled(live, read, answer, *own):
@@ -1883,9 +1874,9 @@ def as_of():
 def risk_etag(document):
     """What a consolidated risk run READS, hashed - the cache key, and the etag the answer carries.
 
-    The whole `Calc`, the sha256 of each file it names and today (`stamp`). Anything less serves
-    yesterday's vector: a rolled `Base_Date` over an unmoved deal tree, a file rewritten on disk,
-    or a market stating no date read on a new day, is a different risk.
+    The whole `Calc`, which names the files it reads, and today (`stamp`). Anything less serves
+    yesterday's vector: a rolled `Base_Date` over an unmoved deal tree, or a market stating no date
+    read on a new day, is a different risk.
     """
     return stamp(document, today=True)
 
@@ -2035,18 +2026,18 @@ def quote_run(run, reading=Context):
     instead, and why. `reading` makes the contexts it loads on (`spine.reading`).
 
     THE REFIT IS THE MARKET'S, NOT THE BOOK'S: kept on the live book (`Book.calibrations`) by the
-    hash of all a fit reads - the market, the calendar its benchmarks roll on, the files they name
-    and the day a market stating no date reads as (`stamp`) - and the blocks refitted, a later run
-    over that market - a booking, a second reader - values its own deals on it, one at a time from
-    a zero gradient."""
+    hash of all a fit reads - the market, the calendar its benchmarks roll on, the digests of the
+    files it loaded and the day a market stating no date reads as - and the blocks refitted, a
+    later run over that market - a booking, a second reader - values its own deals on it, one at a
+    time from a zero gradient."""
     loaded = load(run, reading())
     prices = loaded.current_cfg.params['Market Prices']
     universe = set(loaded.current_cfg.factor_universe()['resolved']) if prices else set()
     blocks = sorted(quote_blocks(loaded.current_cfg.params, universe))
     if not blocks:
         return utils.run_whole(loaded.run_job)[1], [], [], None
-    key = content_hash({'market': stamp(run, 'MergeMarketData', 'CalendDataFile', today=True,
-                                        reading=reading), 'blocks': blocks})
+    key = content_hash({'market': stamp(run, 'MergeMarketData', 'CalendDataFile', today=True),
+                        'files': loaded.current_cfg.files, 'blocks': blocks})
     kept = BOOK and BOOK.calibrations.get(key)
     if kept:
         context, note, lock = kept
@@ -2548,7 +2539,7 @@ def diary_etag(document):
     """What a DIARY compile reads, hashed - its cache key and the etag the answer carries.
 
     The deals, the calculation, which is where the base date is, and the calendar the schedules
-    roll on, by its bytes (`stamp`). NOT the market: a schedule is built from terms and a day, so
+    roll on (`stamp`). NOT the market: a schedule is built from terms and a day, so
     a tick that moves every value moves no row, and keying on the market would throw the compile
     away on every beat of the cadence.
     """
