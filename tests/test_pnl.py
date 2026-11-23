@@ -775,7 +775,7 @@ def test_a_live_window_nothing_can_price_is_named_and_never_a_500(recorded, desk
     assert answer.status_code == 422, answer.text
     said = answer.json()['detail']
     assert said.startswith('the run skipped what it could not price (1 Deals Skipped)'), said
-    assert "{} ('Cannot find EquityPriceVol.EQ',)".format(instrument_of('EQ-BIN')) in said, said
+    assert '{} Cannot find EquityPriceVol.EQ - '.format(instrument_of('EQ-BIN')) in said, said
 
 
 def structure(reference, legs):

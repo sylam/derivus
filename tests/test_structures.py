@@ -1287,7 +1287,7 @@ def test_a_book_deal_the_risk_step_cannot_price_refuses_the_quote(two_sided_book
     lands, its scale and cap the sold call's alone."""
     sold = option('SOLD', SPOT * 1.05, 'Call', buy_sell='Sell')
     with pytest.raises(utils.UnpriceableSchedule,
-                       match=r"FXOptionDeal UNPRICED \('Cannot find FXVol.EUR.JPY',\) - Skipped"):
+                       match=r"FXOptionDeal UNPRICED Cannot find FXVol.EUR.JPY - Skipped"):
         structures.quote(with_policy(holding(two_sided_book, [sold, UNPRICED])), COLLAR,
                          params(floor=SPOT * 0.95))
 
@@ -1334,7 +1334,7 @@ def test_a_leg_that_cannot_compile_refuses_the_quote(book, switch):
             ('Straddle', params(strike=SPOT), 'call'),
             ('TargetRedemptionForward', dict(accrual_params(target=TARGET),
                                              notional_currency='USD'), 'tarf')):
-        refused = r"{}-\w+_{} \('Cannot find InterestRate.USD',\)".format(name, role)
+        refused = r"{}-\w+_{} Cannot find InterestRate.USD - ".format(name, role)
         with pytest.raises(utils.UnpriceableSchedule, match=refused):
             structures.quote(blind, name, ask)
 

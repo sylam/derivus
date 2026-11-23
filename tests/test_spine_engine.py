@@ -753,7 +753,7 @@ def test_a_result_pinned_whose_replay_skipped_a_deal_is_refused_by_name(recorded
     standing = head(recorded)
 
     with pytest.raises(utils.UnpriceableSchedule,
-                       match=r"PIN-GAP \('Cannot find InterestRate.ZAR-SWAP',\) - Skipped"):
+                       match=r"PIN-GAP Cannot find InterestRate.ZAR-SWAP - Skipped"):
         derivus.Context().pin_result(
             spine.canonical(unseen), spine.values_of(context), spine.result_of(out),
             spine.replay(context))

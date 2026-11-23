@@ -6210,8 +6210,8 @@ def test_a_book_holding_a_deal_it_cannot_price_has_no_consolidated_risk(quoting,
         answer = CLIENT.get('/book/risk')
         assert (answer.status_code, answer.json().get('detail'), answer.json().get('code')) == (
             422, "the book will not price a consolidated risk run: the run skipped what it could "
-            "not price (1 Deals Skipped): FixedCashflowDeal CF_GAP ('Cannot find "
-            "InterestRate.ZAR-SWAP',) - Skipped", 'unpriced'), (path.name, answer.json())
+            "not price (1 Deals Skipped): FixedCashflowDeal CF_GAP Cannot find "
+            "InterestRate.ZAR-SWAP - Skipped", 'unpriced'), (path.name, answer.json())
 
 
 def curve_book(path, bootstrapper=True):
@@ -6964,7 +6964,7 @@ def test_a_deal_its_compile_skips_names_itself_and_the_factor_it_wanted_in_its_s
     finally:
         service.BOOK = None
     assert 'OPT_V - Cannot find EquityPriceVol.NOVOL' in rows['NS_V']['error'], rows['NS_V']
-    assert "OPT_PV ('Cannot find EquityPriceVol.NOVOL',)" in rows['NS_P']['error'], rows['NS_P']
+    assert 'OPT_PV Cannot find EquityPriceVol.NOVOL - Skipped' in rows['NS_P']['error'], rows['NS_P']
     assert [(rows[reference]['status'], rows[reference]['missing']['factor'])
             for reference in ('NS_V', 'NS_P')] == [('failed', 'EquityPriceVol.NOVOL')] * 2
 
