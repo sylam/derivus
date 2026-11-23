@@ -31,8 +31,8 @@ export function HeldCurve({ id }: { id: string }) {
   if (!held) {
     return (
       <div className="note">{marketOf(state)?.['Price Factors']?.[factor]
-        ? `Its curve has no quotes: the book holds ${factor} with no ${SURVIVAL_QUOTES} block `
-          + 'to solve it from, so stating its spreads writes the quotes the engine solves it from.'
+        ? `Its curve has no quotes: the book holds ${factor} as it was stated, solved from none. `
+          + 'Stating its spreads writes its quotes, and the curve is solved from them.'
         : 'No credit curve yet: a CVA against this counterparty has no default to read.'}</div>
     );
   }
@@ -46,8 +46,9 @@ export function HeldCurve({ id }: { id: string }) {
           {held.rows.map((row) => (
             <tr key={row.tenor}>
               <td>{row.tenor}</td>
-              <td className="n">{formatNumber(row.quote, 'basis')}</td>
-              <td className="hint">{row.type === 'Par_Spread' ? 'bp of par spread' : row.type}</td>
+              <td className="n">{row.type === 'Par_Spread' ? formatNumber(row.quote, 'basis')
+                : formatNumber(row.quote)}</td>
+              <td className="hint">{row.type === 'Par_Spread' ? 'par spread' : row.type}</td>
             </tr>
           ))}
         </tbody>
@@ -137,7 +138,7 @@ export function CreditCard({ id, title, recording }: {
           <span>recovery</span>
           <input value={form.recovery} inputMode="decimal"
                  onChange={(event) => edit({ recovery: event.target.value })} />
-          <span className="hint">the factor's convention is {
+          <span className="hint">the quotes' convention is {
             String(recoveryConvention(state.schema))}</span>
           {refusal('recovery')}
         </div>
