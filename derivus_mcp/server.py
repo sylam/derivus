@@ -1447,20 +1447,22 @@ def reject_ticket(reason: str, actor: str, ticket: str | None = None,
 
 
 @MCP.tool(annotations=READ_ONLY)
-def validate_book() -> dict:
+def validate_book(actor: str | None = None) -> dict:
     """What would stop the live book running, without running it: authoring messages per deal
     reference, the price factors named by deals that the market data has no block for, and what
-    the book's `Calculation` block's own declarations say against it."""
+    the book's `Calculation` block's own declarations say against it. `actor` is the seat asking,
+    which the queue admits as it admits a what-if."""
     live = service().call('GET', '/book')
-    return service().call('POST', '/validate', json=live['document'])
+    return service().call('POST', '/validate', json=dict(live['document'], **_stated(actor=actor)))
 
 
 @MCP.tool(annotations=READ_ONLY)
-def describe_book() -> dict:
+def describe_book(actor: str | None = None) -> dict:
     """What the engine makes of the live book without pricing it: deals counted by type, the
-    factor universe (resolved and missing), the calculation as loaded, and a crude cost read."""
+    factor universe (resolved and missing), the calculation as loaded, and a crude cost read.
+    `actor` is the seat asking, which the queue admits as it admits a what-if."""
     live = service().call('GET', '/book')
-    return service().call('POST', '/describe', json=live['document'])
+    return service().call('POST', '/describe', json=dict(live['document'], **_stated(actor=actor)))
 
 
 @MCP.tool(annotations=READ_ONLY)

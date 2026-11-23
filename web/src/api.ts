@@ -246,8 +246,10 @@ export const getQuotes = () => call<QuoteRead & { quotes: QuoteGiven[] }>('GET',
 // is a fill toward nothing - answered with the booking fields an acceptance answers
 export const fillDeal = (dealPath: string, fill: Record<string, unknown>) =>
   postDeal<Acceptance>({ action: 'fill', deal_path: dealPath, ...fill });
-export const postDescribe = (doc: JobDoc) => call<DescribeResult>('POST', '/describe', doc);
-export const postValidate = (doc: JobDoc) => call<ValidateResult>('POST', '/validate', doc);
+export const postDescribe = (doc: JobDoc) =>
+  call<DescribeResult>('POST', '/describe', signed(doc));
+export const postValidate = (doc: JobDoc) =>
+  call<ValidateResult>('POST', '/validate', signed(doc));
 export const postExecute = (doc: JobDoc) =>
   call<{ result_id: string; status: string }>('POST', '/execute', signed(doc));
 export const getResult = (id: string) => call<ResultSummary>('GET', `/results/${id}`);

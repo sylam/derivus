@@ -1317,9 +1317,9 @@ def test_the_credit_limits_reach_a_model_as_the_record_declares_them(book, recor
         'limits': {'LEI-A': limit}, 'blob': declared['blob'], 'lsn': 6}
 
 
-#: The tools that put work on the hub's compute, or value the book where the queue would, each with
-#: the arguments that carry it past its own checks to the queue's question.
-QUEUED = (('price_candidate', {}),
+#: The tools that put work on the hub's compute, value the book where the queue would, or read it as
+#: the queue admits a what-if, each with the arguments that carry it to the queue's question.
+QUEUED = (('price_candidate', {}), ('validate_book', {}), ('describe_book', {}),
           ('solve_deal', {'deal': json.loads(dump(BOOKED)), 'field': 'Amount'}),
           ('book_risk_summary', {}), ('recalc_xva', {'netting_sets': ['CLIENT_A']}),
           ('xva_increment', {'deal': json.loads(dump(BOOKED)), 'parent_reference': 'CLIENT_A'}),
@@ -1348,8 +1348,8 @@ def test_a_tool_that_asks_the_queue_answers_the_seat_it_names_and_refuses_none(
     carries a netting set, the FX vol bootstrapper, a short spot-model ladder and a ticked surface,
     so every tool reaches the queue's question.
 
-    Killing mutation: any one of the ten not forwarding its `actor`, which the service refuses
-    as unnamed.
+    Killing mutation: any one of them not forwarding its `actor`, which the service refuses as
+    unnamed.
     """
     from derivus_spine import SpineLog, policy
     from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
