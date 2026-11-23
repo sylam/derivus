@@ -1382,6 +1382,12 @@ def positions_of(book, lsn=None, folds=None):
     return [row for row in _rows('positions', lsn, folds) if row['book'] == book]
 
 
+def markets(lsn=None):
+    """The `markets` rows at `lsn`: the closes standing per market, the names a values vector was
+    declared under and the snapshots registered against a book."""
+    return _rows('markets', lsn)
+
+
 def entities(lsn=None):
     """Every legal entity the record declares at `lsn`: its name and the parent it is grouped
     under."""

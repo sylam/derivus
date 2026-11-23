@@ -3002,10 +3002,7 @@ def book_markets():
     registered against a book. 404 where no home is configured.
     """
     recorded()
-    projections = spine.package().projections
-    projector = projections.PROJECTORS['markets']
-    return spine.folded(lambda log: dict(
-        projector.rows(projections.fold(log, projector)), lsn=log.head()[0]))
+    return dict(spine.markets(), lsn=spine.pin()['lsn'])
 
 
 @app.post('/book/markets', summary='Point a market name at the values the book is carrying')
