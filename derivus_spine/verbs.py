@@ -175,7 +175,7 @@ def fill(log, instrument, quantity, counterparty, netting_set, execution_referen
             raise MalformedEvent(
                 'book: value_date {!r} is the day a fill\'s consideration settles, and this fill '
                 'states no price - there is no consideration to date'.format(value_date))
-        body['value_date'] = _day(value_date, 'book')
+        body['value_date'] = day(value_date)
     return _placed(body, 'book', agreement=agreement, portfolio=portfolio)
 
 
@@ -367,7 +367,7 @@ def declare_close(log, actor, market, values, effective_time=None, date=None):
     body = {'market': _own(_name(market, 'market', 'declare_close'), actor, 'declare_close'),
             'values_hash': address}
     if date is not None:
-        body['date'] = _day(date, 'declare_close')
+        body['date'] = day(date)
     # the markets fold files a close under its date, else the day it is true on
     envelope = keyed(log, 'official_close_declared', body, lambda: standing_under(
         log, 'markets', 'days', body['market'], date or (effective_time or now_stamp())[:10]),
@@ -806,9 +806,10 @@ def _movement(log, subject, status, amount, asset, kind, reference, effective_ti
     return moved if agreement is None else dict(moved, agreement=agreement)
 
 
-def _day(value, verb):
-    """`value` asserted to be a calendar day, exactly `YYYY-MM-DD` - two spellings of one day would
-    be two facts."""
+def day(value):
+    """`value` asserted to be a calendar day, exactly `YYYY-MM-DD`: two spellings of one day would
+    be two facts, a time on it names an instant rather than a close, and `2024` a year. The one
+    rule a day is read by, the record's verbs and the service's reads alike."""
     import datetime
 
     try:
@@ -816,7 +817,9 @@ def _day(value, verb):
             return value
     except ValueError:
         pass
-    raise MalformedEvent('{}: date is {!r}, and a day is exactly YYYY-MM-DD'.format(verb, value))
+    raise MalformedEvent('{!r} is not a day: a close is declared for a calendar date and money '
+                         'settles on one, so a date here is exactly YYYY-MM-DD - no time, no '
+                         'partial year'.format(value))
 
 
 def _own(name, actor, verb):

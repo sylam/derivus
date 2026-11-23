@@ -240,8 +240,10 @@ def test_the_diary_reaches_a_model_as_rows_it_can_act_on(book, tmp_path, monkeyp
     and `null` where it does not. A cashflow of 250,000.125 rides beside the book's own, whose
     whole amount a rounding leaves standing.
 
-    Killing mutation: the tool composing or rounding the rows, which puts a second reading of the
-    schedule between the model and the engine's own.
+    A `due_before` that is no day is refused in the record's words though the desk keeps no record.
+
+    Killing mutations: the tool composing or rounding the rows, which puts a second reading of the
+    schedule between the model and the engine's own; the day read unchecked, a time on it taken.
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
     assert mcp_server.book_deal(json.loads(dump(dict(BOOKED, Amount=250_000.125))))['written']
@@ -261,6 +263,9 @@ def test_the_diary_reaches_a_model_as_rows_it_can_act_on(book, tmp_path, monkeyp
     day = min(row['due_date'] for row in answer['rows'])
     assert mcp_server.book_diary(due_before=day)['rows'] == [
         row for row in answer['rows'] if row['due_date'] <= day]
+    refused = CLIENT.get('/book/diary', params={'due_before': day + 'T00:00'})
+    assert refused.status_code == 422 and refused.json()['detail'].startswith(
+        "'{}T00:00' is not a day".format(day)), refused.text
 
 
 def test_a_booking_s_value_date_reaches_the_record_and_the_diary_announces_its_premium(

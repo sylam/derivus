@@ -2225,9 +2225,6 @@ UNRESOLVED = ('the fixings policy in force orders no source for {}, so the recor
               'print is in force: declare the order and this row answers itself')
 
 #: What a close check is asked for: one day, and nothing that is not one.
-NOT_A_DAY = ('{!r} is not a day: a close is declared for a calendar date and money settles on one, '
-             'so a date here is exactly YYYY-MM-DD - no time, no partial year')
-
 #: What a strip is asked to read from: a position, and nothing that is not one.
 NOT_AN_LSN = ('{!r} is not a position: `since` takes the `lsn` the last page answered, or nothing '
               'at all for the newest page')
@@ -2606,20 +2603,14 @@ def waited(result_id):
 
 
 def read_day(date):
-    """`?date=` as the calendar day it names, or the 422 anything else earns.
+    """`?date=` as the calendar day it names, by the record's one rule for a day
+    (`derivus_spine.verbs.day`), or the 422 in its words - on a desk keeping no record too.
 
     A string compare against a row's `due_date` answers `legal` for an empty string and for a
-    garbage one, which is a wrong answer to the only question the verb exists to ask. The day has
-    to round-trip exactly: a time on it names an instant rather than a close, and `2024` names a
-    year rather than a day.
+    garbage one, which is a wrong answer to the only question the verb exists to ask.
     """
-    try:
-        day = datetime.date.fromisoformat(date).isoformat()
-    except (ValueError, TypeError):
-        raise HTTPException(422, NOT_A_DAY.format(date))
-    if day != date:
-        raise HTTPException(422, NOT_A_DAY.format(date))
-    return day
+    with spine.translating():
+        return spine.package().verbs.day(date)
 
 
 def read_lsn(since):

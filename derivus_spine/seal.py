@@ -32,16 +32,14 @@ authenticity rather than merely re-walk a chain it was handed.
 
 Keys are read from disk at every use rather than cached at construction, so a key destroyed at
 14:02 is destroyed at 14:02 even for a `Keys` held open across that moment.
+
+`cryptography` is imported where a key seals, opens, signs or is minted, so the package imports
+with the standard library alone and a desk keeping no record reads its rules without the extra.
 """
 import hashlib
 import hmac
 import os
 from pathlib import Path
-
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.serialization import (
-    Encoding, NoEncryption, PrivateFormat, PublicFormat)
 
 from .errors import CheckpointInvalid, HomeExists, HomeMissing, SealedBodyUnreadable
 
@@ -81,6 +79,10 @@ class Keys:
         Called once, by genesis. Raises `HomeExists` rather than overwrite: a second mint would
         strand every body already sealed under the key it replaced.
         """
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding, NoEncryption, PrivateFormat, PublicFormat)
+
         keys = cls(home)
         keys.keys.mkdir(parents=True, exist_ok=True)
         signing = Ed25519PrivateKey.generate()
@@ -127,6 +129,8 @@ class Keys:
         `aad` is the envelope the body binds to - authenticated but not encrypted, so an envelope
         field edited afterwards makes the body stop opening.
         """
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
         nonce = os.urandom(NONCE_BYTES)
         return nonce + AESGCM(self._require(FIRM, SealedBodyUnreadable)).encrypt(
             nonce, plaintext, aad)
@@ -138,6 +142,8 @@ class Keys:
         flipped ciphertext byte, an envelope that no longer matches the AAD it was sealed against.
         A caller that needs to tell those apart checks key presence first.
         """
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
         key = self._require(FIRM, SealedBodyUnreadable)
         if not isinstance(sealed, (bytes, bytearray)) or len(sealed) < NONCE_BYTES + TAG_BYTES:
             raise SealedBodyUnreadable(
@@ -156,6 +162,8 @@ class Keys:
 
     def sign_checkpoint(self, payload):
         """Ed25519 over the canonical (event_hash, lsn) payload, hex."""
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
         return Ed25519PrivateKey.from_private_bytes(
             self._require(SIGNING, HomeMissing)).sign(payload).hex()
 
@@ -167,6 +175,8 @@ class Keys:
         Static because it is the replica's check: it needs the published verifying key and nothing
         out of `keys/`.
         """
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
         try:
             signature = bytes.fromhex(sig_hex)
         except (TypeError, ValueError):

@@ -67,6 +67,29 @@ def imported_names(source):
     return names
 
 
+#: A process that cannot import `cryptography`, as a desk installed without the `enterprise` extra.
+NO_CRYPTOGRAPHY = '''import sys
+class Absent:
+    def find_spec(self, name, path=None, target=None):
+        if name.split('.')[0] == 'cryptography':
+            raise ImportError(name)
+sys.meta_path.insert(0, Absent())
+'''
+
+
+def test_the_record_s_rules_import_with_the_standard_library_alone():
+    """`cryptography` IS IMPORTED WHERE A KEY IS USED, so every module of the record the service
+    reads its rules through (`derivus.spine.package()`) imports with the standard library alone,
+    and a desk installed without the extra still reads a day by the record's rule.
+
+    Killing mutation: `seal.py` importing `cryptography` at the top of the module again.
+    """
+    ran = subprocess.run([sys.executable, '-c', NO_CRYPTOGRAPHY + (
+        'from derivus import spine\nprint(spine.package().verbs.day("2024-06-28"))\n')],
+        cwd=ROOT, capture_output=True, text=True)
+    assert (ran.returncode, ran.stdout.strip()) == (0, '2024-06-28'), ran.stderr[-2000:]
+
+
 def test_one_module_under_derivus_imports_the_spine_and_it_is_the_seam():
     """THE ONE-IMPORTER LAW, as a machine-checked fact rather than a promise. `derivus/spine.py` is
     the whole seam: no other module under `derivus/` may name `derivus_spine`, so an engine tree

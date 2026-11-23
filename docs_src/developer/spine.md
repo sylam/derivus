@@ -50,11 +50,16 @@ close times are a bank's declarations, never code. What is unbuilt is under [Ope
 ## The package and its dependency {#the-package}
 
 `derivus_spine` imports the standard library and `cryptography` (the `enterprise` extra) and never
-the engine. Only `derivus/spine.py` imports it, lazily, so `import derivus` never needs the extra.
+the engine, `cryptography` only where a key seals, opens, signs or is minted (`seal.py`): every
+module the service reads the record's rules through imports with the standard library alone, so a
+desk installed without the extra still reads a day by the record's one rule
+(`derivus_spine.verbs.day`, which `service.read_day` reads). Only `derivus/spine.py` imports the
+package, lazily, so `import derivus` never needs the extra.
 `DV_SPINE_HOME` is the whole switch, read per call: unset, nothing records and lanes are inert, and
 it never falls back to the CLI's default home, so a box where someone once ran `DV_Spine init` does
 not start recording. **Held by**
 `test_spine_imports.py::test_the_spine_imports_nothing_but_the_standard_library_and_cryptography`,
+`::test_the_record_s_rules_import_with_the_standard_library_alone`,
 `::test_one_module_under_derivus_imports_the_spine_and_it_is_the_seam`,
 `test_spine_engine.py::test_with_no_spine_home_the_edge_is_the_edge_it_always_was`.
 
