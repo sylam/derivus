@@ -171,7 +171,11 @@ named factors stand on, so a calculation bootstraps only what its book reads. A 
 same way (`service.bootstrap_selection`): the blocks it installed or ticked, every block of a
 family whose entry it added (`service.configure`), nothing having solved them, and what reads
 them; a patch of a factor a family reads, a retire, or nothing moved re-solves the whole market.
-**Held by**
+A move of the book's date (`service.curve_edit`) re-authors every curve block it can read on the
+new day and re-solves every block of every other family, which a credit or inflation curve's solve
+and an option fit read whatever curve they discount on, no family declaring it - a surface, quoted
+in years from the day, solving as it did. **Held by**
+`test_service.py::test_a_date_move_re_solves_every_block_whose_solve_reads_the_date`,
 `test_service.py::test_a_moved_curve_re_solves_what_reads_it_and_nothing_else`,
 `test_service.py::test_a_block_written_re_solves_itself_what_reads_it_and_a_family_newly_configured`,
 `test_service.py::test_a_discount_curve_stated_on_the_entry_re_solves_what_discounts_on_it`,

@@ -2384,6 +2384,32 @@ def test_a_block_written_re_solves_itself_what_reads_it_and_a_family_newly_confi
     assert written_factors(desk_curves) == narrowed, 'the whole market wrote another market'
 
 
+def test_a_date_move_re_solves_every_block_whose_solve_reads_the_date(desk_curves):
+    """A MOVED DATE MOVES EVERY SOLVE THAT READS IT. A credit curve's default swaps run to the
+    standard dates its tenors reach from the book's day, so its solve reads the date, which its
+    family declares no read of; discounting on a curve the book holds as a factor alone, it reads
+    none of the curve blocks the date verb re-authors. Moving the day re-solves it all the same,
+    with every block of every family but the curves', its factor rewritten on the new day.
+
+    Killing mutation: a date move narrowed to the curve blocks it re-authors and what reads them,
+    which leaves the credit curve solved on the old day.
+    """
+    body = json.loads(desk_curves.read_text())
+    factors = body['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+    factors['InterestRate.FLAT'] = json.loads(dump({
+        'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
+        'Curve': utils.Curve([], [[0.0, RATE], [10.0, RATE]])}))
+    desk_curves.write_text(json.dumps(body, indent=2), newline='\n')
+    assert CLIENT.post('/book/survival', content=dump({
+        'counterparty': 'CP_F', 'spread': 150.0, 'currency': 'USD', 'discount_rate': 'FLAT'}),
+        headers=JSON).json()['written'] is True
+    standing = written_factors(desk_curves)
+    dated = CLIENT.post('/book/date', json={'base_date': '2024-07-01'}).json()
+
+    assert dated['written'] is True and 'SurvivalProbPrices.CP_F' in dated['bootstrapped'], dated
+    assert written_factors(desk_curves)['SurvivalProb.CP_F'] != standing['SurvivalProb.CP_F']
+
+
 def test_a_quote_row_leaving_its_quote_out_is_refused_by_name_and_a_zero_quote_solves(
         desk_curves):
     """A ROW WITH NO NUMBER IDENTIFIES NO KNOT. `Quoted_Market_Value` is required of a curve's
@@ -8919,8 +8945,8 @@ def test_a_book_naming_a_market_data_file_is_read_off_the_file(file_book):
     file's strip; and a counterparty's survival curve and the date verb answer as they do on the
     book's explicit twin, the survival curve its quotes block, the family's entry and the one
     factor solved from them the bare block states, and the roll re-authoring the file's ZAR strip
-    on the new day into it, re-solving that curve alone and
-    naming the implied one as left standing. Before, each read the block: the status and the curve
+    on the new day into it, re-solving that curve and the credit curve, whose default swaps run
+    from the day, and naming the implied one as left standing. Before, each read the block: the status and the curve
     verb died on `KeyError: 'System Parameters'`, the risk read no quote, the survival curve
     refused `'Price Factors'` and the roll `'System Parameters'`.
 
@@ -8950,7 +8976,8 @@ def test_a_book_naming_a_market_data_file_is_read_off_the_file(file_book):
     survival, rolled = named
     assert survival['written'] is True and rolled['written'] is True
     assert (rolled['updated'], rolled['reauthored'], rolled['rewrote']) == (
-        ['InterestRatePrices.ZAR'], ['InterestRatePrices.ZAR'], ['InterestRate.ZAR'])
+        ['InterestRatePrices.ZAR'], ['InterestRatePrices.ZAR'],
+        ['InterestRate.ZAR', 'SurvivalProb.CPTY_A'])
     assert rolled['held_out'] == ["InterestRatePrices.ZAR-FX left as it stands - 'Spot_Days'"]
     assert CLIENT.get('/book/status').json()['base_date'] == '2024-07-01'
     assert {section: sorted(stated) for section, stated in block_of(book).items()} == {

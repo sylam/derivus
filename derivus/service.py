@@ -5621,8 +5621,9 @@ def curve_edit(document, curves, base_date, quotes={}, patch={}, held=(), stated
                reading=Context, families=()):
     """Curve blocks installed as ONE edit closure for `Book.mutate`, then what moved bootstrapped
     through `market_edit` where the book declares a `Bootstrapper Configuration`, with every block
-    of the `families` whose entry the caller added - a book declaring none moves its dates and
-    blocks and solves nothing.
+    of the `families` whose entry the caller added, and of every other configured family where the
+    book's date moves or is `stated` - a book declaring none moves its dates and blocks and solves
+    nothing.
 
     A block whose PLAN moved - a rolled date, a row held out - is dropped and re-installed, a
     structural change never being a value tick; one whose plan stands moves its values alone, so
@@ -5647,8 +5648,9 @@ def curve_edit(document, curves, base_date, quotes={}, patch={}, held=(), stated
             'the book rolled to {} while the terminal priced these rows, which are authored as of '
             '{} - a curve is never dated behind its own book and a snap never rolls one back, so '
             'post it again'.format(standing.isoformat(), base_date.isoformat()))
-    rolled, rolled_held = ({}, []) if base_date == standing and not stated else curve_quotes(
-        None, document, base_date, reading)[:2]
+    dated = base_date != standing or stated
+    rolled, rolled_held = curve_quotes(None, document, base_date, reading)[:2] if dated else (
+        {}, [])
     curves, held = dict(rolled, **curves), list(dict.fromkeys([*held, *rolled_held]))
     stamp_base_date(document, base_date)
     market, loaded = document['Calc']['MergeMarketData']['ExplicitMarketData'], market_of(
@@ -5659,9 +5661,13 @@ def curve_edit(document, curves, base_date, quotes={}, patch={}, held=(), stated
     for name in reauthored:
         reauthor(prices, name, curves[name])
     before = dict(market.get('Price Factors', {}))
-    outcome = market_edit(document, dict(quotes, **curves), patch,
-                          'Yes' if loaded['Bootstrapper Configuration'] else 'No',
-                          reading=reading, families=families)[1]
+    # a credit or an inflation solve, or an option fit, reads the date, which no family declares;
+    # the curves are re-authored here, a block that cannot be left standing as it is
+    configured = loaded['Bootstrapper Configuration']
+    outcome = market_edit(document, dict(quotes, **curves), patch, 'Yes' if configured else 'No',
+                          reading=reading, families=[
+                              family for family in configured if family != CURVE_BOOTSTRAPPER]
+                          if dated else families)[1]
     write = outcome['written']
     return write, (dict(outcome, base_date=base_date.isoformat(), reauthored=reauthored,
                         rewrote=rewrote(before, market.get('Price Factors', {})), held_out=held)
@@ -6000,10 +6006,13 @@ def book_date(request: dict):
     THE BOOK CARRIES THE DATE TWICE and this moves both: `System Parameters.Base_Date`, what a
     curve's benchmarks roll off, and `Calculation.Base_Date`, what the pricers run on. Every
     `InterestRatePrices` block is re-authored on the new day from its own rows and conventions -
-    the same benchmarks on new dates, the quotes exactly as they stand - and the whole market is
-    re-bootstrapped in the same atomic write where the book declares a bootstrapper, so a bootstrap
-    that complains writes NOTHING and answers 422 in its own words; a declared family with no quote
-    block yet has nothing to fit and passes. A block authored before it carried its conventions has
+    the same benchmarks on new dates, the quotes exactly as they stand - and they and every block
+    of every other configured family are re-bootstrapped in the same atomic write, the credit and
+    inflation curves and the option fits reading the day whatever curve they discount on, so a
+    bootstrap that
+    complains writes NOTHING and answers 422 in its own words; a declared family with no quote
+    block yet has nothing to fit and passes. A surface is quoted in years from the day and reads
+    nothing else, so it solves as it did. A block authored before it carried its conventions has
     nothing to re-roll under: it is named in `held_out` and left standing, as the tick leaves it.
 
     THIS IS THE VERB THAT GOES ANYWHERE - back as readily as forward. The curve verb and the tick
