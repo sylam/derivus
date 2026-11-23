@@ -5214,7 +5214,7 @@ class InterestRate(Construction):
           sub_fields=[
               F('Use', 'Text', default='Yes', values=['Yes', 'No'],
                 description='Whether this quote enters the solve'),
-              F('Deal', 'Container', default={},
+              F('Deal', 'Container', default=REQUIRED,
                 description='The instrument itself, authored as a deal of type DealType'),
               F('Descriptor', 'Text', default='', description='Free text naming the quote'),
               F('Tenor', 'Text', default='',
@@ -5227,7 +5227,7 @@ class InterestRate(Construction):
                 description='The instrument type the quote is a price for'),
               F('Quote_Type', 'Text', default='Par_Rate', values=['Par_Rate'],
                 description='What Quoted_Market_Value is; the solve holds the instrument at par'),
-              F('Quoted_Market_Value', 'Float', default=0.0,
+              F('Quoted_Market_Value', 'Float', default=REQUIRED,
                 description='The quote, in the unit its DealType reads: percent for a rate '
                             'benchmark, the outright in Buy_Currency per unit of '
                             'Sell_Currency for an FXForwardDeal')] + QUOTE_TWO_WAY,
@@ -5825,7 +5825,7 @@ class SurvivalProb(Construction):
           sub_fields=[
               F('Use', 'Text', default='Yes', values=['Yes', 'No'],
                 description='Whether this quote enters the solve'),
-              F('Deal', 'Container', default={},
+              F('Deal', 'Container', default=REQUIRED,
                 description='The terms of this row\'s default swap that differ from the block\'s '
                             'standard contract'),
               F('Descriptor', 'Text', default='', description='Free text naming the quote'),
@@ -5840,7 +5840,7 @@ class SurvivalProb(Construction):
               F('Quote_Type', 'Text', default='Par_Spread',
                 values=list(instruments.DealDefaultSwap.quoted),
                 description='What Quoted_Market_Value is; the solve holds the contract at par'),
-              F('Quoted_Market_Value', 'Float', default=0.0,
+              F('Quoted_Market_Value', 'Float', default=REQUIRED,
                 description='The quote: basis points of running spread for a Par_Spread, percent of '
                             'principal paid up front for an Upfront')] + QUOTE_TWO_WAY,
           description='One CDS quote: a tenor, what kind of number is quoted, the number, its '
@@ -6031,7 +6031,7 @@ class InflationRate(Construction):
           sub_fields=[
               F('Use', 'Text', default='Yes', values=['Yes', 'No'],
                 description='Whether this quote enters the solve'),
-              F('Deal', 'Container', default={},
+              F('Deal', 'Container', default=REQUIRED,
                 description='The terms of this row\'s swap that differ from the block\'s standard '
                             'one, its legs under Children'),
               F('Descriptor', 'Text', default='', description='Free text naming the quote'),
@@ -6044,7 +6044,7 @@ class InflationRate(Construction):
                 description='The instrument type the quote is a price for'),
               F('Quote_Type', 'Text', default='Breakeven', values=['Breakeven'],
                 description='What Quoted_Market_Value is; the solve holds the swap at par'),
-              F('Quoted_Market_Value', 'Float', default=0.0,
+              F('Quoted_Market_Value', 'Float', default=REQUIRED,
                 description='The breakeven: the fixed rate in percent the swap compounds annually '
                             'against the index ratio')] + QUOTE_TWO_WAY,
           description='One zero-coupon swap quote: a tenor, what kind of number is quoted, the '

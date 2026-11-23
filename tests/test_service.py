@@ -2384,6 +2384,33 @@ def test_a_block_written_re_solves_itself_what_reads_it_and_a_family_newly_confi
     assert written_factors(desk_curves) == narrowed, 'the whole market wrote another market'
 
 
+def test_a_quote_row_leaving_its_quote_out_is_refused_by_name_and_a_zero_quote_solves(
+        desk_curves):
+    """A ROW WITH NO NUMBER IDENTIFIES NO KNOT. `Quoted_Market_Value` is required of a curve's
+    row, so an overnight deposit leaving it out is refused naming it and nothing is written, as no
+    default stands in for a quote; the same deposit quoting 0.0 states one - a par rate of
+    nothing - and its block solves, nothing judging a quote's truth by its value.
+
+    Killing mutation: the quote's 0.0 default put back on the `InterestRate` row, which solves the
+    unquoted deposit at a zero rate and writes the block.
+    """
+    def posted(name, edit):
+        block = {'instrument': curve_block(desk_curves, 'USD')}
+        block['instrument']['Points'] = block['instrument']['Points'][:1]
+        for row in block['instrument']['Points']:
+            edit(row)
+        return CLIENT.post('/book/market', content=dump({'quotes': {name: block}}),
+                           headers=JSON).json()
+
+    before = desk_curves.read_bytes()
+    unquoted = posted('InterestRatePrices.USD-BARE', lambda row: row.pop('Quoted_Market_Value'))
+    assert (unquoted['written'], desk_curves.read_bytes() == before) == (False, True), unquoted
+    assert any('Quoted_Market_Value' in said for said in unquoted['refused']), unquoted
+    zero = posted('InterestRatePrices.USD-ZERO', lambda row: row.update(Quoted_Market_Value=0.0))
+    assert zero['written'] is True and zero['bootstrapped'] == ['InterestRatePrices.USD-ZERO'], zero
+    assert 'InterestRate.USD-ZERO' in written_factors(desk_curves)
+
+
 def test_a_discount_curve_stated_on_the_entry_re_solves_what_discounts_on_it(desk_curves):
     """`Discount_Rate` stated on the curve family's entry rather than the blocks: the OIS tick
     re-solves the curve discounting on it, which then stands as a whole bootstrap solves it.
@@ -4083,9 +4110,7 @@ def test_a_set_up_a_bootstrap_complains_about_writes_nothing(desk_setup, tmp_pat
     result, outcome = set_up({'pair': 'EURZAR'})
 
     assert result['status'] == 'done' and outcome['written'] is False, result
-    # the row's `Deal` reads its declared default, an empty deposit, which states no maturity
-    assert outcome['refused'] == [
-        'the bootstrap asked for Maturity_Date and this market does not carry it']
+    assert outcome['refused'] == ['the bootstrap asked for Deal and this market does not carry it']
     assert [row for row in outcome['held_out'] if row.startswith('InterestRatePrices.OLD left as')]
     assert desk_setup.read_bytes() == before, 'a refused set-up moved the book'
 
