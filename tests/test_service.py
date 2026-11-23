@@ -1170,7 +1170,7 @@ def test_a_book_pointed_at_another_calendar_refits_the_quotes_the_risk_is_read_i
     dates, the served book's risk is the one a book served afresh reads - the deposit's derivative
     moves from about 3,031 to 2,995 per unit of its quote.
 
-    Killing mutation: the refit kept under the market section alone, which reads the old
+    Killing mutation: the files the fit loaded dropped from its key, which reads the old
     calendar's fit.
     """
     assert set_up_curve().status_code == 200
