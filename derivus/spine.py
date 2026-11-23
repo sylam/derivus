@@ -832,7 +832,7 @@ def _balances(document, papers, lsn=None, folds=None):
     sets = {deal.get('Reference'): papers.get(deal.get('Reference'), deal) for deal in (
         node['Instrument']['.Deal'] for _, node in netting_sets(document))}
     sets = {agreement: terms for agreement, terms in sets.items()
-            if terms.get('Collateralized') == 'True'}
+            if instruments.NettingCollateralSet.collateralised(terms)}
     if not sets:
         return {}
     spine = package()

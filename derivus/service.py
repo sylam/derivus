@@ -4406,7 +4406,7 @@ def set_terms(deal):
     every run reads, where only 'True' collateralises a set.
     """
     support = deal.get('Credit_Support_Amounts') or {}
-    return support.get('Counterparty') or '', deal.get('Collateralized') == 'True'
+    return support.get('Counterparty') or '', instruments.NettingCollateralSet.collateralised(deal)
 
 
 def xva_document(document, node, counterparty):

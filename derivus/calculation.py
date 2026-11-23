@@ -6057,7 +6057,7 @@ class SACCR(NettingSetCalculation):
         its first: RC (52.10, 52.18), PFE (52.20) and EAD (52.1), a margined set's capped at its
         unmargined one (52.2)."""
         terms = agreement['Instrument'].field
-        margined = terms['Collateralized'] == 'True'
+        margined = instruments.NettingCollateralSet.collateralised(terms)
         mpor = max(terms['Liquidation_Period'], self.floors[1] if len(indices) > self.floors[2]
                    else self.floors[0]) if margined else None
         valued = [index for index in indices if base[index][0] is not None]

@@ -1410,14 +1410,21 @@ class NettingCollateralSet(Deal):
                      base_date)
         return ts, tl
 
+    @staticmethod
+    def collateralised(terms):
+        """Whether a run collateralises the set its `terms` state: `Collateralized` is 'True',
+        the one reading every reader of a set's terms asks - the engine, the service and the record
+        alike."""
+        return terms.get('Collateralized') == 'True'
+
     def closeout_window(self):
         """The liquidation and settlement periods a collateralised set closes out over."""
-        if self.field['Collateralized'] == 'True':
+        if self.collateralised(self.field):
             return self.field['Liquidation_Period'], self.field['Settlement_Period']
 
     def get_report_dates(self, time_grid, base_date):
         reval_dates = super(NettingCollateralSet, self).get_report_dates(time_grid, base_date)
-        if self.field['Collateralized'] == 'True':
+        if self.collateralised(self.field):
             # a collateralised date reports where its settlement and liquidation dates are on the grid
             reval_dates = [date for date in reval_dates if all(
                 x in time_grid.mtm_dates for x in self.calc_liquidation_settlement_dates(date, base_date))]
@@ -1427,7 +1434,7 @@ class NettingCollateralSet(Deal):
         if not node_children:
             # a set holding no deal reaches no date of its own and moves no other set's
             node_children, node_resets, node_settlements = (), {base_date}, {}
-        if self.field['Collateralized'] == 'True':
+        if self.collateralised(self.field):
             for child in node_children:
                 child.add_reval_date_offset(1)
                 settle_liquid = {self.field['Settlement_Period'],
@@ -1496,7 +1503,7 @@ class NettingCollateralSet(Deal):
         collateralised set's run refuses them (`meaningless`). Reads defensively: validation runs
         BEFORE the contract is known to hold.
         """
-        if self.field['Collateralized'] == 'True' \
+        if self.collateralised(self.field) \
                 and not self.field.get('Agreement_Currency'):
             yield 'Collateralized is True, so Agreement_Currency is required'
         yield from self.meaningless()
@@ -1512,7 +1519,7 @@ class NettingCollateralSet(Deal):
         and on a collateralised set an asset weighing nothing or less and a threshold on the other
         side of zero from the level of the set's value it is."""
         assets = self.field.get('Collateral_Assets')
-        collateralised = self.field.get('Collateralized') == 'True'
+        collateralised = self.collateralised(self.field)
         for table in self.collateral(assets):
             for i, row in enumerate(assets[table]):
                 if not isinstance(row, dict):
@@ -1563,7 +1570,7 @@ class NettingCollateralSet(Deal):
                 # if it's missing make the Survival_Prob None (so that later we can set it to 1)
                 field_index['Survival_Prob'] = None
 
-        if self.field['Collateralized'] == 'True':
+        if self.collateralised(self.field):
             said = next(self.meaningless(), None)
             if said:
                 raise ValueError('{}: {}'.format(self.field.get('Reference'), said))
@@ -1772,7 +1779,7 @@ class NettingCollateralSet(Deal):
 
         # a balance reads the cash ledger a simulation keeps over its paths; given markets on one
         # date, a scenario valuation's, keep none and report the net as a base valuation does
-        if self.field['Collateralized'] == 'True' and shared.simulation_batch > 1 and \
+        if self.collateralised(self.field) and shared.simulation_batch > 1 and \
                 hasattr(shared, 'reset_cashflows'):
             C_base = 0.0
 
