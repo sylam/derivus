@@ -702,7 +702,10 @@ Office workspace (`web/src/views/BackOfficeView.tsx`) is the seat that signs, pa
 posts: the `pending` tickets with approve and refuse-with-a-reason, those `elsewhere` read only
 beside the record's sentence for why this seat does not sign them, then the `payments`,
 `unconfirmed` and `calls` lists - each the list of its own verb - every row beside the fact that
-clears it, with the day's close check and the close behind its verdict. The Paper workspace
+clears it, with the day's close check and the close behind its verdict. A list the seat clears at
+no node (every `may` of its act refused) says so in plain words with the verb a seat clearing it
+holds (`clearsNone`), quoting no denial, since nothing was asked; the record's sentence stands
+where a control would file one. **Held by** `web/scripts/desk_check.mjs`. The Paper workspace
 (`web/src/views/PaperView.tsx`) lists the entities and the agreements with their terms and
 declares both, an agreement's terms the netting set rendered off the `NettingCollateralSet`
 declaration `/schema` publishes, and opens on what a row of the strip names. What a set's terms

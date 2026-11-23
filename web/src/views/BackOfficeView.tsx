@@ -10,7 +10,8 @@ import { NO_PAPER } from '../positions';
 import { clientText, quoteAt, spreadText } from '../quote';
 import { noWork } from '../spine';
 import {
-  type Act, grantsRead, heldBack, marketOf, opened, useApp, useQuoteList, useQuotes, useRead,
+  type Act, clearsNone, grantsRead, heldBack, marketOf, opened, useApp, useQuoteList, useQuotes,
+  useRead,
 } from '../state';
 import { formatNumber, ungrouped } from '../tokens';
 import { ticketWords, tradeAt, tradeName, waitedText } from '../trade';
@@ -68,7 +69,7 @@ export function BackOfficeView() {
                 </table>
               </div>
             ) : <div className="nested">
-              {nothing(heldBack(state, act), 'nothing waits on this seat')}
+              {nothing(clearsNone(state, act), 'nothing waits on this seat')}
             </div>}
           </section>
         ))}
@@ -77,8 +78,8 @@ export function BackOfficeView() {
   );
 }
 
-/** A list this seat clears none of: what holds it from clearing one, else that none waits - the
- * worklist lists only the rows a seat clears. */
+/** An empty list: that this seat clears none of it where it does not (`clearsNone`), else that
+ * none waits - the worklist lists only the rows a seat clears. */
 const nothing = (hold: string | null, none: string) =>
   <div className={hold ? 'note' : 'hint signing'}>{hold ?? none}</div>;
 

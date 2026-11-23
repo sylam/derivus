@@ -598,6 +598,19 @@ check('nothing is held back off a desk that records, before the grants of the se
        state.heldBack(seated(null, '', { grants: { asked: '', read: null, refused: NO_SEAT } }),
                       'fill')],
       [null, null, null, null, NO_SEAT]);
+const SETTLES = (fx) => mays({ status_transition: { HARBOURLINE: SAID.book, 'HARBOURLINE/fx': fx } });
+check('a list the seat clears none of says so in plain words where every node refuses its act, '
+      + 'naming the verb a seat clearing it holds; one it clears at any node, or an act no node '
+      + 'judges, says nothing; a refused read says its own words',
+      "the record's denial shown on the list, which quotes a denial nothing filed and names an "
+      + 'event type; a list the seat clears at one node said to be none of its; or a refused read '
+      + 'said as a plain no',
+      [state.clearsNone(SETTLES(SAID.book), 'status_transition'),
+       state.clearsNone(SETTLES(null), 'status_transition'), state.clearsNone(mays(MAY), 'confirmed'),
+       state.clearsNone(seated(null, '', { grants: { asked: '', read: null, refused: NO_SEAT } }),
+                        'status_transition')],
+      ['sales-1 does not clear these: a seat holding settle over this book does', null, null,
+       NO_SEAT]);
 const UNREAD = { asked: 'sales-1', read: null, refused: null };
 check('a read the grants gate waits on a desk that records until they are read for the seat on '
       + 'screen - none read yet, or those of the seat typed before - and no longer once they are, '
