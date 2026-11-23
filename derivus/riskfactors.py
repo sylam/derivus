@@ -26,7 +26,7 @@ from scipy.special import ndtr
 #: `Price Factor Interpolation` may be set to. Listed by the classes that opt in.
 INTERPOLATION_METHODS = ('HermiteRT', 'Hermite', 'LinearRT', 'Linear')
 
-#: What a routed factor is built with where the section names none for it - `construct_factor`'s
+#: What a routed factor is built with where the section names none for it - `interpolation_scheme`'s
 #: fallback below, and `Factor1D.check_interpolation`'s own last branch.
 INTERPOLATION_DEFAULT = 'Linear'
 
@@ -52,6 +52,13 @@ factor_interp_map = {
     'Linear': 'Linear',
     'LinearExtrapolate': 'LinearExtrapolate'
 }
+
+
+def interpolation_scheme(name):
+    """The scheme `Factor1D.check_interpolation` builds a curve under for the method `name` a
+    section or a factor states (`factor_interp_map`), `INTERPOLATION_DEFAULT` for one it names none
+    or none known."""
+    return factor_interp_map.get(name, INTERPOLATION_DEFAULT)
 
 
 class Factor0D(object):
@@ -109,7 +116,7 @@ class Factor1D(object):
         # not used unless we interpolate different parts of the curve differently
         near_interp = self.param.get('Near_Interpolation')  # e.g. 'LinearRT'
         if near_interp and self.param.get('Near_Date') and self.base_date is not None:
-            near_interp = factor_interp_map.get(near_interp, 'Linear')
+            near_interp = interpolation_scheme(near_interp)
             near_date = self.param['Near_Date']  # implement parse
             near_tenor = np.clip(
                 utils.DayCount.accrual(
@@ -1734,10 +1741,8 @@ def construct_factor(factor, price_factors, factor_interp, base_date=None):
     # check the interpolation on interest Rates - can add more methods/price factors as desired
     pf_local = dict(pf)  # shallow copy
     if factor.type in ['InterestRate', 'InflationRate', 'ForwardRate']:
-        interp_method = factor_interp.search(factor, pf, True)
-        pf_local.update(
-            {'Interpolation' : factor_interp_map.get(interp_method, INTERPOLATION_DEFAULT),
-             'base_date': base_date})
+        method = factor_interp.search(factor, pf, True)
+        pf_local.update({'Interpolation': interpolation_scheme(method), 'base_date': base_date})
     return globals().get(factor.type)(pf_local)
 
 

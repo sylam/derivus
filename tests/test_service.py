@@ -5119,11 +5119,13 @@ def test_describe_names_the_process_each_factor_is_simulated_with_as_a_run_resol
 
 def test_describe_names_the_scheme_each_interpolated_type_takes_where_no_rule_names_one():
     """THE TYPE'S SCHEME IS THE ENGINE'S ANSWER, which the Curves and Bootstrapper screens read
-    rather than resolving it. A type the section gives a default takes it; one it states blank, or
-    states nothing for, takes the engine's own fallback - a blank names no scheme.
+    rather than resolving it. A type the section gives a default takes the scheme the engine builds
+    that method under - `HermiteRTInterpolationCurveGetValue` is `HermiteRT`; one it states blank,
+    or states nothing for, takes the engine's own fallback - a blank names no scheme.
 
-    Killing mutation: a stated default taken as it stands, blank or not, which answers the blank
-    inflation default as the scheme and leaves a curve of that type on a scheme nobody named.
+    Killing mutations: a stated default taken as it stands, blank or not, which answers the blank
+    inflation default as the scheme and leaves a curve of that type on a scheme nobody named; the
+    section's method served unmapped, `HermiteRTInterpolationCurveGetValue` for the rate type.
     """
     document = job(sections={'Price Factor Interpolation': {'.ModelParams': {
         'modelfilters': {}, 'modeldefaults': {'InterestRate': 'HermiteRTInterpolationCurveGetValue',
@@ -5131,7 +5133,7 @@ def test_describe_names_the_scheme_each_interpolated_type_takes_where_no_rule_na
 
     schemes = CLIENT.post('/describe', content=dump(document), headers=JSON).json()['interpolation']
 
-    assert schemes['InterestRate'] == 'HermiteRTInterpolationCurveGetValue'
+    assert schemes['InterestRate'] == 'HermiteRT'
     assert schemes['InflationRate'] == service.riskfactors.INTERPOLATION_DEFAULT
     assert set(schemes) == set(service.mapping['Interpolation_factor_map'])
 

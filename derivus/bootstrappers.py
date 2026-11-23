@@ -5017,8 +5017,7 @@ def knot_prices(curve, price_factors, factor_interp, base_date, calendars, conve
         'Front_Day_Count', 'Compounding')}, **{key: as_period(stated[key]) for key in (
         'Fixed_Frequency', 'Float_Frequency')})
     if factor.get('Near_Interpolation') and factor.get('Near_Date'):
-        block['Near_Interpolation'] = riskfactors.factor_interp_map.get(
-            factor['Near_Interpolation'], riskfactors.INTERPOLATION_DEFAULT)
+        block['Near_Interpolation'] = riskfactors.interpolation_scheme(factor['Near_Interpolation'])
         block['Near_Tenor'] = pd.DateOffset(days=(factor['Near_Date'] - base_date).days)
 
     code = utils.DayCount.code(block['Day_Count'])

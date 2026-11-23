@@ -869,10 +869,12 @@ def describe(job: dict):
 
 def type_schemes(params):
     """`{factor type: scheme}` - what a factor of each interpolated type is built under where no
-    `Price Factor Interpolation` rule names it: the section's default for the type, else the
-    engine's own fallback, the scheme `curve_interpolation` resolves such a curve to."""
-    return {kind: params['Price Factor Interpolation'].modeldefaults.get(kind)
-            or riskfactors.INTERPOLATION_DEFAULT for kind in mapping['Interpolation_factor_map']}
+    `Price Factor Interpolation` rule names it: the section's default for the type resolved as the
+    engine resolves it (`riskfactors.interpolation_scheme`), the scheme `curve_interpolation`
+    resolves such a curve to."""
+    defaults = params['Price Factor Interpolation'].modeldefaults
+    return {kind: riskfactors.interpolation_scheme(defaults.get(kind))
+            for kind in mapping['Interpolation_factor_map']}
 
 
 def factor_processes(config):
@@ -5471,7 +5473,8 @@ VOL_BOOTSTRAPPER = bootstrappers.FXVol.__name__
 def curve_interpolation(market, curve):
     """`(method, source)` for one curve - the scheme it IS built under, resolved the way
     `construct_factor` resolves it: the section's rule where one names the curve, else the routed
-    type's default, else the engine's own fallback. `source` is `curve` or `default`."""
+    type's default, as the engine resolves either (`riskfactors.interpolation_scheme`). `source` is
+    `curve` or `default`."""
     declared = mapping['Configuration']['Price Factor Interpolation']
     half = market.get('Price Factor Interpolation', {}).get('.ModelParams', {})
     params = ModelParams((half.get(declared['entry']) or {}, half.get(declared['rules']) or {}))
@@ -5480,7 +5483,7 @@ def curve_interpolation(market, curve):
         factor, market.get('Price Factors', {}).get(utils.check_tuple_name(factor), {}), True)
     ruled = any(condition == (declared['key'], curve)
                 for condition, _ in params.modelfilters.get(CURVE_BOOTSTRAPPER, ()))
-    return method or riskfactors.INTERPOLATION_DEFAULT, 'curve' if ruled else 'default'
+    return riskfactors.interpolation_scheme(method), 'curve' if ruled else 'default'
 
 
 def wire_stamp(stated):
