@@ -58,10 +58,12 @@ export type Line = {
  * declared, an agreement in force and where the book holds its netting set - each said on a desk
  * that records, the netting sets naming it on one that does not - its credit curve stated in the
  * market's `factors`, and each factor its agreements' terms name that the market lacks
- * (`Agreement.lacks`) but the credit curve, which has its line. */
+ * (`Agreement.lacks`) but the credit curve, which has its line, or what refused that walk
+ * (`unwalked`). */
 export function readiness(id: string, entities: Entity[] | null, agreements: Agreement[],
                           doc: JobDoc | null, reconcile: Reconcile | null,
-                          factors: Record<string, unknown> | undefined): Line[] {
+                          factors: Record<string, unknown> | undefined,
+                          unwalked: string[] | null = null): Line[] {
   const credit = `${SURVIVAL}.${id}`;
   const lines: Line[] = entities ? paperLines(id, entities, agreements, doc, reconcile) : [{
     tone: 'note', text: `This desk keeps no record: ${id} is the counterparty ${
@@ -72,7 +74,9 @@ export function readiness(id: string, entities: Entity[] | null, agreements: Agr
       tone: 'todo', text: `${row.agreement} names ${factor}, which the market does not hold.` })));
   return [...lines, factors?.[credit] ? { tone: 'ok', text: `Its credit curve ${credit} is stated.` }
     : { tone: 'todo', fix: 'curve', text: `No credit curve ${credit}: its CVA cannot be read.` },
-    ...wanting];
+    ...wanting, ...(unwalked ? [{ tone: 'warn' as const, text: 'What its terms name that the '
+      + `market lacks is not read, the book's calculation refusing it: ${unwalked.join('; ')}.` }]
+      : [])];
 }
 
 function paperLines(id: string, entities: Entity[], agreements: Agreement[], doc: JobDoc | null,

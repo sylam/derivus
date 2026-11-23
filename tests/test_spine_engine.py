@@ -1131,7 +1131,8 @@ def test_the_agreements_read_names_what_paper_never_states(recorded):
                        headers=JSON).status_code == 200
     read = CLIENT.get('/book/agreements').json()
     assert read == {'agreements': [], 'settlement_state': {
-        'fields': ['Opening_Balance'], 'collateral_columns': ['Amount', 'Units', 'Principal']}}
+        'fields': ['Opening_Balance'], 'collateral_columns': ['Amount', 'Units', 'Principal']},
+        'lacks_refused': None}
     named = read['settlement_state']
     tables = {'Amount': 'Cash_Collateral', 'Units': 'Equity_Collateral',
               'Principal': 'Bond_Collateral'}

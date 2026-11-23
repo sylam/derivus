@@ -63,11 +63,14 @@ export type Agreement = {
 export type Paper = {
   positions: Position[]; entities: Entity[]; agreements: Agreement[]; unstated: SettlementState;
   nodes: string[];
+  /** What refused the walk of what the agreements' terms lack, null where it was asked. */
+  lacksRefused: string[] | null;
 };
 
 /** The paper of a desk that has read none - or records nothing. */
 export const NO_PAPER: Paper = { positions: [], entities: [], agreements: [],
-                                 unstated: { fields: [], collateral_columns: [] }, nodes: [] };
+                                 unstated: { fields: [], collateral_columns: [] }, nodes: [],
+                                 lacksRefused: null };
 
 /** What the Paper tab says in place of the paper where no record is kept, null on a desk that
  * records: agreements are not declared here, and a set's own terms are read on its client's page

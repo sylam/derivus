@@ -180,7 +180,8 @@ export function App() {
         if (!live) return;
         dispatch({ type: 'PAPER_LOADED', paper: {
           ...(signed && { entities: signed[0].entities, agreements: signed[1].agreements,
-                          unstated: signed[1].settlement_state }),
+                          unstated: signed[1].settlement_state,
+                          lacksRefused: signed[1].lacks_refused }),
           ...(held && { positions: held[0].positions,
                         nodes: held[1].portfolios.map((node) => node.path) }) } });
         if (signed) answered.current.paper = at.paper;

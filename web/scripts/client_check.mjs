@@ -153,6 +153,17 @@ const NAMING = { Object: SET, Reference: 'CSA-MAR', Agreement_Currency: 'CHF', F
   Credit_Support_Amounts: { Counterparty: 'MAR' }, Collateral_Assets: {
     Cash_Collateral: [{ Currency: 'SEK', Funding_Rate: 'USD-FUND' }, { Currency: 'CHF' }, { Currency: '' }],
     Equity_Collateral: [{ Equity: 'ACME' }] } };
+const MAR_PAPER_NONE = { agreement: 'CSA-MAR', entity: 'MAR', kind: 'ISDA 2002', terms: {},
+                         lacks: null };
+check("a client's readiness says the gaps went unread where the book's calculation refused the walk, "
+      + "in the calculation's own words, and nothing of it where the walk was asked",
+      'the refusal left unsaid, which reads a client whose gaps nobody read as having none',
+      [null, ["Greeks is 'Maybe'"]].map((unwalked) => client.readiness(
+        'MAR', ENTITIES, [{ ...MAR_PAPER_NONE }], DOC, null, { 'SurvivalProb.MAR': {} }, unwalked)
+        .filter((line) => line.tone === 'warn').map((line) => line.text)),
+      [[], ["What its terms name that the market lacks is not read, the book's calculation "
+            + "refusing it: Greeks is 'Maybe'."]]);
+
 const worded = (terms, collateralized = false) => {
   const reading = client.termsReading({ terms, collateralized }, DECLARED);
   return [...reading.terms, ...reading.conventions].map((term) => term.key);

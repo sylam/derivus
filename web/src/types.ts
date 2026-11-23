@@ -423,6 +423,8 @@ export type BookXva = {
   funding: Funding;
   /** The credit limits the record declares, by entity; none where it declares none. */
   limits: CreditLimit[];
+  /** What refused the walk of what each set's terms lack, null where it was asked. */
+  lacks_refused: string[] | null;
 };
 
 /** `GET /book/xva/{reference}/profile`: one set's exposure profile off its row, under the run it

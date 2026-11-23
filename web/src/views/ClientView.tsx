@@ -74,7 +74,8 @@ export function ClientView() {
   const pages = [...ids].filter(Boolean).sort().map((id) => {
     const own = agreementsOf(id, reads.agreements, rows, xva.data?.sets ?? []);
     const lines = readiness(id, reads.entities, own, doc, state.record.reconcile,
-                            market?.['Price Factors']);
+                            market?.['Price Factors'], recording ? paper.data?.lacksRefused ?? null
+                              : xva.data?.lacks_refused ?? null);
     return { id, lines, own };
   }).sort((a, b) => Number(ready(a.lines)) - Number(ready(b.lines)));
 

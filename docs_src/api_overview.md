@@ -512,7 +512,8 @@ its Paper workspace `/book/entities` and `/book/agreements` - which names under
 `settlement_state` the balance and the holdings no agreement's terms state, and on each agreement
 whether a run collateralises it (`collateralized`) and the price factors its terms name that the
 served book's market lacks (`lacks`, the engine's walk of the terms alone, null where no book is
-served; each `/book/xva` row says the same of its set) - an agreement's terms rendered off the
+served or the book's calculation refuses the walk, that refusal stated once under `lacks_refused`;
+each `/book/xva` row says the same of its set) - an agreement's terms rendered off the
 `NettingCollateralSet` declaration `/schema` publishes.
 
 **The files a job names.** A job names its market data file and its calendar by path

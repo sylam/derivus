@@ -3751,18 +3751,23 @@ def book_agreements():
     """`{agreements, settlement_state}` - every agreement the record declares, with the entity, the
     kind and the terms it was declared under, whether a run collateralises them (`set_terms`), the
     price factors they name that the served book's market holds no block for (`terms_read`), null
-    where no book is served, and what terms never state
+    where no book is served or its calculation refuses the walk, that refusal under
+    `lacks_refused`, and what terms never state
     (`agreement_terms`): the netting set's balance `fields` and the `collateral_columns` of every
     `Collateral_Assets` table. 404 where no home is configured."""
     recorded()
     rows = spine.agreements()
-    lacks = {} if BOOK is None else polled(BOOK, 'agreements', lambda document, _: {
-        row['agreement']: read['lacks'] for row, read in zip(
-            rows, terms_read(document, [row['terms'] for row in rows]))})
+
+    def walked(document, _):
+        reads, refused = terms_read(document, [row['terms'] for row in rows])
+        return {row['agreement']: read['lacks'] for row, read in zip(rows, reads)}, refused
+
+    lacks, refused = ({}, None) if BOOK is None else polled(BOOK, 'agreements', walked)
     return {'agreements': [dict(row, collateralized=set_terms(row['terms'])[1],
                                 lacks=lacks.get(row['agreement'])) for row in rows],
             'settlement_state': {'fields': list(AGREEMENT_STATE),
-                                 'collateral_columns': list(HOLDING_AMOUNTS)}}
+                                 'collateral_columns': list(HOLDING_AMOUNTS)},
+            'lacks_refused': refused}
 
 
 def policy_declared(declare, request, section):
@@ -4778,6 +4783,10 @@ def book_xva_view():
     this answer carries, so a restated limit reads at once and nothing runs. Empty where none is
     declared and where the desk keeps no record.
 
+    Each set carries what its terms read in the book's market, `held` and `lacks` (`terms_read`);
+    where the book's calculation refuses the walk of the gaps, each `lacks` is null and
+    `lacks_refused` states the refusal once, the holdings answered all the same.
+
     A POLL WITH NOTHING MOVED IS A LOOKUP: the rows, `funding` and the limits are kept on the book
     under its `poll_key` over the XVA file (`xva_view`), and each set's `recalc` is read beside
     them on every poll.
@@ -4785,14 +4794,23 @@ def book_xva_view():
     view = polled(live_book(), 'xva', xva_view, xva_path())
     sets = [dict(entry, recalc=recalc_of(entry['reference'])) for entry in view['sets']]
     return {'as_of': as_of(), 'sets': sets, 'funding': view['funding'],
-            'limits': [limit_usage(limit, draws_on(limit, sets)) for limit in view['limits']]}
+            'limits': [limit_usage(limit, draws_on(limit, sets)) for limit in view['limits']],
+            'lacks_refused': view['lacks_refused']}
 
 
 def xva_view(document, _):
-    """`{sets, funding, limits}` - what `GET /book/xva` reads of `document`, the XVA file and the
-    record: the rows joined with the book's sets (`xva_entries`), the curves a recalc asked now
-    funds at (`funded`) and the credit limits declared (`credit_limits`)."""
-    return {'sets': xva_entries(document), 'funding': funded(document), 'limits': credit_limits()}
+    """`{sets, funding, limits, lacks_refused}` - what `GET /book/xva` reads of `document`, the XVA
+    file and the record: the rows joined with the book's sets (`xva_entries`), each with what its
+    terms read in the book's market (`terms_read`), the curves a recalc asked now funds at
+    (`funded`), the credit limits declared (`credit_limits`), and what refused the walk of the
+    sets' gaps, null where it was asked."""
+    entries = xva_entries(document)
+    reads, refused = terms_read(document, [node['Instrument']['.Deal']
+                                           for _, node in netting_sets(document)])
+    for entry, read in zip(entries, reads):
+        entry.update(read)
+    return {'sets': entries, 'funding': funded(document), 'limits': credit_limits(),
+            'lacks_refused': refused}
 
 
 def funded(document):
@@ -4896,18 +4914,17 @@ def limit_usage(limit, draws):
 
 def xva_entries(document):
     """The projection's rows joined with `document`'s own set list (`projection_entry`): every set
-    the book carries, with what its terms read in the book's market (`terms_read`), then each row
-    whose set has left it."""
+    the book carries, in its order, then each row whose set has left it. Nothing is loaded."""
     rows = read_projection().get('sets') or {}
     entries, seen = [], set()
-    sets = [(deal_path, node['Instrument']['.Deal']) for deal_path, node in netting_sets(document)]
-    for (deal_path, deal), read in zip(sets, terms_read(document, [deal for _, deal in sets])):
+    for deal_path, node in netting_sets(document):
+        deal = node['Instrument']['.Deal']
         reference = deal.get('Reference')
         counterparty, collateralized = set_terms(deal)
         seen.add(reference)
         entries.append(projection_entry(
             rows.get(reference), reference=reference, deal_path=deal_path,
-            counterparty=counterparty, collateralized=collateralized, **read))
+            counterparty=counterparty, collateralized=collateralized))
     for reference in sorted(set(rows) - seen):
         entries.append(projection_entry(rows[reference], reference=reference, note=(
             'no NettingCollateralSet called {!r} is in the book any more - this row is the last '
@@ -4916,28 +4933,28 @@ def xva_entries(document):
 
 
 def terms_read(document, sets):
-    """`[{held, lacks}]` - what each netting set's terms among `sets` read in `document`'s market:
+    """`([{held, lacks}], refused)` - what each netting set's terms among `sets` read in
+    `document`'s market:
     what they say the bank holds (`stated_holding`), and the price factors they name that the
     market holds no block for, the counterparty's credit curve among them - the engine's walk of
     each set alone, nothing under it, over ONE load of the document holding them all
     (`Config.factor_universe`). Kept on the book (`Book.sets`) under the document's
     `market_stamp` and the terms, so a read whose market has not moved unpickles no market and
     loads nothing, and a file the book names is read only where its market moves. A `Calculation`
-    its declarations refuse refuses the read, 422 in their words: the walk cannot be asked of it."""
+    its declarations refuse cannot be walked: each `lacks` is None and `refused` its refusals,
+    None where the walk was asked."""
     key = content_hash({'market': market_stamp(document), 'sets': sets})
     kept = BOOK.sets.get(key)
     if kept is None:
         config = load(around(document, *(
             {'Instrument': {'.Deal': terms}} for terms in sets))).current_cfg
-        refused = config.calculation_refusals()
-        if refused:
-            raise HTTPException(422, '; '.join(refused))
+        refused = config.calculation_refusals() or None
         market = market_of(document)
         reporting = structures.reporting_currency(document, lambda _: market)
-        kept = BOOK.sets.put(key, [
+        kept = BOOK.sets.put(key, ([
             {'held': stated_holding(terms, market, reporting),
-             'lacks': config.factor_universe(children=[node])['missing']}
-            for terms, node in zip(sets, config.deals['Deals']['Children'])])
+             'lacks': None if refused else config.factor_universe(children=[node])['missing']}
+            for terms, node in zip(sets, config.deals['Deals']['Children'])], refused))
     return kept
 
 

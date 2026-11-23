@@ -201,7 +201,8 @@ export const getMarkedDays = () => call<MarkedDays>('GET', '/book/marks');
 export const getPnl = (query: string) => call<Pnl>('GET', `/book/pnl?${query}`);
 export const getBookEntities = () => call<{ entities: Entity[] }>('GET', '/book/entities');
 export const getBookAgreements = () =>
-  call<{ agreements: Agreement[]; settlement_state: SettlementState }>('GET', '/book/agreements');
+  call<{ agreements: Agreement[]; settlement_state: SettlementState;
+          lacks_refused: string[] | null }>('GET', '/book/agreements');
 // the paper, declared under the acting seat: an entity, and an agreement whose terms are its set
 export const declareEntity = (entity: Record<string, unknown>) =>
   call<Recorded>('POST', '/book/entities', signed(entity));
