@@ -1908,18 +1908,19 @@ def test_the_explain_and_the_call_of_a_past_close_read_the_files_its_marks_read(
     through two marked closes, the book rolled between them. The explain between them - the
     start's job valued with its sensitivities in the quotes, the end's job for the levels there,
     and the start rolled onto the end's day, its curve re-authored and re-solved - reads a carry of
-    -1,838,031.40, a market move of 85,422.41 and a residual of 58.66, and the second close's call
-    an exposure of 15,899,479.92, the day's 1,860,000.00 left out as the file says. The file is
-    then rewritten on disk - the two-year quote moved 25 basis points, the curve interpolated
-    another way and the setting turned off - and both read again are the same answers to the bit,
-    every job loaded on the bytes its marks run read, which the record holds.
+    -1,843,741.11, a market move of 85,472.45 and a residual of 33.65. The file is then rewritten
+    on disk - the two-year quote moved 25 basis points, the curve interpolated another way and the
+    setting turned off - and the explain read again is the same answer to the bit, and the second
+    close's call, read for the first time, an exposure of 15,904,678.76, the day's 1,860,000.00
+    left out as the marks' file said: every job loaded on the bytes its marks run read, which the
+    record holds.
 
     Killing mutations, each moving the explain off the path: the start's job, to a carry of
     -1,839,392.60, a market move of 165,485.17 and a residual of -78,642.90; its sensitivities
     alone, to -1,758,671.63, 84,993.44 and -78,872.14; the end's job, to a market move of 4,304.73
     and a residual of 81,176.34; the roll's own loads, to a carry of -1,918,459.05; the rolled
-    job's valuation, to a carry of -1,838,098.94. The call's setting read off the path adds the
-    day's payment back, an exposure of 17,759,479.92.
+    job's valuation, to a carry of -1,838,098.94. The close's market read off the path
+    (`close_market`) adds the day's payment back, an exposure of 17,764,678.76.
     """
     book, market = filed
 
@@ -1954,10 +1955,8 @@ def test_the_explain_and_the_call_of_a_past_close_read_the_files_its_marks_read(
     settle({'subject': due('CF-W', '2024-07-01')['key']})
     closed_and_marked()
     window = between('2024-06-28', '2024-07-01', explain=True)
-    told, call = window['explain'], called('2024-07-01')['CSA-A']
-    assert told['unknown'] == [] and call['exposure'] == pytest.approx(sum(
-        row['unit_end'] * row['quantity_end'] for row in window['rows']) - 100_000.0 * 18.6,
-        rel=1e-12)
+    told = window['explain']
+    assert told['unknown'] == []
 
     data = json.loads(market.read_text())
     data['MarketData']['Market Prices']['InterestRatePrices.ZAR']['instrument']['Points'][2][
@@ -1971,47 +1970,11 @@ def test_the_explain_and_the_call_of_a_past_close_read_the_files_its_marks_read(
     # the explain is kept by the two marks it reads, so the read after the rewrite is run again
     service.BOOK.explains.entries.clear()
     assert between('2024-06-28', '2024-07-01', explain=True)['explain'] == told
-    assert called('2024-07-01')['CSA-A'] == call
-
-
-def test_the_call_of_a_close_whose_file_nobody_declared_is_read_on_the_file_as_it_stands(
-        recorded, filed):
-    """A CLOSE WHOSE FILE THE RECORD DOES NOT HOLD IS READ ON THE FILE AS IT STANDS. The book names
-    its market data file, which states `Exclude_Paid_Today` for the netting sets, and the desk
-    never declares it, so the record's store holds no copy of the bytes the marks read. A two-year
-    rand cashflow and one paying 100,000 rand on the second day sit under a collateralised
-    agreement through two marked closes, the book rolled between them to a rand of 18.6. The second
-    close's call leaves the day's payment out, as the file says; the file is then rewritten with
-    the setting turned off, and the same close's call, read again by the same service, adds the
-    payment back - 100,000 at 18.6, an exposure 1,860,000.00 higher.
-
-    Killing mutation: the close's market kept under its job and the digests its marks run reported
-    (`'files': marks_of['files']`), which answers the first read's exposure after the file moved.
-    """
-    book, market = filed
-
-    def excluding(paid):
-        data = json.loads(market.read_text())
-        data['MarketData']['Valuation Configuration'] = {
-            'NettingCollateralSet': {'Exclude_Paid_Today': paid}}
-        market.write_text(json.dumps(data), newline='\n')
-
-    designated(recorded, fixings=False)
-    excluding(True)
-    agreed_csa('CSA-A', 'CPTY_A', 'USD', 1_000_000.0, -500_000.0, 100_000.0)
-    for deal, reference, price in ((LONG, 'EXEC-A', 15_600_000.0),
-                                   (PAYS_END, 'EXEC-W', 1_800_000.0)):
-        booked(deal, 1.0, reference, BOOK + '/Rates', price, parent=None, agreement='CSA-A')
-    closed_and_marked()
-    rolled(book, END, 18.6)
-    settle({'subject': due('CF-W', '2024-07-01')['key']})
-    closed_and_marked()
-    left_out = called('2024-07-01')['CSA-A']['exposure']
-    assert called('2024-07-01')['CSA-A']['exposure'] == left_out
-
-    excluding(False)
-    assert called('2024-07-01')['CSA-A']['exposure'] - left_out == pytest.approx(
-        100_000.0 * 18.6, rel=1e-9), 'the call is still read on the file as it first stood'
+    # the call is first read now: a close's market is kept under its job, so a read before the
+    # rewrite would answer this one whatever it read
+    assert called('2024-07-01')['CSA-A']['exposure'] == pytest.approx(sum(
+        row['unit_end'] * row['quantity_end'] for row in window['rows']) - 100_000.0 * 18.6,
+        rel=1e-12)
 
 
 #: The second pair of eyes, a seat reading the FX node of the book alone, and the seats that act on

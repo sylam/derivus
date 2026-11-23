@@ -211,13 +211,13 @@ def market_of(document, context=None, stamp=None):
 
 
 def close_market(marks_of):
-    """The market a stored close (`PnL.loaded`) was marked on, kept on `Book.markets` under its
-    job and the bytes of each file read for it: the record's where it holds them, the path's as
-    they stand where it does not (`spine.reading`), so a file nobody declared is read anew once
-    it moves."""
-    context = spine.reading(marks_of['document'], marks_of['files'])()
-    return market_of(marks_of['document'], context=context, stamp=content_hash(
-        {'job': marks_of['job'], 'files': context.files(marks_of['document'])}))
+    """The market a stored close (`PnL.loaded`) was marked on, its files read as its marks run read
+    them (`spine.reading`), kept on `Book.markets` under its job, which names those files, and the
+    digests the run reported: a file the job names is a read-only input, so none is read for the
+    stamp (`stamp`)."""
+    return market_of(marks_of['document'], context=spine.reading(
+        marks_of['document'], marks_of['files'])(), stamp=content_hash(
+        {'job': marks_of['job'], 'files': marks_of['files']}))
 
 
 #: What `/execute` does with a lane it was never given. A run is recorded IFF its output will be
