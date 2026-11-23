@@ -4460,26 +4460,17 @@ def xva_document(document, node, counterparty):
     return run
 
 
-def peak_of(values, days):
-    """`{value, day}` - the largest of an exposure column's `values` and the one of `days` it
-    first falls on."""
-    peak = max(values)
-    return {'value': peak, 'day': days[values.index(peak)]}
-
-
-def peaked(column):
-    """Whether an exposure profile's `column` has a peak (`peak_of`): `EE` and each `PFE_`."""
-    return column == 'EE' or column.startswith('PFE_')
-
-
 def exposure(profile):
     """`{peaks, profile}` off a run's `exposure_profile` table in wire form: the largest number of
-    each `peaked` column with the day it first falls on (`peak_of`), and the table itself as
-    `{columns, index, data}`, every day `YYYY-MM-DD`."""
-    frame = profile['.DataFrame']
+    `EE` and of each `PFE_` column, `{value, day}` with the day it first falls on, and the table
+    itself as `{columns, index, data}`, every day `YYYY-MM-DD`."""
+    frame, peaks = profile['.DataFrame'], {}
     days = [plain(label) for label in frame['index']]
-    peaks = {column: peak_of([row[at] for row in frame['data']], days)
-             for at, column in enumerate(frame['columns']) if peaked(column)}
+    for at, column in enumerate(frame['columns']):
+        if column == 'EE' or column.startswith('PFE_'):
+            values = [row[at] for row in frame['data']]
+            peak = max(values)
+            peaks[column] = {'value': peak, 'day': days[values.index(peak)]}
     return {'peaks': peaks, 'profile': dict(frame, index=days)}
 
 
@@ -4708,14 +4699,12 @@ class IncrementJob:
             numbers = [float(result[name]) for result in results]
             answer[name] = {'with': numbers[0], 'without': numbers[1],
                             'increment': numbers[0] - numbers[1]}
-        profiles = [result['exposure_profile'] for result in results]
-        for column in filter(peaked, profiles[0].columns):
-            peaks = [peak_of(profile[column].tolist(), profile.index.strftime('%Y-%m-%d'))
-                     for profile in profiles]
-            answer[column] = {'with': peaks[0], 'without': peaks[1],
-                              'increment': peaks[0]['value'] - peaks[1]['value']}
+        peaks = [exposure(as_json(result['exposure_profile']))['peaks'] for result in results]
+        for column, peak in peaks[0].items():
+            answer[column] = {'with': peak, 'without': peaks[1][column],
+                              'increment': peak['value'] - peaks[1][column]['value']}
         if self.limits:
-            column = pfe_column(profiles[0].columns)
+            column = pfe_column(peaks[0])
             mine = [(self.terms['netting_set'], column and answer[column][run]['value'],
                      self.terms['currency']) for run in ('with', 'without')]
             answer['limits'] = [

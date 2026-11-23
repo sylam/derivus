@@ -7551,7 +7551,7 @@ def test_a_trade_beside_its_mirror_is_worth_nothing_on_every_path(tmp_path, monk
     XVA row of NS_F, a set the book carries holding a call beside the same call sold.
 
     Killing mutations: the mirror left out of the 'without' run, which reads the call's own
-    numbers; the last day a peak is reached answered (`peak_of`), where both read the day the
+    numbers; the last day a peak is reached answered (`exposure`), where both read the day the
     profile ends.
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path))
