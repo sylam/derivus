@@ -2112,27 +2112,23 @@ def consolidated_risk(document):
         return answer
 
     out, answer['quotes'], answer['quoted'], answer['quote_note'] = quote_run(run)
-    table = as_json(out['Results']['mtm'])['.DataFrame']
-    column = {name: position for position, name in enumerate(table['columns'])}
     children = job_children(document)
     paths, sets = priced_paths(children), {}
-    # row 0 is the grand-total row the reporter inserts; a row naming IT as its parent is a
-    # top-level deal, one naming a top-level set a trade the set holds - after the set's own row -
-    # and anything deeper is a leg inside one of them
-    root = table['data'][0][column['Reference']] if table['data'] else None
-    for row in table['data'][1:]:
-        parent, reference = row[column['Parent']], row[column['Reference']]
-        value = float(row[column['Value']] or 0.0)
-        if parent == root:
+    # a row naming a top-level set is a trade the set holds - after the set's own row - and
+    # anything deeper is a leg inside one of them
+    for row in PnL.mtm_rows(as_json(out['Results']['mtm'])):
+        reference, value = row['Reference'], float(row['Value'] or 0.0)
+        if row['top']:
             at = paths.get(reference)
             answer['per_deal'].append({'reference': reference, 'deal_path': at, 'value': value})
             answer['mtm'] += value
-            if row[column['Object']] == 'NettingCollateralSet':
+            if row['Object'] == 'NettingCollateralSet':
                 sets[reference] = {} if at is None else priced_paths(
                     children[int(at)].get('Children', []), at + '/')
-        elif parent in sets:
+        elif row['Parent'] in sets:
             answer['in_sets'].append({'reference': reference,
-                                      'deal_path': sets[parent].get(reference), 'value': value})
+                                      'deal_path': sets[row['Parent']].get(reference),
+                                      'value': value})
     gradient = out['Results'].get('Greeks_First')
     answer['greeks'] = [] if gradient is None else greek_rows(gradient)
     return answer

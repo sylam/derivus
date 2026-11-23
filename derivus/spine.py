@@ -2297,15 +2297,20 @@ class PnL:
         return {'Calc': calc}
 
     @staticmethod
-    def unit_marks(results):
+    def mtm_rows(table):
+        """Each row of a run's `mtm` table in wire form below the grand total the reporter puts
+        first, `{column: cell}` and `top`, whether it is a top-level deal: one naming the total."""
+        frame = table['.DataFrame']
+        rows = [dict(zip(frame['columns'], row)) for row in frame['data']]
+        return [dict(row, top=row['Parent'] == rows[0]['Reference']) for row in rows[1:]]
+
+    @classmethod
+    def unit_marks(cls, results):
         """`{address: value}` off a marks run's results - its top-level rows, each one unit of the
         instrument filed under its own address. An instrument the run could not price, or that had
         expired, has no row."""
-        table = tables_of(results)['mtm']['.DataFrame']
-        column = {name: position for position, name in enumerate(table['columns'])}
-        root = table['data'][0][column['Reference']] if table['data'] else None
-        return {row[column['Reference']]: float(row[column['Value']] or 0.0)
-                for row in table['data'][1:] if row[column['Parent']] == root}
+        return {row['Reference']: float(row['Value'] or 0.0)
+                for row in cls.mtm_rows(tables_of(results)['mtm']) if row['top']}
 
     @classmethod
     def marked(cls, book, closes, attestations, days):
