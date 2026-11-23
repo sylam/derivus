@@ -5052,8 +5052,9 @@ def test_describe_names_the_process_each_factor_is_simulated_with_as_a_run_resol
 
     Killing mutations: the process read off `Model Configuration` alone, which names the rand
     curve's unparameterised process and the base currency's; a `Price Models` block taken as the
-    process wherever one is keyed, which names the dollar's; `factor_processes` adding no filter,
-    so the describe logs each curve's `Risk Factor ... missing in Price Models section`.
+    process wherever one is keyed, which names the dollar's; `factor_processes` capturing what
+    `find_models` logs without withholding it (`CapturedErrors()`), so the describe logs each
+    curve's `Risk Factor ... missing in Price Models section`.
     """
     document = job(sections={
         'Price Models': {'GBMAssetPriceModel.ZAR': {'Vol': VOL, 'Drift': 0.0},

@@ -3085,12 +3085,13 @@ class CapturedErrors(logging.Handler):
     `/book/price` logging a CRITICAL inside a tick's window turned a good tick into
     `written: False` with a foreign run's message as the reason. `record.thread` against the
     constructing thread's ident is the whole filter, so single-threaded behaviour is byte-identical.
-    A `with` block holds it on the root logger for the block's span.
+    A `with` block holds it on the root logger for the block's span; `withheld`, every record its
+    thread logs on the root logger in that span reaches no other handler, so a read logs nothing.
     """
 
-    def __init__(self):
+    def __init__(self, withheld=False):
         super().__init__(level=logging.ERROR)
-        self.said = []
+        self.said, self.withheld = [], withheld
         self.thread = threading.get_ident()
 
     @property
@@ -3101,12 +3102,22 @@ class CapturedErrors(logging.Handler):
         if record.thread == self.thread:
             self.said.append((record.name, record.getMessage()))
 
+    def foreign(self, record):
+        """Whether `record` is another thread's: the root logger's filter while `withheld`, which
+        captures this thread's ERROR records on their way out."""
+        if record.levelno >= self.level:
+            self.emit(record)
+        return record.thread != self.thread
+
     def __enter__(self):
         logging.getLogger().addHandler(self)
+        if self.withheld:
+            logging.getLogger().addFilter(self.foreign)
         return self
 
     def __exit__(self, *raised):
         logging.getLogger().removeHandler(self)
+        logging.getLogger().removeFilter(self.foreign)
 
 
 def run_whole(run_job):
