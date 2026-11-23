@@ -397,6 +397,9 @@ export type XvaSet = {
   /** Where the run failed for want of a price factor, that factor and what would supply it: the
    * seed's entry, or `note` saying why none would. */
   missing: { factor: string; supply: { block: string; key: string } | null; note?: string } | null;
+  /** What the set's terms say the bank holds, in the book's reporting `currency` at the market's
+   * spots - `balance` null where they cannot cross it - and null on a row whose set left the book. */
+  held: { currency: string; balance: number | null } | null;
   /** A recalc in flight for this set: {result_id, status: 'queued' | 'running'}. */
   recalc: { result_id: string; status: string } | null;
   /** The run's largest `EE` and each `PFE_<percentile>`, each with the day it first falls on -

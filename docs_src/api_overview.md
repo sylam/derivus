@@ -370,7 +370,11 @@ netting set and a CACHED PROJECTION: a credit Monte Carlo simulates the whole se
 ride a tick, so `DV_HOME/xva.json` holds the last run of each set — written atomically, one row at
 a time — and a desk asks for a FULL or PARTIAL recalc when it wants the file to move. The
 projection is a mosaic on purpose: each row carries its own `as_of`, a partial recalc moves only
-the rows it names, and staleness is data rather than a failure. What ONE trade does to a set's
+the rows it names, and staleness is data rather than a failure. Each row carries `held`, what its
+set's terms say the bank holds - its `Opening_Balance` in the book's reporting currency at the
+market's spots, the base at one, null where they cannot cross it - and a failed row `missing`, the
+price factor its run wanted with what supplies it, as `/book/dependencies` answers one.
+What ONE trade does to a set's
 XVA is the what-if's question instead - `POST /book/price` with `xva_increment: true` and a
 candidate, a `quote_id`, or the `deal_path` of a trade the book already holds, which splices
 nothing - answered under `stats.Increment` as with, without and the increment

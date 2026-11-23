@@ -6846,6 +6846,35 @@ def test_an_unknown_set_refuses_by_name_and_a_missing_survival_curve_lands_in_th
         service.BOOK = None
 
 
+def test_a_set_holds_what_its_terms_state_in_the_reporting_currency_the_base_at_one(
+        tmp_path, monkeypatch):
+    """WHAT A SET'S TERMS SAY IT HOLDS, read on every XVA row with nothing run: its
+    `Opening_Balance`, nought by convention where unstated, held in its `Balance_Currency`, else
+    its agreement's, crossed into the book's reporting dollars at the market's spots as the record
+    crosses a balance (`PnL.rates`), the base at one though the market carries no `FxRate.USD`.
+    1,000 rand at a spot of 18.5 hold 18,500 dollars, a set stating nothing nought, and one held
+    in euros, which the market has no spot for, is unread.
+
+    Killing mutation: the base left to a block of its own, which leaves every holding unread.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    sets = [netting_set(reference, 'CPTY_A', []) for reference in ('NS_ZAR', 'NS_USD', 'NS_EUR')]
+    sets[0]['Instrument']['.Deal'].update(Balance_Currency='ZAR', Opening_Balance=1000.0)
+    sets[1]['Instrument']['.Deal']['Balance_Currency'] = ''
+    sets[2]['Instrument']['.Deal']['Balance_Currency'] = 'EUR'
+    book = xva_book(tmp_path, sets)
+    document = json.loads(book.read_text())
+    del document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']['FxRate.USD']
+    book.write_text(json.dumps(document), newline='\n')
+    try:
+        held = {reference: row['held'] for reference, row in xva_rows().items()}
+    finally:
+        service.BOOK = None
+    assert held == {'NS_ZAR': {'currency': 'USD', 'balance': pytest.approx(18_500.0, rel=1e-12)},
+                    'NS_USD': {'currency': 'USD', 'balance': 0.0},
+                    'NS_EUR': {'currency': 'USD', 'balance': None}}
+
+
 def test_a_survival_curve_is_written_from_the_cva_desk_s_spread(recorded, tmp_path):
     """`POST /book/survival` writes `SurvivalProb.<counterparty>` from the spread and the recovery
     the CVA desk states, each spread a hazard s/(1-R), the last one's line run on to fifty years.

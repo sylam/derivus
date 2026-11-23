@@ -1,9 +1,9 @@
 import { useState, type ReactNode } from 'react';
 import { getBookCollateral, getXvaProfile } from '../api';
-import { EXPORTS, SET, fieldsOf, rowsByPath, saveCsv, toRows } from '../blotter';
+import { EXPORTS, rowsByPath, saveCsv, toRows } from '../blotter';
 import {
   LIMIT_USAGE, RUNS, WRONG, actionFirst, actsOf, actsText, agreementsOf, bookedText, closeRead,
-  creditExport, creditLines, exposureAfter, fundedAt, limitOf, openClient, paperText, runSum, statedHolding,
+  creditExport, creditLines, exposureAfter, fundedAt, limitOf, openClient, paperText, runSum,
   summed, unmarked, wrongWith, type CreditLine, type LimitRead, type Wrong,
 } from '../client';
 import { EmptyState } from '../components/EmptyState';
@@ -163,15 +163,14 @@ export function useCredit() {
 
   const view = xva.data;
   const currency = risk.data?.currency ?? reportCurrency(doc);
-  const market = marketOf(state);
-  const factors = market?.['Price Factors'] ?? {};
+  const factors = marketOf(state)?.['Price Factors'] ?? {};
   const rows = rowsByPath(toRows(doc.Calc.Deals.Deals.Children, [], undefined));
   const client = (id: string): Client => {
     const agreements = agreementsOf(id, paper?.agreements ?? null, rows, view.sets);
     const lines = creditLines(id, {
       sets: view.sets, agreements, rows, positions: paper?.positions ?? null,
       marks: risk.marks, calls: recording ? collateral.data?.calls ?? null
-        : agreements.map((row) => statedHolding(row.terms, fieldsOf(schema, SET) ?? {}, market)),
+        : view.sets.flatMap((set) => (set.held ? [{ ...set.held, agreement: set.reference }] : [])),
     });
     const own = lines.filter((line) => !line.run?.note);
     const [first] = heldSpreads(factors[`${SURVIVAL}.${id}`], schema)?.rows ?? [];
@@ -352,7 +351,7 @@ function LineCells({ line, reads }: { line: CreditLine; reads: Reads }) {
                       : call.direction === 'post' ? `posts ${formatNumber(-call.call!, 'whole')}`
                         : 'no call'}</div></>
             ) : <span className="hint" title={reads.collateralError ?? call?.unknown
-              .map((row) => row.what).join('; ')}>{closeRead(undefined, reads.noClose)}</span>}
+              ?.map((row) => row.what).join('; ')}>{closeRead(undefined, reads.noClose)}</span>}
       </td>
       <Amount value={exposureAfter(line, reads.currency)}
               absent={line.collateralised ? 'its collateral is unread' : 'its value is unread'} />

@@ -17,7 +17,7 @@ import {
 } from './tokens';
 import { markOf } from './trade';
 import type {
-  ActivityRow, CollateralCall, CreditLimit, DealMark, Descriptor, Funding, JobDoc, Market,
+  ActivityRow, CollateralCall, CreditLimit, DealMark, Descriptor, Funding, JobDoc,
   Reconcile, Schema, SpineBlock, XvaSet,
 } from './types';
 
@@ -232,20 +232,25 @@ export const bookedText = (count: number): string => `${plural(count, 'trade')} 
  * agreement's kind, null where none is in force - and whether a run collateralises it, its paper's
  * verdict where it has one and else its row's, its last
  * run, its trades and those waiting on a second seat, its value to the desk now in the risk's
- * currency, its call on the marked close, and how many trades were booked under it since its run -
- * null where the record's positions are not read. */
+ * currency, its call on the marked close - on a desk keeping no record, what its terms state it
+ * holds (`XvaSet.held`) - and how many trades were booked under it since its run - null where the
+ * record's positions are not read. */
 export type CreditLine = {
   reference: string; path: string | null; paper: string | null; collateralised: boolean;
   run: XvaSet | null; trades: number; pending: number; value: number | null;
-  call: CollateralCall | null; booked: number | null;
+  call: Holding | null; booked: number | null;
 };
+
+/** What a line holds: a call on the marked close, or a set's stated holding, which works none. */
+export type Holding = Pick<CollateralCall, 'agreement' | 'currency' | 'balance'>
+  & Partial<CollateralCall>;
 
 /** What the lines are read off: the projection's sets, the client's agreements (`agreementsOf`),
  * the file's rows, the risk's marks (`bookRisk`), none where it is not read, and - each null where
  * it is not read - the record's positions and the calls on the marked close. */
 type CreditReads = {
   sets: XvaSet[]; agreements: Agreement[]; rows: Map<string, BlotterRow>;
-  positions: Position[] | null; marks: DealMark[]; calls: CollateralCall[] | null;
+  positions: Position[] | null; marks: DealMark[]; calls: Holding[] | null;
 };
 
 /** A client's lines: a set the book holds or held naming it, under its own agreement where one is
@@ -307,33 +312,15 @@ export function unmarked(spine: SpineBlock | null, day = false): { title: string
 export const closeRead = (day: string | undefined, noClose: boolean, unread = 'unread'): string =>
   (day ? `close of ${day}` : noClose ? 'no close marked' : unread);
 
-/** What a set's own terms say the bank holds, on a desk keeping no record: its opening balance -
- * at its declared convention where it states none - in its balance currency, else its agreement's,
- * else the market's base, with the market's spots in that currency; no call is worked without a
- * marked close. */
-export function statedHolding(terms: Record<string, unknown>, fields: Record<string, Descriptor>,
-                              market: Market | null): CollateralCall {
-  const factors = market?.['Price Factors'] ?? {};
-  const base = label(token(market?.['System Parameters'], 'Base_Currency'));
-  const currency = setCurrency(terms) || base;
-  const spot = (of: string) => Number(token(factors[`FxRate.${of}`], 'Spot') ?? NaN);
-  const balance = Number(terms.Opening_Balance ?? fields.Opening_Balance?.value ?? 0);
-  return {
-    agreement: String(terms.Reference), entity: '', currency, exposure: null, balance,
-    fx: Object.fromEntries(Object.keys(factors).filter((name) => name.startsWith('FxRate.'))
-      .map((name) => [name.slice(7), spot(name.slice(7)) / spot(currency)])),
-    held: balance ? { [currency]: balance } : {}, margin: {}, required: null, call: null,
-    direction: null, minimum_transfer: null, unknown: [],
-  };
-}
-
 /** What the desk stands to lose on a line today, in the value's `currency`: its value to the desk
- * less the collateral held under it at the close's spots - what the bank posted adding to it - and
- * nothing where the client is owed; null where the value, or a collateralised set's call, is unread. */
+ * less the collateral held under it at the close's spots, a holding stated in `currency` at one -
+ * what the bank posted adding to it - and nothing where the client is owed; null where the value,
+ * or a collateralised set's holding, is unread. */
 export function exposureAfter(line: CreditLine, currency: string | null): number | null {
   if (line.value === null) return null;
   if (!line.collateralised) return Math.max(0, line.value);
-  const rate = currency ? line.call?.fx[currency] : undefined;
+  const rate = !currency ? undefined
+    : line.call?.currency === currency ? 1 : line.call?.fx?.[currency];
   return line.call?.balance === null || line.call?.balance === undefined || !rate ? null
     : Math.max(0, line.value - line.call.balance / rate);
 }

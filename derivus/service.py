@@ -4726,7 +4726,7 @@ def projection_entry(row, **book):
     `as_of` takes."""
     row = row or {}
     entry = dict({'reference': None, 'deal_path': None, 'counterparty': row.get('counterparty'),
-                  'collateralized': row.get('collateralized'), 'note': None}, **book)
+                  'collateralized': row.get('collateralized'), 'note': None, 'held': None}, **book)
     entry.update({key: row.get(key) for key in XVA_COLUMNS + ('error', 'missing')},
                  status=row.get('status', 'never run'))
     return entry
@@ -4897,9 +4897,11 @@ def limit_usage(limit, draws):
 
 def xva_entries(document):
     """The projection's rows joined with `document`'s own set list (`projection_entry`): every set
-    the book carries, then each row whose set has left it."""
+    the book carries, with what its terms say the bank holds (`stated_holding`), then each row
+    whose set has left it."""
     rows = read_projection().get('sets') or {}
-    entries, seen = [], set()
+    entries, seen, market = [], set(), market_of(document)
+    reporting = structures.reporting_currency(document, lambda _: market)
     for deal_path, node in netting_sets(document):
         deal = node['Instrument']['.Deal']
         reference = deal.get('Reference')
@@ -4907,12 +4909,27 @@ def xva_entries(document):
         seen.add(reference)
         entries.append(projection_entry(
             rows.get(reference), reference=reference, deal_path=deal_path,
-            counterparty=counterparty, collateralized=collateralized))
+            counterparty=counterparty, collateralized=collateralized,
+            held=stated_holding(deal, market, reporting)))
     for reference in sorted(set(rows) - seen):
         entries.append(projection_entry(rows[reference], reference=reference, note=(
             'no NettingCollateralSet called {!r} is in the book any more - this row is the last '
             'run of a set that has since left it'.format(reference))))
     return entries
+
+
+def stated_holding(terms, market, reporting):
+    """`{currency, balance}` - what a netting set's own `terms` say the bank holds, in the
+    `reporting` currency: its `Opening_Balance`, at its declared convention where it states none,
+    held in its `Balance_Currency`, else its agreement's, else the market's base, crossed at the
+    market's spots as the record crosses a balance (`PnL.rates`); `balance` None where they cannot
+    cross it."""
+    base = structures.base_currency(market)
+    stated = declared_defaults(instruments.NettingCollateralSet, terms)
+    rate = PnL.rates(market['Price Factors'], reporting, base).get(
+        stated['Balance_Currency'] or stated['Agreement_Currency'] or base)
+    return {'currency': reporting,
+            'balance': None if rate is None else stated['Opening_Balance'] * rate}
 
 
 @app.get('/book/xva/{reference}/profile', summary="One netting set's exposure profile, off its row")

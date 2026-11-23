@@ -417,10 +417,11 @@ def offered(fields):
 
 
 def declared_defaults(cls, params):
-    """A block completed by its own declarations - the `F` default under every key the author
-    omitted that `offered` offers, so a reader may index directly. Mutable defaults are deep-copied
-    per call."""
-    merged = {key: copy.deepcopy(default) for key, default in offered(cls.fields).items()}
+    """A block completed by its own declarations (`declared_fields`, a deal's groups included) -
+    the `F` default under every key the author omitted that `offered` offers, so a reader may index
+    directly. Mutable defaults are deep-copied per call."""
+    merged = {key: copy.deepcopy(default)
+              for key, default in offered(declared_fields(cls).values()).items()}
     merged.update(params)
     return merged
 

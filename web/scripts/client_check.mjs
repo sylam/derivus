@@ -351,21 +351,13 @@ check('the exposure after collateral is the value to the desk less the collatera
        after(300, true, 400), after(1500, true), after(1500, true, null), after(null, false)],
       [1000, 0, 1000, 2000, 0, null, null, null]);
 
-const SPOTS = { 'System Parameters': { Base_Currency: 'USD' }, 'Price Factors': {
-  'FxRate.USD': { Spot: 1 }, 'FxRate.EUR': { Spot: 1.25 }, 'FxRate.ZAR': { Spot: 0.05 } } };
-const stated = (terms) => {
-  const held = client.statedHolding({ Reference: 'S', ...terms }, { Opening_Balance: { value: 0 } }, SPOTS);
-  return [held.currency, held.balance, held.fx.USD, held.call,
-          client.exposureAfter({ value: 1000, collateralised: true, call: held }, 'USD')];
-};
-check("on a desk keeping no record a set holds what its terms state - its opening balance, at its "
-      + 'convention where unstated - in its balance currency, else its agreement\'s, else the base, '
-      + "crossed at the market's spots; no call is worked",
-      "the agreement currency read for the balance's; the spots inverted; or an unstated balance "
-      + 'read as unread rather than at its convention',
-      [stated({ Agreement_Currency: 'EUR', Opening_Balance: 400 }),
-       stated({ Balance_Currency: 'ZAR', Agreement_Currency: 'EUR', Opening_Balance: 10000 }), stated({})],
-      [['EUR', 400, 0.8, null, 500], ['ZAR', 10000, 20, null, 500], ['USD', 0, 1, null, 1000]]);
+const stated = (balance, currency = 'USD') => client.exposureAfter(
+  { value: 1000, collateralised: true, call: { agreement: 'S', currency, balance } }, 'USD');
+check("on a desk keeping no record a set holds what its row says its terms state, in the reporting "
+      + 'currency the service crossed it into, read at one; unread where the service could not cross it',
+      "the stated holding's currency not read at one, which leaves every holding on a desk keeping no "
+      + 'record unread; or an unread holding read as nothing held',
+      [stated(400), stated(0), stated(null), stated(400, 'EUR')], [600, 1000, null, null]);
 
 const closed = (market, stands, marked = false) => ({
   lsn: 4, events_behind: 0, positions_behind: 0, paper: 1, close: { market, stands, marked } });
