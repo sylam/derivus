@@ -1345,7 +1345,7 @@ class CreditMonteCarlo(Calculation):
                         base_date=base_date)
                 )
             except KeyError as e:
-                logging.warning('Price Factor {0} missing in market data file - skipping'.format(e.args))
+                logging.warning('Price Factor {0} missing in market data file - skipping'.format(e))
 
         self.all_factors = self.stoch_factors.copy()
         self.all_factors.update(self.static_factors)
@@ -2298,7 +2298,7 @@ class BaseValuation(Calculation):
                         self.config.params['Price Factor Interpolation'],
                         base_date=base_date))
             except KeyError as e:
-                logging.warning('Price Factor {0} missing in market data file - skipping'.format(e.args))
+                logging.warning('Price Factor {0} missing in market data file - skipping'.format(e))
 
         self.all_factors = self.static_factors
 
