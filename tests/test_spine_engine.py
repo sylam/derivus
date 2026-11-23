@@ -364,7 +364,7 @@ def test_with_no_spine_home_the_edge_is_the_edge_it_always_was(unrecorded, desk)
                             ('declare_market', ('official',))):
         with pytest.raises(spine.SpineRefused) as refusal:
             getattr(derivus.Context().load_json((dump(job()), 'posted')), verb)(*arguments)
-        assert 'DV_SPINE_HOME' in str(refusal.value), verb
+        assert str(refusal.value) == spine.NO_RECORD, verb
 
 
 def test_a_configured_home_that_is_not_a_home_refuses_by_name(tmp_path, monkeypatch, desk):
@@ -400,7 +400,7 @@ def test_a_configured_home_still_refuses_an_append_nobody_signed(recorded):
     context = derivus.Context().load_json((dump(job()), 'posted'))
     with pytest.raises(spine.SpineRefused) as refusal:
         context.declare_market('official')
-    assert 'DV_SPINE_ACTOR' in str(refusal.value)
+    assert str(refusal.value) == spine.NO_ACTOR
     assert head(recorded) == 4, 'a refused append wrote something'
 
 
@@ -4233,7 +4233,7 @@ def test_a_decision_on_a_quote_nobody_accepted_refuses_by_name(recorded, quoting
     """
     quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
     refused = CLIENT.post('/book/approve', json={'quote_id': quote['quote_id'], 'actor': ACTOR})
-    assert refused.status_code == 422 and 'accept it first' in refused.json()['detail']
+    assert refused.status_code == 422 and 'the quote is accepted first' in refused.json()['detail']
 
     waiting = declare(recorded, policy.TIERS_POLICY, tiers({'name': 'desk', 'four_eyes': True}))
     assert accept(quote).json()['written'] is True, 'the tier held the booking back'
@@ -4681,7 +4681,7 @@ def test_a_restated_close_names_the_close_it_stands_over(recorded, booking):
 
 def test_the_record_reads_are_a_404_on_a_box_that_records_nothing(unrecorded, desk):
     """A reading refuses nothing and a desk that records nothing is a STATE rather than an
-    error: the three reads 404 in the service's own sentence naming the variable, the status block
+    error: the three reads 404 in the record's own sentence, the status block
     is null, and the banner's verdict is `none`.
 
     Killing mutation: any read answering an empty strip, markets list or positions list, which tells
@@ -4691,7 +4691,7 @@ def test_the_record_reads_are_a_404_on_a_box_that_records_nothing(unrecorded, de
     for path in ('/book/activity', '/book/markets', '/book/positions'):
         answer = CLIENT.get(path)
         assert answer.status_code == 404, path
-        assert spine.SPINE_HOME in answer.json()['detail'], path
+        assert answer.json()['detail'] == spine.NO_RECORD, path
     assert CLIENT.get('/book/status').json()['spine'] is None
     assert verdict(None, None) == 'none'
 
