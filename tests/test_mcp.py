@@ -2001,7 +2001,7 @@ def test_a_refusal_reaches_a_model_whole_after_its_kind(recorded, book):
     for entity in entities:
         mcp_server.declare_legal_entity(entity, 'Entity ' + entity[-2:])
     with pytest.raises(ToolError) as refused:
-        mcp_server.declare_survival_curve('GHOST', 150.0)
+        mcp_server.declare_survival_curve('GHOST', 150.0, 'USD', 'USD')
     said = ("counterparty 'GHOST' is no legal entity the record declares - it declares {}: declare "
             'the entity first'.format(', '.join(entities)))
     assert len(said) > 1000 and str(refused.value) == 'counterparty: ' + said
