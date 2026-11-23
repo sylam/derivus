@@ -396,7 +396,7 @@ def test_a_blank_delivery_date_prices_nothing_and_a_strip_never_reads_it(caplog)
     try:
         max(())
     except ValueError as error:
-        empty = error.args
+        empty = error
     skipped = ['{} {} {} - Skipped'.format(deal['Object'], name, empty) for name, deal in DELIVERING.items()]
     strips = [*STRIPS.values(), *(dict(deal, Reference=name + '_D', Delivery_Date=SETTLE) for name, deal in STRIPS.items())]
     for calc, deals in (({'MCMC_Simulations': 256}, strips), (CMC, [VANILLA])):

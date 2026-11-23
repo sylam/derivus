@@ -124,7 +124,7 @@ class DealStructure(object):
         except Exception as e:
             fatal = utils.is_fatal_pricing_error(e)
             logging.error('{0} {1} {2} - {3}'.format(
-                deal.field['Object'], deal.field.get('Reference'), e.args,
+                deal.field['Object'], deal.field.get('Reference'), e,
                 'Skipped' if exclude or fatal else 'kept at zero'))
             shared.calc_stats['Deals Skipped'] = shared.calc_stats.get('Deals Skipped', 0) + 1
             deal.unpriced_because = e
@@ -182,7 +182,7 @@ class DealStructure(object):
                 self.sub_structures.append(struct)
                 shared.calc_stats['Structs loaded'] = shared.calc_stats.setdefault('Structs loaded', 0) + 1
             except Exception as e:
-                logging.error('{0} {1} - Skipped'.format(struct.obj.Instrument.field['Object'], e.args))
+                logging.error('{0} {1} - Skipped'.format(struct.obj.Instrument.field['Object'], e))
                 # same rule as `add_deal_to_structure`: a skipped STRUCTURE takes its whole netting
                 # set's deals out of the report with it
                 if utils.is_fatal_pricing_error(e):
@@ -246,10 +246,10 @@ class DealStructure(object):
             try:
                 accum = self.obj.Instrument.post_process(accum, shared, time_grid, self.obj, self.dependencies)
             except RuntimeError as e:
-                logging.error('Runtime error Deal skipped - {}'.format(e.args))
+                logging.error('Runtime error Deal skipped - {}'.format(e))
                 raise
             except Exception as e:
-                logging.critical('Deal skipped - {}'.format(e.args))
+                logging.critical('Deal skipped - {}'.format(e))
                 # the same rule as `Deal.calculate`: a post_process that prices a leg can meet a
                 # named refusal, and swallowing one leaves the structure marking at its accumulation
                 if utils.is_fatal_pricing_error(e):

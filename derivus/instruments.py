@@ -945,7 +945,7 @@ class Deal(object):
             return pricing.interpolate(mtm, shared, time_grid, deal_data)
         except Exception as e:
             logging.critical('Deal {} skipped - {}'.format(
-                deal_data.Instrument.field.get("Reference"), e.args))
+                deal_data.Instrument.field.get("Reference"), e))
             if utils.is_fatal_pricing_error(e):
                 raise
             utils.unpriced(shared, self, e, 'Deals Skipped')
@@ -979,7 +979,7 @@ class Deal(object):
             return self.hedge_features(shared, time_grid, deal_data)
         except Exception as e:
             logging.critical('Deal {} skipped - {}'.format(
-                deal_data.Instrument.field.get("Reference"), e.args))
+                deal_data.Instrument.field.get("Reference"), e))
             # Same rule as `calculate`: a swallowed leg here drops silently out of the liability
             # accumulation, where a second leg's mark broadcasts over the gap.
             if utils.is_fatal_pricing_error(e):
