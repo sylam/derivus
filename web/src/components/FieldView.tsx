@@ -365,6 +365,8 @@ export function EditableScalar({ name, descriptor, value, onAmend, ask }: {
     input = (
       <select value={raw} disabled={saving}
               onChange={(e) => { edit(e.target.value); commit(e.target.value); }}>
+        {/* what the block states where it is no option - blank where a required menu is unset */}
+        {!(descriptor.values ?? []).includes(raw) && <option value={raw}>{raw}</option>}
         {(descriptor.values ?? []).map((option) => <option key={option}>{option}</option>)}
       </select>
     );
