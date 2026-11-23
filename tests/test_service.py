@@ -2947,6 +2947,33 @@ def test_progress_is_readable_while_the_fetch_runs(desk, monkeypatch):
     assert done['stats']['Bloomberg']['provisioned'] is True
 
 
+def test_a_quote_whose_bootstrap_asks_for_a_block_the_market_lacks_is_refused_naming_it(tmp_path):
+    """A BOOTSTRAP'S MISSING BLOCK IS A REFUSED WRITE NAMING IT, as any refused bootstrap is: a
+    credit block discounting on a curve the market does not carry, and one naming none, each tick
+    `written: false` with the block the bootstrap asked for, the book's bytes standing still.
+
+    Killing mutation: the `KeyError` left to the verb's catch-all, which answers a 422 saying the
+    request did not state the key.
+    """
+    import test_credit_prices as credit
+    document = job(sections={'Bootstrapper Configuration': {'SurvivalProb': {}}})
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(json.loads(dump(document)), indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    before = path.read_bytes()
+    try:
+        answers = [CLIENT.post('/book/market', content=dump({'quotes': {credit.BLOCK: credit.block(
+            'Par_Spread', Discount_Rate=curve)}}), headers=JSON) for curve in ('NOPE', '')]
+    finally:
+        service.BOOK = None
+    assert [(answer.status_code, {key: answer.json().get(key) for key in ('written', 'refused')})
+            for answer in answers] == [
+        (200, {'written': False, 'refused': [
+            'the bootstrap asked for {} and this market does not carry it'.format(curve)]})
+        for curve in ('InterestRate.NOPE', 'InterestRate.')]
+    assert path.read_bytes() == before
+
+
 def test_a_tick_a_bootstrapper_refuses_lands_refused_rather_than_raising(desk, monkeypatch):
     """A REFUSAL IS AN OUTCOME OF THE JOB, never an exception out of it.
 
@@ -9000,9 +9027,9 @@ def test_a_retired_system_date_is_the_date_verb_back_to_the_files_day(file_book,
 def test_a_retire_the_market_cannot_stand_on_writes_nothing(file_book):
     """A retire is judged as every market write is and refused whole, the book's bytes standing.
     On the book's explicit twin, which names no file, the ZAR spot retired leaves the outrights
-    the ZAR-FX curve is solved from no spot to read, and the bootstrap refuses naming
-    `FxRate.ZAR`; on the book naming the file, a path its block does not state refuses naming the
-    section it lacks.
+    the ZAR-FX curve is solved from no spot to read, and the write is refused naming `FxRate.ZAR`,
+    which the bootstrap asked for (`refusal`); on the book naming the file, a path its block does
+    not state refuses naming the section it lacks.
 
     KILLING MUTATION: the retire's bootstrap left off, which writes the twin a market with no ZAR
     spot.
@@ -9018,8 +9045,8 @@ def test_a_retire_the_market_cannot_stand_on_writes_nothing(file_book):
     service.BOOK = service.Book(str(path))
     before = path.read_bytes()
     refused = CLIENT.post('/book/market', json={'retire': [['Price Factors', 'FxRate.ZAR']]})
-    assert refused.status_code == 422 and refused.json()['detail'] == (
-        "'FxRate.ZAR' is not stated, and nothing is done without it")
+    assert refused.status_code == 200 and refused.json()['refused'] == [
+        'the bootstrap asked for FxRate.ZAR and this market does not carry it']
     assert path.read_bytes() == before
 
 

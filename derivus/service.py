@@ -5096,7 +5096,10 @@ def market_edit(document, quotes, patch, bootstrap=None, authored=(), reading=Co
     if wants_bootstrap:
         # `Config.bootstrap` reports a family that could not run at ERROR and carries on
         with utils.CapturedErrors() as captured:
-            context.bootstrap(only)
+            try:
+                context.bootstrap(only)
+            except KeyError as error:
+                return False, {'written': False, 'refused': [refusal(error)]}
         if captured.messages:
             return False, {'written': False, 'refused': captured.messages}
     written = as_json(params['Price Factors'])
@@ -5976,9 +5979,11 @@ def fetch_quotes(source, definitions, routes, base, note):
 
 
 def refusal(error):
-    """A refusal a model can act on: a bootstrap that raised a bare `KeyError` NAMES the key the
-    market being written does not carry, where its repr names nothing."""
-    return ('the bootstrap asked for {} and this market does not carry it'.format(error.args[0])
+    """A refusal a model can act on: a bootstrap that raised a `KeyError` - a block it looked up,
+    or a price factor it could not find (`utils.MissingFactor`) - NAMES what the market being
+    written does not carry, where its repr names nothing."""
+    return ('the bootstrap asked for {} and this market does not carry it'.format(
+        error.factor if isinstance(error, utils.MissingFactor) else error.args[0])
             if isinstance(error, KeyError) else str(error))
 
 
