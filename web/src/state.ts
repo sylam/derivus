@@ -483,18 +483,18 @@ export function heldBack(state: AppState, act: Act, node?: string | null): strin
 
 /** What a list of the rows `act` clears, or a control performing it, says where the seat may not
  * perform it at any node the service judges it at (`may`): in plain words that it does not `deed`,
- * and the verb a seat that does holds (`demands`) over the scope the act is judged at - this book,
- * or the firm for the firm's own facts. Nothing was asked, so no denial is quoted; a refused read
- * says its own words. Null where the seat may anywhere, off a desk that records and until read. */
-export function clearsNone(state: AppState, act: Act, deed = 'clear these',
-                           scope = 'this book'): string | null {
+ * and the verb a seat that does holds (`demands`) over the scope the record judges the act at -
+ * the firm for its own facts (`firm`), else this book. Nothing was asked, so no denial is quoted;
+ * a refused read says its own words. Null where the seat may anywhere, off a desk that records
+ * and until read. */
+export function clearsNone(state: AppState, act: Act, deed = 'clear these'): string | null {
   const grants = grantsRead(state);
   if (!spineOf(state) || !grants) return null;
   if (grants.refused !== null) return grants.refused;
   const verdicts = Object.values(grants.read?.may[act] ?? {});
   return verdicts.length && !verdicts.includes(null)
     ? `${grants.read?.seat} does not ${deed}: a seat holding ${grants.read?.demands[act]} over `
-      + `${scope} does`
+      + `${grants.read?.firm.includes(act) ? 'the firm' : 'this book'} does`
     : null;
 }
 

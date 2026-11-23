@@ -343,8 +343,7 @@ function Clearing({ list, row, day }: { list: List; row: WorkRow; day: string })
  * and what it waits on is listed. A seat that may not declare it is told which seat does, over the
  * firm whose fact a close is (`clearsNone`); the close refuses an illegal day in its own words. */
 function CloseCheck({ check }: { check: CloseVerdict }) {
-  const hold = clearsNone(useApp().state, 'official_close_declared', 'declare the close',
-                          'the firm');
+  const hold = clearsNone(useApp().state, 'official_close_declared', 'declare the close');
   const [refused, setRefused] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
 

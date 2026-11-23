@@ -5,7 +5,7 @@ import { declareAgreement, failure } from '../api';
 import { SET } from '../blotter';
 import { entityText } from '../desk';
 import type { Agreement, Entity } from '../positions';
-import { heldBack, useApp } from '../state';
+import { clearsNone, useApp } from '../state';
 import { COLLATERAL, onPaper, statedOnly, termsMoved } from '../tokens';
 import type { Schema, SettlementState } from '../types';
 import { Gated } from './Desk';
@@ -37,7 +37,7 @@ export function AgreementForm({ schema, entities, agreements, unstated, from }: 
   schema: Schema; entities: Entity[]; agreements: Agreement[]; unstated: SettlementState;
   from?: Partial<Agreement>;
 }) {
-  const hold = heldBack(useApp().state, 'agreement_declared', null);
+  const hold = clearsNone(useApp().state, 'agreement_declared', 'declare agreements');
   const [named, setNamed] = useState({
     agreement: from?.agreement ?? '', entity: from?.entity ?? '', kind: from?.kind ?? '' });
   const [terms, setTerms] = useState<Record<string, unknown>>(from?.terms ?? { Object: SET });

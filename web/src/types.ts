@@ -583,10 +583,12 @@ export type RefusalCode = 'no_actor' | 'not_granted' | 'unpriced' | 'recorded' |
 
 /** `GET /book/seat` - the seat a request's acts are filed under, per verb the nodes it holds it
  * at, each reaching every path under it and null where nothing narrows it, `demands`, the verb
- * each act the record files demands under the map in force, and `may`, per act and per node the
- * service gates it at, null where the seat may and else the sentence the record refuses it with. */
+ * each act the record files demands under the map in force, `firm`, the acts it judges at the
+ * firm whatever node performs them, and `may`, per act and per node the service gates it at, null
+ * where the seat may and else the sentence the record refuses it with. */
 export type SeatGrants = {
   seat: string; verbs: Record<string, string[] | null>; demands: Record<string, string>;
+  firm: string[];
   may: Record<string, Record<string, string | null>>;
   /** The nodes the seat is shown, sorted - none where it holds nothing - null for the whole book. */
   sees: string[] | null;

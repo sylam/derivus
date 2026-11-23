@@ -5915,12 +5915,14 @@ def test_a_seat_reads_what_it_may_do_and_where(recorded, desk):
     `demands` IS THE MAP IN FORCE, act -> the verb it demands: the vocabulary's until a document
     moves an act, then the document's. Where one moves the approval to `mark` the read says so,
     and the acts agree: the seat holding `approve` is refused the signature naming `mark`, and the
-    seat holding `mark` where the ticket books signs it.
+    seat holding `mark` where the ticket books signs it. `firm` names the acts the record judges
+    at the firm, its own facts, which a screen says a seat declares over the firm.
 
     Killing mutations: the verbs read for the seat the deployment runs as rather than the one
-    asking, which hands the FX seat the deployment's `admin` and `validate` everywhere; and
+    asking, which hands the FX seat the deployment's `admin` and `validate` everywhere;
     `demands` read off the vocabulary rather than the document in force, which tells a screen
-    `approve` signs where the record asks `mark`.
+    `approve` signs where the record asks `mark`; and `firm` served empty, which sends a book's
+    `mark` to declare the firm's close.
     """
     with_client(desk)
     verbs = ('validate', 'book', 'approve', 'mark', 'document', 'settle', 'confirm', 'collateral',
@@ -5936,7 +5938,10 @@ def test_a_seat_reads_what_it_may_do_and_where(recorded, desk):
 
     def read(actor=None):
         answer = seat(actor).json()
-        assert sorted(answer) == ['demands', 'may', 'seat', 'sees', 'verbs'], answer
+        assert sorted(answer) == ['demands', 'firm', 'may', 'seat', 'sees', 'verbs'], answer
+        # the firm's own facts, judged at the firm whatever node performs them
+        assert [act for act in answer['firm'] if act in asked] == [
+            'agreement_declared', 'entity_declared', 'official_close_declared'], answer['firm']
         return answer['seat'], answer['verbs'], {act: answer['demands'][act] for act in asked}
 
     assert read(DESK_FX) == (DESK_FX, dict.fromkeys(verbs), asked)

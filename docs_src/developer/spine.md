@@ -331,7 +331,9 @@ next declaration; a document stored without a map reads the vocabulary's. Its on
 hook asks it under the document in force at the head, the oracle's seat invariant under the one in
 force at each frame, so an old frame is judged by the map of its day, and the worklist narrows
 each list by the verb its clearing act demands (`spine.demands`). `GET /book/seat` answers that
-map as `demands` beside the nodes the seat holds each verb at, and a screen holds a control by the
+map as `demands` beside the nodes the seat holds each verb at, and as `firm` the acts of it judged
+at the firm whatever node performs them (`capability.FIRM_TYPES`). **Held by**
+`tests/test_spine_engine.py::test_a_seat_reads_what_it_may_do_and_where`. A screen holds a control by the
 service's verdict on the act it performs (`may`, read by `heldBack` in `web/src/state.ts`) at its
 node, computing none of its own: a node the answer does not name is offered, the act judged when
 it is sent. An
@@ -704,9 +706,10 @@ beside the record's sentence for why this seat does not sign them, then the `pay
 `unconfirmed` and `calls` lists - each the list of its own verb - every row beside the fact that
 clears it, with the day's close check and the close behind its verdict. A list the seat clears at
 no node (every `may` of its act refused) says so in plain words with the verb a seat clearing it
-holds (`clearsNone`), quoting no denial, since nothing was asked, and so does the close card, a
-seat that may not declare the close told which verb declares it over the firm, whose fact a close
-is; the record's sentence stands where any other control would file one. **Held by**
+holds (`clearsNone`), quoting no denial, since nothing was asked, and so do the close card and
+the Paper workspace's entity and agreement forms, a seat that may not declare them told which verb
+does over the scope the service says the act is judged at, the firm for these (`firm`); the
+record's sentence stands where any other control would file one. **Held by**
 `web/scripts/desk_check.mjs`. The Paper workspace
 (`web/src/views/PaperView.tsx`) lists the entities and the agreements with their terms and
 declares both, an agreement's terms the netting set rendered off the `NettingCollateralSet`

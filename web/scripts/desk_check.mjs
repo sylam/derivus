@@ -503,12 +503,15 @@ const DEMANDS = { fill: 'book', amendment: 'book', quote_filed: 'book', approval
                   entity_declared: 'document',
                   agreement_declared: 'document', official_close_declared: 'mark',
                   status_transition: 'settle', confirmed: 'confirm', collateral: 'collateral' };
+// the acts the record judges at the firm, as the service serves them
+const FIRM = ['agreement_declared', 'entity_declared', 'official_close_declared'];
 // a seat whose `GET /book/seat` answers `read` over a seat shown the whole book; null, unread
 const seated = (read, seat = 'sales-1', extra = {}) => ({
   source: { kind: 'book' }, record: { spine: { lsn: 1 } }, seat,
   doc: { Calc: { Deals: { Reference: 'HARBOURLINE' } } },
   grants: read && { asked: seat, refused: null,
-                    read: { seat, verbs: {}, demands: DEMANDS, may: {}, sees: null, ...read } },
+                    read: { seat, verbs: {}, demands: DEMANDS, firm: FIRM, may: {}, sees: null,
+                            ...read } },
   ...extra });
 // one whose answer gives `may`, its verdict per act and node
 const mays = (may, extra = {}) => seated({ may }, 'sales-1', extra);
@@ -614,19 +617,19 @@ check('nothing is held back off a desk that records, before the grants of the se
 const SETTLES = (fx) => mays({ status_transition: { HARBOURLINE: SAID.book, 'HARBOURLINE/fx': fx } });
 check('a list the seat clears none of says so in plain words where every node refuses its act, '
       + 'naming the verb a seat clearing it holds; one it clears at any node, or an act no node '
-      + 'judges, says nothing; a refused read says its own words; the close, a fact of the '
-      + 'firm, says which seat declares it over the firm',
+      + 'judges, says nothing; a refused read says its own words; the close, which the service '
+      + 'says the record judges at the firm, says which seat declares it over the firm',
       "the record's denial shown on the list, which quotes a denial nothing filed and names an "
       + 'event type; a list the seat clears at one node said to be none of its; a refused read '
-      + "said as a plain no; or the deed and its scope dropped, which sends a book's mark to "
-      + "declare the firm's close",
+      + "said as a plain no; or the deed dropped, or the scope not read off the service's firm "
+      + "acts, which sends a book's mark to declare the firm's close",
       [state.clearsNone(SETTLES(SAID.book), 'status_transition'),
        state.clearsNone(SETTLES(null), 'status_transition'), state.clearsNone(mays(MAY), 'confirmed'),
        state.clearsNone(seated(null, '', { grants: { asked: '', read: null, refused: NO_SEAT } }),
                         'status_transition'),
        state.clearsNone(mays({ official_close_declared: { HARBOURLINE: SAID.firm,
                                                           'HARBOURLINE/fx': SAID.firm } }),
-                        'official_close_declared', 'declare the close', 'the firm')],
+                        'official_close_declared', 'declare the close')],
       ['sales-1 does not clear these: a seat holding settle over this book does', null, null,
        NO_SEAT, 'sales-1 does not declare the close: a seat holding mark over the firm does']);
 const UNREAD = { asked: 'sales-1', read: null, refused: null };

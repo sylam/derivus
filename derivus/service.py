@@ -4162,9 +4162,9 @@ RUNS = dict({'run': spine.CURIOSITY, 'standing': spine.STANDING},
 
 @app.get('/book/seat', summary='What the seat asking may do, and at which nodes')
 def book_seat(actor: str = None):
-    """`{seat, verbs, demands, may}` - the seat this request's acts are filed under and, for every
-    verb a grant names - `book`, `approve`, `mark` and the rest - the nodes it holds that verb at,
-    each reaching every path under it: null where nothing narrows it, a grant over `*` or no
+    """`{seat, verbs, demands, firm, may, sees}` - the seat this request's acts are filed under and,
+    for every verb a grant names - `book`, `approve`, `mark` and the rest - the nodes it holds that
+    verb at, each reaching every path under it: null where nothing narrows it, a grant over `*` or no
     capabilities document in force, and empty where it holds it nowhere. The grants fold's own
     answer (`spine.sight`). `demands` is the map in force, act -> the verb it demands
     (`spine.demands`), so a control asked by the act it performs is one the record clears. `may`
@@ -4175,11 +4175,14 @@ def book_seat(actor: str = None):
     judged at (`written`), the firm's keyed `*` - kept on the served book under the poll's key.
     `sees` is null where the seat is shown the whole book, a verb held at it or above
     (`spine.reaches`), else the nodes whose positions it is shown, sorted. A request naming no
-    seat is refused as each of its acts would be. 404 where no home is configured.
+    seat is refused as each of its acts would be. `firm` names the acts of the map the record judges
+    at the firm whatever node performs them, the firm's own facts (`capability.FIRM_TYPES`). 404
+    where no home is configured.
     """
     recorded()
     seat = spine.actor(actor)
     sight = spine.sight(seat)
+    demands = spine.demands()
 
     def may(document, _):
         held = ({spine.book_name(document)} | {row['path'] for row in spine.portfolios()}
@@ -4193,7 +4196,8 @@ def book_seat(actor: str = None):
 
     return {'seat': seat, 'verbs': {verb: None if sight is None else sight[verb]
                                     for verb in spine.package().vocabulary.VERBS},
-            'demands': spine.demands(),
+            'demands': demands,
+            'firm': sorted(set(demands).intersection(spine.package().capability.FIRM_TYPES)),
             'may': may({}, None) if BOOK is None else polled(BOOK, ('seat', seat), may),
             'sees': None if spine.reaches(sight, book_served())
             else sorted({at for nodes in sight.values() for at in nodes})}

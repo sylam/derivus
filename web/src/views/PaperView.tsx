@@ -5,7 +5,7 @@ import { openClient } from '../client';
 import { Gated } from '../components/Desk';
 import { EmptyState } from '../components/EmptyState';
 import { type Agreement, type Entity, NO_PAPER, noPaper } from '../positions';
-import { heldBack, opened, spineOf, standing, useApp } from '../state';
+import { clearsNone, opened, spineOf, standing, useApp } from '../state';
 import { AgreementForm, AgreementTerms, type Said } from '../components/AgreementForm';
 
 /** The paper the book trades under: every legal entity and agreement the record declares, each
@@ -20,7 +20,7 @@ export function PaperView() {
   const { schema } = state;
   const recording = spineOf(state) !== null;
   const [amending, setAmending] = useState<{ from: Agreement; at: number } | null>(null);
-  const hold = heldBack(state, 'agreement_declared', null);
+  const hold = clearsNone(state, 'agreement_declared', 'declare agreements');
 
   const paper = { ...(state.paper.data ?? NO_PAPER), error: state.paper.error };
 
@@ -99,7 +99,7 @@ export function PaperView() {
 /** Declaring a legal entity: its id as the legal system knows it, its name and the parent it is
  * grouped under. */
 function EntityForm({ entities }: { entities: Entity[] }) {
-  const hold = heldBack(useApp().state, 'entity_declared', null);
+  const hold = clearsNone(useApp().state, 'entity_declared', 'declare entities');
   const [entity, setEntity] = useState({ entity: '', name: '', parent: '' });
   const [said, setSaid] = useState<Said>(null);
 
