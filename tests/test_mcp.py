@@ -82,7 +82,8 @@ def test_every_tool_is_registered_and_carries_its_contract():
     before a model may read the book; `patch_market_values`' example spot written in market terms,
     `19.25`, which a model copies into a field held as the reporting currency per unit; `book_deal`
     teaching a par amount solved by two `price_candidate` calls again; a tool registered that the
-    desk's word list does not name, which a refusal may then tell a desk.
+    desk's word list does not name, which a refusal may then tell a desk, or a name kept on the
+    list after its tool is gone.
     """
     tools = {t.name: t for t in asyncio.run(mcp_server.MCP.list_tools())}
     assert not [name for name, tool in tools.items() if 'trial amount' in tool.description]
@@ -110,9 +111,9 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'describe_official_calculation', 'declare_official_calculation',
                 'describe_credit_limits', 'declare_credit_limits'}
     assert set(tools) == expected
-    # the desk's wording gates know every tool by name, but the one a desk word already names
-    named = re.compile(OPERATOR_WORDS['never']['an MCP tool'])
-    assert {name for name in tools if not named.fullmatch(name)} == {'worklist'}
+    # the desk's wording gates know every tool by name and no other, but the one a desk word names
+    listed = re.search(r'\(\?:(.*)\)', OPERATOR_WORDS['never']['an MCP tool'])[1].split('|')
+    assert set(listed) == set(tools) - {'worklist'}
     for name, tool in tools.items():
         assert tool.description and len(tool.description) > 60, f'{name} has no real contract'
     assert '{{"FxRate.ZAR": {{"Spot": {:.5f}}}}}'.format(1 / 19.25) in tools[
