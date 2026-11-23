@@ -191,8 +191,8 @@ def curve_conventions(seed: Mapping, curve: str, stated: Mapping = ()) -> CurveC
     if spec is None and not stated:
         raise BloombergConfigurationError(
             'the seed names no rates entry for {} - a curve this workstation never seeded has no '
-            'strip to fetch and no conventions to author one in. Add it to `seed.json` and re-run '
-            '`DV_Bloomberg discover`'.format(curve))
+            'strip to fetch and no conventions to author one in, so none is set up: a seat '
+            'holding mark names it among the desk\'s securities and verifies it'.format(curve))
     declared = (spec or {}).get('conventions')
     if stated:
         declared = dict(declared if isinstance(declared, collections.abc.Mapping) else {}, **stated)
@@ -395,10 +395,11 @@ def strip_entries(document, seed, curve):
         raise BloombergConfigurationError(
             '{} declares its front point as {!r} and the map carries no verified entry there - the '
             'front is what seeds the short end of the curve, and a strip quoted from its first swap '
-            'alone leaves everything under {} unidentified. Re-run `DV_Bloomberg discover` (the '
-            'entry may have gone dead), or declare a `front` the map verified: the seeded ones are '
-            '{}'.format(curve, conventions.front, wanted[0][0] if wanted else 'its first knot',
-                        ', '.join(_seeded_fronts(seed, curve)) or 'none'))
+            'alone leaves everything under {} unidentified, so no strip is fetched. A seat holding '
+            'mark verifies the securities again (the entry may have gone dead), or declares a '
+            '`front` the map verified: the seeded ones are {}'.format(
+                curve, conventions.front, wanted[0][0] if wanted else 'its first knot',
+                ', '.join(_seeded_fronts(seed, curve)) or 'none'))
     return tuple(wanted), ledger
 
 
@@ -941,9 +942,9 @@ def ir_curve_block(strip, screen=None, holidays=()):
         raise IncompleteStrip(
             '{} screened to {} believed point{} against a floor of {} - the terminal was asked '
             'about {} securities and refused {} ({}). One knot is a flat curve quoted once, so '
-            'there is no strip to solve. Widen the screen the census names, re-run `DV_Bloomberg '
-            'discover` if the strip has gone dead, or quote a currency this workstation is '
-            'entitled to'.format(
+            'there is no strip to solve. Widen the screen the census names, have a seat holding '
+            'mark verify the securities again if the strip has gone dead, or quote a currency '
+            'this workstation is entitled to'.format(
                 strip.currency, len(used), '' if len(used) == 1 else 's',
                 screen.minimum_points, len(strip.prints) + len(strip.rejected),
                 len(strip.rejected),

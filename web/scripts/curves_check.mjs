@@ -39,7 +39,8 @@ const BLOCK = {
 const OLD_BLOCK = {
   curve: 'USD', currency: 'USD', discount_rate: '',
   interpolation: 'Linear', interpolation_source: 'default',
-  note: "authored without 'Spot_Days' - set it up again through POST /book/curve",
+  note: "authored without 'Spot_Days', so it cannot re-roll - a seat holding mark authors the "
+    + 'curve again from its rows',
   rows: [{ tenor: '', security: 'US0003M Index', quote: 5.3, use: 'Yes' },
          { tenor: '2Y', security: 'USSW2 Curncy', quote: 4.1, use: 'Yes' }],
 };

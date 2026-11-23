@@ -3474,7 +3474,7 @@ def verified(request={}):
 def test_a_verification_needs_a_terminal_and_re_verifies_the_scope_it_is_given(
         vocabulary, monkeypatch):
     """ONLY A TERMINAL WRITES THE MAP, so a workstation whose blpapi does not import refuses at
-    submission naming the read that still works - no session, no queue, no file.
+    submission naming the seat that verifies on a terminal - no session, no queue, no file.
 
     With one answering, the scope is the whole act: the entry the map already carries is re-probed
     and its DRIFT named by its own path, the two names the seed spells that the map has never heard
@@ -3483,14 +3483,14 @@ def test_a_verification_needs_a_terminal_and_re_verifies_the_scope_it_is_given(
 
     Killing mutations: the scope dropped, and the whole packaged vocabulary is re-probed - which
     `asked` measures; the recheck reading the entry's own recorded name rather than the terminal's,
-    which then never drifts; the refusal naming `GET /book/securities` for the read that still
-    works, a route its reader cannot ask.
+    which then never drifts; the refusal naming `describe_securities` again, a tool no reader
+    at a desk can call.
     """
     monkeypatch.setitem(sys.modules, 'blpapi', None)
     refused = CLIENT.post('/book/securities/verify', json={'block': 'rates'})
 
     assert refused.status_code == 422 and 'blpapi' in refused.json()['detail']
-    assert 'with describe_securities' in refused.json()['detail']
+    assert 'a seat holding mark verifies the securities' in refused.json()['detail']
     assert '/book/' not in refused.json()['detail']
     assert not (vocabulary / 'security_map.json').exists()
 
@@ -3824,8 +3824,8 @@ def test_a_pair_is_set_up_and_then_quotes(desk_setup, tmp_path, monkeypatch):
     assert abs(par_residuals(desk_setup, 'EUR')).max() < 1e-6, 'a benchmark that does not reprice'
     assert any('EUR was set up on the conventions this build ships' in row
                for row in outcome['check']), outcome['check']
-    assert ("FXVol.EUR.ZAR is a cross - USD is neither leg, so its spot model is fitted for the "
-            "pair: calibrate_spot_model(pair='EUR.ZAR')") in outcome['check']
+    assert ('FXVol.EUR.ZAR is a cross - USD is neither leg, so its spot model is fitted for the '
+            'pair: a seat holding mark calibrates it for EUR.ZAR') in outcome['check']
     # ONE write: the etag the job answers with is the file's, and nothing else moved it
     assert outcome['etag'] == CLIENT.get('/book').json()['etag'] != before
 
@@ -4225,7 +4225,7 @@ def test_a_set_up_refuses_at_submission_and_a_routine_tick_never_discovers(
         desk_setup, tmp_path, monkeypatch):
     """ONLY A TERMINAL SETS A MARKET UP, so a workstation whose blpapi does not import refuses at
     SUBMISSION by name - no session, no queue, nothing written. A pair this desk's vocabulary does
-    not spell refuses there too, naming the verb that adds it, and one stated BACKWARDS is told the
+    not spell refuses there too, naming the seat that adds it, and one stated BACKWARDS is told the
     spelling the seed carries rather than sent to add a duplicate. A `deal` the booking verb would
     refuse is refused there, in its words.
 
@@ -4250,7 +4250,7 @@ def test_a_set_up_refuses_at_submission_and_a_routine_tick_never_discovers(
         {'deal': {'Object': 'CrossCurrencySwap', 'Reference': 'T'}}), headers=JSON)
 
     assert unseeded.status_code == 422 and 'EURNOK' in unseeded.json()['detail']
-    assert 'with configure_securities' in unseeded.json()['detail']
+    assert 'a seat holding mark names it among' in unseeded.json()['detail']
     assert '/book/' not in unseeded.json()['detail']
     assert backwards.status_code == 422
     assert backwards.json()['detail'] == 'this desk seeds EURZAR rather than ZAREUR - ask for that'
@@ -4540,7 +4540,7 @@ def test_a_book_ahead_of_its_prints_is_told_which_day_to_roll(desk_setup, tmp_pa
     """A BOOK VALUED FORWARD OF ITS MARKET IS A LEGAL STATE, and the set-up screens its prints
     exactly as the tick screens the book's own rows - against the book's date. So a book six days
     ahead of its prints keeps every benchmark out, and what the answer owes is the WAY OUT: the
-    book's date, the print's date and the verb that moves one. It never reads "nothing refused"
+    book's date, the print's date and the seat that moves one. It never reads "nothing refused"
     beside two dozen held-out rows, which is what the emitter's own census says when the rows were
     held rather than rejected.
 
@@ -4558,7 +4558,8 @@ def test_a_book_ahead_of_its_prints_is_told_which_day_to_roll(desk_setup, tmp_pa
 
     assert result['status'] == 'done' and outcome['written'] is False, outcome
     assert 'kept 0 of 24 seeded benchmarks' in reason and '24 stale' in reason
-    assert ahead in reason and 'with set_base_date' in reason and '/book/' not in reason
+    assert ahead in reason and 'a seat holding mark rolls the book' in reason
+    assert '/book/' not in reason and 'set_base_date' not in reason
     # the screen does not keep a rejected print's own date, so the window it judged by stands in
     assert 'no print more than 5 days older than that' in reason
     assert 'nothing refused' not in reason, 'the emitter counted rejections it never made'
@@ -9335,10 +9336,10 @@ def test_a_quote_read_says_where_each_quote_stands_by_the_window_the_acceptance_
 def test_a_curve_authored_before_it_carried_its_definition_reads_back_with_a_note(tmp_path):
     """An older book's curve block has quotes and no definition: no tenor on its rows, no
     conventions on the block. The read verb answers it as far as it goes, blank tenors and the
-    quotes, with a note naming what is missing and the tool that re-authors it, rather than dying
+    quotes, with a note naming what is missing and the seat that re-authors it, rather than dying
     on the first missing key.
 
-    Killing mutation: the note naming `POST /book/curve`, a route its reader cannot post to.
+    Killing mutation: the note naming `configure_curve`, a tool its reader cannot call.
     """
     old = {'instrument': {'Currency': 'ZAR', 'Day_Count': 'ACT_365', 'Discount_Rate': '', 'Points': [
         {'Use': 'Yes', 'Descriptor': 'ZAR 3M', 'DealType': 'DepositDeal', 'Quote_Type': 'Par_Rate',
@@ -9352,7 +9353,8 @@ def test_a_curve_authored_before_it_carried_its_definition_reads_back_with_a_not
         assert answer.status_code == 200
         curve = answer.json()['curves']['InterestRatePrices.ZAR']
         assert curve['note'] == (
-            "authored without 'Tenor' - set it up again with configure_curve")
+            "authored without 'Tenor', so it cannot re-roll - a seat holding mark authors the "
+            'curve again from its rows')
         assert curve['rows'] == [{'tenor': '', 'security': '', 'quote': 7.1, 'use': 'Yes'}]
         assert 'conventions' not in curve
     finally:

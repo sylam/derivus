@@ -585,7 +585,7 @@ def test_the_trap_is_closed(caplog):
     assert quoted['valuation_configuration'] is None, 'the cross pinned another pair\'s law'
     assert CROSS_FACTOR in note, 'the note does not name the factor this leg looked up'
     assert 'LogVar2FJModelParameters.EUR' not in note, 'the note names the other pair\'s law'
-    assert 'calibrate_spot_model' in note, 'a note without a remedy'
+    assert 'Calibrating the LogVar2FJ spot model for' in note, 'a note without a remedy'
     assert strike(quoted, 'accumulator') == pytest.approx(
         strike(accrual(lognormal(document), 'Accumulator', 'EUR', knockout=KNOCKOUT),
                'accumulator'), rel=1e-12), 'the leg says GBM and prices as something else'

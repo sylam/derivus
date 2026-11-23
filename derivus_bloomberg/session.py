@@ -50,14 +50,14 @@ def _failure_text(message):
 
 
 def blpapi_module():
-    """Return the imported `blpapi` module, raising `BloombergUnavailable` naming what to install
-    when the SDK is absent. Public so a caller can refuse at startup rather than mid-request."""
+    """Return the imported `blpapi` module, raising `BloombergUnavailable` where the SDK does not
+    import. Public so a caller can refuse at startup rather than mid-request."""
     try:
         return importlib.import_module('blpapi')
     except ImportError as error:
         raise BloombergUnavailable(
-            'Bloomberg blpapi is unavailable. Install the Bloomberg-supported Python SDK on '
-            'this workstation and confirm the Desktop API service is running.') from error
+            'Bloomberg blpapi does not import on this workstation, so no terminal was asked - a '
+            'seat holding mark asks from a workstation whose terminal answers.') from error
 
 
 def _error_text(element) -> str:
@@ -322,8 +322,8 @@ class BloombergSession:
                                 for field in fields):
             raise BloombergRequestError(
                 'B-PIPE is a price feed: it serves {} from //blp/mktdata and nothing else, and {} '
-                'needs a Desktop API terminal. Discovery and the security map are built on a '
-                'terminal workstation (DV_Bloomberg discover) and deployed to this host'.format(
+                'needs a Desktop API terminal, so nothing was asked - a seat holding mark '
+                'verifies the securities on a workstation whose terminal answers'.format(
                     ', '.join(MKTDATA_PRICE_FIELDS) + ', LAST_UPDATE_DT',
                     'an override' if overrides else ', '.join(
                         field for field in fields if field not in MKTDATA_PRICE_FIELDS
@@ -333,9 +333,9 @@ class BloombergSession:
     def _walk_bulk(self, securities, fields, overrides=None):
         if self._identity is not None:
             raise BloombergRequestError(
-                'B-PIPE is a price feed: the bulk field {} needs a Desktop API terminal. '
-                'Discovery and the security map are built on a terminal workstation '
-                '(DV_Bloomberg discover) and deployed to this host'.format(', '.join(fields)))
+                'B-PIPE is a price feed: the bulk field {} needs a Desktop API terminal, so '
+                'nothing was asked - a seat holding mark verifies the securities on a '
+                'workstation whose terminal answers'.format(', '.join(fields)))
         yield from self._request(securities, fields, _bulk_value, overrides)
 
     def _snapshot(self, securities, fields):

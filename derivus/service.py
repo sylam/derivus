@@ -5679,8 +5679,8 @@ def book_curves(curve: str = None):
                 interpolation=entry['interpolation'])
         except KeyError as missing:
             # a block authored before it carried its definition: its quotes read, it cannot re-roll
-            entry['note'] = 'authored without {} - set it up again with configure_curve'.format(
-                missing)
+            entry['note'] = ('authored without {}, so it cannot re-roll - a seat holding mark '
+                             'authors the curve again from its rows'.format(missing))
     if curve is not None:
         return answer
     answer['seeded'] = {}
@@ -6092,8 +6092,8 @@ def book_bloomberg(request: dict):
 #: What a verification refuses on where this workstation cannot reach a terminal at all: the map is
 #: EVIDENCE and only a terminal writes one, so a sandboxed desk reads its map and never verifies.
 NO_TERMINAL = ('this workstation has no terminal (blpapi does not import) and only a terminal '
-               'writes the security map - read the vocabulary with describe_securities, and '
-               'verify it on the workstation whose terminal answers for these securities')
+               'writes the security map, so nothing is verified - a seat holding mark verifies '
+               'the securities on the workstation whose terminal answers for them')
 
 #: A curve row quoted off a security no entry and no rejection carries - the join's third answer,
 #: beside an entry's own evidence and a rejection's verdict.
@@ -6203,9 +6203,9 @@ def seed_entry(block, key, entry):
                              in discover.candidates_from_seed(seed)
                              if candidate.path[0] == block})
     except (AttributeError, KeyError, TypeError, ValueError) as error:
-        raise ValueError('{}/{} spells no vocabulary a terminal can be asked about ({}: {}) - read'
-                         ' the block back with describe_securities and state that shape'.format(
-                             block, key, type(error).__name__, error))
+        raise ValueError('{}/{} spells no vocabulary a terminal can be asked about ({}: {}), so '
+                         'nothing is written - state it in the shape the Securities screen reads '
+                         'the block back in'.format(block, key, type(error).__name__, error))
 
 
 def keep_seed():
@@ -6251,8 +6251,9 @@ def book_securities_entry(request: dict):
     marking(request, 'ticker_vocabulary')
     block, key = request.get('block'), request.get('key')
     if not block or not key:
-        raise HTTPException(422, 'a vocabulary entry is named by its `block` and its `key` - '
-                                 'describe_securities reads back what this desk carries')
+        raise HTTPException(422, 'a vocabulary entry is named by its `block` and its `key`, so '
+                                 'nothing is written - the Securities screen reads back the '
+                                 'entries this desk carries')
     try:
         seed, candidates = seed_entry(block, key, request.get('entry'))
     except (BloombergFXError, ValueError) as error:
@@ -6440,7 +6441,8 @@ def supply_of(factor, base_currency, seed, mapped):
                     ((seed.get(block) or {}).get('pairs') or [])), None)
         missing = 'the seed spells no {} pair for {}'.format(block, ' or '.join(spellings))
     if key is None:
-        return None, '{} - name one with configure_securities and verify it'.format(missing)
+        return None, ('{} - a seat holding mark names one among the desk\'s securities and '
+                      'verifies it'.format(missing))
     entry = {'block': block, 'key': key,
              'securities': sum(1 for _ in discover.candidates_from_seed(
                  scoped_seed(seed, block, key))),
@@ -6609,8 +6611,9 @@ def setup_scope(request, document, baseline):
             raise ValueError(
                 'this desk seeds {} rather than {} - ask for that'.format(reverse, scope['pair'])
                 if reverse in spelled else
-                'this desk seeds no fx_vol surface for {} - name it with configure_securities '
-                '(block `fx_vol`, key `pairs`), then set it up'.format(scope['pair']))
+                'this desk seeds no fx_vol surface for {}, so none is set up - a seat holding '
+                'mark names it among the desk\'s securities (block `fx_vol`, key `pairs`), '
+                'then sets it up'.format(scope['pair']))
     return scope
 
 
@@ -6638,9 +6641,9 @@ def unsupplied_curve(curve, rows, dated, error):
         return str(error)
     printed = max([read_date(row.last_update) for row in rows
                    if read_date(row.last_update)], default=None)
-    return ('{} kept {} of {} seeded benchmarks - {}. The book is dated {} and {}; roll the book '
-            'onto its market with set_base_date where it stands ahead of one, or state the rows '
-            'by hand with configure_curve').format(
+    return ('{} kept {} of {} seeded benchmarks - {}, so it is not set up. The book is dated {} '
+            'and {}; a seat holding mark rolls the book onto its market where it stands ahead '
+            'of one, or states the rows by hand').format(
                 curve, len(rows) - len(screened), len(rows),
                 ', '.join('{} {}'.format(count, verdict) for verdict, count
                           in sorted(Counter(row.verdict for row in screened).items())),
@@ -6933,7 +6936,7 @@ class SetupJob(Progressing):
         rows += ['{} was re-priced onto {} with this set-up'.format(name, answer['base_date'])
                  for name in repriced]
         return rows + ['{} is a cross - {} is neither leg, so its spot model is fitted for the '
-                       'pair: calibrate_spot_model(pair={!r})'.format(
+                       'pair: a seat holding mark calibrates it for {}'.format(
                            name, base_currency, name.split('.', 1)[1])
                        for name in answer.get('installed', [])
                        if name.startswith('FXVol.') and base_currency not in name.split('.')]

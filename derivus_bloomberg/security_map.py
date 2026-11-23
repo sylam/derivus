@@ -116,7 +116,8 @@ def load(path=None):
             if not entry.get(evidence):
                 raise BloombergConfigurationError(
                     '{} ({}) carries no {} - an entry without its terminal evidence is not '
-                    'trusted; re-run `DV_Bloomberg discover`'.format(
+                    'trusted, so the map is not read: a seat holding mark verifies the '
+                    'securities again'.format(
                         '/'.join(entry_path), entry['security'], evidence))
     return document
 
