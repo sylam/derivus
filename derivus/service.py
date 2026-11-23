@@ -2773,10 +2773,7 @@ def book_positions(actor: str = None):
     # box's store holds them - a copy that never pulled them can name neither day
     lost = lost and spine.folded(lambda log: set(filter(log.store.has, lost)))
     if lost:
-        found, legs = diary_rows(PnL.marks_job(document, PnL.held_terms(
-            document, lost)), None)
-        diaried += [dict(row, instrument=legs.get(row['instrument'], row['instrument']))
-                    for row in found]
+        diaried += diary_rows(PnL.marks_job(document, PnL.held_terms(document, lost)), None)
     ended = expiries(diaried, spine.base_day(document))
     rows = []
     for row in standing:
@@ -3554,10 +3551,8 @@ def window_payments(first, last, fills, amended, document, marks, movements):
     for job, nodes in units.items():
         marked = (jobs.get(job) or spine.stored(job))['Calc']
         for group in PnL.apart(nodes):
-            found, holders = diary_rows({'Calc': dict(marked, Deals=dict(marked['Deals'], Deals={
-                'Children': group}))}, last['lsn'], read.get(job))
-            rows.extend(dict(row, instrument=holders.get(row['instrument'], row['instrument']))
-                        for row in found)
+            rows.extend(diary_rows({'Calc': dict(marked, Deals=dict(marked['Deals'], Deals={
+                'Children': group}))}, last['lsn'], read.get(job)))
     keys, earlier = {row['key'] for row in rows}, {}
     for movement in movements:
         if movement['kind'] != 'payment' or movement['subject'] in keys:
@@ -3567,9 +3562,7 @@ def window_payments(first, last, fills, amended, document, marks, movements):
             if day not in earlier:
                 earlier[day] = diary_rows(spine.stored(marks[day]['job']), last['lsn'],
                                           marks[day]['files'])
-            found, legs = earlier[day]
-            hits = [dict(row, instrument=legs.get(row['instrument'], row['instrument']))
-                    for row in found if row['key'] == movement['subject']]
+            hits = [row for row in earlier[day] if row['key'] == movement['subject']]
             if hits:
                 rows.extend(hits)
                 keys.add(movement['subject'])
@@ -3585,16 +3578,17 @@ def window_payments(first, last, fills, amended, document, marks, movements):
 
 
 def diary_rows(job, lsn, files=None):
-    """`(rows, legs)` - the diary of a marks job's units as the record stood at `lsn`, every row
-    keyed as the book's own diary keys it, and `{leg address: unit}` for every leg of a structure
-    among them. `files` is what the job's marks run read (`Stats['Files']`), which the diary reads
+    """The diary of a marks job's units as the record stood at `lsn`, every row keyed as the book's
+    own diary keys it and filed under the unit that holds it, a structure's leg under the
+    structure. `files` is what the job's marks run read (`Stats['Files']`), which the diary reads
     as it stood where the record holds it (`spine.reading`)."""
     units = [node['Instrument']['.Deal']['Reference'] for node in job_children(job)]
     context = load(spine.compiled_job(job, lsn=lsn, strict=False, folds=folds()),
                    spine.reading(job, files)())
-    return (diary(context, dict(booked_instruments(job), **{
-        str(position): address for position, address in enumerate(units)})),
-        PnL.held_legs(job_children(job), set(units)))
+    legs = PnL.held_legs(job_children(job), set(units))
+    return [dict(row, instrument=legs.get(row['instrument'], row['instrument'])) for row in diary(
+        context, dict(booked_instruments(job), **{
+            str(position): address for position, address in enumerate(units)}))]
 
 
 def clients_under(entity, declared=None):
