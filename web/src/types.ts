@@ -400,6 +400,9 @@ export type XvaSet = {
   /** What the set's terms say the bank holds, in the book's reporting `currency` at the market's
    * spots - `balance` null where they cannot cross it - and null on a row whose set left the book. */
   held: { currency: string; balance: number | null } | null;
+  /** The price factors the set's terms name that the market lacks, by the engine's walk of the set
+   * alone - null on a row whose set left the book. */
+  lacks: string[] | null;
   /** A recalc in flight for this set: {result_id, status: 'queued' | 'running'}. */
   recalc: { result_id: string; status: string } | null;
   /** The run's largest `EE` and each `PFE_<percentile>`, each with the day it first falls on -

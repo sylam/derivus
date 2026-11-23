@@ -6,7 +6,7 @@
 import type { Dispatch } from 'react';
 import { fieldsOf, type BlotterRow } from './blotter';
 import {
-  SURVIVAL, entityText, factorFamily, instantMs, peaks, plural, type Peak,
+  SURVIVAL, entityText, instantMs, peaks, plural, type Peak,
 } from './desk';
 import {
   byPath, closed, type Agreement, type Entity, type Position,
@@ -32,70 +32,47 @@ export function openClient(dispatch: Dispatch<Action>, id: string) {
 
 /** A client's agreements: on a desk that records, the ones its record declares with the entity; on
  * one that does not, every row of the book (`rowsByPath`, the caller's) whose credit support names
- * it - a netting set's terms being its agreement - collateralised where the XVA read's row of that
- * set (`sets`) says a run collateralises it. */
+ * it - a netting set's terms being its agreement - collateralised, and lacking, as the XVA read's
+ * row of that set (`sets`) says. */
 export function agreementsOf(id: string, declared: Agreement[] | null,
                              rows: Map<string, BlotterRow>, sets: XvaSet[]): Agreement[] {
   if (declared) return declared.filter((row) => row.entity === id);
   return [...rows.values()]
     .filter((row) => token(row.deal.Credit_Support_Amounts, 'Counterparty') === id)
-    .map((row) => ({ agreement: row.reference, entity: id, kind: '', terms: row.deal,
-                     collateralized: !!sets.find((set) => set.deal_path === row.path)?.collateralized }));
+    .map((row) => {
+      const set = sets.find((one) => one.deal_path === row.path);
+      return { agreement: row.reference, entity: id, kind: '', terms: row.deal,
+               collateralized: !!set?.collateralized, lacks: set?.lacks ?? null };
+    });
 }
 
 // ---- is it ready to trade ----------------------------------------------------------------------
 
-/** A fact the page leads with: `ok` stands, `todo` stops a booking until it is put right, `warn` is
- * wrong and books all the same, `note` is how the desk is; `fix` names where it is put right. */
+/** A fact the page leads with: `ok` stands, `todo` is wanting, `warn` is wrong, `note` is how the
+ * desk is; `fix` names where it is put right. */
 export type Line = {
   tone: 'ok' | 'todo' | 'warn' | 'note'; text: string; fix?: 'entity' | 'agreement' | 'curve';
 };
 
-/** The price factors an agreement's `terms` name that the market's `factors` do not hold, sorted:
- * every type a field's declaration names under the name the terms state, a collateral table's by
- * its column - less its counterparty's credit curve, which has a line of its own. */
-export function lacked(terms: Record<string, unknown>, fields: Record<string, Descriptor>,
-                       factors: Record<string, unknown>): string[] {
-  const named = (declared: Descriptor['factors'], stated: unknown): string[] => (
-    Array.isArray(declared)
-      ? (isBlank(stated) ? [] : declared.map((type) => `${type}.${label(stated)}`))
-      : Object.entries(declared ?? {}).flatMap(([column, types]) =>
-        (Array.isArray(stated) ? stated : []).flatMap((row) => named(types, token(row, column)))));
-  const walk = (level: Record<string, Descriptor>, stated: unknown): string[] =>
-    Object.entries(level).flatMap(([key, field]) => [...named(field.factors, token(stated, key)),
-      ...walk(field.sub_fields ?? {}, token(stated, key))]);
-  return [...new Set(walk(fields, terms))]
-    .filter((name) => !(name in factors) && factorFamily(name) !== SURVIVAL).sort();
-}
-
-/** Whether a client is ready to trade, line by line: its entity declared, an agreement in force
- * and where the book holds its netting set - each said on a desk that records, the netting sets
- * naming it on one that does not - its credit curve, without which no CVA reads and its first
- * trade is refused, and each factor its paper names that the market's `factors` lack, none said of
- * a market not read yet; a booking is refused for a factor the book newly lacks, so a set the
- * book already prices without one still takes a trade. */
+/** Whether a client is ready to trade, line by line, each a fact the service serves: its entity
+ * declared, an agreement in force and where the book holds its netting set - each said on a desk
+ * that records, the netting sets naming it on one that does not - its credit curve stated in the
+ * market's `factors`, and each factor its agreements' terms name that the market lacks
+ * (`Agreement.lacks`) but the credit curve, which has its line. */
 export function readiness(id: string, entities: Entity[] | null, agreements: Agreement[],
                           doc: JobDoc | null, reconcile: Reconcile | null,
-                          factors: Record<string, unknown> | undefined,
-                          schema: Schema | null): Line[] {
+                          factors: Record<string, unknown> | undefined): Line[] {
   const credit = `${SURVIVAL}.${id}`;
   const lines: Line[] = entities ? paperLines(id, entities, agreements, doc, reconcile) : [{
     tone: 'note', text: `This desk keeps no record: ${id} is the counterparty ${
       agreements.map((row) => row.agreement).join(', ')} name${agreements.length === 1 ? 's' : ''}.`,
   }];
-  const booked = (row: Agreement) => standing(doc, reconcile, row).path !== null;
-  const wanting = !factors ? [] : agreements.flatMap((row) => lacked(
-    row.terms, fieldsOf(schema, String(row.terms.Object)) ?? {}, factors).map((factor): Line => ({
-    tone: 'todo', text: `${row.agreement} names ${factor}, which the market does not hold: ${
-      booked(row) ? 'a trade still books under the set the book already holds, and a run that '
-        + 'reads it fails' : 'the first trade under it is refused until the market holds it or '
-        + 'the agreement is amended'}.`,
-  })));
-  return [...lines, factors?.[credit] ? { tone: 'ok', text: `Its credit curve ${credit} is stated.` } : {
-    tone: 'todo', fix: 'curve', text: `No credit curve ${credit}: ${agreements.some(booked)
-      ? 'its CVA cannot be read, though a trade still books under a set the book already prices '
-        + 'without one' : 'its first trade is refused for want of it, and its CVA cannot be read'}.`,
-  }, ...wanting];
+  const wanting = agreements.flatMap((row) => (row.lacks ?? [])
+    .filter((factor) => factor !== credit).map((factor): Line => ({
+      tone: 'todo', text: `${row.agreement} names ${factor}, which the market does not hold.` })));
+  return [...lines, factors?.[credit] ? { tone: 'ok', text: `Its credit curve ${credit} is stated.` }
+    : { tone: 'todo', fix: 'curve', text: `No credit curve ${credit}: its CVA cannot be read.` },
+    ...wanting];
 }
 
 function paperLines(id: string, entities: Entity[], agreements: Agreement[], doc: JobDoc | null,
@@ -104,23 +81,21 @@ function paperLines(id: string, entities: Entity[], agreements: Agreement[], doc
   const named = entity ? { tone: 'ok' as const, text: `Legal declares ${entityText(entities, id)}${
     entity.parent ? `, under ${entityText(entities, entity.parent)}` : ''}.` }
     : { tone: 'todo' as const, fix: 'entity' as const,
-        text: `Legal declares no entity ${id}: nothing books for it until one is declared.` };
+        text: `Legal declares no entity ${id}.` };
   if (!agreements.length) {
-    return [named, { tone: 'todo', fix: 'agreement',
-                     text: 'No agreement is in force: nothing books for it until one is declared.' }];
+    return [named, { tone: 'todo', fix: 'agreement', text: 'No agreement is in force.' }];
   }
   return [named, ...agreements.map((row): Line => {
     const { path, moved } = standing(doc, reconcile, row);
     const force = `${row.agreement} (${row.kind}) is in force`;
-    return path === null ? { tone: 'note', text: `${force}; no trade is booked under it yet, and the `
-      + 'first booking adds its netting set to the book.' }
+    return path === null ? { tone: 'note', text: `${force}; no trade is booked under it yet.` }
       : moved.length ? { tone: 'warn', text: `${force}, but its netting set in the book at ${path} `
         + `is off the paper on ${moved.join(', ')}: runs read the declared terms.` }
         : { tone: 'ok', text: `${force}, and the book holds its netting set at ${path} as declared.` };
   })];
 }
 
-/** Ready where nothing stops a booking. */
+/** Ready where nothing is wanting. */
 export const ready = (lines: Line[]): boolean => !lines.some((line) => line.tone === 'todo');
 
 // ---- an agreement as a credit officer says it --------------------------------------------------

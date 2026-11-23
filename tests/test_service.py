@@ -6851,7 +6851,7 @@ def test_a_set_holds_what_its_terms_state_in_the_reporting_currency_the_base_at_
     """WHAT A SET'S TERMS SAY IT HOLDS, read on every XVA row with nothing run: its
     `Opening_Balance`, nought by convention where unstated, held in its `Balance_Currency`, else
     its agreement's, crossed into the book's reporting dollars at the market's spots as the record
-    crosses a balance (`PnL.rates`), the base at one though the market carries no `FxRate.USD`.
+    crosses a balance (`PnL.rates`), the base at one though its `FxRate.USD` states no spot.
     1,000 rand at a spot of 18.5 hold 18,500 dollars, a set stating nothing nought, and one held
     in euros, which the market has no spot for, is unread.
 
@@ -6864,7 +6864,8 @@ def test_a_set_holds_what_its_terms_state_in_the_reporting_currency_the_base_at_
     sets[2]['Instrument']['.Deal']['Balance_Currency'] = 'EUR'
     book = xva_book(tmp_path, sets)
     document = json.loads(book.read_text())
-    del document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']['FxRate.USD']
+    del document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']['FxRate.USD'][
+        'Spot']
     book.write_text(json.dumps(document), newline='\n')
     try:
         held = {reference: row['held'] for reference, row in xva_rows().items()}
@@ -6873,6 +6874,25 @@ def test_a_set_holds_what_its_terms_state_in_the_reporting_currency_the_base_at_
     assert held == {'NS_ZAR': {'currency': 'USD', 'balance': pytest.approx(18_500.0, rel=1e-12)},
                     'NS_USD': {'currency': 'USD', 'balance': 0.0},
                     'NS_EUR': {'currency': 'USD', 'balance': None}}
+
+
+def test_each_set_row_names_the_factors_its_terms_name_that_the_market_lacks(tmp_path, monkeypatch):
+    """THE SET ROWS SAY WHAT THEIR TERMS LACK, read with nothing run on a desk keeping no record,
+    as the paper read says it on one that keeps one: the engine's walk of each set's terms alone,
+    nothing under it. A set funding at a curve the market does not carry names it; one funding at
+    the dollar names nothing, its counterparty's credit curve being in the market.
+
+    Killing mutation: the rows' `lacks` left off, which leaves a desk keeping no record no gap to
+    read.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    xva_book(tmp_path, [netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')]),
+                        netting_set('NS_B', 'CPTY_B', [], funding_rate='NOPE')])
+    try:
+        assert {reference: row['lacks'] for reference, row in xva_rows().items()} == {
+            'NS_A': [], 'NS_B': ['InterestRate.NOPE']}
+    finally:
+        service.BOOK = None
 
 
 def test_a_survival_curve_is_written_from_the_cva_desk_s_spread(recorded, tmp_path):

@@ -697,13 +697,17 @@ flag: `collateralized` on each agreement `GET /book/agreements` answers, on each
 names for a run's tables. No screen shows a
 set's own `Funding_Rate`, the term of its collateral adjustment: every view of a deal's fields
 leaves it out (`onScreen` in `web/src/tokens.ts`), a set stating it keeps it through an edit, and
-a client's readiness still asks the market for the curve it names. Each posts under the
+the curve it names is still among what its terms lack where the market does not carry it: the
+engine's walk of the set's terms alone (`service.lacking`), `lacks` on each agreement and on each
+XVA row, which a client's readiness reads. Each posts under the
 acting seat and shows a refusal in the service's own words. **Held by** what they read,
 `test_pnl.py::test_the_worklist_names_what_waits_and_each_row_leaves_when_its_fact_lands`,
 `test_diary.py::test_a_close_is_declared_only_on_a_day_the_check_calls_legal` and
 `test_spine_engine.py::test_the_paper_is_declared_and_a_booking_names_the_agreement_it_sits_under`,
 `::test_the_agreements_read_says_whether_a_run_collateralises_each`,
+`::test_the_agreements_read_names_the_factors_each_names_that_the_market_lacks`,
 `test_service.py::test_a_set_reads_collateralised_exactly_as_a_run_prices_it`,
+`::test_each_set_row_names_the_factors_its_terms_name_that_the_market_lacks`,
 `web/scripts/paper_check.mjs`, `web/scripts/client_check.mjs` and `web/scripts/trade_check.mjs`
 for what no screen shows, and
 the web's type check; the rest of the rendering is **Not gated**.

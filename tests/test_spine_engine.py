@@ -1166,6 +1166,30 @@ def test_the_agreements_read_says_whether_a_run_collateralises_each(recorded):
         '/book/agreements').json()['agreements']} == {'CSA-A': True, 'ISDA-A': False}
 
 
+def test_the_agreements_read_names_the_factors_each_names_that_the_market_lacks(recorded, desk):
+    """WHAT PAPER NAMES THAT THE MARKET LACKS, by the engine's walk of each agreement's terms alone
+    against the served book's market: one funding at dollars and holding them names only its
+    counterparty's credit curve, and one funding at a curve the market does not carry and holding
+    yen names that curve and the yen's spot beside it, sorted - so a screen reads the gaps rather
+    than walking the schema for them.
+
+    Killing mutation: the walk taken over the book rather than the set (`lacking` walking
+    `document` whole), which names the book's own wants, none, against every agreement.
+    """
+    terms = netting_set(CLIENT_SET, 'LEI-A')['Instrument']['.Deal']
+    assert CLIENT.post('/book/entities', content=dump({'entity': 'LEI-A', 'name': 'Client A'}),
+                       headers=JSON).status_code == 200
+    for agreement, stated in (('ISDA-A', {}), ('ISDA-B', {'Funding_Rate': 'NOPE',
+                                                         'Balance_Currency': 'JPY'})):
+        assert CLIENT.post('/book/agreements', content=dump({
+            'agreement': agreement, 'entity': 'LEI-A', 'kind': 'ISDA 2002',
+            'terms': dict(terms, Reference=agreement, **stated)}), headers=JSON).status_code == 200
+    assert {row['agreement']: row['lacks'] for row in CLIENT.get(
+        '/book/agreements').json()['agreements']} == {
+        'ISDA-A': ['SurvivalProb.LEI-A'],
+        'ISDA-B': ['FxRate.JPY', 'InterestRate.NOPE', 'SurvivalProb.LEI-A']}
+
+
 def test_the_paper_is_declared_and_a_booking_names_the_agreement_it_sits_under(recorded, desk):
     """Legal's half and the desk's, through the service.
 

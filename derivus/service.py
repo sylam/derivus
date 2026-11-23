@@ -3755,13 +3755,19 @@ def book_agreement_declared(request: dict):
 @app.get('/book/agreements', summary="The record's agreements, each with its terms")
 def book_agreements():
     """`{agreements, settlement_state}` - every agreement the record declares, with the entity, the
-    kind and the terms it was declared under, whether a run collateralises them (`set_terms`), and
-    what terms never state (`agreement_terms`): the netting set's balance `fields` and the
-    `collateral_columns` of every `Collateral_Assets` table. 404 where no home is configured."""
+    kind and the terms it was declared under, whether a run collateralises them (`set_terms`), the
+    price factors they name that the served book's market holds no block for (`lacking`, kept on
+    the book under its poll key), null where no book is served, and what terms never state
+    (`agreement_terms`): the netting set's balance `fields` and the `collateral_columns` of every
+    `Collateral_Assets` table. 404 where no home is configured."""
     recorded()
-    return {'agreements': [dict(row, collateralized=set_terms(row['terms'])[1])
-                           for row in spine.agreements()], 'settlement_state': {
-        'fields': list(AGREEMENT_STATE), 'collateral_columns': list(HOLDING_AMOUNTS)}}
+    rows = spine.agreements()
+    lacks = {} if BOOK is None else polled(BOOK, 'agreements', lambda document, _: {
+        row['agreement']: lacking(document, row['terms']) for row in rows})
+    return {'agreements': [dict(row, collateralized=set_terms(row['terms'])[1],
+                                lacks=lacks.get(row['agreement'])) for row in rows],
+            'settlement_state': {'fields': list(AGREEMENT_STATE),
+                                 'collateral_columns': list(HOLDING_AMOUNTS)}}
 
 
 def policy_declared(declare, request, section):
@@ -4726,7 +4732,8 @@ def projection_entry(row, **book):
     `as_of` takes."""
     row = row or {}
     entry = dict({'reference': None, 'deal_path': None, 'counterparty': row.get('counterparty'),
-                  'collateralized': row.get('collateralized'), 'note': None, 'held': None}, **book)
+                  'collateralized': row.get('collateralized'), 'note': None, 'held': None,
+                  'lacks': None}, **book)
     entry.update({key: row.get(key) for key in XVA_COLUMNS + ('error', 'missing')},
                  status=row.get('status', 'never run'))
     return entry
@@ -4897,8 +4904,8 @@ def limit_usage(limit, draws):
 
 def xva_entries(document):
     """The projection's rows joined with `document`'s own set list (`projection_entry`): every set
-    the book carries, with what its terms say the bank holds (`stated_holding`), then each row
-    whose set has left it."""
+    the book carries, with what its terms say the bank holds (`stated_holding`) and the factors
+    they name that its market lacks (`lacking`), then each row whose set has left it."""
     rows = read_projection().get('sets') or {}
     entries, seen, market = [], set(), market_of(document)
     reporting = structures.reporting_currency(document, lambda _: market)
@@ -4910,12 +4917,23 @@ def xva_entries(document):
         entries.append(projection_entry(
             rows.get(reference), reference=reference, deal_path=deal_path,
             counterparty=counterparty, collateralized=collateralized,
-            held=stated_holding(deal, market, reporting)))
+            held=stated_holding(deal, market, reporting), lacks=lacking(document, deal)))
     for reference in sorted(set(rows) - seen):
         entries.append(projection_entry(rows[reference], reference=reference, note=(
             'no NettingCollateralSet called {!r} is in the book any more - this row is the last '
             'run of a set that has since left it'.format(reference))))
     return entries
+
+
+def lacking(document, terms):
+    """The price factors a netting set's `terms` name that `document`'s market holds no block for,
+    the counterparty's credit curve among them: the engine's walk of the set alone, nothing under
+    it (`walked_factors`) - None where the book's calculation refuses the walk, so a read whose
+    rows carry it never goes down with the calculation."""
+    try:
+        return walked_factors(around(document, {'Instrument': {'.Deal': terms}}))[1]
+    except ValueError:
+        return None
 
 
 def stated_holding(terms, market, reporting):
