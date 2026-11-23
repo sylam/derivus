@@ -2028,10 +2028,10 @@ def test_a_status_poll_with_nothing_moved_is_a_lookup_and_all_it_reads_is_in_its
 
 def test_an_xva_poll_with_nothing_moved_is_a_lookup_and_a_row_landing_is_read_at_once(file_book):
     """`GET /book/xva` keeps its rows, its funding and its limits on the book under `poll_key` over
-    the XVA file's stamp, so a second poll with nothing moved is answered off what the first kept
-    and the file is not parsed: a row restated with the file's size and modified time held reads
-    as kept. Each set's `recalc` is read beside the kept rows. A row landing in the file moves the
-    key and is read at the next poll.
+    the stamps of the XVA file and the desk's vocabulary, so a second poll with nothing moved is
+    answered off what the first kept and the file is not parsed: a row restated with the file's
+    size and modified time held reads as kept. Each set's `recalc` is read beside the kept rows. A
+    row landing in the file moves the key and is read at the next poll.
 
     Killing mutation: the rows read off the file on every poll, outside the key, which reads the
     restated row on the poll a lookup answers.
@@ -2047,7 +2047,8 @@ def test_an_xva_poll_with_nothing_moved_is_a_lookup_and_a_row_landing_is_read_at
         return {entry['reference']: entry['cva'] for entry in CLIENT.get('/book/xva').json()['sets']}
 
     def kept():
-        return service.BOOK.polls.get(('xva',) + service.poll_key(service.BOOK, xva))
+        return service.BOOK.polls.get(('xva',) + service.poll_key(
+            service.BOOK, xva, *service.vocabulary_files()))
 
     service.write_row('GONE', {'status': 'done', 'cva': 1.5})
     stamp = rested()
@@ -6892,6 +6893,49 @@ def test_an_unknown_set_refuses_by_name_and_a_missing_survival_curve_lands_in_th
         assert CLIENT.get('/results/{}'.format(rows['NS_GHOST']['result_id'])).json()[
             'missing'] == 'SurvivalProb.GHOST'
         assert rows['NS_A'] == standing, "a failed set took another set's row with it"
+    finally:
+        service.BOOK = None
+
+
+def test_who_supplies_a_failed_run_s_factor_is_read_once_per_market_and_vocabulary(
+        tmp_path, monkeypatch):
+    """WHO SUPPLIES THE FACTOR A FAILED RUN WANTED IS KEPT UNDER WHAT IT IS READ FROM: the book's
+    market, the desk's seed and its security map by their stamps, and the factor. NS_G's option
+    discounts on a GATE curve the market lacks, so its run fails wanting `InterestRate.GATE`, which
+    the seed declares no rates entry for. A GATE entry written to the seed moves its stamp, and the
+    next read says that entry sets it up. The seed then overwritten unreadable at its own size and
+    time, and the book moved under the read, the read answers as before: nothing reads a seed
+    whose stamp stands.
+
+    Killing mutations: the join worked out on every poll miss, which reads the broken seed and
+    fails the read; the seed's stamp left out of the read's keys, which answers the entry's
+    absence after it is written.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    book = xva_book(tmp_path, [netting_set('NS_G', 'CPTY_A', [dict(
+        VANILLA, Reference='OPT_G', Discount_Rate='GATE')])])
+    # each file a read is keyed on stamped past a tick, on no whole second, so the read is kept
+    stamp = time.time_ns() - 10 ** 10 + 1
+    seed, projection = tmp_path / 'seed.json', tmp_path / 'xva.json'
+    try:
+        recalc()
+        os.utime(projection, ns=(stamp, stamp))
+        assert xva_rows()['NS_G']['missing'] == {
+            'factor': 'InterestRate.GATE', 'status': 'missing', 'supply': None,
+            'note': "the seed declares no rates entry for GATE - a seat holding mark names one "
+                    "among the desk's securities and verifies it"}
+
+        assert CLIENT.post('/book/securities', json={'block': 'rates', 'key': 'GATE',
+                                                     'entry': GATE_CURVE}).json()['written']
+        os.utime(seed, ns=(stamp, stamp))
+        supplied = xva_rows()['NS_G']['missing']
+        assert (supplied['supply']['key'], supplied['note']) == (
+            'GATE', "a seat holding mark sets it up off the desk's rates entry GATE")
+
+        seed.write_bytes(b'x' * seed.stat().st_size)
+        os.utime(seed, ns=(stamp, stamp))
+        book.write_text(book.read_text() + '\n', newline='\n')
+        assert xva_rows()['NS_G']['missing'] == supplied
     finally:
         service.BOOK = None
 

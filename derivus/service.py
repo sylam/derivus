@@ -599,9 +599,10 @@ class Book:
         # each file the book names parsed once per content, for every context a request builds
         # over it (`load`): the newest of the market data and the calendar and the ones before
         self.parses = utils.LRUCache(4)
-        # the market a document prices on by its `market_stamp`, pickled as the parses are, and what
-        # netting sets' terms read in it (`terms_read`) by the same stamp and the terms
-        self.markets, self.sets = utils.LRUCache(4), utils.LRUCache(4)
+        # the market a document prices on by its `market_stamp`, pickled as the parses are, what
+        # netting sets' terms read in it (`terms_read`) by the same stamp and the terms, and who
+        # supplies the factors failed runs wanted (`suppliers`) by the stamp and the vocabulary's
+        self.markets, self.sets, self.supplies = (utils.LRUCache(4) for _ in range(3))
         # what a poll was last answered, by the read and its `poll_key`
         self.polls = utils.LRUCache(8)
         # each pending quote file's row of `/book/quotes` by its path, with the stamp it was read at
@@ -4791,10 +4792,10 @@ def book_xva_view():
     `lacks_refused` states the refusal once, the holdings answered all the same.
 
     A POLL WITH NOTHING MOVED IS A LOOKUP: the rows, `funding` and the limits are kept on the book
-    under its `poll_key` over the XVA file (`xva_view`), and each set's `recalc` is read beside
-    them on every poll.
+    under its `poll_key` over the XVA file and the desk's vocabulary (`xva_view`), and each set's
+    `recalc` is read beside them on every poll.
     """
-    view = polled(live_book(), 'xva', xva_view, xva_path())
+    view = polled(live_book(), 'xva', xva_view, xva_path(), *vocabulary_files())
     sets = [dict(entry, recalc=recalc_of(entry['reference'])) for entry in view['sets']]
     return {'as_of': as_of(), 'sets': sets, 'funding': view['funding'],
             'limits': [limit_usage(limit, draws_on(limit, sets)) for limit in view['limits']],
@@ -4805,7 +4806,7 @@ def xva_view(document, _):
     """`{sets, funding, limits, lacks_refused}` - what `GET /book/xva` reads of `document`, the XVA
     file and the record: the rows joined with the book's sets (`xva_entries`), each with what its
     terms read in the book's market (`terms_read`) and a failed row's `missing` factor with what
-    supplies it (`dependency_answer`), the curves a recalc asked now funds at
+    supplies it (`suppliers`), the curves a recalc asked now funds at
     (`funded`), the credit limits declared (`credit_limits`), and what refused the walk of the
     sets' gaps, null where it was asked."""
     entries = xva_entries(document)
@@ -4815,12 +4816,28 @@ def xva_view(document, _):
         entry.update(read)
     # a failed row names the factor its run wanted; who supplies it is the desk's vocabulary now
     wanted = sorted({entry['missing'] for entry in entries if entry['missing']})
-    supplied = {} if not wanted else {
-        row['factor']: row for row in dependency_answer(document, [], wanted)['factors']}
+    supplied = suppliers(document, wanted) if wanted else {}
     for entry in entries:
         entry['missing'] = supplied.get(entry['missing'])
     return {'sets': entries, 'funding': funded(document), 'limits': credit_limits(),
             'lacks_refused': refused}
+
+
+def suppliers(document, factors):
+    """`{factor: row}` - who supplies each of `factors` (`dependency_answer`), kept on the book
+    (`Book.supplies`) under the document's `market_stamp`, the `settled` stamps of the desk's
+    vocabulary (`vocabulary_files`) and `factors`, so a read whose market and vocabulary stand
+    still builds no market and reads neither file. Worked out afresh, and not kept, while either
+    file is inside a tick of its last write."""
+    files = [settled(path) for path in vocabulary_files()]
+    key = None if None in files else content_hash(
+        {'market': market_stamp(document), 'files': files, 'factors': factors})
+    kept = BOOK.supplies.get(key) if key else None
+    if kept is None:
+        kept = {row['factor']: row for row in dependency_answer(document, [], factors)['factors']}
+        if key:
+            BOOK.supplies.put(key, kept)
+    return kept
 
 
 def funded(document):
@@ -4866,7 +4883,7 @@ def limits_against(terms):
     its counterparty's and that of every entity above it, with what every OTHER set draws on it
     as the XVA rows stand (`xva_view`): what a credit charge of that set is held against. Empty
     where none is declared for them."""
-    view = polled(live_book(), 'xva', xva_view, xva_path())
+    view = polled(live_book(), 'xva', xva_view, xva_path(), *vocabulary_files())
     return [(limit, [draw for draw in draws_on(limit, view['sets'])
                      if draw[0] != terms['netting_set']])
             for limit in view['limits'] if terms['counterparty'] in limit['clients']]
@@ -6227,6 +6244,12 @@ def desk_map():
     path = discover.provisioned()
     return ({'schema': security_map.SCHEMA, 'generated': None, 'blocks': {}, 'rejected': {}}
             if path is None else security_map.load(path)), path
+
+
+def vocabulary_files():
+    """The paths of the desk's own vocabulary, its seed and its security map (`desk_seed`,
+    `desk_map`), as a read keyed on them stamps them (`settled`)."""
+    return [os.path.join(dv_home(), name) for name in ('seed.json', 'security_map.json')]
 
 
 def curve_securities(document, mapped):
