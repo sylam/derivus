@@ -306,17 +306,43 @@ export function onPair(row: GreekRow, market: Market | null): GreekRow & { pair?
 /** The price-factor family a counterparty's credit curve is filed under, `SurvivalProb.<id>`. */
 export const SURVIVAL = 'SurvivalProb';
 
-/** The recovery a credit curve is written at where none is stated, its field's declared default. */
-export const recoveryConvention = (schema: Schema | null): number =>
-  Number(schema?.Factor.types[SURVIVAL]?.Recovery_Rate?.value);
+/** The quotes family a credit curve is solved from, its block `SurvivalProbPrices.<id>`. */
+export const SURVIVAL_QUOTES = `${SURVIVAL}Prices`;
 
-/** A credit curve as the officer types it: the recovery, and one flat spread - the first row's - or
- * a spread in basis points per tenor. */
-export type SpreadForm = { recovery: string; flat: boolean; rows: { tenor: string; spread: string }[] };
+/** The recovery a credit curve's quotes are priced at where none is stated, its declared default. */
+export const recoveryConvention = (schema: Schema | null): number =>
+  Number(schema?.MarketPrices.types[SURVIVAL_QUOTES]?.Recovery_Rate?.value);
+
+/** The credit curve `factor` (`SurvivalProb.<id>`) as its quotes block in `market` states it: the
+ * recovery - the convention where it states none - the currency and discount curve, and each used
+ * row; undefined where the market holds no block for it. */
+export function heldQuotes(market: Market | null, factor: string,
+                           schema: Schema | null): HeldSpreads | undefined {
+  const block = factorFamily(factor) === SURVIVAL ? (market?.['Market Prices']?.[
+    `${SURVIVAL_QUOTES}.${factor.slice(SURVIVAL.length + 1)}`] as { instrument?: Record<string, unknown> })
+    ?.instrument : undefined;
+  if (!block) return undefined;
+  const points = (Array.isArray(block.Points) ? block.Points : []) as Record<string, unknown>[];
+  return {
+    recovery: typeof block.Recovery_Rate === 'number' ? block.Recovery_Rate : recoveryConvention(schema),
+    currency: String(block.Currency ?? ''), discount_rate: String(block.Discount_Rate ?? ''),
+    rows: points.filter((row) => row.Use !== 'No').map((row) => ({
+      tenor: String(row.Tenor ?? ''), quote: Number(row.Quoted_Market_Value),
+      type: String(row.Quote_Type ?? '') })),
+  };
+}
+
+/** A credit curve as the officer types it: the recovery, the currency its default swaps are struck
+ * in and the curve they discount on, and one flat spread - the first row's - or a spread in basis
+ * points per tenor. */
+export type SpreadForm = {
+  recovery: string; currency: string; discount_rate: string; flat: boolean;
+  rows: { tenor: string; spread: string }[];
+};
 
 /** What `POST /book/survival` takes: a typed number as the number, anything else as typed. */
 export type SpreadRequest = {
-  counterparty: string; recovery: number | string;
+  counterparty: string; recovery: number | string; currency: string; discount_rate: string;
   spread: number | string | { tenor: string; spread: number | string }[];
 };
 
@@ -329,19 +355,22 @@ const typed = (text: string): number | string => {
 export function spreadRequest(counterparty: string, form: SpreadForm): SpreadRequest {
   return {
     counterparty: counterparty.trim(), recovery: typed(form.recovery),
+    currency: form.currency.trim(), discount_rate: form.discount_rate.trim(),
     spread: form.flat ? typed(form.rows[0]?.spread ?? '')
       : form.rows.filter((row) => `${row.tenor}${row.spread}`.trim())
         .map((row) => ({ tenor: row.tenor.trim(), spread: typed(row.spread) })),
   };
 }
 
-/** The form a counterparty's curve opens in: the spreads the book holds (`HeldSpreads`) at their
- * recovery - one alone a flat spread - else one blank row at the convention's. */
+/** The form a counterparty's curve opens in: the spreads its quotes block states (`HeldSpreads`),
+ * a spread per tenor as they stand, at their recovery, currency and discount curve - else a flat
+ * spread left blank at the convention's recovery, the currency and the curve chosen. */
 export function spreadForm(held: HeldSpreads | undefined, schema: Schema | null): SpreadForm {
-  const rows = (held?.rows ?? []).map(([tenor, spread]) => ({
-    tenor: tenorLabel(tenor), spread: String(+spread.toPrecision(12)) }));
-  return { recovery: String(held?.recovery ?? recoveryConvention(schema)), flat: rows.length < 2,
-           rows: rows.length ? rows : [{ tenor: '', spread: '' }] };
+  const rows = (held?.rows ?? []).filter((row) => row.type === 'Par_Spread')
+    .map((row) => ({ tenor: row.tenor, spread: String(row.quote) }));
+  return { recovery: String(held?.recovery ?? recoveryConvention(schema)),
+           currency: held?.currency ?? '', discount_rate: held?.discount_rate ?? '',
+           flat: !rows.length, rows: rows.length ? rows : [{ tenor: '', spread: '' }] };
 }
 
 /** Where the survival route's refusal reads: beside the field of `request` its `code` names, any

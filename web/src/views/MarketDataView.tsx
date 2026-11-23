@@ -176,8 +176,8 @@ function ReadAs({ name, value, market }: { name: string; value: unknown; market:
   if (!held || !curveOf(value)) return null;
   return (
     <div className="readas">
-      <div>the curve is the cumulative hazard; as the spreads a credit officer types:</div>
-      <HeldCurve held={held} />
+      <div>the curve is the cumulative hazard the engine solved from the spreads a credit officer typed:</div>
+      <HeldCurve id={name.slice(name.indexOf('.') + 1)} />
     </div>
   );
 }

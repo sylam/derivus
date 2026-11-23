@@ -138,11 +138,11 @@ export const configureBook = (section: string, entry: string, fields: Record<str
 export const getCurves = () => call<CurvesAnswer>('GET', '/book/curve');
 export const configureCurve = (request: Record<string, unknown>) =>
   call<CurveOutcome>('POST', '/book/curve', signed(request));
-// a counterparty's credit curve from its spread, written under the acting seat, and the years its
-// last spread is run on to
+// a counterparty's credit curve from its spreads, written under the acting seat as the quotes block
+// the engine solves the curve from
 export const stateSurvival = (request: SpreadRequest) =>
-  call<BookDealOutcome & { factor: string; horizon: number }>('POST', '/book/survival',
-                                                              signed(request));
+  call<BookDealOutcome & { factor: string; block: string }>('POST', '/book/survival',
+                                                            signed(request));
 // the ticker vocabulary: the candidates this desk could quote, what a terminal verified about
 // them and every knot's own print in one read; one entry of the desk's own seed merged; and the
 // terminal round trip that rewrites the map, queued and polled like an execute

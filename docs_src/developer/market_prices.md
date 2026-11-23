@@ -353,11 +353,16 @@ name and left out, the curve family's `takes`. **Held by**
 `test_credit_prices.py::test_a_quote_type_the_family_does_not_take_is_refused_by_name_and_left_out`.
 
 **The knot rule, anchored.** One knot per used quote at its contract's maturity on the factor's
-ACT/365 axis (`InterestRate.live_knots`), so the system is square, and a contract maturing on or
-before the base date refuses by name. A cumulative hazard is zero at tenor zero and a `SurvivalProb`
+ACT/365 axis (`InterestRate.live_knots`), so the system is square: a contract maturing on or
+before the base date refuses by name, and so do two maturing on one day. The curve's last hazard
+runs on past its last knot in the credit Monte Carlo (`CurveTenor.get_index`'s `Hazard` read), so a
+flat 1Y quote defaults over a ten-year set. The desk's `POST /book/survival` writes a block of
+`Par_Spread` rows and the curve is solved from it in the same write. A cumulative hazard is zero at
+tenor zero and a `SurvivalProb`
 curve is flat below its first knot, so the written curve carries that anchor, which
 `BenchmarkInstruments` holds (`held`): theta is the knots after it and the static buffer the whole
-curve. **Held by** `test_credit_prices.py::test_a_quote_maturing_at_the_base_date_refuses_by_name`.
+curve. **Held by** `test_credit_prices.py::test_a_quote_maturing_at_the_base_date_refuses_by_name`,
+`test_service.py::test_a_credit_curve_is_solved_by_the_engine_from_the_quotes_the_cva_desk_states`.
 
 **The solve is the curve family's**: `utils.CalibrationSolve` over `damped_newton` in float64 on the
 host under the same `N_Iter`, `Tol` and `Damping_Halvings` declarations, seeded at each row's

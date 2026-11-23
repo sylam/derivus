@@ -7125,25 +7125,28 @@ def test_a_projection_file_that_does_not_parse_refuses_by_name(desk_xva, tmp_pat
         "the desk's XVA projection, xva.json, is not readable as one"), answer.text
 
 
-def test_a_survival_curve_is_written_from_the_cva_desk_s_spread(recorded, tmp_path):
-    """`POST /book/survival` writes `SurvivalProb.<counterparty>` from the spread and the recovery
-    the CVA desk states, each spread a hazard s/(1-R), the last one's line run on to fifty years.
-    Read back through the engine's own factor, 150bp flat at a 40% recovery survives
-    exp(-0.015 t/0.6) at one year and at five, and 100bp at a year and 200bp at five survive
-    exp(-0.01 T/0.6) and exp(-0.02 T/0.6) at their own tenors, and at ten years on the five-year
-    hazard still. The agreement's set whose CVA failed for want of the curve, a five-year option,
-    prices after it to the CVA of the same hazard written by hand to ten years. A counterparty the
-    record never declared, a spread that is not a positive number, `true` among them, a recovery
-    of one or `false`, and tenors that do not rise refuse by name with the file untouched, and a
-    seat holding no `mark` over the book is refused, the denial landed.
+def test_a_credit_curve_is_solved_by_the_engine_from_the_quotes_the_cva_desk_states(
+        recorded, tmp_path):
+    """`POST /book/survival` writes the CVA desk's spreads as the counterparty's quotes block,
+    `SurvivalProbPrices.<counterparty>` - a `Par_Spread` row per tenor at the recovery stated, the
+    default swaps struck in the currency and discounting on the curve stated - and the engine
+    solves `SurvivalProb.<counterparty>` from it in the same write, the family's `Bootstrapper
+    Configuration` entry added on a book declaring none; `GET /book/market` serves the block as it
+    serves the market, and no spreads beside it. 150bp flat at 40%, coupons on ACT/360, is a hazard
+    of 0.015 x 365/360 / 0.6 = 0.025347 to the 1Y contract's standard date, 20 September 2025, 449
+    days out - to 1e-3, the default swap's own reading. The agreement's five-year set whose CVA
+    failed for want of the curve prices after it to the CVA of that curve's last hazard written on
+    by hand to ten years: the credit Monte Carlo defaults past the last quote. A term structure,
+    stated in any order, restates the block whole. A solve that fails - a discount curve the market
+    lacks, two quotes on one day - writes nothing and refuses in the engine's words, and a seat
+    holding no `mark` over the book is refused, the denial landed.
 
-    Killing mutations: the hazard written as the spread itself, without 1 - R, which survives
-    exp(-0.015 t) instead; the curve ending at its last row, which the factor runs on along its
-    last segment, survival at ten years read off the slope between one and five years; the tenors
-    unchecked; a boolean read as a number; and the verb asking no `mark`, which writes the curve an
-    unscoped seat asked for.
+    Killing mutations: the block standing under a restatement left in place, which refuses the term
+    structure as a moved plan; the family's entry left unwritten, which refuses the first write for
+    want of a bootstrapper; two quotes on one day let through the knot rule, a 500 on a non-square
+    solve; the simulation's cumulative hazard read flat past its last knot (`CurveTenor.get_index`
+    clamping a `Hazard` read at the last tenor), which prices the set's CVA at 454 against 1,564.
     """
-    from derivus import riskfactors
     from derivus_spine import SpineLog
     from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 
@@ -7151,15 +7154,13 @@ def test_a_survival_curve_is_written_from_the_cva_desk_s_spread(recorded, tmp_pa
     ghost = netting_set('NS_GHOST', 'GHOST', [dict(VANILLA, Reference='OPT_G',
                                                    Expiry_Date=BASE + pd.DateOffset(years=5))])
     book = xva_book(tmp_path, [ghost])
+    struck = {'counterparty': 'GHOST', 'currency': 'USD', 'discount_rate': 'USD'}
 
     def survival(**body):
-        return CLIENT.post('/book/survival', content=dump(body), headers=JSON)
+        return CLIENT.post('/book/survival', content=dump(dict(struck, **body)), headers=JSON)
 
-    def survives(tenors):
-        params = in_process(json.loads(book.read_text())).current_cfg.params
-        return riskfactors.construct_factor(
-            utils.Factor('SurvivalProb', ('GHOST',)), params['Price Factors'],
-            params['Price Factor Interpolation']).survival(tenors)
+    def market():
+        return CLIENT.get('/book/market').json()
 
     try:
         for path, body in (('/book/entities', {'entity': 'GHOST', 'name': 'Ghost Ltd'}),
@@ -7170,41 +7171,50 @@ def test_a_survival_curve_is_written_from_the_cva_desk_s_spread(recorded, tmp_pa
         recalc(['NS_GHOST'])
         assert xva_rows()['NS_GHOST']['status'] == 'failed'
 
-        before = book.read_bytes()
-        for body, said in (({'counterparty': 'NOBODY', 'spread': 150.0}, 'declares GHOST'),
-                           ({'counterparty': 'GHOST', 'spread': -5.0}, 'positive spread'),
-                           ({'counterparty': 'GHOST', 'spread': True}, 'positive spread'),
-                           ({'counterparty': 'GHOST', 'spread': 150.0, 'recovery': 1.0},
-                            'outside [0, 1)'),
-                           ({'counterparty': 'GHOST', 'spread': 150.0, 'recovery': False},
-                            'outside [0, 1)'),
-                           ({'counterparty': 'GHOST', 'spread': [{'tenor': '5Y', 'spread': 200.0},
-                                                                 {'tenor': '1Y', 'spread': 100.0}]},
-                            'do not rise')):
-            refused = survival(**body)
-            assert refused.status_code == 422 and said in refused.json()['detail'], body
-        assert book.read_bytes() == before, 'a refused curve was written'
+        assert survival(spread=150.0, recovery=0.4).json()['factor'] == 'SurvivalProb.GHOST'
+        read = market()
+        assert sorted(read) == ['etag', 'market', 'stamp']
+        block = read['market']['Market Prices']['SurvivalProbPrices.GHOST']['instrument']
+        assert (block['Currency'], block['Discount_Rate'], block['Recovery_Rate']) == (
+            'USD', 'USD', 0.4)
+        assert [(row['Tenor'], row['Quote_Type'], row['Quoted_Market_Value'])
+                for row in block['Points']] == [('1Y', 'Par_Spread', 150.0)]
+        assert read['market']['Bootstrapper Configuration']['SurvivalProb'] == {
+            'Prices': 'SurvivalProb'}
+        (_, _), (year, hazard) = read['market']['Price Factors']['SurvivalProb.GHOST']['Curve'][
+            '.Curve']['data']
+        assert year == 449 / 365.0
+        assert hazard / year == pytest.approx(0.015 * 365 / 360 / 0.6, rel=1e-3)
 
-        assert survival(counterparty='GHOST', spread=150.0, recovery=0.4).json()['written']
-        assert survives([1.0, 5.0]) == pytest.approx(np.exp(-0.015 * np.array([1.0, 5.0]) / 0.6),
-                                                     rel=1e-12)
         recalc(['NS_GHOST'])
-        written = xva_rows()['NS_GHOST']
+        solved = xva_rows()['NS_GHOST']
         body = json.loads(book.read_text())
         body['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'][
             'SurvivalProb.GHOST'] = json.loads(dump({'Recovery_Rate': 0.4, 'Curve': utils.Curve(
-                [], [[0.0, 0.0], [10.0, 0.25]])}))
+                [], [[0.0, 0.0], [10.0, 10.0 * hazard / year]])}))
         book.write_text(json.dumps(body, indent=2), newline='\n')
         recalc(['NS_GHOST'])
-        assert (written['status'], written['cva']) == (
+        assert (solved['status'], solved['cva']) == (
             'done', pytest.approx(xva_rows()['NS_GHOST']['cva'], rel=1e-6))
 
-        assert survival(counterparty='GHOST', spread=[{'tenor': '1Y', 'spread': 100.0},
-                                                      {'tenor': '5Y', 'spread': 200.0}]).json()[
-            'written']
-        tenors = np.array([365.0, 1826.0, 3652.0]) / 365.0
-        assert survives(tenors) == pytest.approx(
-            np.exp(-np.array([0.01, 0.02, 0.02]) * tenors / 0.6), rel=1e-12)
+        assert survival(spread=[{'tenor': '5Y', 'spread': 200.0}, {'tenor': '1Y', 'spread': 100.0}],
+                        recovery=0.35).json()['written']
+        read = market()['market']
+        assert [(row['Tenor'], row['Quoted_Market_Value']) for row in read['Market Prices'][
+            'SurvivalProbPrices.GHOST']['instrument']['Points']] == [('5Y', 200.0), ('1Y', 100.0)]
+        assert [knot for knot, _ in read['Price Factors']['SurvivalProb.GHOST']['Curve'][
+            '.Curve']['data']] == [0.0, 449 / 365.0, 1910 / 365.0]
+
+        before = book.read_bytes()
+        for said, body in (
+                ('the bootstrap asked for InterestRate.NOSUCH and this market does not carry it',
+                 {'spread': 150.0, 'discount_rate': 'NOSUCH'}),
+                ('SurvivalProbPrices.GHOST: GHOST 1Y, GHOST 12M mature on one day, so each '
+                 'identifies the knot another does. Hold all but one out with Use No',
+                 {'spread': [{'tenor': '1Y', 'spread': 100.0}, {'tenor': '12M', 'spread': 120.0}]})):
+            refused = survival(**body)
+            assert (refused.status_code, refused.json()['detail']) == (422, said), refused.text
+        assert book.read_bytes() == before, 'a refused curve was written'
 
         raw = canonical_document({'grants': [{'subject': seat, 'verb': verb, 'book': '*'}
                                              for verb in ('admin', 'mark')], 'read': []})
@@ -7215,7 +7225,7 @@ def test_a_survival_curve_is_written_from_the_cva_desk_s_spread(recorded, tmp_pa
                        actor=seat, pending=(raw,))
         finally:
             log.close()
-        denied = survival(counterparty='GHOST', spread=150.0, actor='subject-desk-two')
+        denied = survival(spread=150.0, actor='subject-desk-two')
         assert denied.status_code == 422 and 'holds no mark scope' in denied.json()['detail']
         log = SpineLog(home)
         try:
@@ -7233,12 +7243,13 @@ def test_a_refused_survival_curve_names_the_field_it_is_about(recorded, book, mo
     """Each cause a credit curve is refused for is a sentence of its own, opening with the field it
     is about and what it stated, then what holds, the field its `code`: a counterparty the record
     does not declare, a spread that is not a positive number - negative, `true`, a row of nothing -
-    and a recovery outside [0, 1), one or `false`; and, on a desk that records nothing, a
-    counterparty naming nobody. Nothing is written.
+    a recovery outside [0, 1), one or `false`, and a currency or a discount curve not stated; and,
+    on a desk that records nothing, a counterparty naming nobody. Nothing is written.
 
     Killing mutations: the recovery read inside the spread's check, which answers a recovery of one
     with the spread's sentence; the record's refusal of a stranger passed on as its own, which
-    codes it `refused` and leaves a form to place it by its words.
+    codes it `refused` and leaves a form to place it by its words; the discount curve left to the
+    solve, which refuses it in the bootstrap's words coded `refused`.
     """
     assert CLIENT.post('/book/entities', content=dump({'entity': 'GHOST', 'name': 'Ghost Ltd'}),
                        headers=JSON).status_code == 200
@@ -7246,6 +7257,8 @@ def test_a_refused_survival_curve_names_the_field_it_is_about(recorded, book, mo
               'flat or rows [{{tenor, spread}}] of them')
     recovery = ('recovery {} is outside [0, 1): it is the share of a claim recovered on default, '
                 '0.4 by convention')
+    struck = ('{} {!r} names nothing: the default swaps a credit curve is solved from are {} the '
+              'desk states')
     before = book.read_bytes()
     for body, code, said in (
             ({'counterparty': 'NOBODY', 'spread': 150.0}, 'counterparty',
@@ -7258,7 +7271,11 @@ def test_a_refused_survival_curve_names_the_field_it_is_about(recorded, book, mo
             ({'counterparty': 'GHOST', 'spread': 150.0, 'recovery': 1.0}, 'recovery',
              recovery.format(1.0)),
             ({'counterparty': 'GHOST', 'spread': 150.0, 'recovery': False}, 'recovery',
-             recovery.format(False))):
+             recovery.format(False)),
+            ({'counterparty': 'GHOST', 'spread': 150.0, 'discount_rate': 'USD'}, 'currency',
+             struck.format('currency', None, 'struck in the currency')),
+            ({'counterparty': 'GHOST', 'spread': 150.0, 'currency': 'USD', 'discount_rate': ''},
+             'discount_rate', struck.format('discount_rate', '', 'discounted on the curve'))):
         refused = CLIENT.post('/book/survival', content=dump(body), headers=JSON)
         assert (refused.status_code, refused.json()) == (422, {'detail': said, 'code': code}), body
 
@@ -7269,77 +7286,6 @@ def test_a_refused_survival_curve_names_the_field_it_is_about(recorded, book, mo
         'detail': "counterparty '' names nobody: a survival curve is written for the counterparty "
                   "a netting set names", 'code': 'counterparty'})
     assert book.read_bytes() == before, 'a refused curve was written'
-
-
-def test_a_written_survival_curve_names_the_horizon_it_runs_on_to(book, monkeypatch):
-    """The answer to a written credit curve says the horizon its last line runs on to. 150bp flat
-    at a 40% recovery is a hazard of 0.015/0.6 = 0.025, so the curve is 0.025 at a year and runs on
-    to 0.025 x 50 = 1.25 at the fifty-year horizon. A term structure whose last row is sixty years
-    out - 21,915 days, 60.041 years, at 120bp: 0.012 x 60.041/0.6 = 1.2008 - already reaches past
-    the horizon, so nothing is run on and the answer still names the horizon it ran on to.
-
-    Killing mutation: the horizon answered as where the written curve ends, which reads the sixty-
-    year curve as run on to sixty years.
-    """
-    monkeypatch.delenv('DV_SPINE_HOME', raising=False)
-
-    def written(**body):
-        answer = CLIENT.post('/book/survival', content=dump(dict(body, counterparty='CPTY_A')),
-                             headers=JSON).json()
-        return {key: value for key, value in answer.items() if key != 'etag'}
-
-    def curve(*knots):
-        return [pytest.approx(knot, rel=1e-12) for knot in knots]
-
-    assert written(spread=150.0) == {
-        'written': True, 'factor': 'SurvivalProb.CPTY_A', 'recovery': 0.4, 'horizon': 50.0,
-        'curve': curve([0.0, 0.0], [1.0, 0.025], [50.0, 1.25])}
-    ten, sixty = 3652 / 365.0, 21915 / 365.0
-    assert written(spread=[{'tenor': '10Y', 'spread': 100.0}, {'tenor': '60Y', 'spread': 120.0}]
-                   ) == {
-        'written': True, 'factor': 'SurvivalProb.CPTY_A', 'recovery': 0.4, 'horizon': 50.0,
-        'curve': curve([0.0, 0.0], [ten, 0.01 * ten / 0.6], [sixty, 0.012 * sixty / 0.6])}
-
-
-def test_a_credit_curve_reads_back_on_the_market_as_the_spreads_it_was_written_from(
-        book, monkeypatch):
-    """`GET /book/market` serves each credit curve read back as the spreads `POST /book/survival`
-    takes. 150bp flat at the convention's 40% reads back as 150bp at a year surviving
-    exp(-0.015/0.6); 100, 150 and 200bp at 1Y, 3Y and 5Y at 35% as those three at 1, 1,095/365
-    and 1,826/365 years, each surviving exp(-sT/0.65); neither shows the knot it runs on to at
-    fifty years. A curve stating no recovery reads at the convention, and one whose last knot is
-    no run-on keeps it: 0.02 at a year and 0.2 at ten read 120bp at both.
-
-    Killing mutations: the run-on knot kept, which reads a flat 150bp back as a 1Y and a 50Y; a
-    last knot dropped wherever its spread is the one before it, which ends the ten-year curve at a
-    year.
-    """
-    monkeypatch.delenv('DV_SPINE_HOME', raising=False)
-
-    def spreads(counterparty, spread, **body):
-        CLIENT.post('/book/survival', content=dump(dict(body, counterparty=counterparty,
-                                                         spread=spread)), headers=JSON)
-        return CLIENT.get('/book/market').json()['spreads']['SurvivalProb.' + counterparty]
-
-    def rows(recovery, *typed):
-        return {'recovery': recovery, 'rows': [
-            [pytest.approx(tenor, rel=1e-12), pytest.approx(spread, rel=1e-12),
-             pytest.approx(np.exp(-spread / 1e4 * tenor / (1.0 - recovery)), rel=1e-12)]
-            for tenor, spread in typed]}
-
-    three, five = ((BASE + pd.DateOffset(years=years) - BASE).days / 365.0 for years in (3, 5))
-    assert spreads('CPTY_A', 150.0) == rows(0.4, (1.0, 150.0))
-    assert spreads('CPTY_B', [{'tenor': '1Y', 'spread': 100.0}, {'tenor': '3Y', 'spread': 150.0},
-                              {'tenor': '5Y', 'spread': 200.0}], recovery=0.35) == rows(
-        0.35, (1.0, 100.0), (three, 150.0), (five, 200.0))
-
-    document = json.loads(book.read_text())
-    document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'][
-        'SurvivalProb.CPTY_C'] = json.loads(dump({'Curve': utils.Curve(
-            [], [[0.0, 0.0], [1.0, 0.02], [10.0, 0.2]])}))
-    book.write_text(json.dumps(document, indent=2), newline='\n')
-    assert CLIENT.get('/book/market').json()['spreads']['SurvivalProb.CPTY_C'] == rows(
-        0.4, (1.0, 120.0), (10.0, 120.0))
 
 
 #: Every verb that writes market data or its set-up, a body it would act on, and the act its denial
@@ -8814,8 +8760,9 @@ def test_a_book_naming_a_market_data_file_is_read_off_the_file(file_book):
     status names the file's base currency and date, both its quoted curves beside the USD curve no
     block solved, and its surface; the curve verb lists both quoted curves; the consolidated risk reads the cashflow's six ZAR quotes off the
     file's strip; and a counterparty's survival curve and the date verb answer as they do on the
-    book's explicit twin, the survival curve the one factor the bare block states and the roll
-    re-authoring the file's ZAR strip on the new day into it, re-solving that curve alone and
+    book's explicit twin, the survival curve its quotes block, the family's entry and the one
+    factor solved from them the bare block states, and the roll re-authoring the file's ZAR strip
+    on the new day into it, re-solving that curve alone and
     naming the implied one as left standing. Before, each read the block: the status and the curve
     verb died on `KeyError: 'System Parameters'`, the risk read no quote, the survival curve
     refused `'Price Factors'` and the roll `'System Parameters'`.
@@ -8839,7 +8786,8 @@ def test_a_book_naming_a_market_data_file_is_read_off_the_file(file_book):
     assert [row['block'] for row in risk['quotes']] == ['InterestRatePrices.ZAR'] * 6
 
     explicit, named = on_each((twin(book, market), book), lambda: [
-        CLIENT.post('/book/survival', json={'counterparty': 'CPTY_A', 'spread': 100.0}).json(),
+        CLIENT.post('/book/survival', json={'counterparty': 'CPTY_A', 'spread': 100.0,
+                                            'currency': 'USD', 'discount_rate': 'USD'}).json(),
         CLIENT.post('/book/date', json={'base_date': '2024-07-01'}).json()])
     assert named == explicit
     survival, rolled = named
@@ -8850,7 +8798,8 @@ def test_a_book_naming_a_market_data_file_is_read_off_the_file(file_book):
     assert CLIENT.get('/book/status').json()['base_date'] == '2024-07-01'
     assert {section: sorted(stated) for section, stated in block_of(book).items()} == {
         'Price Factors': ['InterestRate.ZAR', 'SurvivalProb.CPTY_A'],
-        'System Parameters': ['Base_Date'], 'Market Prices': ['InterestRatePrices.ZAR']}
+        'System Parameters': ['Base_Date'], 'Bootstrapper Configuration': ['SurvivalProb'],
+        'Market Prices': ['InterestRatePrices.ZAR', 'SurvivalProbPrices.CPTY_A']}
 
 
 def test_a_spot_patched_on_a_book_naming_a_file_writes_back_what_moved(file_book):
@@ -9379,7 +9328,7 @@ def test_the_market_read_is_kept_by_what_it_is_read_from(file_book):
     assert len(service.BOOK.markets.entries) == 1
     stamp = answer['stamp']
     held = CLIENT.get('/book/market', params={'stamp': stamp}).json()
-    assert held == {'etag': answer['etag'], 'stamp': stamp, 'market': None, 'spreads': None}
+    assert held == {'etag': answer['etag'], 'stamp': stamp, 'market': None}
 
     amended = CLIENT.post('/book/deals', json={'action': 'amend', 'deal_path': '0',
                                                'fields': {'Amount': 2e6}}).json()

@@ -5274,8 +5274,9 @@ class InterestRate(Construction):
     @classmethod
     def live_knots(cls, market_price, points, nodes, base_date, day_count, calendars):
         """`quote_knots` of the used quotes `points` authored as `nodes`, refusing by name every
-        benchmark maturing on or before the base date: a knot at tenor zero identifies nothing,
-        and the Newton solve meets it as a singular Jacobian rather than a bad curve."""
+        benchmark maturing on or before the base date - a knot at tenor zero identifies nothing -
+        and every two maturing on one day, which identify one knot twice: the Newton solve meets
+        either as a singular or a non-square Jacobian rather than a bad curve."""
         knots = cls.quote_knots(nodes, base_date, day_count, calendars)
         dead = ['{} (last cashflow {:%Y-%m-%d})'.format(
             point['Descriptor'], max(max(leaf.get_reval_dates()) for leaf in leaf_deals(node)))
@@ -5286,6 +5287,12 @@ class InterestRate(Construction):
                 'identifies lands at tenor zero, which no quote identifies. Hold the quote out '
                 'with Use No, or move the base date'.format(market_price, '; '.join(dead),
                                                             base_date))
+        shared = [point['Descriptor'] for point, knot in zip(points, knots)
+                  if np.count_nonzero(knots == knot) > 1]
+        if shared:
+            raise ValueError(
+                '{}: {} mature on one day, so each identifies the knot another does. Hold all '
+                'but one out with Use No'.format(market_price, ', '.join(shared)))
         return knots
 
     @staticmethod
@@ -5799,9 +5806,9 @@ class SurvivalProb(Construction):
     #: the axis a survival curve's knots lie on, `riskfactors.SurvivalProb.get_day_count`'s
     DAY_COUNT = 'ACT_365'
     fields = [
-        F('Currency', 'Text', default=REQUIRED,
+        F('Currency', 'Text', default=REQUIRED, factors=['FxRate'],
           description='The currency the default swaps are struck in'),
-        F('Discount_Rate', 'Text', default=REQUIRED,
+        F('Discount_Rate', 'Text', default=REQUIRED, factors=['InterestRate'],
           description='The curve the default swaps discount on'),
         F('Recovery_Rate', 'Float', default=0.4, convention=True,
           description='The recovery the default swaps are priced at and the solved curve carries, '

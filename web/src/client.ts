@@ -13,7 +13,7 @@ import {
 } from './positions';
 import { standing, type Action } from './state';
 import {
-  COLLATERAL, currencyOf, formatNumber, isBlank, label, onScreen, tenorLabel, token,
+  COLLATERAL, currencyOf, formatNumber, isBlank, label, onScreen, token,
 } from './tokens';
 import { markOf } from './trade';
 import type {
@@ -330,7 +330,7 @@ export function paperLine(set: string, agreements: Agreement[]): string {
  * service's note on a set that has left the book; and the client's credit limit, with the usage
  * and the headroom it states (`limitRead`). A client's sums are left to the reader. */
 export function creditExport(
-  clients: { name: string; spread?: [number, number]; lines: CreditLine[]; limit?: LimitRead }[],
+  clients: { name: string; spread?: [string, number]; lines: CreditLine[]; limit?: LimitRead }[],
   currency: string): unknown[][] {
   const kept = (line?: CreditLine) => peaks(line?.run?.peaks ?? null);
   const quantiles = [...new Set(clients.flatMap((client) => client.lines)
@@ -345,7 +345,7 @@ export function creditExport(
       'Limit ccy'],
     ...clients.flatMap(({ name, spread, lines, limit }) => (lines.length ? lines : [undefined]).map((line) => {
       const held = line?.collateralised && typeof line.call?.balance === 'number' ? line.call : null;
-      return [name, line?.reference, spread && spread[1], spread && tenorLabel(spread[0]),
+      return [name, line?.reference, spread && spread[1], spread && spread[0],
         line && paperText(line), line?.trades, line?.pending, line?.value,
         line && currency, held?.balance, held?.call, held?.currency, line?.run?.after_collateral,
         ...peak(kept(line).ee),

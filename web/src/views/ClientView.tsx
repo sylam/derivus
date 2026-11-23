@@ -245,16 +245,13 @@ function Terms({ terms }: { terms: Term[] }) {
   );
 }
 
-/** The client's credit curve as the book holds it, read back as the Curves tab reads it. */
+/** The client's credit curve as its quotes state it, read as the Curves tab reads it. */
 function CurveRead({ id, restate }: { id: string; restate: () => void }) {
   const held = heldSpreads(useApp().state, `${SURVIVAL}.${id}`);
   return (
     <section className="card credit">
       <h3>Credit curve — {SURVIVAL}.{id}</h3>
-      <HeldCurve held={held} />
-      {!held && (
-        <div className="note">No credit curve yet: a CVA against {id} has no default to read.</div>
-      )}
+      <HeldCurve id={id} />
       <div><button className="ghost" onClick={restate}>{held ? 'restate it' : 'state it'}</button></div>
     </section>
   );

@@ -3,11 +3,11 @@
 import { useEffect, useState } from 'react';
 import { failure, stateSurvival } from '../api';
 import {
-  SURVIVAL, recoveryConvention, refusedAt, spreadForm, spreadRequest, type SpreadForm,
+  SURVIVAL, SURVIVAL_QUOTES, factorNames, recoveryConvention, refusedAt, spreadForm, spreadRequest,
+  type SpreadForm,
 } from '../desk';
-import { actingSeat, heldBack, heldSpreads, useApp, written } from '../state';
-import { formatNumber, tenorLabel } from '../tokens';
-import type { HeldSpreads } from '../types';
+import { actingSeat, heldBack, heldSpreads, marketOf, useApp, written } from '../state';
+import { formatNumber } from '../tokens';
 import { Gated } from './Desk';
 import { Whose } from './Whose';
 
@@ -20,29 +20,56 @@ const HOLDS = {
   plain: 'This desk keeps no record: a curve is written for any counterparty named.',
 };
 
-/** A counterparty's credit curve as the book holds it (`heldSpreads`): the recovery it is read at,
- * and each tenor's spread with the survival to it - nothing where the market holds no curve. */
-export function HeldCurve({ held }: { held?: HeldSpreads }) {
-  if (!held) return null;
+/** A counterparty's credit curve `SurvivalProb.<id>` as its quotes block states it (`heldSpreads`):
+ * the currency, the discount curve and the recovery its default swaps are priced at, and each
+ * tenor's quote; where the market holds no block, that its curve has no quotes, or that there is
+ * no curve at all. */
+export function HeldCurve({ id }: { id: string }) {
+  const { state } = useApp();
+  const factor = `${SURVIVAL}.${id}`;
+  const held = heldSpreads(state, factor);
+  if (!held) {
+    return (
+      <div className="note">{marketOf(state)?.['Price Factors']?.[factor]
+        ? `Its curve has no quotes: the book holds ${factor} with no ${SURVIVAL_QUOTES} block `
+          + 'to solve it from, so stating its spreads writes the quotes the engine solves it from.'
+        : 'No credit curve yet: a CVA against this counterparty has no default to read.'}</div>
+    );
+  }
   return (
     <>
-      <div className="hint">As the book holds it, at a recovery of{' '}
-        {formatNumber(100 * held.recovery, 'percent')}:</div>
+      <div className="hint">Its quotes, struck in {held.currency} and discounting on{' '}
+        {held.discount_rate}, at a recovery of {formatNumber(100 * held.recovery, 'percent')}:</div>
       <table className="data">
-        <thead>
-          <tr><th>Tenor</th><th className="n">Spread</th><th className="n">Survival</th></tr>
-        </thead>
+        <thead><tr><th>Tenor</th><th className="n">Quote</th><th>As</th></tr></thead>
         <tbody>
-          {held.rows.map(([tenor, spread, survival]) => (
-            <tr key={tenor}>
-              <td>{tenorLabel(tenor)}</td>
-              <td className="n">{formatNumber(spread, 'basis')}</td>
-              <td className="n">{formatNumber(100 * survival, 'percent')}</td>
+          {held.rows.map((row) => (
+            <tr key={row.tenor}>
+              <td>{row.tenor}</td>
+              <td className="n">{formatNumber(row.quote, 'basis')}</td>
+              <td className="hint">{row.type === 'Par_Spread' ? 'bp of par spread' : row.type}</td>
             </tr>
           ))}
         </tbody>
       </table>
     </>
+  );
+}
+
+/** A select over the market's factors a field of the quotes block names, the value held among
+ * them where the market lacks it. */
+function FactorPick({ field, value, blank, onPick }: {
+  field: string; value: string; blank: string; onPick: (value: string) => void;
+}) {
+  const { state } = useApp();
+  const offered = factorNames(state.schema?.MarketPrices.types[SURVIVAL_QUOTES]?.[field],
+                              marketOf(state));
+  return (
+    <select value={value} onChange={(event) => onPick(event.target.value)}>
+      <option value="">{blank}</option>
+      {[...new Set([value, ...offered])].filter(Boolean).map((name) => (
+        <option key={name}>{name}</option>))}
+    </select>
   );
 }
 
@@ -71,8 +98,7 @@ export function CreditCard({ id, title, recording }: {
     try {
       const answer = await stateSurvival(request);
       await written(dispatch, answer);
-      setSaid({ at: 'done', text: `wrote ${answer.factor}, its last spread run on to ${
-        formatNumber(answer.horizon)} years` });
+      setSaid({ at: 'done', text: `solved ${answer.factor} from its quotes` });
       if (id) return;
       setName('');
       setForm(spreadForm(undefined, state.schema));
@@ -93,11 +119,7 @@ export function CreditCard({ id, title, recording }: {
           {id && <Whose path={['Price Factors', `${SURVIVAL}.${id}`]} />}
           <span>{recording ? HOLDS.record : HOLDS.plain}</span>
         </div>
-        <HeldCurve held={held} />
-        {!held && id && (
-          <div className="note">No credit curve yet: a CVA against this counterparty has no default
-            to read.</div>
-        )}
+        {id && <HeldCurve id={id} />}
       </section>
       <section className="card credit">
         <h3>{held ? 'Restate the curve' : 'State the curve'}</h3>
@@ -118,6 +140,16 @@ export function CreditCard({ id, title, recording }: {
           <span className="hint">the factor's convention is {
             String(recoveryConvention(state.schema))}</span>
           {refusal('recovery')}
+        </div>
+        <div className="statusrow">
+          <span>struck in</span>
+          <FactorPick field="Currency" value={form.currency} blank="a currency"
+                      onPick={(currency) => edit({ currency })} />
+          {refusal('currency')}
+          <span>discounting on</span>
+          <FactorPick field="Discount_Rate" value={form.discount_rate} blank="a curve"
+                      onPick={(discount_rate) => edit({ discount_rate })} />
+          {refusal('discount_rate')}
         </div>
         <div className="statusrow">
           <label><input type="radio" checked={form.flat} onChange={() => edit({ flat: true })} />

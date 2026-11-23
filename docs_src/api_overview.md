@@ -550,18 +550,23 @@ the base currency and date, the factors, the quotes, the configuration - off the
 with the explicit block merged over them, and a verb that writes the market writes into the block
 what it moved, the factors a patch states and the ones its bootstrap changed, and never a factor of
 the file's that stood still. `GET /book/market` answers that market itself, which the web client's
-market screens show, an entry the document's own block states marked as the block's, and under
-`spreads` each `SurvivalProb` curve read back as the spreads `POST /book/survival` writes it from:
-`{recovery, rows: [[tenor, spread, survival]]}`, the tenor in years, the spread in basis points
-of the average hazard to it times one less the recovery, and the knot a written curve runs on to
-at fifty years left off. **Held by**
-`tests/test_service.py::test_a_credit_curve_reads_back_on_the_market_as_the_spreads_it_was_written_from`.
+market screens show, an entry the document's own block states marked as the block's.
+`POST /book/survival` `{counterparty, spread, currency, discount_rate, recovery?}` writes the CVA
+desk's spreads for a counterparty as its quotes block, `SurvivalProbPrices.<counterparty>`: a
+`Par_Spread` row per tenor - one flat spread a 1Y row - its default swaps struck in `currency` and
+discounting on `discount_rate`, both required, at `recovery`, the family's convention where unstated.
+The engine solves `SurvivalProb.<counterparty>` from it in the same write, the family's
+`Bootstrapper Configuration` entry added where the book has none, its last hazard carried past its
+last quote; a solve that fails writes nothing and is refused in the engine's words. A credit curve
+is read off that block in the market - its tenors, quotes and recovery - and one the market holds
+with no block has no quotes to read. **Held by**
+`tests/test_service.py::test_a_credit_curve_is_solved_by_the_engine_from_the_quotes_the_cva_desk_states`.
 `POST /book/market` with `retire: [[section, key, ...]]` deletes such an entry by its path, so the
 file's stands again, and re-bootstraps the market; the system date retired moves the calculation's
 date back with it, as `POST /book/date` does. The answer carries the `stamp` of what the market is
 read from - the document less its deals, the files it names by content, the day - and
-`GET /book/market?stamp=` naming the current one answers `market` and `spreads` null, so a client
-polling it re-reads the market only where the stamp moved.
+`GET /book/market?stamp=` naming the current one answers `market` null, so a client polling it
+re-reads the market only where the stamp moved.
 
 **A document from another system.** `POST /book/open` `{name, document}` files a job document
 another system wrote in `DV_HOME/inbox/` under the base name of `name` and serves that copy as the
@@ -645,8 +650,9 @@ by name answers `500` with `{detail, code}`, `detail` naming the exception's typ
 `code`, a short stable name a client branches on rather than the words — `no_actor` (an act no
 seat signs), `not_granted` (a seat without the grant the act asks), `unpriced` (`/book/risk` on a
 book that will not price), `recorded` (`/book/open` on a desk that keeps a record, nothing filed
-or served), the request field a refused credit curve names - `counterparty`, `spread` or
-`recovery` (`/book/survival`) - and `refused` for every other kind, a body or a query that does
+or served), the request field a refused credit curve names - `counterparty`, `spread`,
+`recovery`, `currency` or `discount_rate` (`/book/survival`) - and `refused` for every other kind,
+a body or a query that does
 not read among them, whose sentence names each part that did not, and a body leaving out a key its
 verb reads, named. **Held by**
 `test_spine_engine.py::test_a_refusal_names_its_kind_beside_its_sentence`,

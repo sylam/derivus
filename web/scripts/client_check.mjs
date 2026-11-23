@@ -529,7 +529,7 @@ const RAN_AT = '2026-11-19T22:27:28.743+02:00';
 const PEAKED = { ...KES_LINES[0], run: { ...RUNS[0], cva: 1234567.891, fva: 0.1 + 0.2, peaks: {
   EE: { value: 2500000.5, day: '2027-02-16' }, PFE_95: { value: 9000000.25, day: '2027-05-16' } } } };
 const SHEET = client.creditExport([
-  { name: 'Kestrel (KES)', spread: [1, 150], lines: [PEAKED, KES_LINES[1], KES_LINES[3]],
+  { name: 'Kestrel (KES)', spread: ['1Y', 150], lines: [PEAKED, KES_LINES[1], KES_LINES[3]],
     limit: OVER },
   { name: 'Marrick (MAR)', lines: [], limit: client.limitOf('UNRUN', LIMITS) },
   { name: 'Ostrava (OST)', lines: [] }], 'USD');

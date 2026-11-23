@@ -213,17 +213,18 @@ export type JobDoc = {
   };
 };
 
-/** A credit curve read back as the spreads `POST /book/survival` takes: the recovery it is read at,
- * and per tenor in years the spread in basis points and the survival to it. */
-export type HeldSpreads = { recovery: number; rows: [number, number, number][] };
+/** A credit curve as its quotes block states it, `SurvivalProbPrices.<id>`: the recovery its default
+ * swaps are priced at, the currency they are struck in and the curve they discount on, and each
+ * used row's tenor, quote and what it quotes (`Quote_Type`). */
+export type HeldSpreads = {
+  recovery: number; currency: string; discount_rate: string;
+  rows: { tenor: string; quote: number; type: string }[];
+};
 
 /** `GET /book/market`: the market the book prices on - the file it names with its explicit block
- * merged over it - with each credit curve in it as `HeldSpreads` by factor, the etag of the
- * document it was read off, and the stamp the market is named by. `market` and `spreads` are null
- * where the stamp asked with is that one: the market held is still current. */
-export type BookMarket = {
-  etag: string; stamp: string; market: Market | null; spreads: Record<string, HeldSpreads> | null;
-};
+ * merged over it - the etag of the document it was read off, and the stamp the market is named by.
+ * `market` is null where the stamp asked with is that one: the market held is still current. */
+export type BookMarket = { etag: string; stamp: string; market: Market | null };
 
 export type TableShape = { rows: number; columns: unknown[] };
 
@@ -574,7 +575,7 @@ export type SettlementState = { fields: string[]; collateral_columns: string[] }
  * credit curve's names the field of the request it refuses, and `error` is a failure no verb
  * refuses by name. */
 export type RefusalCode = 'no_actor' | 'not_granted' | 'unpriced' | 'recorded' | 'refused'
-  | 'counterparty' | 'spread' | 'recovery' | 'error';
+  | 'counterparty' | 'spread' | 'recovery' | 'currency' | 'discount_rate' | 'error';
 
 /** `GET /book/seat` - the seat a request's acts are filed under, per verb the nodes it holds it
  * at, each reaching every path under it and null where nothing narrows it, `demands`, the verb

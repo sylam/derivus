@@ -555,22 +555,26 @@ def test_a_print_reaches_the_record_through_the_binding(book, recorded, tmp_path
 
 
 def test_a_survival_curve_reaches_the_book_through_the_binding(book):
-    """`declare_survival_curve` is one `service().call`: 150bp flat, the recovery stated nowhere and
-    so the factor's declared 40%, lands as the curve the verb writes, a hazard of 0.015 / 0.6 a year
-    to fifty years, and a spread that is not positive comes back as the service's own refusal with
-    the book untouched.
+    """`declare_survival_curve` is one `service().call`: 150bp flat, struck in dollars and
+    discounting on the dollar curve, the recovery stated nowhere, lands as the one 1Y quote of the
+    curve's block at the family's declared 40%, the curve the engine solves from it written
+    beside, and a spread that is not positive comes back as the service's own refusal with the book
+    untouched.
 
-    Killing mutations: the tool sending the spread under another key, which the verb reads as no
-    spread and refuses; the tool or the verb stating a recovery of its own, 0.3, beside the
-    factor's.
+    Killing mutations: the tool sending the spread or the discount curve under another key, which
+    the verb reads as none and refuses; the tool stating a recovery of its own beside the family's.
     """
-    written = mcp_server.declare_survival_curve('CPTY_Z', 150.0)
-    assert (written['factor'], written['recovery']) == ('SurvivalProb.CPTY_Z', 0.4)
-    assert written['curve'] == [[0.0, 0.0], [1.0, pytest.approx(0.015 / 0.6)],
-                                [50.0, pytest.approx(50 * 0.015 / 0.6)]]
+    written = mcp_server.declare_survival_curve('CPTY_Z', 150.0, 'USD', 'USD')
+    assert (written['block'], written['factor']) == (
+        'SurvivalProbPrices.CPTY_Z', 'SurvivalProb.CPTY_Z')
+    market = json.loads(book.read_text())['Calc']['MergeMarketData']['ExplicitMarketData']
+    block = market['Market Prices']['SurvivalProbPrices.CPTY_Z']['instrument']
+    assert (block['Recovery_Rate'], [(row['Tenor'], row['Quoted_Market_Value'])
+                                     for row in block['Points']]) == (0.4, [('1Y', 150.0)])
+    assert 'SurvivalProb.CPTY_Z' in market['Price Factors']
     before = book.read_bytes()
     with pytest.raises(ToolError) as refused:
-        mcp_server.declare_survival_curve('CPTY_Z', 0.0)
+        mcp_server.declare_survival_curve('CPTY_Z', 0.0, 'USD', 'USD')
     assert 'positive spread' in str(refused.value) and book.read_bytes() == before
 
 

@@ -88,7 +88,7 @@ structure takes it as `name`. **Held by**
 | `describe_securities`, `configure_securities`, `verify_securities` | `GET`/`POST /book/securities`, `POST /book/securities/verify`: the ticker seed, map and IPV join |
 | `book_dependencies`, `setup_market` | `GET`/`POST /book/dependencies`, `POST /book/setup`: what a trade needs; that market built |
 | `calibrate_spot_model` | `POST /book/model`: one pair's spot model fitted, never on the tick |
-| `declare_survival_curve` | `POST /book/survival`: a counterparty's curve from the CVA desk's spread |
+| `declare_survival_curve` | `POST /book/survival`: a counterparty's curve solved from the CVA desk's spreads, written as its quotes |
 | `book_risk_summary` | `GET /book/risk`: the mark and its largest quote and factor rows |
 | `xva_view`, `recalc_xva` | `GET /book/xva`, `/book/xva/{reference}/profile`, `POST /book/xva`: the cached projection per netting set, or one set's row with its exposure profile; the verb that moves it |
 | `book_diary` | `GET /book/diary`: every payment, fixing and expiry, and each booking's premium |

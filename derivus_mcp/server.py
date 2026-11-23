@@ -2046,21 +2046,23 @@ def declare_credit_limits(limits: dict, actor: str | None = None) -> dict:
 
 
 @MCP.tool()
-def declare_survival_curve(counterparty: str, spread: float | list[dict],
-                           recovery: float | None = None, actor: str | None = None) -> dict:
-    """Write a counterparty's survival curve - `SurvivalProb.<counterparty>`, what its netting
-    set's CVA discounts by - from the credit spread the CVA desk states: `spread` in basis points,
-    a number for a flat curve or rows `[{tenor, spread}]` (`tenor` like `5Y`) for a term structure,
-    and `recovery` the share recovered on default, the factor's convention where unstated
-    (`describe_factor_type('SurvivalProb')`), which the answer names. Each spread is read as the
-    hazard spread / (1 - recovery), the last one's line run on to fifty years, so a flat spread is a
-    flat hazard to fifty years. Never look a spread up or guess one: it is the desk's number.
-    On a recorded desk the counterparty is a declared legal entity and the seat holds `mark`.
-    Answers `{written, factor, recovery, curve, horizon}`, `horizon` the years the last line runs
-    on to; `recalc_xva` then prices the set.
+def declare_survival_curve(counterparty: str, spread: float | list[dict], currency: str,
+                           discount_rate: str, recovery: float | None = None,
+                           actor: str | None = None) -> dict:
+    """Write a counterparty's credit curve - `SurvivalProb.<counterparty>`, what its netting set's
+    CVA discounts by - from the credit spreads the CVA desk states, as the quotes the engine solves
+    it from: `spread` in basis points of par spread, a number for one 1Y quote or rows
+    `[{tenor, spread}]` (`tenor` like `5Y`) for a term structure; `currency` and `discount_rate`,
+    the currency the default swaps are struck in and the curve they discount on, both required;
+    and `recovery` the share recovered on default, the convention where unstated. The curve's last
+    hazard runs on past its last quote. Never look a spread up or guess one: it is the desk's
+    number. On a recorded desk the counterparty is a declared legal entity and the seat holds
+    `mark`. Answers `{written, block, factor}`; a solve that fails is refused in the engine's words
+    and writes nothing; `recalc_xva` then prices the set.
     """
     return service().call('POST', '/book/survival', json=dict(
-        {'counterparty': counterparty, 'spread': spread}, **_stated(recovery=recovery, actor=actor)))
+        {'counterparty': counterparty, 'spread': spread, 'currency': currency,
+         'discount_rate': discount_rate}, **_stated(recovery=recovery, actor=actor)))
 
 
 @MCP.tool()

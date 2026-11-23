@@ -399,51 +399,81 @@ check('the desk reading exports as one table: every spot on its pair at its leve
        ['FXVol.EUR.USD.rho', '0.4Y', null, 17851.2, 'per unit', 'USD'],
        ['EquityPrice.NOLEVEL', '', null, 42, 'per unit', 'USD']]);
 
-// --- a credit curve stated as spreads, and the form a restatement opens in. `GET /book/market`'s
-// read-back of `POST /book/survival`'s curves on a book valued 2026-11-16: 1Y/3Y/5Y at 100/150/200bp
-// and a recovery of 0.35, and flat 120bp at the convention's 0.4
-const SERVED_ROWS = { recovery: 0.35, rows: [[1, 100.0, 0.9847331232494916],
-  [3.0027397260273974, 150.0, 0.9330523282659905], [5.002739726027397, 200.0, 0.8573316436889203]] };
-const SERVED_120 = { recovery: 0.4, rows: [[1, 120.0, 0.9801986733067553]] };
-const TERM = { recovery: '0.35', flat: false, rows: [
+// --- a credit curve stated as spreads, and the form a restatement opens in: the quotes blocks
+// `POST /book/survival` writes, as the market holds them - 1Y/3Y/5Y at 100/150/200bp and a 7Y held
+// out, at a recovery of 0.35, struck in USD on USD-OIS; flat 120bp stating no recovery; and a
+// block another source wrote quoting a 5Y upfront
+const QUOTED = (rows, extra = {}) => ({ instrument: {
+  Currency: 'USD', Discount_Rate: 'USD-OIS', ...extra,
+  Points: rows.map(([Tenor, Quoted_Market_Value, Quote_Type = 'Par_Spread', Use = 'Yes']) => ({
+    Use, Descriptor: Tenor, Tenor, DealType: 'DealDefaultSwap', Quote_Type, Quoted_Market_Value,
+    Deal: {} })) } });
+const QUOTES_HELD = { 'Price Factors': {}, 'Market Prices': {
+  'SurvivalProbPrices.MARRICK': QUOTED([['1Y', 100], ['3Y', 150], ['5Y', 200],
+                                        ['7Y', 250, 'Par_Spread', 'No']], { Recovery_Rate: 0.35 }),
+  'SurvivalProbPrices.KESTREL': QUOTED([['1Y', 120]]),
+  'SurvivalProbPrices.UPFRONT': QUOTED([['5Y', 2.5, 'Upfront']]) } };
+// the quotes family's declaration, as far as a blank form turns on it
+const CREDIT = { MarketPrices: { types: { SurvivalProbPrices: { Recovery_Rate: { value: 0.4 } } } } };
+const SERVED_ROWS = desk.heldQuotes(QUOTES_HELD, 'SurvivalProb.MARRICK', CREDIT);
+const SERVED_120 = desk.heldQuotes(QUOTES_HELD, 'SurvivalProb.KESTREL', CREDIT);
+const UPFRONT = desk.heldQuotes(QUOTES_HELD, 'SurvivalProb.UPFRONT', CREDIT);
+const quoted = (tenor, quote, type = 'Par_Spread') => ({ tenor, quote, type });
+check('a credit curve reads off its quotes block in the market held: each used row\'s tenor, quote '
+      + 'and what it quotes, the currency and the discount curve, and the recovery, the '
+      + "family's convention where the block states none; a curve with no block, or a factor of "
+      + 'another family, reads none',
+      'a row held out read as a quote; a block stating no recovery read at none; the block of '
+      + 'another counterparty read; or a factor that is no credit curve read as one',
+      [SERVED_ROWS, SERVED_120, UPFRONT.rows, desk.heldQuotes(QUOTES_HELD, 'SurvivalProb.NOBODY', CREDIT),
+       desk.heldQuotes(QUOTES_HELD, 'InterestRate.MARRICK', CREDIT)],
+      [{ recovery: 0.35, currency: 'USD', discount_rate: 'USD-OIS',
+         rows: [quoted('1Y', 100), quoted('3Y', 150), quoted('5Y', 200)] },
+       { recovery: 0.4, currency: 'USD', discount_rate: 'USD-OIS', rows: [quoted('1Y', 120)] },
+       [quoted('5Y', 2.5, 'Upfront')], undefined, undefined]);
+const TERM = { recovery: '0.35', currency: ' USD', discount_rate: 'USD-OIS ', flat: false, rows: [
   { tenor: '1Y', spread: '100' }, { tenor: ' 3Y', spread: '150' }, { tenor: '', spread: '' },
   { tenor: '5Y', spread: '200' }] };
-const FLAT = { recovery: '0.4', flat: true, rows: [{ tenor: '2Y', spread: '120' },
-                                                  { tenor: '5Y', spread: '300' }] };
-// the survival curve's declaration, as far as a blank form turns on it
-const CREDIT = { Factor: { types: { SurvivalProb: { Recovery_Rate: { value: 0.4 } } } } };
-check('the form a restatement opens in posts the spreads the service read back again: a row '
-      + 'nothing is typed on, a grouped or a mistyped number each sent as what it reads as, and a '
-      + "blank form at the recovery's declared default",
-      'a spread scaled from what was served, or a tenor shown as its years; a row nothing is typed '
-      + 'on posted; a flat spread posted as a row, or restated as two; a grouped or a mistyped '
-      + 'number sent as anything but what it reads as; or a curve restated at the declared recovery '
-      + 'rather than its own',
+const FLAT = { recovery: '0.4', currency: 'USD', discount_rate: 'USD', flat: true,
+               rows: [{ tenor: '2Y', spread: '120' }, { tenor: '5Y', spread: '300' }] };
+check('the form a restatement opens in posts the quotes its block states again, a spread per tenor '
+      + 'as they stand, at their recovery, currency and discount curve: a row nothing is typed on, '
+      + 'a grouped or a mistyped number each sent as what it reads as; a curve with no quotes, or '
+      + 'none a spread, opens flat and blank at the declared recovery',
+      'a quote scaled from what the block states, or an upfront read as a spread; a row nothing is '
+      + 'typed on posted; a flat spread posted as a row, or a stated quote restated flat at 1Y; the '
+      + 'currency or the curve left off the request, or the block\'s not offered back; a grouped '
+      + 'or a mistyped number sent as anything but what it reads as; or a curve restated at the '
+      + 'declared recovery rather than its own',
       [desk.spreadRequest(' MARRICK ', TERM), desk.spreadForm(SERVED_ROWS, CREDIT),
        desk.spreadRequest('ALDERBY-AM', FLAT),
        desk.spreadForm(SERVED_120, CREDIT), desk.spreadForm(undefined, CREDIT),
-       desk.spreadRequest('X', { recovery: 'forty', flat: false, rows: [
-         { tenor: '1Y', spread: '1,250' }, { tenor: '2Y', spread: '2,5' }] })],
-      [{ counterparty: 'MARRICK', recovery: 0.35, spread: [
+       desk.spreadForm(UPFRONT, CREDIT),
+       desk.spreadRequest('X', { recovery: 'forty', currency: '', discount_rate: '', flat: false,
+                                 rows: [{ tenor: '1Y', spread: '1,250' }, { tenor: '2Y', spread: '2,5' }] })],
+      [{ counterparty: 'MARRICK', recovery: 0.35, currency: 'USD', discount_rate: 'USD-OIS', spread: [
         { tenor: '1Y', spread: 100 }, { tenor: '3Y', spread: 150 }, { tenor: '5Y', spread: 200 }] },
-       { recovery: '0.35', flat: false, rows: [{ tenor: '1Y', spread: '100' },
-         { tenor: '3Y', spread: '150' }, { tenor: '5Y', spread: '200' }] },
-       { counterparty: 'ALDERBY-AM', recovery: 0.4, spread: 120 },
-       { recovery: '0.4', flat: true, rows: [{ tenor: '1Y', spread: '120' }] },
-       { recovery: '0.4', flat: true, rows: [{ tenor: '', spread: '' }] },
-       { counterparty: 'X', recovery: 'forty', spread: [{ tenor: '1Y', spread: 1250 },
-         { tenor: '2Y', spread: '2,5' }] }]);
-const served = (market, spreads) => ({ type: 'MARKET_LOADED', market: { etag: market ? 'e1' : 'e2',
-                                        stamp: market ? 's1' : 's2', market, spreads } });
-const marketed = state.reducer(state.reducer(state.INITIAL, book('e1')), served(
-  { 'Price Factors': {} }, { 'SurvivalProb.KESTREL': SERVED_120 }));
-check("the spreads served with a market stand while the service answers no market, the one held "
-      + 'being current, and none is read off the live book',
-      'the spreads taken from an answer with no market, which empties every credit curve on screen '
-      + "at each poll the market has not moved in; or a document opened from a file read with the "
-      + "live book's spreads",
-      [state.heldSpreads(state.reducer(marketed, served(null, null)), 'SurvivalProb.KESTREL'),
-       state.heldSpreads(state.reducer(marketed, served(null, null)), 'SurvivalProb.MARRICK'),
+       { recovery: '0.35', currency: 'USD', discount_rate: 'USD-OIS', flat: false, rows: [
+         { tenor: '1Y', spread: '100' }, { tenor: '3Y', spread: '150' }, { tenor: '5Y', spread: '200' }] },
+       { counterparty: 'ALDERBY-AM', recovery: 0.4, currency: 'USD', discount_rate: 'USD', spread: 120 },
+       { recovery: '0.4', currency: 'USD', discount_rate: 'USD-OIS', flat: false,
+         rows: [{ tenor: '1Y', spread: '120' }] },
+       { recovery: '0.4', currency: '', discount_rate: '', flat: true, rows: [{ tenor: '', spread: '' }] },
+       { recovery: '0.4', currency: 'USD', discount_rate: 'USD-OIS', flat: true,
+         rows: [{ tenor: '', spread: '' }] },
+       { counterparty: 'X', recovery: 'forty', currency: '', discount_rate: '', spread: [
+         { tenor: '1Y', spread: 1250 }, { tenor: '2Y', spread: '2,5' }] }]);
+const served = (market) => ({ type: 'MARKET_LOADED', market: { etag: market ? 'e1' : 'e2',
+                                                               stamp: market ? 's1' : 's2', market } });
+const marketed = { ...state.reducer(state.reducer(state.INITIAL, book('e1')), served(QUOTES_HELD)),
+                   schema: CREDIT };
+check("a credit curve's quotes read off the market held stand while the service answers no "
+      + 'market, the one held being current; a document opened from a file reads its own',
+      'the market taken from an answer with none, which empties every credit curve on screen at '
+      + "each poll the market has not moved in; or a document opened from a file read with the "
+      + "live book's market",
+      [state.heldSpreads(state.reducer(marketed, served(null)), 'SurvivalProb.KESTREL'),
+       state.heldSpreads(state.reducer(marketed, served(null)), 'SurvivalProb.NOBODY'),
        state.heldSpreads({ ...marketed, source: { kind: 'local', name: 'job.json', note: null } },
                          'SurvivalProb.KESTREL')],
       [SERVED_120, undefined, undefined]);
@@ -452,9 +482,10 @@ check("a refusal of a credit curve reads beside the box of the request field its
       + 'other - the tenors, a seat without the grant, none named - by the write',
       'every refusal printed in one place; or a code that names no field of the request, a '
       + "seat's or the record's, filed by a box",
-      ['counterparty', 'spread', 'recovery', 'refused', 'not_granted', 'no_actor', null]
-        .map((code) => desk.refusedAt(code, ASKED)),
-      ['counterparty', 'spread', 'recovery', 'act', 'act', 'act', 'act']);
+      ['counterparty', 'spread', 'recovery', 'currency', 'discount_rate', 'refused', 'not_granted',
+       'no_actor', null].map((code) => desk.refusedAt(code, ASKED)),
+      ['counterparty', 'spread', 'recovery', 'currency', 'discount_rate', 'act', 'act', 'act',
+       'act']);
 
 const CURVES = { 'Price Factors': {
   'InterestRate.ZAR': {}, 'InterestRate.USD-OIS': {}, 'InterestRate.EUR': {}, 'FxRate.ZAR': {},
