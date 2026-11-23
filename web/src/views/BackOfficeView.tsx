@@ -149,7 +149,7 @@ function Tickets({ worklist }: { worklist: Worklist }) {
           )}
           {worklist.pending.map((row) => signing(row, hold && ''))}
           {(hold || !worklist.pending.length)
-            && nothing(hold, 'nothing waits on this seat to sign')}
+            && nothing(clearsNone(state, 'approval') ?? hold, 'nothing waits on this seat to sign')}
         </div>
       </section>
       {elsewhere.length > 0 && (
