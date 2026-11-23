@@ -5825,7 +5825,7 @@ class SurvivalProb(Construction):
           sub_fields=[
               F('Use', 'Text', default='Yes', values=['Yes', 'No'],
                 description='Whether this quote enters the solve'),
-              F('Deal', 'Container', default=REQUIRED,
+              F('Deal', 'Container', default={},
                 description='The terms of this row\'s default swap that differ from the block\'s '
                             'standard contract'),
               F('Descriptor', 'Text', default='', description='Free text naming the quote'),
@@ -6031,7 +6031,7 @@ class InflationRate(Construction):
           sub_fields=[
               F('Use', 'Text', default='Yes', values=['Yes', 'No'],
                 description='Whether this quote enters the solve'),
-              F('Deal', 'Container', default=REQUIRED,
+              F('Deal', 'Container', default={},
                 description='The terms of this row\'s swap that differ from the block\'s standard '
                             'one, its legs under Children'),
               F('Descriptor', 'Text', default='', description='Free text naming the quote'),
