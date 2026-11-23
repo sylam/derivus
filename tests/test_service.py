@@ -7099,7 +7099,9 @@ def test_a_calculation_its_declarations_refuse_leaves_the_gaps_unread_and_says_w
     Killing mutation: the refusal raised, which takes the XVA read down.
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path))
-    book = xva_book(tmp_path, [netting_set('NS_A', 'CPTY_A', [])])
+    held = netting_set('NS_A', 'CPTY_A', [])
+    held['Instrument']['.Deal'].update(Collateralized='True', Balance_Currency='USD')
+    book = xva_book(tmp_path, [held])
     document = json.loads(book.read_text())
     document['Calc']['Calculation']['Greeks'] = 'Maybe'
     book.write_text(json.dumps(document), newline='\n')
