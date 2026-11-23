@@ -203,8 +203,10 @@ cx.validate()
   is not what its field declares. A run refuses the block by name for the same messages, and a
   refused block is not walked, so `'factors'` is empty beside it.
 
-All three empty means nothing here can tell you the job will fail. A deal's message never stops it
-pricing: the engine still fails exactly where it always failed, and this says so first.
+All three empty means nothing here can tell you the job will fail. A field a deal's declarations
+require left unstated stops every run of the job, refused by name before anything compiles; any
+other message never stops a deal pricing: the engine still fails exactly where it always failed,
+and this says so first.
 
 `cx.describe()` answers the other question — not what is wrong with the job, but what the engine
 made of it. Also read-only, on the same discovery walk:
@@ -587,8 +589,10 @@ under that name, so `/execute` takes either the whole document or the plan:
 `/validate` and `/describe` take `{"plan_id": …}` the same way. An unknown `plan_id` is a `404`. A job a
 verb reads - `/describe`, `/prepare`, `/execute` - is refused `422` where a deal leaves a field its
 declarations require unstated, naming the deal and the field (`NS_1: Collateralized is required`),
-since no read of it survives; `/validate` names it among the rest. **Held by**
-`tests/test_service.py::test_a_job_leaving_a_required_field_unstated_is_refused_by_name_by_each_verb_reading_it`.
+since no read of it survives; `/validate` names it among the rest, and a run of the live book - a
+what-if, its risk, an XVA set - refuses it in the same words, its calculation's name first. **Held by**
+`tests/test_service.py::test_a_job_leaving_a_required_field_unstated_is_refused_by_name_by_each_verb_reading_it`,
+`::test_a_book_leaving_a_required_field_unstated_is_refused_by_name_by_each_of_its_runs`.
 Content addressing does not care how the job arrived: a plan-id execute with no patch reports the
 same `result_id` as a full-document execute of the same job. The cache is bounded (32) and
 least-recently-used, and every read of it is a deep copy — two executes off one plan cannot

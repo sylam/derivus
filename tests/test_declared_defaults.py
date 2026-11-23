@@ -1113,24 +1113,20 @@ def test_validate_names_a_blank_term_on_every_type_declaring_it(key):
 
 
 @pytest.mark.parametrize('key', sorted(UNSTATED))
-def test_a_deal_leaving_a_term_out_prices_nothing(key, caplog):
-    """A base valuation prices no deal leaving `key` out - an FX option its discount curve, a cap its
-    forecast curve, a swap its interest curve, a FRA its reset date: its compile reads the term by
-    name and the deal is skipped on that `KeyError`, logged by name in the error's own sentence,
-    the deposit beside it priced.
+def test_a_deal_leaving_a_term_out_prices_nothing(key):
+    """A base valuation prices nothing of a book holding a deal that leaves `key` out - an FX option
+    its discount curve, a cap its forecast curve, a swap its interest curve, a FRA its reset date:
+    the term is required, so the run refuses the book naming the deal and the term before anything
+    compiles, the deposit beside it unpriced with it.
 
-    Killing mutations, each a fallback put back at one site: the FX option's blank discount curve
-    its currency's own (`fx_pair`), the cap's blank forecast curve its discount curve, the FRA's
-    blank reset its effective date - the blank priced; and the skip line logging the error's
-    arguments (`e.args`), the tuple `('Discount_Rate',)`, for its sentence.
+    Killing mutation: the run judging its block alone (`Config.unstated` left out of
+    `Calculation.parameters`), which compiles the book, skips the deal on the `KeyError` its compile
+    raises reading the term and prices the deposit.
     """
     deal = next(deal for deal in BOOK if deal['Reference'] == UNSTATED[key])
-    caplog.set_level(logging.ERROR)
-    marked, stats = marks([{name: value for name, value in deal.items() if name != key}, BOOK[1]])
-    assert stats.get('Deals Skipped') == 1 and deal['Reference'] not in marked, (marked, stats)
-    assert float.fromhex(marked[BOOK[1]['Reference']]) != 0.0, marked
-    assert "{} {} '{}' - Skipped".format(deal['Object'], deal['Reference'], key) in [
-        record.getMessage() for record in caplog.records]
+    with pytest.raises(ValueError) as refused:
+        marks([{name: value for name, value in deal.items() if name != key}, BOOK[1]])
+    assert str(refused.value) == 'BaseValuation: {}: {} is required'.format(deal['Reference'], key)
 
 
 #: How a book may file each currency's own curve (`world`): under the currency's name with its

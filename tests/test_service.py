@@ -6761,6 +6761,35 @@ def test_a_set_reads_collateralised_exactly_as_a_run_prices_it(tmp_path):
     assert described['collateralized_sets'] == ['UPPER'], described
 
 
+def test_a_book_leaving_a_required_field_unstated_is_refused_by_name_by_each_of_its_runs(
+        tmp_path, monkeypatch):
+    """EVERY RUN JUDGES THE BOOK. A live book whose netting set leaves `Collateralized` unstated
+    prices nothing: the what-if's valuation, the consolidated risk and the set's XVA run each refuse
+    naming the set and the field, as a verb reading a posted job does.
+
+    Killing mutation: `Calculation.parameters` judging the block alone (`cls.judged(params)`),
+    which fails all three on the bare `KeyError: 'Collateralized'`.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    node = netting_set('NS_X', 'CPTY_A', [dict(VANILLA, Reference='OPT_X')])
+    del node['Instrument']['.Deal']['Collateralized']
+    xva_book(tmp_path, [node])
+    said = 'NS_X: Collateralized is required'
+    try:
+        priced = CLIENT.post('/book/price', content=dump({}), headers=JSON).json()
+        service.EXECUTOR.queue.join()
+        result = CLIENT.get('/results/{}'.format(priced['result_id'])).json()
+        risk = CLIENT.get('/book/risk')
+        recalc()
+        row = xva_rows()['NS_X']
+    finally:
+        service.BOOK = None
+    assert result['error'] == 'BaseValuation: ' + said, result
+    assert (risk.status_code, risk.json()['detail']) == (
+        422, 'the book will not price a consolidated risk run: BaseValuation: ' + said), risk.text
+    assert row['error'] == 'CreditMonteCarlo: ' + said, row
+
+
 def test_an_xva_row_says_the_currency_its_own_run_reported_in(desk_xva, tmp_path):
     """A row states the currency ITS OWN run reported in. NS_A run on the USD book reads USD and
     NS_B, never run, none. The book opened again in ZAR and NS_B run there reads ZAR beside NS_A's

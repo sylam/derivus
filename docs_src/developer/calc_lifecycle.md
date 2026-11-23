@@ -300,16 +300,20 @@ set's unmargined one. **Held by** `tests/test_saccr.py::test_the_rates_example_i
 `::test_a_parameters_file_stating_an_entry_amiss_is_refused_by_name`. **Not gated:** the MPOR floor
 of a set of more than 5,000 trades.
 
-The calculation's `Currency` is required: no default names the currency a book reports in. Before
-anything runs, the block - overrides merged, completed as `declared_defaults` completes it - is
-judged by its own declarations (`Calculation.judged`, through `schema.validate_block`), and a
-`ValueError` names every field it refuses at once: `BaseValuation.run`, `ScenarioValuation.run` and
-`CreditMonteCarlo.run` judge the merged block, `HedgeMonteCarlo`, `SIMM`, `SACCR` and the diary
-where they complete it. `Config.validate` reports the same messages under `calculation`, and a
-refused block is not walked for factors. A service override is judged on what it states before it
-queues (`schema.stated_messages`), an undeclared key refused
+The calculation's `Currency` is required: no default names the currency a book reports in. Every
+run passes `Calculation.parameters` before anything compiles, and it judges there: the block -
+overrides merged, completed as `declared_defaults` completes it - by its own declarations
+(`Calculation.judged`, through `schema.validate_block`; `HedgeMonteCarlo.refusals` adds its
+`Hedging_Problem` at every depth), together with every field the book's deals leave unstated that
+their declarations require (`Config.unstated`), and a `ValueError` names every one at once. The
+diary, which reads a book rather than running it, judges its block alone where it completes it.
+`Config.validate` reports the same messages under `calculation` and `deals`, and a refused block is
+not walked for factors. A service override is judged on what it states before it queues
+(`schema.stated_messages`), an undeclared key refused
 ([Conventions](conventions.md#declared-defaults)). **Held by**
-`tests/test_loud_refusals.py::test_a_calculation_stating_no_currency_is_refused_by_name`.
+`tests/test_loud_refusals.py::test_a_calculation_stating_no_currency_is_refused_by_name`,
+`tests/test_declared_defaults.py::test_a_deal_leaving_a_term_out_prices_nothing`,
+`tests/test_service.py::test_a_book_leaving_a_required_field_unstated_is_refused_by_name_by_each_of_its_runs`.
 
 ## Compile phase 1 — `calculate_dependencies` {#compile-phase-1-calculate_dependencies}
 

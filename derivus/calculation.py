@@ -404,18 +404,20 @@ class Calculation(object):
     def parameters(cls, context, overrides=None):
         """The block a run of `context` reads, each step over the last: its `runner_keys`, the
         job's `Calculation` block (the system parameters' date and currency where it has none) and
-        `overrides` merged deeply."""
+        `overrides` merged deeply - judged with every field the book's deals leave unstated that
+        their declarations require (`judged`, `Config.unstated`), which every run passes before
+        anything compiles."""
         system = context.params['System Parameters']
         block = context.deals.get('Calculation', {
             'Base_Date': system['Base_Date'], 'Currency': system['Base_Currency']})
         params = dict(cls.runner_keys(block), **block)
         if overrides is not None:
             utils.update_dict(params, overrides)
-        return params
+        return cls.judged(params, context.unstated())
 
     @classmethod
     def run(cls, context, overrides=None):
-        """Runs this calculation on `context`, its block completed by `parameters`:
+        """Runs this calculation on `context`, its block completed and judged by `parameters`:
         `(calculation, output)`."""
         calc = cls(context)
         return calc, calc.execute(cls.parameters(context, overrides))
@@ -428,9 +430,10 @@ class Calculation(object):
         return schema.validate_block(cls, declared_defaults(cls, params))
 
     @classmethod
-    def judged(cls, params):
-        """`params`, or a `ValueError` naming every one of its `refusals` at once."""
-        refused = cls.refusals(params)
+    def judged(cls, params, unstated=()):
+        """`params`, or a `ValueError` naming every one of its `refusals` and the book's `unstated`
+        at once."""
+        refused = cls.refusals(params) + list(unstated)
         if refused:
             raise ValueError('{}: {}'.format(cls.__name__, '; '.join(refused)))
         return params
@@ -1224,7 +1227,7 @@ class CreditMonteCarlo(Calculation):
             return merged
 
         device = utils.calculation_device(device, job_id)
-        params = cls.judged(cls.parameters(context, overrides))
+        params = cls.parameters(context, overrides)
         if params.get('Credit_Valuation_Adjustment', {}).get('Calculate', 'No') == 'Yes':
             cva_sect = params['Credit_Valuation_Adjustment']
             if cva_sect.get('CDS_Tenors'):
@@ -2279,9 +2282,9 @@ class BaseValuation(Calculation):
     @classmethod
     def run(cls, context, overrides=None, prec=torch.float64):
         """Values `context`'s book on the device `utils.calculation_device` picks, at `prec`, its
-        block completed by `parameters` and judged: `(calculation, output)`."""
+        block completed and judged by `parameters`: `(calculation, output)`."""
         calc = cls(context, device=utils.calculation_device(), prec=prec)
-        return calc, calc.execute(calc.judged(cls.parameters(context, overrides)))
+        return calc, calc.execute(cls.parameters(context, overrides))
 
     def update_factors(self, params, base_date):
         dependent_factors, stochastic_factors, implied_factors, reset_dates, settlement_currencies = \
@@ -2999,10 +3002,10 @@ class ScenarioValuation(BaseValuation):
     @classmethod
     def run(cls, context, overrides=None, prec=torch.float64):
         """Values `context`'s book on its market and on each scenario on the device
-        `utils.calculation_device` picks, at `prec`, its block completed by `parameters` and
-        judged: `(calculation, output)`."""
+        `utils.calculation_device` picks, at `prec`, its block completed and judged by
+        `parameters`: `(calculation, output)`."""
         calc = cls(context, device=utils.calculation_device(), prec=prec)
-        return calc, calc.execute(calc.judged(cls.parameters(context, overrides)))
+        return calc, calc.execute(cls.parameters(context, overrides))
 
     def update_time_grid(self, base_date, day=None):
         """The grid of `Valuation_Date`, the base date where blank."""
@@ -3478,7 +3481,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
     @classmethod
     def run(cls, context, overrides=None, prec=torch.float32):
         """Runs the hedge on `context` on the device `utils.calculation_device` picks, at `prec`,
-        its block completed by `parameters`: `(calculation, HedgeRuntimeExecutionResult)`."""
+        its block completed and judged by `parameters`:
+        `(calculation, HedgeRuntimeExecutionResult)`."""
         calc = cls(context, device=utils.calculation_device(), prec=prec)
         return calc, calc.execute(cls.parameters(context, overrides))
 
@@ -3591,7 +3595,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         """
         # the declaration is the single source of an omitted field's default, at every depth the
         # hedging problem states
-        params = declared_defaults(type(self), self.judged(params))
+        params = declared_defaults(type(self), params)
         params['Hedging_Problem'] = declared_block(
             schema.declared_fields(type(self))['Hedging_Problem'].sub_fields, params['Hedging_Problem'])
         base_date = pd.Timestamp(params['Run_Date'])
@@ -4231,10 +4235,10 @@ class NettingSetCalculation(Calculation):
                                "trade's inner paths its own whatever is booked beside it")
 
     def setup(self, params):
-        """The block judged and completed, its `Mapping` read, the base valuation it prices by
-        stated and the book listed - what the run and each of its workers share - and the
-        `Parameters` file as it reads, returned."""
-        params = self.params = declared_defaults(type(self), self.judged(params))
+        """The block `parameters` judged, completed, its `Mapping` read, the base valuation it
+        prices by stated and the book listed - what the run and each of its workers share - and
+        the `Parameters` file as it reads, returned."""
+        params = self.params = declared_defaults(type(self), params)
         with open(params['Mapping'], 'rt', encoding='utf-8') as f:
             self.mapping = json.load(f)
         with open(params['Parameters'], 'rt', encoding='utf-8') as f:
