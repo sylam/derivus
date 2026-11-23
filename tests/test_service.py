@@ -6947,17 +6947,22 @@ def test_a_deal_its_compile_skips_names_itself_and_the_factor_it_wanted_in_its_s
     """A DEAL THE COMPILE SKIPS IS AMONG WHAT THE RUN COULD NOT VALUE, by name and cause. A set
     whose only option names a vol surface the market lacks lands failed, its error naming the
     option and `Cannot find` the surface, and `missing` the surface; a set holding that option
-    beside one the market prices lands failed for the skip, naming both the same way.
+    beside one the market prices lands failed for the skip, naming both the same way. A set whose
+    only cashflow discounts on a curve the market lacks reaches no factor the book models, and is
+    refused for the skip all the same, before the run asks for a model: `missing` the curve.
 
     Killing mutations: the surface's lookup raising a bare `Exception`, which names no factor; the
     compile guard leaving the skipped deal out of what the run could not value, which leaves the
-    lone option's refusal naming nothing and both rows no factor.
+    lone option's refusal naming nothing and both rows no factor; `refuse_unframed` not asking
+    `refuse_unvalued` first, which refuses the cashflow's set for having no factor with a model and
+    names no factor missing.
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path))
     unread = dict(VANILLA, Reference='OPT_V', Equity_Volatility='NOVOL')
     xva_book(tmp_path, [netting_set('NS_V', 'CPTY_A', [unread]),
                         netting_set('NS_P', 'CPTY_B', [dict(VANILLA, Reference='OPT_P'),
-                                                       dict(unread, Reference='OPT_PV')])])
+                                                       dict(unread, Reference='OPT_PV')]),
+                        netting_set('NS_C', 'CPTY_A', [dict(CASHFLOW, Discount_Rate='GATE')])])
     try:
         recalc()
         rows = xva_rows()
@@ -6965,8 +6970,11 @@ def test_a_deal_its_compile_skips_names_itself_and_the_factor_it_wanted_in_its_s
         service.BOOK = None
     assert 'OPT_V - Cannot find EquityPriceVol.NOVOL' in rows['NS_V']['error'], rows['NS_V']
     assert 'OPT_PV Cannot find EquityPriceVol.NOVOL - Skipped' in rows['NS_P']['error'], rows['NS_P']
+    assert rows['NS_C']['error'] == ('Nothing in the book was valued (1 Deals Skipped), so the run '
+                                     'has nothing to report: CF1 - Cannot find InterestRate.GATE')
     assert [(rows[reference]['status'], rows[reference]['missing']['factor'])
-            for reference in ('NS_V', 'NS_P')] == [('failed', 'EquityPriceVol.NOVOL')] * 2
+            for reference in ('NS_V', 'NS_P', 'NS_C')] == [
+        ('failed', 'EquityPriceVol.NOVOL')] * 2 + [('failed', 'InterestRate.GATE')]
 
 
 def test_a_set_holds_what_its_terms_state_in_the_reporting_currency_the_base_at_one(

@@ -422,9 +422,11 @@ batch find one, and the memory held, `Device_Memory` reporting the process's res
     with the factors it holds it on, its entries left NaN (`Calculation.nan_gradient`). Every run
     the service, a structure quote, a solve's iterate or a replay pin answers with refuses one
     counting a skip, by name (`utils.run_whole`).
-    `Device_Memory` reports the peak, warning past the device; a run that valued nothing refuses,
-    naming each structure and deal it could not value with its reason, one its compile refused
-    among them: a deal the compile drops joins what the run could not value (`utils.unpriced`,
+    `Device_Memory` reports the peak, warning past the device; a run that valued nothing refuses
+    (`CreditMonteCarlo.refuse_unvalued`, asked before a credit Monte Carlo asks for a modelled
+    factor, so a book whose compile skipped all it holds is refused for the skip), naming each
+    structure and deal it could not value with its reason, one its compile refused among them: a
+    deal the compile drops joins what the run could not value (`utils.unpriced`,
     the one place every guard records one). Either refusal is raised from the price factor the
     first of those wanted (`utils.missing_among`, a `utils.MissingFactor`), which a failed run's
     `missing` names.

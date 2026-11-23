@@ -1592,7 +1592,10 @@ class CreditMonteCarlo(Calculation):
             self.params['Credit_Valuation_Adjustment']['Hessian'])
         return shared_mem
 
-    def report(self, output):
+    def refuse_unvalued(self):
+        """Refuse a run that values nothing of its book, every deal and structure in it skipped:
+        the counts and each one's reason named, raised from the price factor the first wanted
+        (`utils.missing_among`)."""
         def valued(structure):
             # a structure the run skipped values nothing, nor does one whose deals and structures were
             return structure.obj.Instrument not in self.unpriced and (
@@ -1607,6 +1610,9 @@ class CreditMonteCarlo(Calculation):
                     skipped, '; '.join(sorted('{} - {}'.format(x.field.get('Reference'), x.unpriced_because)
                                               for x in self.unpriced)))) from utils.missing_among(
                 self.unpriced)
+
+    def report(self, output):
+        self.refuse_unvalued()
         for result, data in output.items():
             if result == 'scenarios':
                 def frame(values, index, scenarios, key=None):
@@ -1671,7 +1677,9 @@ class CreditMonteCarlo(Calculation):
         reshapes a draw of no factors or reduces a structure holding no deal, and the run dies on
         the tensor rather than on the book. The third shape - no date after the base date - is
         refused where the grid is grown, `update_time_grid` having nothing to take a maximum over.
+        A book whose compile skipped all it holds is refused for the skip first (`refuse_unvalued`).
         """
+        self.refuse_unvalued()
         if not (self.calc_stats.get('Deals loaded', 0) + self.calc_stats.get('Structs loaded', 0)):
             raise ValueError(
                 'every deal of this book was skipped or ignored - a credit Monte Carlo projects '
