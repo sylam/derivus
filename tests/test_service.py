@@ -5023,6 +5023,28 @@ def test_validate_over_http_is_the_verb_verbatim():
                          'factors': ['InterestRate.GBP'], 'calculation': []}
 
 
+def test_a_job_leaving_a_required_field_unstated_is_refused_by_name_by_each_verb_reading_it():
+    """A JOB NO READ SURVIVES IS REFUSED BY NAME. A netting set leaving `Collateralized` unstated is
+    named by `/validate` among the rest, and refused 422 naming the set and the field by
+    `/describe`, which reads whether a run collateralises the set, by `/prepare` before it keeps a
+    plan and by `/execute` before it queues a run.
+
+    Killing mutation: `context_for` answering the parse alone (`parsed`), which answers `/describe`
+    a 500 on `KeyError: 'Collateralized'`, keeps the plan and queues the run.
+    """
+    node = netting_set('NS_X', 'CPTY_A', [])
+    del node['Instrument']['.Deal']['Collateralized']
+    document = job(deals=())
+    document['Calc']['Deals']['Deals']['Children'] = [node]
+
+    assert CLIENT.post('/validate', content=dump(document), headers=JSON).json()['deals'] == {
+        'NS_X': ['Collateralized is required']}
+    for verb in ('/describe', '/prepare', '/execute'):
+        answer = CLIENT.post(verb, content=dump(document), headers=JSON)
+        assert (answer.status_code, answer.json()) == (422, {
+            'detail': 'NS_X: Collateralized is required', 'code': 'refused'}), verb
+
+
 def test_a_browser_is_allowed_to_call_the_service_at_all():
     """Without the CORS header a browser discards the answer before the SPA sees it. Both halves:
     the preflight a POST of JSON provokes, and the header on the answer itself.

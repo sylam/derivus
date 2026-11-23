@@ -807,7 +807,7 @@ def refusals():
         raise HTTPException(422, str(error))
 
 
-def context_for(body):
+def parsed(body):
     """The Context an endpoint works on: the posted document parsed, or a deep copy of the plan it
     names. Nothing downstream can tell the two apart, which is the whole point of `plan_id`."""
     if 'plan_id' in body:
@@ -817,6 +817,17 @@ def context_for(body):
         return context
     with refusals():
         return load(body)
+
+
+def context_for(body):
+    """`parsed(body)` for a verb that reads the job: one leaving a field its declarations require
+    unstated (`Config.unstated`) is refused by name, nothing reading past it, where `/validate`,
+    which reads `parsed`, names it among the rest."""
+    context = parsed(body)
+    unstated = context.current_cfg.unstated()
+    if unstated:
+        raise HTTPException(422, '; '.join(unstated))
+    return context
 
 
 @app.get('/schema', summary='Every declaration a front end renders from')
@@ -849,7 +860,7 @@ def validate(job: dict):
     prices nothing and never reaches the queue, and asks of the seat `job` names what the queue
     asks of a what-if (`spine.admit`) before it loads anything."""
     spine.admit(spine.CURIOSITY, job.get('actor'), book_name(job))
-    return context_for(job).validate()
+    return parsed(job).validate()
 
 
 @app.post('/describe', summary='What the engine parsed, and what running it would cost')

@@ -566,7 +566,7 @@ def validate_block(cls, block):
     messages = []
     for key, field in declared_fields(cls).items():
         value = block.get(key)
-        if not value and field.default is REQUIRED:
+        if unstated(field, value):
             message = '{} is required'.format(key)
         elif value in (None, '') and field.default is not None and not field.convention:
             message = '{} is not stated'.format(key)
@@ -575,6 +575,12 @@ def validate_block(cls, block):
         if message:
             messages.append(message)
     return messages
+
+
+def unstated(field, value):
+    """Whether `value` leaves `field` unstated where its declaration makes the author state it: a
+    REQUIRED field, falsy, which no read of its block survives."""
+    return not value and field.default is REQUIRED
 
 
 def stated_messages(owner, fields, block, known=()):

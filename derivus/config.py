@@ -973,6 +973,15 @@ class Config(object):
         return {'deals': deals, 'factors': self.factor_universe()['missing'],
                 'calculation': self.calculation_refusals()}
 
+    def unstated(self):
+        """`<Reference>: <field> is required` for each field a deal's declarations require that its
+        block leaves unstated (`schema.unstated`): what no read of the job survives, which `validate`
+        reports among the rest."""
+        return ['{}: {} is required'.format(instrument.field.get('Reference'), key)
+                for instrument in self.walk_deals() if isinstance(instrument, Deal)
+                for key, field in schema.declared_fields(type(instrument)).items()
+                if schema.unstated(field, instrument.field.get(key))]
+
     def describe(self):
         """What the engine made of this job without running it: the book counted by the `Object` a
         deal was constructed from, the price factors it reaches on both sides of the want-list, and

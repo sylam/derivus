@@ -574,7 +574,11 @@ under that name, so `/execute` takes either the whole document or the plan:
 {"plan_id": "89db21b1…", "Patch": {"FxRate.ZAR": {"Spot": 0.05263}}}
 ```
 
-`/validate` and `/describe` take `{"plan_id": …}` the same way. An unknown `plan_id` is a `404`.
+`/validate` and `/describe` take `{"plan_id": …}` the same way. An unknown `plan_id` is a `404`. A job a
+verb reads - `/describe`, `/prepare`, `/execute` - is refused `422` where a deal leaves a field its
+declarations require unstated, naming the deal and the field (`NS_1: Collateralized is required`),
+since no read of it survives; `/validate` names it among the rest. **Held by**
+`tests/test_service.py::test_a_job_leaving_a_required_field_unstated_is_refused_by_name_by_each_verb_reading_it`.
 Content addressing does not care how the job arrived: a plan-id execute with no patch reports the
 same `result_id` as a full-document execute of the same job. The cache is bounded (32) and
 least-recently-used, and every read of it is a deep copy — two executes off one plan cannot
