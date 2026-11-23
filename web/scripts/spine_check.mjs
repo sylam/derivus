@@ -156,12 +156,19 @@ check('a beat past the cursor is read and one at or behind it is not',
       [spine.ringsAhead(RUNG[4], 21), spine.ringsAhead(RUNG[4], 22), spine.ringsAhead(RUNG[4], 99)],
       [true, false, false]);
 const standing = { ...PINNED, head_lsn: 22 };
-check('a beat asks the strip on its first paint and then only where the head moved past the cursor',
+check('a beat asks the strip from the start on its first paint, from the cursor where the head moved '
+        + 'past it, from the start again where the head fell below it, and nowhere else',
       'the strip asked on every beat whatever the head did, a read of the log every two seconds '
-        + 'with nothing moved; or never asked on a first paint, which leaves the strip empty',
-      [spine.stripOwed(standing, null), spine.stripOwed(standing, 21), spine.stripOwed(standing, 22),
-       spine.stripOwed(null, null)],
-      [true, true, false, false]);
+        + 'with nothing moved; never asked on a first paint, which leaves the strip empty; or a '
+        + 'head below the cursor read as nothing moved, which stops the strip for good',
+      [spine.stripFrom(standing, null), spine.stripFrom(standing, 21), spine.stripFrom(standing, 22),
+       spine.stripFrom(standing, 30), spine.stripFrom(null, null)],
+      [null, 21, false, null, false]);
+const fallen = spine.readRecord({ spine: standing, rows: [{ lsn: 21 }, { lsn: 25 }, { lsn: 30 }] },
+                                standing, { lsn: 22, rows: [{ lsn: 22 }] });
+check("rows past a head that fell below them are another record's and leave the strip",
+      'the rows of the record before kept above the head, which shows events this record never held',
+      fallen.rows.map((row) => row.lsn), [21, 22]);
 check('a stream with every third beat dropped reads the same strip as one that lost none',
       'the page asked for from the BEAT\'s position rather than from the cursor the client holds, '
       + 'after which a dropped beat is an event this desk never sees at all',

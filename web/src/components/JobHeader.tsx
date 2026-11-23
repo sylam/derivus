@@ -12,8 +12,10 @@ import { useApp } from '../state';
 export function JobHeader() {
   const { state, dispatch } = useApp();
   const { doc, describe, validate } = state;
-  const [refused, setRefused] = useState<string | null>(null);
+  // a refusal is the document's it was asked of, and leaves when the document moves
+  const [asked, setRefused] = useState<{ of: typeof doc; said: string } | null>(null);
   if (!doc) return null;
+  const refused = asked?.of === doc ? asked.said : null;
 
   const dealCount = describe
     ? Object.values(describe.deals).reduce((a, b) => a + b, 0) : null;
@@ -56,7 +58,7 @@ export function JobHeader() {
           try {
             dispatch({ type: 'VALIDATED', validate: await postValidate(doc) });
           } catch (error) {
-            setRefused(failure(error).error);
+            setRefused({ of: doc, said: failure(error).error });
           }
         }}
       >

@@ -76,7 +76,6 @@ export function TradeCells({ size, read, object, schema, closed = false, solved,
       <td title={size.of?.key}>{size.of ? cellText(size.of.value) ?? '' : ''}</td>
       {level('strike')}
       {level('barrier')}
-      {/* a wrapped line never opens on the separator */}
       <td className="terms" title={read.terms?.title}>{read.terms?.parts.join(' · ')}</td>
     </>
   );

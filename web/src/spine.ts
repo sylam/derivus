@@ -78,7 +78,10 @@ export type RecordHeld = {
  * open. */
 export function readRecord(held: RecordHeld, spine: SpineBlock | null,
                            page: ActivityPage | null): RecordHeld {
-  const rows = mergeActivity(held.rows, page);
+  // rows past a head that fell below them are another record's
+  const past = spine && held.rows?.some((row) => row.lsn > spine.head_lsn);
+  const rows = mergeActivity(past ? held.rows!.filter((row) => row.lsn <= spine!.head_lsn)
+    : held.rows, page);
   return rows === held.rows && pinnedAt(spine) === pinnedAt(held.spine)
     ? held : { ...held, spine, rows };
 }
@@ -186,11 +189,13 @@ export function ringsAhead(beat: Doorbell, cursor: number): boolean {
   return beat.lsn > cursor;
 }
 
-/** Whether a beat asks the record for the strip's next page: on a desk that records, the first
- * time, and after it only where the record's head stands past the `cursor` the strip was read to -
- * a beat with nothing moved reads no log. */
-export const stripOwed = (spine: SpineBlock | null, cursor: number | null): boolean =>
-  spine !== null && (cursor === null || spine.head_lsn > cursor);
+/** Where a beat reads the strip's next page from, on a desk that records: the start the first
+ * time, the `cursor` the strip was read to where the record's head stands past it, the start again
+ * where the head stands below it - a record restored, another home served - and nowhere (`false`)
+ * where nothing moved, a beat that reads no log. */
+export const stripFrom = (spine: SpineBlock | null, cursor: number | null): number | null | false =>
+  (spine === null || cursor === spine.head_lsn ? false
+    : cursor !== null && spine.head_lsn < cursor ? null : cursor);
 
 /** The banner's whole reading. THE LISTS DECIDE AND THE COUNTS NEVER DO: the counts say how far
  * the record has moved past the file's PIN, and every write to the file resets them - including

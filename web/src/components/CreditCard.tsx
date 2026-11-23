@@ -96,8 +96,7 @@ export function CreditCard({ id, title, factor, recording }: {
         <HeldCurve factor={factor} />
         {!stated && id && (
           <div className="note">No credit curve yet: a CVA against this counterparty has no default
-            to read, and the first trade under a netting set naming it is refused until it has
-            one.</div>
+            to read.</div>
         )}
       </section>
       <section className="card credit">

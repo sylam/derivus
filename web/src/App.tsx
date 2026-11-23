@@ -10,7 +10,7 @@ import { JobHeader } from './components/JobHeader';
 import { ActivityStrip, ReconcileBanner, SeatControl, WorklistBanner } from './components/Record';
 import { OPEN_FILE } from './desk';
 import { WORKSPACES } from './registry';
-import { bookOwed, polled, ringsAhead, single, stripOwed, worklistAt } from './spine';
+import { bookOwed, polled, ringsAhead, single, stripFrom, worklistAt } from './spine';
 import {
   AppContext, INITIAL, PAPER_TABS, clockOf, paperAt, paperOwed, readBook, reducer, runHeld,
   seatClock, spineOf,
@@ -56,17 +56,18 @@ export function App() {
 
   // THE BEAT, over the desk's own book and never a document opened from a file (`bookOwed`): the
   // status read says where the book and the record stand, the book is fetched only where its
-  // stamp moved, and the strip's next page rides along where the record moved past it
-  // (`stripOwed`) - all of it ONE transition, so a deal
+  // stamp moved, and the strip's next page rides along where the record moved from it
+  // (`stripFrom`) - all of it ONE transition, so a deal
   // booked by any client moves the clock once. One beat at a time (`single`), so a stalled
   // service stacks nothing; `spine` is read fresh each time, so a service restarted with a home
   // appears without a reload.
   const beat = useRef(single(async () => {
     try {
       const status = await getBookStatus();
+      const from = stripFrom(status.spine, since.current);
       const [live, page] = await Promise.all([
         bookOwed(source.current, status.etag) ? getBook() : null,
-        stripOwed(status.spine, since.current) ? getBookActivity(since.current ?? '') : null]);
+        from === false ? null : getBookActivity(from ?? '')]);
       if (page) since.current = page.lsn;
       dispatch({ type: 'BEAT', etag: status.etag, live, spine: status.spine, page });
     } catch { /* the beat outlives a service restart */ }

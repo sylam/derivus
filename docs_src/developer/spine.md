@@ -658,9 +658,12 @@ ahead of the usage with it (`limitRead`). **Held by**
 `GET /book/activity` is the strip: with `?since=` the oldest rows after it, the cursor the last
 delivered, so a capped walk loses nothing. The status's `head_lsn` (`service.spine_block`) is
 where the log stands, and the web's beat asks the strip for a page on its first paint and after it
-only where that head stands past the cursor it holds (`stripOwed` in `web/src/spine.ts`), so a
-beat with nothing moved reads no log. A client's and a trade's history are read the same way
-(`useRecordRows` in `web/src/state.ts`): each question's rows are held with its cursor, a moved
+only where that head moved from the cursor it holds - from the cursor where the head stands past
+it, from the start where it fell below it, the rows past it dropped (`stripFrom`, `readRecord` in
+`web/src/spine.ts`) - so a beat with nothing moved reads no log. A client's and a trade's history
+are read the same way (`useRecordRows` in `web/src/state.ts`), keyed on the seat asking and, for a
+trade, the book's text its path is read against (`recordKey`): each question's rows are held with
+its cursor, a moved
 head reads on from the cursor and appends, and another question starts from nothing (`readOn` in
 `web/src/trade.ts`). **Held by** `web/scripts/spine_check.mjs`, `web/scripts/trade_check.mjs`,
 `test_spine_engine.py::test_a_status_poll_is_answered_anew_once_the_record_moves_and_the_paper_has_its_own_stamp`.
