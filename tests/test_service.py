@@ -281,6 +281,21 @@ def test_a_run_that_skipped_a_deal_is_an_error_naming_it(switch):
     assert (out['Stats']['Deals loaded'], out['Stats']['Deals Skipped']) == (1, 1), out['Stats']
 
 
+def test_a_run_s_errors_reach_the_log_as_well_as_its_refusal(caplog):
+    """A RUN LOGS AS IT RUNS: what a run says at ERROR is captured for its refusal and reaches every
+    other handler on the root logger too, the deployment's log among them - a read alone withholds
+    it (`CapturedErrors(withheld=True)`). The unreadable cash flow's skip names it in the refusal
+    and in the log.
+
+    Killing mutation: `CapturedErrors` withholding by default, which leaves the log silent on every
+    run while the refusal still names the skip.
+    """
+    with caplog.at_level(logging.ERROR):
+        _, result = run(job(deals=(CASHFLOW, UNREAD)))
+    assert result['status'] == 'error' and 'CF_GAP' in result['error'], result
+    assert any('CF_GAP' in record.getMessage() for record in caplog.records), caplog.text
+
+
 def test_a_node_the_document_ignores_fails_nothing():
     """The unreadable cash flow's node stated `Ignore: 'True'`: done, counted under `Ignored`, its
     root the book's without the node to the bit. Killing mutation: `run_whole` reading `Ignored` as
