@@ -213,18 +213,22 @@ export type JobDoc = {
   };
 };
 
-/** A credit curve as its quotes block states it, `SurvivalProbPrices.<id>`: the recovery its default
- * swaps are priced at, the currency they are struck in and the curve they discount on, and each
- * used row's tenor, quote and what it quotes (`Quote_Type`). */
+/** A credit curve as its quotes block states it, `SurvivalProbPrices.<id>`, read as its family
+ * reads it: the recovery its default swaps are priced at, the currency they are struck in and the
+ * curve they discount on, and each used row's tenor, quote and what it quotes (`Quote_Type`). */
 export type HeldSpreads = {
   recovery: number; currency: string; discount_rate: string;
-  rows: { tenor: string; quote: number; type: string }[];
+  rows: { tenor: string; quote: number | null; type: string }[];
 };
 
 /** `GET /book/market`: the market the book prices on - the file it names with its explicit block
- * merged over it - the etag of the document it was read off, and the stamp the market is named by.
- * `market` is null where the stamp asked with is that one: the market held is still current. */
-export type BookMarket = { etag: string; stamp: string; market: Market | null };
+ * merged over it - the etag of the document it was read off, the stamp the market is named by, and
+ * each credit curve as its quotes block states it, keyed by its factor. `market` and `credit` are
+ * null where the stamp asked with is that one: the market held is still current. */
+export type BookMarket = {
+  etag: string; stamp: string; market: Market | null;
+  credit: Record<string, HeldSpreads> | null;
+};
 
 export type TableShape = { rows: number; columns: unknown[] };
 

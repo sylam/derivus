@@ -8,7 +8,7 @@ import {
   type About, type BookDealOutcome,
 } from './api';
 import { rowsByPath, toRows } from './blotter';
-import { bookClock, heldQuotes, lagsBook } from './desk';
+import { bookClock, lagsBook } from './desk';
 import { NO_PAPER, type Grouping, type Paper } from './positions';
 import { firmFor, pendingKey, ranAs } from './quote';
 import { pinnedAt, readRecord, reconciledRecord, type RecordHeld } from './spine';
@@ -255,10 +255,12 @@ export function reducer(state: AppState, action: Action): AppState {
       };
     // no market is the service saying the one held is still current: its etag and stamp move
     case 'MARKET_LOADED': {
-      const { market } = action.market.market ? action.market : state.market.data ?? action.market;
+      const { market, credit } = action.market.market ? action.market
+        : state.market.data ?? action.market;
       return {
         ...state,
-        market: { data: { ...action.market, market }, error: null, status: null, loading: false },
+        market: { data: { ...action.market, market, credit }, error: null, status: null,
+                  loading: false },
       };
     }
     case 'MARKET_FAILED':
@@ -415,10 +417,11 @@ export function marketOf(state: AppState): Market | null {
   return state.doc?.Calc.MergeMarketData?.ExplicitMarketData ?? {};
 }
 
-/** The credit curve `factor` of the market on screen as its quotes block states it (`heldQuotes`);
- * undefined where the market holds no block for it. */
+/** The credit curve `factor` of the live book's market as its quotes block states it, as the
+ * service read it (`GET /book/market`'s `credit`); undefined where the market holds no block for
+ * it, and for a document opened from a file, which no service reads. */
 export const heldSpreads = (state: AppState, factor: string): HeldSpreads | undefined =>
-  heldQuotes(marketOf(state), factor, state.schema);
+  (state.source?.kind === 'book' ? state.market.data?.credit?.[factor] : undefined);
 
 /** Whether `record` holds a key at every step of `path` - a section, an entry and any key below
  * it. Asked of the document's explicit block, it is what makes an entry the block's. */

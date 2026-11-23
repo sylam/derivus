@@ -560,15 +560,18 @@ discounting on `discount_rate`, both required, at `recovery`, the family's conve
 The engine solves `SurvivalProb.<counterparty>` from it in the same write, the family's
 `Bootstrapper Configuration` entry added where the book has none, its last hazard carried past its
 last quote; a solve that fails writes nothing and is refused in the engine's words. A credit curve
-is read off that block in the market - its tenors, quotes and recovery - and one the market holds
-with no block has no quotes to read. **Held by**
-`tests/test_service.py::test_a_credit_curve_is_solved_by_the_engine_from_the_quotes_the_cva_desk_states`.
+is read off that block as its family reads it, and `GET /book/market` serves the reading under
+`credit` (`service.held_credit`): the recovery, the currency and discount curve, and the tenor,
+quote and type of each row the solve uses, each row completed by its declarations. One the market
+holds with no block has no quotes to read. **Held by**
+`tests/test_service.py::test_a_credit_curve_is_solved_by_the_engine_from_the_quotes_the_cva_desk_states`,
+`::test_a_credit_curve_is_read_back_as_its_family_reads_its_quotes`.
 `POST /book/market` with `retire: [[section, key, ...]]` deletes such an entry by its path, so the
 file's stands again, and re-bootstraps the market; the system date retired moves the calculation's
 date back with it, as `POST /book/date` does. The answer carries the `stamp` of what the market is
 read from - the document less its deals, the files it names by content, the day - and
-`GET /book/market?stamp=` naming the current one answers `market` null, so a client polling it
-re-reads the market only where the stamp moved.
+`GET /book/market?stamp=` naming the current one answers `market` and `credit` null, so a client
+polling it re-reads the market only where the stamp moved.
 
 **A document from another system.** `POST /book/open` `{name, document}` files a job document
 another system wrote in `DV_HOME/inbox/` under the base name of `name` and serves that copy as the

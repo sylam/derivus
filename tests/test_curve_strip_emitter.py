@@ -52,6 +52,8 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from derivus.bootstrappers import InterestRate
+from derivus.schema import quote_table
 from derivus_bloomberg import discover, ir_curve
 from derivus_bloomberg.errors import (BloombergConfigurationError, BloombergRequestError,
                                       BloombergUnavailable, IncompleteStrip, InvalidQuote)
@@ -1108,7 +1110,7 @@ def declared_of(block, curve, as_of=AS_OF, seed=None):
     return ir_curve.author_block(
         {'curve': curve, 'currency': instrument['Currency'],
          'conventions': ir_curve.block_conventions(instrument, seed or SEED, curve),
-         'rows': ir_curve.block_rows(instrument),
+         'rows': ir_curve.block_rows(quote_table(InterestRate, instrument, None)),
          'discount_rate': instrument['Discount_Rate']}, as_of)
 
 

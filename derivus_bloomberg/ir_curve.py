@@ -1016,15 +1016,16 @@ def author_block(definition, as_of, holidays=(), screen=None):
         discount_rate=definition.get('discount_rate') or ''), screen, holidays)
 
 
-def block_rows(instrument):
-    """A block's `Points` read back as the rows they were authored from - the tenor, the security
-    the number came off, the number, its two-way and whether the block uses it. `Timestamp` is read
-    in its WIRE spelling, a block on the book being what a tick and a re-roll both hold."""
+def block_rows(rows):
+    """A block's `Points` rows, completed by the curve family's declarations (`schema.quote_table`),
+    read back as the rows they were authored from - the tenor, the security the number came off,
+    the number, its two-way and whether the block uses it, a number nobody stated read as none.
+    `Timestamp` is read in its WIRE spelling, a block on the book being what a tick and a re-roll
+    both hold."""
     return tuple(RatePrint(
-        label=row['Tenor'], kind='', security=row.get('Security', ''),
+        label=row['Tenor'], kind='', security=row['Security'],
         value=row.get('Quoted_Market_Value'), bid=row.get('Quoted_Bid'), ask=row.get('Quoted_Ask'),
-        last_update=(row.get('Timestamp') or {}).get('.Timestamp'), use=row.get('Use', 'Yes'))
-        for row in instrument['Points'])
+        last_update=(row['Timestamp'] or {}).get('.Timestamp'), use=row['Use']) for row in rows)
 
 
 def block_conventions(instrument, seed=None, curve=''):

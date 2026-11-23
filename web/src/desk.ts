@@ -313,25 +313,6 @@ export const SURVIVAL_QUOTES = `${SURVIVAL}Prices`;
 export const recoveryConvention = (schema: Schema | null): number =>
   Number(schema?.MarketPrices.types[SURVIVAL_QUOTES]?.Recovery_Rate?.value);
 
-/** The credit curve `factor` (`SurvivalProb.<id>`) as its quotes block in `market` states it: the
- * recovery - the convention where it states none - the currency and discount curve, and each used
- * row; undefined where the market holds no block for it. */
-export function heldQuotes(market: Market | null, factor: string,
-                           schema: Schema | null): HeldSpreads | undefined {
-  const block = factorFamily(factor) === SURVIVAL ? (market?.['Market Prices']?.[
-    `${SURVIVAL_QUOTES}.${factor.slice(SURVIVAL.length + 1)}`] as { instrument?: Record<string, unknown> })
-    ?.instrument : undefined;
-  if (!block) return undefined;
-  const points = (Array.isArray(block.Points) ? block.Points : []) as Record<string, unknown>[];
-  return {
-    recovery: typeof block.Recovery_Rate === 'number' ? block.Recovery_Rate : recoveryConvention(schema),
-    currency: String(block.Currency ?? ''), discount_rate: String(block.Discount_Rate ?? ''),
-    rows: points.filter((row) => row.Use !== 'No').map((row) => ({
-      tenor: String(row.Tenor ?? ''), quote: Number(row.Quoted_Market_Value),
-      type: String(row.Quote_Type ?? '') })),
-  };
-}
-
 /** A credit curve as the officer types it: the recovery, the currency its default swaps are struck
  * in and the curve they discount on, and one flat spread - the first row's - or a spread in basis
  * points per tenor. */
@@ -367,7 +348,7 @@ export function spreadRequest(counterparty: string, form: SpreadForm): SpreadReq
  * spread left blank at the convention's recovery, the currency and the curve chosen. */
 export function spreadForm(held: HeldSpreads | undefined, schema: Schema | null): SpreadForm {
   const rows = (held?.rows ?? []).filter((row) => row.type === 'Par_Spread')
-    .map((row) => ({ tenor: row.tenor, spread: String(row.quote) }));
+    .map((row) => ({ tenor: row.tenor, spread: String(row.quote ?? '') }));
   return { recovery: String(held?.recovery ?? recoveryConvention(schema)),
            currency: held?.currency ?? '', discount_rate: held?.discount_rate ?? '',
            flat: !rows.length, rows: rows.length ? rows : [{ tenor: '', spread: '' }] };

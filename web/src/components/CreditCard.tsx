@@ -46,8 +46,8 @@ export function HeldCurve({ id }: { id: string }) {
           {held.rows.map((row) => (
             <tr key={row.tenor}>
               <td>{row.tenor}</td>
-              <td className="n">{row.type === 'Par_Spread' ? formatNumber(row.quote, 'basis')
-                : formatNumber(row.quote)}</td>
+              <td className="n">{row.quote === null ? 'no quote'
+                : formatNumber(row.quote, row.type === 'Par_Spread' ? 'basis' : 'plain')}</td>
               <td className="hint">{row.type === 'Par_Spread' ? 'par spread' : row.type}</td>
             </tr>
           ))}

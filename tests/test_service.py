@@ -7251,6 +7251,37 @@ def test_a_projection_file_that_does_not_parse_refuses_by_name(desk_xva, tmp_pat
         "the desk's XVA projection, xva.json, is not readable as one"), answer.text
 
 
+def test_a_credit_curve_is_read_back_as_its_family_reads_its_quotes(book):
+    """THE SERVICE READS A CREDIT CURVE'S QUOTES, the web shows them. `GET /book/market` serves under
+    `credit` each `SurvivalProbPrices` block as its family reads it: a row stating no `Use` used as
+    its declaration says, one held out left out, and the recovery the block states, its declared
+    convention where the block states none; and no credit while the client's market is current.
+
+    Killing mutation: `held_credit` reading the rows as authored rather than as the family uses
+    them, which reads the held-out row as a quote.
+    """
+    def row(tenor, spread, **said):
+        return dict({'Tenor': tenor, 'Quoted_Market_Value': spread, 'Deal': {}}, **said)
+
+    def block(rows, **said):
+        return {'instrument': dict({'Currency': 'USD', 'Discount_Rate': 'USD', 'Points': rows},
+                                   **said)}
+
+    assert CLIENT.post('/book/market', content=dump({'bootstrap': 'No', 'quotes': {
+        'SurvivalProbPrices.CP_A': block([row('1Y', 100.0), row('3Y', 150.0, Use='No')],
+                                         Recovery_Rate=0.35),
+        'SurvivalProbPrices.CP_B': block([row('1Y', 120.0, Use='Yes', Quote_Type='Par_Spread')])}}),
+        headers=JSON).json()['written'] is True
+    read = CLIENT.get('/book/market').json()
+
+    assert read['credit'] == {
+        'SurvivalProb.CP_A': {'recovery': 0.35, 'currency': 'USD', 'discount_rate': 'USD',
+                              'rows': [{'tenor': '1Y', 'quote': 100.0, 'type': 'Par_Spread'}]},
+        'SurvivalProb.CP_B': {'recovery': 0.4, 'currency': 'USD', 'discount_rate': 'USD',
+                              'rows': [{'tenor': '1Y', 'quote': 120.0, 'type': 'Par_Spread'}]}}
+    assert CLIENT.get('/book/market', params={'stamp': read['stamp']}).json()['credit'] is None
+
+
 def test_a_credit_curve_is_solved_by_the_engine_from_the_quotes_the_cva_desk_states(
         recorded, tmp_path):
     """`POST /book/survival` writes the CVA desk's spreads as the counterparty's quotes block,
@@ -7299,7 +7330,7 @@ def test_a_credit_curve_is_solved_by_the_engine_from_the_quotes_the_cva_desk_sta
 
         assert survival(spread=150.0, recovery=0.4).json()['factor'] == 'SurvivalProb.GHOST'
         read = market()
-        assert sorted(read) == ['etag', 'market', 'stamp']
+        assert sorted(read) == ['credit', 'etag', 'market', 'stamp']
         block = read['market']['Market Prices']['SurvivalProbPrices.GHOST']['instrument']
         assert (block['Currency'], block['Discount_Rate'], block['Recovery_Rate']) == (
             'USD', 'USD', 0.4)
@@ -9454,7 +9485,7 @@ def test_the_market_read_is_kept_by_what_it_is_read_from(file_book):
     assert len(service.BOOK.markets.entries) == 1
     stamp = answer['stamp']
     held = CLIENT.get('/book/market', params={'stamp': stamp}).json()
-    assert held == {'etag': answer['etag'], 'stamp': stamp, 'market': None}
+    assert held == {'etag': answer['etag'], 'stamp': stamp, 'market': None, 'credit': None}
 
     amended = CLIENT.post('/book/deals', json={'action': 'amend', 'deal_path': '0',
                                                'fields': {'Amount': 2e6}}).json()

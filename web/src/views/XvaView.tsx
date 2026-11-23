@@ -174,10 +174,10 @@ export function useCredit() {
     });
     const own = lines.filter((line) => !line.run?.note);
     const first = heldSpreads(state, `${SURVIVAL}.${id}`)?.rows
-      .find((row) => row.type === 'Par_Spread');
+      .find((row) => row.type === 'Par_Spread' && row.quote !== null);
     return {
       id, name: entityText(paper?.entities ?? null, id), lines, wrong: wrongWith(lines),
-      spread: first && [first.tenor, first.quote], value: summed(own.map((line) => line.value)),
+      spread: first && [first.tenor, first.quote!], value: summed(own.map((line) => line.value)),
       after: runSum(lines, 'after_collateral').value,
       limit: limitOf(id, view.limits),
     };

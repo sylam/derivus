@@ -83,7 +83,7 @@ from . import (PATHS_FILE, Context, bootstrappers, content_hash, desk_file, dv_h
 from .schema import (EXPOSURES, PRICES_KEY, mapping, deal_at, declared_block,
                      declared_defaults, declared_factors, declared_fields, declared_settlements,
                      instrument_of, job_children, live_deals, netting_sets, quote_plan,
-                     quote_stamps, remove_deal, settlement_days, sniff_indent, splice_deal,
+                     quote_stamps, quote_table, remove_deal, settlement_days, sniff_indent, splice_deal,
                      stated_messages, tables_of, tenor_fields, update_market_quote,
                      validate_instrument, value_message, walk, walk_job_deals)
 from ._version import __version__
@@ -5704,7 +5704,7 @@ def curve_quotes(source, document, base_date=None, reading=Context):
         try:
             instrument = prices[name]['instrument']
             conventions = ir_curve.block_conventions(instrument, seed, curve)
-            rows = ir_curve.block_rows(instrument)
+            rows = ir_curve.block_rows(quote_table(bootstrappers.InterestRate, instrument, name))
             if source is not None:
                 rows = ir_curve.price_rows(source, rows, dated, conventions)
                 held += held_rows(name, rows)
@@ -5837,16 +5837,15 @@ def curve_blocks(market, curve=None):
         if curve not in (None, named):
             continue
         instrument = market['Market Prices'][name]['instrument']
+        rows = quote_table(bootstrappers.InterestRate, instrument, name)
         method, source = curve_interpolation(market, named)
         blocks[name] = {
             'curve': named, 'currency': instrument['Currency'],
             'discount_rate': instrument['Discount_Rate'],
             'interpolation': method, 'interpolation_source': source,
-            'snapped': max([wire_stamp(row.get('Timestamp')) for row in instrument['Points']],
-                           default=''),
-            'rows': [{'tenor': row.get('Tenor', ''), 'security': row.get('Security', ''),
-                      'quote': row.get('Quoted_Market_Value'), 'use': row.get('Use', 'Yes')}
-                     for row in instrument['Points']]}
+            'snapped': max([wire_stamp(row['Timestamp']) for row in rows], default=''),
+            'rows': [{'tenor': row['Tenor'], 'security': row['Security'],
+                      'quote': row.get('Quoted_Market_Value'), 'use': row['Use']} for row in rows]}
     return blocks
 
 
@@ -5954,17 +5953,40 @@ def status_of(document, etag):
         'spine': spine_block(document)}
 
 
+def held_credit(market):
+    """`{SurvivalProb.<id>: {recovery, currency, discount_rate, rows}}` - each credit curve as its
+    quotes block in `market` states it, read as its family reads it over its entry (`SURVIVAL`):
+    the recovery, the default swaps' currency and discount curve, and `{tenor, quote, type}` for
+    each row the solve uses (`used_quotes`), a quote nobody stated read as none."""
+    entry = market.get('Bootstrapper Configuration', {}).get(SURVIVAL.__name__)
+    stated = declared_defaults(SURVIVAL, entry if isinstance(entry, dict) else {})
+    held = {}
+    for name, block in market.get('Market Prices', {}).items():
+        rate = utils.check_rate_name(name)
+        if rate[0] == SURVIVAL.market_factor_type:
+            instrument = dict(stated, **block['instrument'])
+            held[utils.check_tuple_name(utils.Factor(SURVIVAL.__name__, rate[1:]))] = {
+                'recovery': instrument['Recovery_Rate'], 'currency': instrument.get('Currency', ''),
+                'discount_rate': instrument.get('Discount_Rate', ''),
+                'rows': [{'tenor': row['Tenor'], 'quote': row.get('Quoted_Market_Value'),
+                          'type': row['Quote_Type']}
+                         for row in SURVIVAL.used_quotes(instrument, name)]}
+    return held
+
+
 @app.get('/book/market', summary='The market the book prices on - its file, its block over it')
 def book_market_view(stamp: str = None):
     """The market data the live book PRICES on, in wire form: the sections of the market data file
     it names with its explicit block merged over them (`market_of`), `Correlations` aside - what
-    every reader here answers a market question off, where `GET /book` serves the document.
-    `stamp` is the `market_stamp` of what it is read from; a client naming the current one is
-    answered no market, and none is built."""
+    every reader here answers a market question off, where `GET /book` serves the document - and
+    under `credit` each credit curve as its quotes block states it (`held_credit`). `stamp` is the
+    `market_stamp` of what it is read from; a client naming the current one is answered no market
+    and no credit, and none is built."""
     document, etag = live_book().read()
     current = market_stamp(document)
     market = None if stamp == current else market_of(document, stamp=current)
-    return JSONResponse({'etag': etag, 'stamp': current, 'market': market})
+    return JSONResponse({'etag': etag, 'stamp': current, 'market': market,
+                         'credit': None if market is None else held_credit(market)})
 
 
 @app.post('/book/date', summary="Set the book's calculation date - curves re-rolled, re-solved")
@@ -6280,12 +6302,11 @@ def curve_securities(document, mapped):
                 for _, entry in entries(mapped)}
     evidence.update(mapped.get('rejected', {}))
     prices = market_of(document)['Market Prices']
-    return [{'curve': curve, 'tenor': row.get('Tenor', ''),
-             'security': row.get('Security', ''), 'quote': row.get('Quoted_Market_Value'),
-             'timestamp': wire_stamp(row.get('Timestamp')),
-             'use': row.get('Use', 'Yes'),
-             'evidence': evidence.get(row.get('Security', ''), UNMAPPED)}
-            for name, curve in curve_names(prices) for row in prices[name]['instrument']['Points']]
+    return [{'curve': curve, 'tenor': row['Tenor'], 'security': row['Security'],
+             'quote': row.get('Quoted_Market_Value'), 'timestamp': wire_stamp(row['Timestamp']),
+             'use': row['Use'], 'evidence': evidence.get(row['Security'], UNMAPPED)}
+            for name, curve in curve_names(prices)
+            for row in quote_table(bootstrappers.InterestRate, prices[name]['instrument'], name)]
 
 
 @app.get('/book/securities', summary="The ticker vocabulary, its evidence, and every knot's print")
