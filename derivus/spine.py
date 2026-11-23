@@ -450,13 +450,16 @@ def _state(log, projector, lsn=None, folds=None):
     return state
 
 
-def _rows(projector, lsn=None, folds=None):
+def _rows(projector, lsn=None, folds=None, head=False):
     """One projector's rows at `lsn`, folded off the home and ADVANCED in `folds` where held - what
-    every read below is made of. Copied so callers cannot mutate state held in advancing folds or a
+    every read below is made of - or, with `head`, `(lsn, rows)`: the record's head and the rows
+    there, read in one open. Copied so callers cannot mutate state held in advancing folds or a
     read memo."""
     def fold(log):
         named = package().projections.PROJECTORS[projector]
-        return deepcopy(named.rows(_state(log, named, lsn, folds)))
+        at = log.head()[0] if head else lsn
+        rows = deepcopy(named.rows(_state(log, named, at, folds)))
+        return (at, rows) if head else rows
 
     return folded(fold)
 
@@ -1382,10 +1385,11 @@ def positions_of(book, lsn=None, folds=None):
     return [row for row in _rows('positions', lsn, folds) if row['book'] == book]
 
 
-def markets(lsn=None):
+def markets(lsn=None, head=False):
     """The `markets` rows at `lsn`: the closes standing per market, the names a values vector was
-    declared under and the snapshots registered against a book."""
-    return _rows('markets', lsn)
+    declared under and the snapshots registered against a book - with `head`, `(lsn, rows)` at the
+    head, read in one open (`_rows`)."""
+    return _rows('markets', lsn, head=head)
 
 
 def entities(lsn=None):
@@ -1524,12 +1528,7 @@ def cash(lsn=None):
 def cash_standing(folds=None):
     """`(lsn, rows)` - the head, and the `cash` fold's rows there ADVANCED in `folds`: what a
     collateral call reads on every ask."""
-    def read(log):
-        cash = package().projections.PROJECTORS['cash']
-        head = log.head()[0]
-        return head, deepcopy(cash.rows(_state(log, cash, head, folds)))
-
-    return folded(read)
+    return _rows('cash', folds=folds, head=True)
 
 
 def costs(lsn=None):

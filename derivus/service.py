@@ -3002,7 +3002,8 @@ def book_markets():
     registered against a book. 404 where no home is configured.
     """
     recorded()
-    return dict(spine.markets(), lsn=spine.pin()['lsn'])
+    lsn, rows = spine.markets(head=True)
+    return dict(rows, lsn=lsn)
 
 
 @app.post('/book/markets', summary='Point a market name at the values the book is carrying')
