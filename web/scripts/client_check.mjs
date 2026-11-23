@@ -262,7 +262,9 @@ const run = (reference, deal_path, extra = {}) => ({
 const RUNS = [run('ISDA-KES', '0'),
               run('CSA-KES', '1/0', { status: 'never run', as_of: null, collateralized: true }),
               run('KES-OLD', '2', { status: 'failed', cva: null, fva: null,
-                                     error: 'Cannot find SurvivalProb.KES' }),
+                                     error: 'Cannot find SurvivalProb.KES',
+                                     missing: { factor: 'SurvivalProb.KES', supply: null,
+                                                note: 'the CVA desk writes it from its spread' } }),
               run('KES-GONE', null, { note: 'left the book', status: 'failed', cva: null, error: 'boom' }), run('OFF-1', '3', { counterparty: 'OFF' })];
 const KES_PAPER = [{ ...PAPER[0], collateralized: false },
                    { agreement: 'CSA-KES', entity: 'KES', kind: 'ISDA 2002 with CSA', terms: CSA_KES,
@@ -481,6 +483,11 @@ check("a failed run names who puts it right off the factor its row says it wante
       ['SurvivalProb.KES: the CVA desk writes it from its spread',
        "InterestRate.ZAR-OIS: a seat holding mark sets it up off the desk's rates entry ZAR-OIS",
        'read its sentence, then a recalc asked for through the chat']);
+
+check("a failed set's line names who puts it right off the factor its row says it wanted",
+      "the row's `missing` left unread, which names nobody for a run the CVA desk puts right",
+      client.wrongWith(KES_LINES).filter((wrong) => wrong.kind === 'failed').map((wrong) => wrong.who),
+      ['SurvivalProb.KES: the CVA desk writes it from its spread']);
 
 check("what is wrong under a client's sets, worst first: a failed run, trades no agreement covers, "
       + 'trades waiting on a second seat, trades never run - nothing of a set that left the book or of '
