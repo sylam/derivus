@@ -885,9 +885,11 @@ class Config(object):
         return (node['Instrument'] for _, node in schema.walk(self.deals['Deals']['Children'], live)
                 if live(node))
 
-    def factor_universe(self):
+    def factor_universe(self, children=None):
         """Every price factor the deal walk reaches, split by whether the market data has a block
-        for it: `resolved` is what a run would build, `missing` is the want-list.
+        for it: `resolved` is what a run would build, `missing` is the want-list. `children`, deal
+        nodes this config loaded, walks those alone in place of the book's whole tree, so one load
+        answers each of several subtrees.
 
         Calls `discover_factors` rather than `calculate_dependencies` because the want-list needs no
         model resolution; dates are taken as `BaseValuation` takes them (`calc_dates=False`).
@@ -912,12 +914,12 @@ class Config(object):
             return {'resolved': [], 'missing': [], 'calculation': refused}
         # cached against the deal list it walked, because `validate` and `describe` both read it
         # and the booking verbs load a fresh document rather than editing a loaded book in place
-        children = self.deals['Deals']['Children']
+        children = self.deals['Deals']['Children'] if children is None else children
         if self._universe_of is children:
             return self._universe
         options = self.deals['Calculation']
         factors, skipped, _, _ = self.discover_factors(
-            options, options['Base_Date'], '0d', False, readable=True)
+            options, options['Base_Date'], '0d', False, readable=True, children=children)
         names = set(map(utils.check_tuple_name, factors))
 
         self._universe_of = children
@@ -1005,7 +1007,7 @@ class Config(object):
         return dependent_factors, stochastic_factors, additional_factors, reset_dates, currency_settlement_dates
 
     def discover_factors(self, options, base_date, base_MTM_dates, calc_dates=True,
-                         readable=False):
+                         readable=False, children=None):
         """Every price factor the deal walk reaches, ordered so a factor follows the factors it
         depends on, with the reset and settlement dates the walk collected.
 
@@ -1017,7 +1019,7 @@ class Config(object):
 
         `readable` walks only the deals whose values are what their declarations say and whose
         dates read no field they omit - what `factor_universe` asks, a run asking over the book as
-        it is.
+        it is. `children` walks those deal nodes in place of the book's.
         """
         def update_nested_rates(factor, rates_to_add):
             # tail periods take the mapped nested type, linked to their parent prefix; a type switch
@@ -1249,7 +1251,8 @@ class Config(object):
             dependent_factor_tenors = {}
 
             dependant_deals, reset_dates, currency_settlement_dates = walk_groups(
-                self.deals['Deals']['Children'], dependent_factors, dependent_factor_tenors)
+                self.deals['Deals']['Children'] if children is None else children,
+                dependent_factors, dependent_factor_tenors)
 
             report_factor = utils.Factor('FxRate', utils.check_rate_name(report_currency))
             report_currency_dependencies = get_rates(report_factor, {})

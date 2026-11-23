@@ -3762,8 +3762,8 @@ def book_agreements():
     `Collateral_Assets` table. 404 where no home is configured."""
     recorded()
     rows = spine.agreements()
-    lacks = {} if BOOK is None else polled(BOOK, 'agreements', lambda document, _: {
-        row['agreement']: lacking(document, row['terms']) for row in rows})
+    lacks = {} if BOOK is None else polled(BOOK, 'agreements', lambda document, _: dict(zip(
+        (row['agreement'] for row in rows), lacking(document, [row['terms'] for row in rows]))))
     return {'agreements': [dict(row, collateralized=set_terms(row['terms'])[1],
                                 lacks=lacks.get(row['agreement'])) for row in rows],
             'settlement_state': {'fields': list(AGREEMENT_STATE),
@@ -4906,15 +4906,15 @@ def xva_entries(document):
     rows = read_projection().get('sets') or {}
     entries, seen, market = [], set(), market_of(document)
     reporting = structures.reporting_currency(document, lambda _: market)
-    for deal_path, node in netting_sets(document):
-        deal = node['Instrument']['.Deal']
+    sets = [(deal_path, node['Instrument']['.Deal']) for deal_path, node in netting_sets(document)]
+    for (deal_path, deal), lacks in zip(sets, lacking(document, [deal for _, deal in sets])):
         reference = deal.get('Reference')
         counterparty, collateralized = set_terms(deal)
         seen.add(reference)
         entries.append(projection_entry(
             rows.get(reference), reference=reference, deal_path=deal_path,
             counterparty=counterparty, collateralized=collateralized,
-            held=stated_holding(deal, market, reporting), lacks=lacking(document, deal)))
+            held=stated_holding(deal, market, reporting), lacks=lacks))
     for reference in sorted(set(rows) - seen):
         entries.append(projection_entry(rows[reference], reference=reference, note=(
             'no NettingCollateralSet called {!r} is in the book any more - this row is the last '
@@ -4922,15 +4922,16 @@ def xva_entries(document):
     return entries
 
 
-def lacking(document, terms):
-    """The price factors a netting set's `terms` name that `document`'s market holds no block for,
-    the counterparty's credit curve among them: the engine's walk of the set alone, nothing under
-    it (`walked_factors`) - None where the book's calculation refuses the walk, so a read whose
-    rows carry it never goes down with the calculation."""
-    try:
-        return walked_factors(around(document, {'Instrument': {'.Deal': terms}}))[1]
-    except ValueError:
-        return None
+def lacking(document, sets):
+    """For each netting set's terms among `sets`, the price factors they name that `document`'s
+    market holds no block for, the counterparty's credit curve among them: the engine's walk of
+    each set alone, nothing under it, over ONE load of the document holding them all
+    (`Config.factor_universe`) - each None where the book's calculation refuses the walk, so a
+    read whose rows carry it never goes down with the calculation."""
+    config = load(around(document, *(
+        {'Instrument': {'.Deal': terms}} for terms in sets))).current_cfg
+    walked = [config.factor_universe(children=[node]) for node in config.deals['Deals']['Children']]
+    return [None if 'calculation' in universe else universe['missing'] for universe in walked]
 
 
 def stated_holding(terms, market, reporting):
@@ -6484,11 +6485,11 @@ def supply_of(factor, base_currency, seed, mapped):
     return entry, None
 
 
-def around(document, node):
-    """`document` re-wrapped around ONE deal node, its market and every other block shared rather
-    than copied, so the caller's document is left exactly where it was found."""
+def around(document, *nodes):
+    """`document` re-wrapped around the deal `nodes` alone, its market and every other block shared
+    rather than copied, so the caller's document is left exactly where it was found."""
     return dict(document, Calc=dict(document['Calc'], Deals=dict(
-        document['Calc']['Deals'], Deals={'Children': [node]})))
+        document['Calc']['Deals'], Deals={'Children': list(nodes)})))
 
 
 def walked_factors(document, deal_path=None):
