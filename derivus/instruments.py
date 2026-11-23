@@ -1112,7 +1112,7 @@ class NettingCollateralSet(Deal):
           description='Agreement currency, which every amount of the agreement is in'),
         F('Apply_Closeout_When_Uncollateralized', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Balance_Currency', 'Text', default='', convention=True, factors=['FxRate'],
-          description="Balance currency of the collateral, blank for the agreement's"),
+          description='Balance currency of the collateral, required where the set is collateralised'),
         F('Opening_Balance', 'Float', default=0.0, convention=True,
           description='Opening balance the bank holds, in the balance currency'),
         F('Base_Collateral_Call_Date', 'Date', default='', convention=True),
@@ -1138,7 +1138,7 @@ class NettingCollateralSet(Deal):
                   F('Collateral_Rate', 'Text'), F('Funding_Rate', 'Text'),
                   F('Liquidation_Period', 'Integer')]))]),
         F('Collateral_Call_Frequency', 'Period', default='1D', convention=True),
-        F('Collateralized', 'Text', default='False', convention=True, values=['True', 'False']),
+        F('Collateralized', 'Text', default=REQUIRED, values=['True', 'False']),
         F('Netted', 'Text', default='True', convention=True, values=['True', 'False']),
         F('Credit_Support_Amounts', 'Container',
           convention=True, sub_fields=[
@@ -1412,16 +1412,9 @@ class NettingCollateralSet(Deal):
 
     @staticmethod
     def collateralised(terms):
-        """Whether a run collateralises the set its `terms` state: `Collateralized` is 'True',
-        the one reading every reader of a set's terms asks - the engine, the service and the record
-        alike."""
-        return terms.get('Collateralized') == 'True'
-
-    @staticmethod
-    def balance_currency(terms):
-        """The currency a set's `terms` keep its collateral balance in: its `Balance_Currency`,
-        else its agreement's, None where they state neither."""
-        return terms.get('Balance_Currency') or terms.get('Agreement_Currency') or None
+        """Whether a calculation collateralises the set its `terms` state: its `Collateralized`,
+        read as stated."""
+        return terms['Collateralized'] == 'True'
 
     def closeout_window(self):
         """The liquidation and settlement periods a collateralised set closes out over."""
@@ -1501,17 +1494,12 @@ class NettingCollateralSet(Deal):
         """What a CSA cannot be without once it is collateralised, and a cash row asking for ColVA
         must fund.
 
-        The agreement currency is read on the collateralised branch alone, so an uncollateralised
-        set states none and a collateralised one cannot be priced without it - a rule spanning two
-        fields, which is this method rather than a declaration. Collateral_Rate and Funding_Rate are
-        each optional on the row, but post_process enters the ColVA block on Collateral_Rate alone
-        and then reads Funding_Rate unconditionally. Terms that mean nothing are named as a
-        collateralised set's run refuses them (`meaningless`). Reads defensively: validation runs
-        BEFORE the contract is known to hold.
+        What a collateralised set cannot be without and the terms that mean nothing are named as
+        its run refuses them (`meaningless`). Collateral_Rate and Funding_Rate are each optional on
+        the row, but post_process enters the ColVA block on Collateral_Rate alone and then reads
+        Funding_Rate unconditionally. Reads defensively: validation runs BEFORE the contract is
+        known to hold.
         """
-        if self.collateralised(self.field) \
-                and not self.field.get('Agreement_Currency'):
-            yield 'Collateralized is True, so Agreement_Currency is required'
         yield from self.meaningless()
         rows = self.collateral(self.field.get('Collateral_Assets')).get('Cash_Collateral', [])
         for i, row in enumerate(rows):
@@ -1521,11 +1509,16 @@ class NettingCollateralSet(Deal):
 
     def meaningless(self):
         """Each term the set states that means nothing, in the one sentence `validate` names it in
-        and a collateralised set's run refuses it with: a collateral row stated as a list of cells,
-        and on a collateralised set an asset weighing nothing or less and a threshold on the other
-        side of zero from the level of the set's value it is."""
+        and a collateralised set's run refuses it with: on a collateralised set its agreement's or
+        its balance's currency unstated, an asset weighing nothing or less and a threshold on the
+        other side of zero from the level of the set's value it is, and a collateral row stated as
+        a list of cells."""
         assets = self.field.get('Collateral_Assets')
-        collateralised = self.collateralised(self.field)
+        # read as stated, its absence being validation's to name
+        collateralised = self.field.get('Collateralized') == 'True'
+        for key in ('Agreement_Currency', 'Balance_Currency') if collateralised else ():
+            if not self.field.get(key):
+                yield 'Collateralized is True, so {} is required'.format(key)
         for table in self.collateral(assets):
             for i, row in enumerate(assets[table]):
                 if not isinstance(row, dict):
@@ -1583,8 +1576,7 @@ class NettingCollateralSet(Deal):
             field['Agreement_Currency'] = utils.check_rate_name(self.field['Agreement_Currency'])
             field['Funding_Rate'] = self.check_factor_name('Funding_Rate')
 
-            # defaults to the agreement currency, not the base currency the convention suggests
-            field['Balance_Currency'] = self.check_factor_name('Balance_Currency', field['Agreement_Currency'])
+            field['Balance_Currency'] = utils.check_rate_name(self.field['Balance_Currency'])
 
             field_index['Agreement_Currency'] = get_fxrate_factor(
                 field['Agreement_Currency'], static_offsets, stochastic_offsets)

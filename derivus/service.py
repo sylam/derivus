@@ -3767,7 +3767,7 @@ def book_agreements():
 
     lacks, refused = ({}, None) if BOOK is None else polled(BOOK, 'agreements', walked)
     return {'agreements': [dict(row, collateralized=set_terms(row['terms'])[1],
-                                balance_currency=instruments.NettingCollateralSet.balance_currency(
+                                balance_currency=spine.package().projections.CSA.balance_currency(
                                     row['terms']), lacks=lacks.get(row['agreement']))
                            for row in rows],
             'settlement_state': {'fields': list(AGREEMENT_STATE),
@@ -4406,11 +4406,11 @@ def set_terms(deal):
     `Credit_Support_Amounts.Counterparty` is the one the engine reads too - the `SurvivalProb`
     factor the CVA discounts by - so the recalc and the row cannot name two different
     counterparties. `Collateralized` is declared as 'True'/'False' TEXT and the string "False" is
-    truthy in every browser, so the row carries the READING rather than the spelling - the one
-    every run reads, where only 'True' collateralises a set.
+    truthy in every browser, so the row carries the READING rather than the spelling - the
+    record's (`CSA.collateralised`), where only 'True' collateralises a set.
     """
     support = deal.get('Credit_Support_Amounts') or {}
-    return support.get('Counterparty') or '', instruments.NettingCollateralSet.collateralised(deal)
+    return support.get('Counterparty') or '', spine.package().projections.CSA.collateralised(deal)
 
 
 def xva_document(document, node, counterparty):
@@ -4952,7 +4952,7 @@ def xva_entries(document):
         entries.append(projection_entry(
             rows.get(reference), reference=reference, deal_path=deal_path,
             counterparty=counterparty, collateralized=collateralized,
-            balance_currency=instruments.NettingCollateralSet.balance_currency(deal)))
+            balance_currency=spine.package().projections.CSA.balance_currency(deal)))
     for reference in sorted(set(rows) - seen):
         entries.append(projection_entry(rows[reference], reference=reference, note=(
             'no NettingCollateralSet called {!r} is in the book any more - this row is the last '
@@ -4988,14 +4988,16 @@ def terms_read(document, sets):
 
 def stated_holding(terms, market, reporting):
     """`{currency, balance}` - what a netting set's own `terms` say the bank holds, in the
-    `reporting` currency: its `Opening_Balance`, at its declared convention where it states none,
-    held in its `Balance_Currency`, else its agreement's, else the market's base, crossed at the
-    market's spots as the record crosses a balance (`PnL.rates`); `balance` None where they cannot
-    cross it."""
-    base = structures.base_currency(market)
+    `reporting` currency: where they collateralise it, its `Opening_Balance`, at its declared
+    convention where it states none, held in its `Balance_Currency` (`CSA.balance_currency`) and
+    crossed at the market's spots as the record crosses a balance (`PnL.rates`), `balance` None
+    where they cannot cross it; nothing where they do not."""
+    csa = spine.package().projections.CSA
+    if not csa.collateralised(terms):
+        return {'currency': reporting, 'balance': 0.0}
     stated = declared_defaults(instruments.NettingCollateralSet, terms)
-    rate = PnL.rates(market['Price Factors'], reporting, base).get(
-        instruments.NettingCollateralSet.balance_currency(stated) or base)
+    rate = PnL.rates(market['Price Factors'], reporting, structures.base_currency(market)).get(
+        csa.balance_currency(stated))
     return {'currency': reporting,
             'balance': None if rate is None else stated['Opening_Balance'] * rate}
 

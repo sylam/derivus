@@ -217,7 +217,6 @@ function AgreementCard({ agreement, schema, amend }: {
       </div>
       <div className="csa">
         {agreement.collateralized ? 'Collateralised' : 'Not collateralised'}
-        {!read.stated && <span className="hint"> (its convention)</span>}
         {agreement.collateralized && read.currency && `, every collateral amount in ${read.currency}`}.
       </div>
       <Terms terms={read.terms} />

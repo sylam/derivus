@@ -6093,15 +6093,15 @@ class SACCR(NettingSetCalculation):
             raise ValueError('SACCR: netting set {} holds bond or equity collateral, whose value at '
                              'the base date the calculation does not price'.format(
                                  terms.get('Reference')))
-        balance_currency = terms.read('Balance_Currency', terms['Agreement_Currency'])
-        rows = assets.get('Cash_Collateral') or [{'Currency': balance_currency}]
+        currency = terms['Balance_Currency']
+        rows = assets.get('Cash_Collateral') or [{'Currency': currency}]
         worth = [(1.0 if row.get('Amount') is None else row['Amount']) * self.fx(row['Currency'])
                  for row in rows]
         cuts = [instruments.NettingCollateralSet.haircuts(row) for row in rows]
         face = sum(worth)
         posted, held = (sum(unit * cut[key] for unit, cut in zip(worth, cuts))
                         for key in ('Haircut_Posted', 'Haircut_Received'))
-        opening = terms['Opening_Balance'] * self.fx(balance_currency)
+        opening = terms['Opening_Balance'] * self.fx(currency)
         balance = opening / (face - posted * (opening < 0))
         return instruments.collateral_credit(balance, face, held), margin
 

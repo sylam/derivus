@@ -1072,7 +1072,7 @@ def test_a_document_stating_only_its_terms_prices_the_full_one_to_the_bit():
     lean, full = [stripped(deal) for deal in BOOK], [furnished(deal) for deal in BOOK]
     # the admin group's Product_Class convention among them, one on each of the fourteen deals, and
     # the option's and the barrier's expiry print
-    assert sum(dropped(deal) for deal in BOOK) == 180
+    assert sum(dropped(deal) for deal in BOOK) == 179
 
     lean_marks, lean_stats = marks(lean)
     full_marks, full_stats = marks(full)
@@ -1546,8 +1546,8 @@ EQUITY_OPTION = {'Object': 'EquityOptionDeal', 'Reference': 'EQO', 'Currency': '
                  'Option_Type': 'Call', 'Strike_Price': 100.0, 'Units': 10.0, 'Expiry_Date': WORLD_EXPIRY}
 #: A collateralised set, which closes out on the calendar its `Calendars` names.
 CLOSED_OUT = {'Object': 'NettingCollateralSet', 'Reference': 'CSA', 'Netted': 'True',
-              'Collateralized': 'True', 'Agreement_Currency': 'USD', 'Liquidation_Period': 10.0,
-              'Settlement_Period': 0.0, 'Children': [{
+              'Collateralized': 'True', 'Agreement_Currency': 'USD', 'Balance_Currency': 'USD',
+              'Liquidation_Period': 10.0, 'Settlement_Period': 0.0, 'Children': [{
                   'Object': 'FixedCashflowDeal', 'Reference': 'CF', 'Currency': 'USD', 'Discount_Rate': 'USD',
                   'Amount': 1e6, 'Payment_Date': WORLD_EXPIRY}]}
 #: Every kind of field naming a calendar, each read at its own site.

@@ -6969,20 +6969,25 @@ def test_a_deal_its_compile_skips_names_itself_and_the_factor_it_wanted_in_its_s
 
 def test_a_set_holds_what_its_terms_state_in_the_reporting_currency_the_base_at_one(
         tmp_path, monkeypatch):
-    """WHAT A SET'S TERMS SAY IT HOLDS, read on every XVA row with nothing run: its
-    `Opening_Balance`, nought by convention where unstated, held in its `Balance_Currency`, else
-    its agreement's, crossed into the book's reporting dollars at the market's spots as the record
-    crosses a balance (`PnL.rates`), the base at one though its `FxRate.USD` states no spot.
-    1,000 rand at a spot of 18.5 hold 18,500 dollars, a set stating nothing nought, and one held
-    in euros, which the market has no spot for, is unread.
+    """WHAT A SET'S TERMS SAY IT HOLDS, read on every XVA row with nothing run: where they
+    collateralise it, its `Opening_Balance`, nought by convention where unstated, held in its
+    `Balance_Currency` and crossed into the book's reporting dollars at the market's spots as the
+    record crosses a balance (`PnL.rates`), the base at one though its `FxRate.USD` states no spot;
+    where they do not, nothing. 1,000 rand at a spot of 18.5 hold 18,500 dollars, a set stating no
+    balance nought, one held in euros, which the market has no spot for, unread, and the 1,000 rand
+    an uncollateralised set states nought.
 
-    Killing mutation: the base left to a block of its own, which leaves every holding unread.
+    Killing mutations: the base left to a block of its own, which leaves every holding unread; a
+    set its terms do not collateralise read as holding a balance, which reads its rand as unread.
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path))
-    sets = [netting_set(reference, 'CPTY_A', []) for reference in ('NS_ZAR', 'NS_USD', 'NS_EUR')]
-    sets[0]['Instrument']['.Deal'].update(Balance_Currency='ZAR', Opening_Balance=1000.0)
-    sets[1]['Instrument']['.Deal']['Balance_Currency'] = ''
-    sets[2]['Instrument']['.Deal']['Balance_Currency'] = 'EUR'
+    sets = [netting_set(reference, 'CPTY_A', [])
+            for reference in ('NS_ZAR', 'NS_USD', 'NS_EUR', 'NS_NONE')]
+    for node, currency in zip(sets, ('ZAR', 'USD', 'EUR', 'ZAR')):
+        node['Instrument']['.Deal'].update(Collateralized='True', Balance_Currency=currency)
+    for node in (sets[0], sets[3]):
+        node['Instrument']['.Deal']['Opening_Balance'] = 1000.0
+    sets[3]['Instrument']['.Deal']['Collateralized'] = 'False'
     book = xva_book(tmp_path, sets)
     document = json.loads(book.read_text())
     del document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']['FxRate.USD'][
@@ -6994,7 +6999,8 @@ def test_a_set_holds_what_its_terms_state_in_the_reporting_currency_the_base_at_
         service.BOOK = None
     assert held == {'NS_ZAR': {'currency': 'USD', 'balance': pytest.approx(18_500.0, rel=1e-12)},
                     'NS_USD': {'currency': 'USD', 'balance': 0.0},
-                    'NS_EUR': {'currency': 'USD', 'balance': None}}
+                    'NS_EUR': {'currency': 'USD', 'balance': None},
+                    'NS_NONE': {'currency': 'USD', 'balance': 0.0}}
 
 
 def test_each_set_row_names_the_factors_its_terms_name_that_the_market_lacks(tmp_path, monkeypatch):

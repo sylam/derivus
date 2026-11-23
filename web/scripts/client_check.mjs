@@ -38,7 +38,7 @@ const SCHEMA = { Instrument: {
 const read = (terms, collateralized) => {
   const reading = client.termsReading({ terms, collateralized }, SCHEMA);
   const rows = (list) => list.map((term) => [term.words, term.value, term.unit, term.convention]);
-  return [reading.stated, reading.currency ?? null, rows(reading.terms), rows(reading.conventions)];
+  return [reading.currency ?? null, rows(reading.terms), rows(reading.conventions)];
 };
 const CSA = { Object: SET, Reference: 'CSA-1', Collateralized: 'True', Agreement_Currency: 'EUR',
               Liquidation_Period: 10, Credit_Support_Amounts: {
@@ -52,25 +52,25 @@ check("a collateralised set reads every collateral term first, at its convention
       + "as its phrase, 'the agreement currency' for EUR; or a term at its convention listed with "
       + 'the stated ones',
       read(CSA, true),
-      [true, 'EUR',
+      ['EUR',
        [[THRESHOLD, '0', 'EUR', true], ['Minimum transfer the bank posts', '250,000', 'EUR', false],
         ['Agreement currency', 'EUR', '', false], ['Liquidation period', '10', 'calendar days', false],
         ['Counterparty', 'ALDER', '', false]],
        [['Cash Collateral', 'none', '', true]]]);
 
-check('a set whose collateral is off reads only what it states, and says the flag is its convention',
+check('a set whose collateral is off reads only what it states',
       'the collateral terms of an uncollateralised set shown at their conventions, a threshold it '
-      + 'does not have; or the flag read as stated where the terms say nothing',
-      read({ Object: SET, Agreement_Currency: 'USD', Credit_Support_Amounts: { Counterparty: 'KES' } },
-           false),
-      [false, 'USD',
+      + 'does not have',
+      read({ Object: SET, Collateralized: 'False', Agreement_Currency: 'USD',
+             Credit_Support_Amounts: { Counterparty: 'KES' } }, false),
+      ['USD',
        [['Agreement currency', 'USD', '', false], ['Counterparty', 'KES', '', false]], []]);
 
 check('a set reads as the service says a run collateralises it, whatever its flag spells: a set '
       + 'stating "Yes" the service reads uncollateralised reads only what it states',
       'the reading deciding off the flag again, collateralised unless it says "False", which shows '
       + 'the set thresholds no run holds it to',
-      read({ ...CSA, Collateralized: 'Yes' }, false)[2].map(([words]) => words),
+      read({ ...CSA, Collateralized: 'Yes' }, false)[1].map(([words]) => words),
       ['Agreement currency', 'Liquidation period', 'Counterparty', 'Minimum transfer the bank posts']);
 
 check('a collateralised set reads as collateralised and no more: its reading names no way its '
@@ -79,7 +79,7 @@ check('a collateralised set reads as collateralised and no more: its reading nam
       + 'collateralised set two-way: the type declares both sides for every set, and says '
       + 'nothing of this one',
       Object.keys(client.termsReading({ terms: CSA, collateralized: true }, SCHEMA)).sort(),
-      ['conventions', 'currency', 'stated', 'terms']);
+      ['conventions', 'currency', 'terms']);
 
 // ---- which agreements, and is it ready -----------------------------------------------------------
 

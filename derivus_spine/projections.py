@@ -667,24 +667,36 @@ class CSA:
     #: What an agreement nothing moved under holds: two empty balances.
     NOTHING = dict.fromkeys(HELD, {})
 
+    @staticmethod
+    def collateralised(terms):
+        """Whether a netting set's `terms` collateralise it, their `Collateralized` stated 'True':
+        what they mean to every reader that is not a calculation."""
+        return terms.get('Collateralized') == 'True'
+
+    @classmethod
+    def balance_currency(cls, terms):
+        """The currency a netting set's `terms` keep its collateral balance in: their stated
+        `Balance_Currency` where they collateralise it, else None - a set they do not collateralise
+        holds no stated collateral."""
+        return terms.get('Balance_Currency') or None if cls.collateralised(terms) else None
+
     @classmethod
     def of(cls, terms):
         """The CSA a netting set's `terms` declare, as the engine reads them - or None where they
-        collateralise nothing, the engine then holding no collateral at all.
+        collateralise nothing (`collateralised`), the engine then holding no collateral at all.
 
         `{Agreement_Currency, Balance_Currency, <each of DIALS>, haircuts}`: every
         `CreditSupportList` at its first value, nothing where the terms state none, the balance
-        currency the agreement's where unstated, and `haircuts` `{currency: Haircut_Posted}` off the
-        cash rows of `Collateral_Assets`, a currency being the one asset a close's spots value.
+        currency `balance_currency`, and `haircuts` `{currency: Haircut_Posted}` off the cash rows
+        of `Collateral_Assets`, a currency being the one asset a close's spots value.
         """
-        if terms.get('Collateralized', 'False') != 'True':
+        if not cls.collateralised(terms):
             return None
         support = terms.get('Credit_Support_Amounts') or {}
         dials = {dial: cls._first(support.get(dial)) or 0.0 for dial in cls.DIALS}
         rows = (terms.get('Collateral_Assets') or {}).get('Cash_Collateral') or []
         return dict(dials, Agreement_Currency=terms.get('Agreement_Currency'),
-                    Balance_Currency=terms.get('Balance_Currency') or terms.get(
-                        'Agreement_Currency'),
+                    Balance_Currency=cls.balance_currency(terms),
                     haircuts={row['Currency']: cls._percent(row.get('Haircut_Posted'))
                               for row in rows})
 

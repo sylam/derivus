@@ -72,9 +72,9 @@ def test_the_dials_are_read_as_the_engine_reads_them():
     """THE CSA IS THE ENGINE'S. Every `CreditSupportList` is read at its FIRST value exactly as
     `utils.CreditSupportList.value` reads it - a dict over the rows, so a rating listed twice keeps
     its first place and its last amount - `Haircut_Posted` as the fraction the engine's `Percent`
-    decodes to, and the balance currency the agreement's where unstated, as the engine defaults
-    it. Terms that collateralise nothing have no CSA, and a dial the terms state none of reads
-    zero, the engine's convention for it.
+    decodes to, and the balance currency as stated, none where unstated, the agreement's no
+    fallback. Terms that collateralise nothing have no CSA, and a dial the terms state none of
+    reads zero, the engine's convention for it.
 
     Killing mutations: the first row's rating read as its amount, which puts every threshold at 1;
     an unstated dial read as None, which fails the call the engine prices.
@@ -89,7 +89,7 @@ def test_the_dials_are_read_as_the_engine_reads_them():
         'Minimum_Posted'] == utils.CreditSupportList(twice['.CreditSupportList']).value() == 7.0
     assert dials['haircuts'] == {'USD': float(utils.Percent(50.0))}
     assert (dials['Agreement_Currency'], dials['Balance_Currency']) == ('ZAR', 'EUR')
-    assert CSA.of(dict(TERMS, Balance_Currency=''))['Balance_Currency'] == 'ZAR'
+    assert CSA.of(dict(TERMS, Balance_Currency=''))['Balance_Currency'] is None
     assert CSA.of(dict(TERMS, Collateralized='False')) is None
     assert CSA.of({'Object': 'NettingCollateralSet'}) is None
     bare = CSA.of(dict(TERMS, Credit_Support_Amounts={
@@ -604,6 +604,38 @@ def test_a_set_its_call_cannot_value_is_named_with_its_error_s_own_words():
     with pytest.raises(utils.UnpriceableSchedule) as refused:
         derivus.run_cmc(context.current_cfg, prec=torch.float64)
     assert str(refused.value).endswith("CSA-1 - 'NoneType' object is not iterable"), refused.value
+
+
+def test_a_set_states_whether_it_is_collateralised_and_a_collateralised_one_its_balance_currency():
+    """THE ENGINE READS BOTH AS STATED. `Collateralized` is required of every set and
+    `Balance_Currency` of a collateralised one, the agreement's currency no fallback: a set stating
+    no `Collateralized` and a collateralised one stating no balance currency are each named before
+    a run, and the second's run refuses it in that sentence; an uncollateralised set stating no
+    balance currency prices.
+
+    Killing mutations: `Collateralized` declared with a default, which names nothing on the set
+    stating none; the balance currency left out of what a collateralised set requires, which names
+    nothing before the run; the requirement asked of every set, which refuses the uncollateralised
+    one.
+    """
+    def loaded(terms):
+        context = derivus.Context()
+        context.load_json((json.dumps(engine_job(terms)), 'stated'))
+        return context
+
+    unstated, bare = ({key: value for key, value in TERMS.items() if key != field}
+                      for field in ('Collateralized', 'Balance_Currency'))
+    said = 'Collateralized is True, so Balance_Currency is required'
+    assert loaded(unstated).validate()['deals'] == {'CSA-1': ['Collateralized is required']}
+    refused = loaded(bare)
+    assert refused.validate()['deals'] == {'CSA-1': [said]}
+    with pytest.raises(utils.UnpriceableSchedule) as run:
+        derivus.run_cmc(refused.current_cfg, prec=torch.float64)
+    assert str(run.value).endswith('CSA-1 - CSA-1: ' + said), run.value
+    plain = loaded(dict(bare, Collateralized='False'))
+    assert plain.validate()['deals'] == {}
+    out = derivus.run_cmc(plain.current_cfg, prec=torch.float64)[1]
+    assert np.isfinite(out['Netting'].sub_structures[0].obj.Calc_res['Value'][0]).all()
 
 
 def test_a_sole_cash_asset_stating_no_amount_is_one_unit_of_it(caplog):

@@ -236,7 +236,8 @@ FORWARDS = [forward('WTI', 80.0, 1e7, BASE + pd.DateOffset(months=9), 'Buy'),
 def margined(threshold, minimum, independent, held, mpor):
     """A margined agreement's terms in dollars: its received threshold and minimum transfer, the
     independent amount received, the collateral held and the MPOR in business days."""
-    return {'Collateralized': 'True', 'Agreement_Currency': 'USD', 'Liquidation_Period': mpor,
+    return {'Collateralized': 'True', 'Agreement_Currency': 'USD', 'Balance_Currency': 'USD',
+            'Liquidation_Period': mpor,
             'Opening_Balance': held, 'Credit_Support_Amounts': {
                 'Received_Threshold': utils.CreditSupportList([[1, threshold]]),
                 'Minimum_Received': utils.CreditSupportList([[1, minimum]]),

@@ -77,7 +77,8 @@ AUTOCALL = _autocall(1.02)
 
 
 NETTING = {
-    'Object': 'NettingCollateralSet', 'Netted': 'True', 'Agreement_Currency': 'USD',
+    'Object': 'NettingCollateralSet', 'Netted': 'True', 'Collateralized': 'False',
+    'Agreement_Currency': 'USD',
     'Funding_Rate': 'USD', 'Balance_Currency': 'USD', 'Liquidation_Period': 10.0,
     'Settlement_Period': 0.0,
     'Credit_Support_Amounts': {

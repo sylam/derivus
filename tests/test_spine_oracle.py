@@ -1131,7 +1131,7 @@ def test_a_call_the_formula_does_not_give_is_named(tmp_path):
     numbers never read.
     """
     terms = {'Object': 'NettingCollateralSet', 'Reference': 'CSA-1', 'Collateralized': 'True',
-             'Agreement_Currency': 'USD', 'Credit_Support_Amounts': {
+             'Agreement_Currency': 'USD', 'Balance_Currency': 'USD', 'Credit_Support_Amounts': {
                  dial: {'.CreditSupportList': [[1, amount]]} for dial, amount in (
                      ('Received_Threshold', 100.0), ('Posted_Threshold', -100.0),
                      ('Minimum_Received', 10.0), ('Minimum_Posted', 10.0))}}

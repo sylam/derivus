@@ -116,7 +116,7 @@ export type Term = {
 /** Whether the terms state the collateral flag, the currency its collateral amounts are in, its
  * terms and those at their conventions apart. */
 type TermsReading = {
-  stated: boolean; currency?: string; terms: Term[]; conventions: Term[];
+  currency?: string; terms: Term[]; conventions: Term[];
 };
 
 /** The words a collateral term's declaration names the bank's side of it in. */
@@ -155,7 +155,7 @@ export function termsReading({ terms, collateralized }: Agreement, schema: Schem
   const moving = all.filter((row) => row.side);
   const rest = all.filter((row) => !row.side);
   return {
-    stated: !isBlank(terms[COLLATERAL]), currency: moving.map((row) => row.unit).find(Boolean),
+    currency: moving.map((row) => row.unit).find(Boolean),
     terms: !collateralized ? all.filter((row) => !row.convention)
       : [...moving, ...rest.filter((row) => !row.convention)],
     conventions: !collateralized ? [] : rest.filter((row) => row.convention),

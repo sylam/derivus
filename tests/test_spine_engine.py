@@ -1148,18 +1148,20 @@ def test_the_agreements_read_names_what_paper_never_states(recorded):
 
 
 def test_the_agreements_read_says_whether_a_run_collateralises_each(recorded):
-    """Each agreement the paper read answers says whether a run collateralises its terms, read as
-    a run reads them: one stating `'True'` does, one stating it blank stands at its convention and
-    does not, so a screen renders the service's verdict rather than reading the flag again - and in
-    which currency its balance is kept, its `Balance_Currency`, else its agreement's.
+    """Each agreement the paper read answers says whether its terms collateralise it, the record's
+    reading (`CSA.collateralised`): one stating `'True'` does and one stating `'False'` does not,
+    so a screen renders the service's verdict rather than reading the flag again - and in which
+    currency its balance is kept, its stated `Balance_Currency` where it is collateralised and none
+    where it is not, the agreement's currency no fallback (`CSA.balance_currency`).
 
-    Killing mutations: the verdict read as anything but `'False'`, which calls the blank one
-    collateralised; the agreement's currency read ahead of the balance's.
+    Killing mutations: the flag read as anything stated, which calls the `'False'` one
+    collateralised; the balance currency read off terms that collateralise nothing, which keeps the
+    uncollateralised one's in euros.
     """
     terms = netting_set(CLIENT_SET, 'LEI-A')['Instrument']['.Deal']
     assert CLIENT.post('/book/entities', content=dump({'entity': 'LEI-A', 'name': 'Client A'}),
                        headers=JSON).status_code == 200
-    for agreement, said, balance in (('CSA-A', 'True', 'EUR'), ('ISDA-A', '', '')):
+    for agreement, said, balance in (('CSA-A', 'True', 'EUR'), ('ISDA-A', 'False', 'EUR')):
         assert CLIENT.post('/book/agreements', content=dump({
             'agreement': agreement, 'entity': 'LEI-A', 'kind': 'ISDA 2002',
             'terms': dict(terms, Reference=agreement, Collateralized=said,
@@ -1167,7 +1169,7 @@ def test_the_agreements_read_says_whether_a_run_collateralises_each(recorded):
             headers=JSON).status_code == 200
     assert {row['agreement']: (row['collateralized'], row['balance_currency']) for row in CLIENT.get(
         '/book/agreements').json()['agreements']} == {'CSA-A': (True, 'EUR'),
-                                                      'ISDA-A': (False, 'USD')}
+                                                      'ISDA-A': (False, None)}
 
 
 def test_the_agreements_read_names_the_factors_each_names_that_the_market_lacks(recorded, desk):
@@ -1199,8 +1201,9 @@ def test_the_paper_is_declared_and_a_booking_names_the_agreement_it_sits_under(r
 
     An entity is declared and then an agreement with it, its terms judged by the engine before
     anything appends: a block that is not a netting set, one carrying positions, one stating a
-    balance or a holding, one its own declarations refuse and one naming an entity nobody declared
-    each refuse by name with nothing recorded. A booking naming the agreement files it on the fill,
+    balance or a holding, one its own declarations refuse - a menu off its values, no
+    `Collateralized`, a collateralised set's `Balance_Currency` unstated - and one naming an entity
+    nobody declared each refuse by name with nothing recorded. A booking naming the agreement files it on the fill,
     the counterparty being the agreement's entity, beside the portfolio - the book's own where none
     is stated - and the price it was done at; the position is keyed by the agreement and the
     portfolio. A booking naming an agreement nobody declared, or sitting under another set than
@@ -1208,7 +1211,8 @@ def test_the_paper_is_declared_and_a_booking_names_the_agreement_it_sits_under(r
 
     Killing mutations: the counterparty read off the file's set rather than the agreement books
     `CPTY_A` where the paper says `LEI-A`; the portfolio default dropped files the second booking
-    under the book only through the fold's fallback, and the fill carries no portfolio.
+    under the book only through the fold's fallback, and the fill carries no portfolio; a
+    collateralised set's balance currency left unrequired, which declares the paper with none.
     """
     def declared(body):
         return CLIENT.post('/book/agreements', content=dump(body), headers=JSON)
@@ -1225,7 +1229,11 @@ def test_the_paper_is_declared_and_a_booking_names_the_agreement_it_sits_under(r
             (dict(terms, Collateral_Assets={'Cash_Collateral': [{'Currency': 'USD',
                                                                   'Amount': 500_000.0}]}),
              'Cash_Collateral[0].Amount is 500000.0'),
-            (dict(terms, Netted='Sometimes'), 'Netted is')):
+            (dict(terms, Netted='Sometimes'), 'Netted is'),
+            ({key: value for key, value in terms.items() if key != 'Collateralized'},
+             'Collateralized is required'),
+            (dict(terms, Collateralized='True', Balance_Currency=''),
+             'Collateralized is True, so Balance_Currency is required')):
         refused = declared({'agreement': CLIENT_SET, 'entity': 'LEI-A', 'kind': 'ISDA 2002',
                             'terms': body})
         assert refused.status_code == 422 and said in refused.json()['detail'], said

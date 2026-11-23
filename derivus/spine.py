@@ -831,11 +831,11 @@ def _balances(document, papers, lsn=None, folds=None):
     alike: the book lacks that market, and nothing is valued on a zero."""
     sets = {deal.get('Reference'): papers.get(deal.get('Reference'), deal) for deal in (
         node['Instrument']['.Deal'] for _, node in netting_sets(document))}
+    spine = package()
     sets = {agreement: terms for agreement, terms in sets.items()
-            if instruments.NettingCollateralSet.collateralised(terms)}
+            if spine.projections.CSA.collateralised(terms)}
     if not sets:
         return {}
-    spine = package()
     held = spine.projections.CSA.held(_rows('cash', lsn, folds), base_day(document))
     balances, market = {}, None
     for agreement, terms in sets.items():
@@ -2987,8 +2987,7 @@ class Collateral:
     @staticmethod
     def collateralised(agreements):
         """The declared `agreements` whose terms collateralise - the ones a close has calls on."""
-        return [row for row in agreements
-                if package().projections.CSA.of(row['terms']) is not None]
+        return [row for row in agreements if package().projections.CSA.collateralised(row['terms'])]
 
     @staticmethod
     def seen(agreements, positions, sight, verb=None):

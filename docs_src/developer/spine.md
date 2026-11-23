@@ -698,11 +698,18 @@ beside the record's sentence for why this seat does not sign them, then the `pay
 clears it, with the day's close check and the close behind its verdict. The Paper workspace
 (`web/src/views/PaperView.tsx`) lists the entities and the agreements with their terms and
 declares both, an agreement's terms the netting set rendered off the `NettingCollateralSet`
-declaration `/schema` publishes, and opens on what a row of the strip names. Whether a set is
-collateralised is the service's verdict, read as a run reads it, never the web's reading of the
-flag: `collateralized` on each agreement `GET /book/agreements` answers, on each row of
-`GET /book/xva` for a desk keeping no record, and the `collateralized_sets` a job's `/describe`
-names for a run's tables. No screen shows a
+declaration `/schema` publishes, and opens on what a row of the strip names. What a set's terms
+mean outside a calculation is the record's reading (`CSA.collateralised`, `CSA.balance_currency`):
+`Collateralized` stated `'True'` alone collateralises a set, and its balance is kept in its stated
+`Balance_Currency` where it does and in none where it does not, the agreement's currency no
+fallback. The service serves it and reads it through `spine.package()`, never the web's reading of
+the flag: `collateralized` and `balance_currency` on each agreement `GET /book/agreements` answers
+and on each row of `GET /book/xva`, a set's stated holding (nothing where its terms collateralise
+nothing) and the record's balances. The engine parses both fields as stated for its own
+calculations (`NettingCollateralSet.collateralised`, the `collateralized_sets` a job's `/describe`
+names): `Collateralized` is required of every set and `Balance_Currency` of a collateralised one,
+terms breaking either refused by name when an agreement is declared, at a booking and by the run.
+No screen shows a
 set's own `Funding_Rate`, the term of its collateral adjustment: every view of a deal's fields
 leaves it out (`onScreen` in `web/src/tokens.ts`), a set stating it keeps it through an edit, and
 the curve it names is still among what its terms lack where the market does not carry it: the
@@ -715,6 +722,8 @@ acting seat and shows a refusal in the service's own words. **Held by** what the
 `::test_the_agreements_read_says_whether_a_run_collateralises_each`,
 `::test_the_agreements_read_names_the_factors_each_names_that_the_market_lacks`,
 `test_service.py::test_a_set_reads_collateralised_exactly_as_a_run_prices_it`,
+`::test_a_set_holds_what_its_terms_state_in_the_reporting_currency_the_base_at_one`,
+`test_collateral.py::test_a_set_states_whether_it_is_collateralised_and_a_collateralised_one_its_balance_currency`,
 `::test_each_set_row_names_the_factors_its_terms_name_that_the_market_lacks`,
 `web/scripts/paper_check.mjs`, `web/scripts/client_check.mjs` and `web/scripts/trade_check.mjs`
 for what no screen shows, and
