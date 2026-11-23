@@ -186,6 +186,12 @@ export function ringsAhead(beat: Doorbell, cursor: number): boolean {
   return beat.lsn > cursor;
 }
 
+/** Whether a beat asks the record for the strip's next page: on a desk that records, the first
+ * time, and after it only where the record's head stands past the `cursor` the strip was read to -
+ * a beat with nothing moved reads no log. */
+export const stripOwed = (spine: SpineBlock | null, cursor: number | null): boolean =>
+  spine !== null && (cursor === null || spine.head_lsn > cursor);
+
 /** The banner's whole reading. THE LISTS DECIDE AND THE COUNTS NEVER DO: the counts say how far
  * the record has moved past the file's PIN, and every write to the file resets them - including
  * the write that is the other half of a divergence - so a desk gated on them is told `clean`

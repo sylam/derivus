@@ -1,5 +1,5 @@
 // Drives `src/trade.ts` where the eye cannot: which node a path's trade is, which mark is its own,
-// how the record is read whole and what of it is the trade's, who booked it, its size and dates,
+// how the record is read and read on, what of it is the trade's, who booked it, its size and dates,
 // what an unwind files and says, and what a ticket to sign says to the seat reading it - and the
 // store's way onto the page from a row naming a trade and back to where it was opened from.
 // Every check names the MUTATION it kills - the change that would still typecheck, still render,
@@ -78,7 +78,7 @@ check("a position shows its own row of the risk answer's per-position marks, the
        shown('0/7', DESK), shown('0/1', DESK, null)],
       [1, 0.5, -2.25, 1.5, 'none', 'none', 'none']);
 
-// --- the record, read whole
+// --- the record, read on from where it was read to
 const RECORD = Array.from({ length: 450 }, (_, at) => ({ lsn: at + 1 }));
 const reader = (rows) => {
   const asked = [];
@@ -91,15 +91,26 @@ const reader = (rows) => {
   return { asked, read };
 };
 const walked = reader(RECORD);
-const whole = await trade.wholeRecord(walked.read).catch((error) => String(error));
+const whole = await trade.readOn(null, 'trade 0', [walked.read]).catch((error) => String(error));
 check('the record is read page by page from its first event, each from the cursor before',
       'one page taken for the whole record, which loses every event past the 200th',
-      [Array.isArray(whole) ? whole.length : whole, walked.asked], [450, [0, 200, 400]]);
+      [whole.rows?.[0].length ?? whole, whole.since, walked.asked], [450, [450], [0, 200, 400]]);
 const exact = reader(RECORD.slice(0, 200));
-await trade.wholeRecord(exact.read);
+await trade.readOn(null, 'trade 0', [exact.read]);
 check('a full last page asks once more and stops on the empty one',
       'a full page read as the end, so a record of exactly a page\'s rows hides the next event',
       exact.asked, [0, 200]);
+const grown = reader([...RECORD, ...Array.from({ length: 10 }, (_, at) => ({ lsn: 451 + at }))]);
+const on = await trade.readOn(whole, 'trade 0', [grown.read]);
+check('a moved head reads the same question on from its cursor and appends what is new',
+      'the rows read again from the first event on every head move, three pages for ten events',
+      [on.rows[0].length, on.rows[0].at(-1).lsn, on.since, grown.asked], [460, 460, [460], [450]]);
+const other = reader(RECORD);
+const asked = await trade.readOn(on, 'trade 1', [other.read]);
+check('another question starts from nothing',
+      'the rows held for one trade kept under the next one asked, which shows its history on '
+        + 'another trade\'s page',
+      [asked.rows[0].length, other.asked], [450, [0, 200, 400]]);
 
 // one trade's rows, oldest first, as `GET /book/activity?deal_path=` pages them
 const ROWS = [

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { getBookActivity, type About } from '../api';
+import { type About } from '../api';
 import {
   MARKED, baseDateOf, quoted, rowsByPath, sizeOf, toRows, type BlotterRow,
 } from '../blotter';
@@ -15,12 +15,11 @@ import {
 import {
   positionName, statusText, type Agreement, type Entity, type Position,
 } from '../positions';
-import { pinnedAt } from '../spine';
 import {
-  bookRisk, marketOf, opened, readAs, riskNow, standing, unread, useApp, useRead,
+  bookRisk, marketOf, opened, readAs, riskNow, standing, unread, useApp, useRecordRows,
 } from '../state';
 import { curveOf, formatNumber, token } from '../tokens';
-import { markOf, markShown, markText, noMark, wholeRecord } from '../trade';
+import { markOf, markShown, markText, noMark } from '../trade';
 import type { ActivityRow, Market, Schema, SettlementState } from '../types';
 import { AgreementForm } from '../components/AgreementForm';
 import { CreditCard, HeldCurve } from '../components/CreditCard';
@@ -107,9 +106,8 @@ function ClientPage({ id, lines, own, reads, rows, factor, market, schema }: {
   const { entities } = reads;
   // its history asked for by its entity and by each of its agreements, where the desk records
   const asked: About[] = [{ entity: id }, ...own.map((row) => ({ agreement: row.agreement }))];
-  const history = useRead(entities ? async () => touching(await Promise.all(asked.map((about) =>
-    wholeRecord((since) => getBookActivity(since, about))))) : null,
-  [JSON.stringify(asked), !!entities, pinnedAt(state.record.spine)]);
+  const read = useRecordRows(entities ? asked : null, state.record.spine?.head_lsn ?? null);
+  const history = { ...read, data: read.data && touching(read.data) };
   const entity = entities?.find((row) => row.entity === id);
   const below = (entities ?? []).filter((row) => row.parent === id);
   const name = entityText(entities, id);

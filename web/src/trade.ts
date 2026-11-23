@@ -77,18 +77,27 @@ export function noMark(risk: { data: unknown; error: string | null }, own?: Deal
     : none;
 }
 
-/** Every row a read of the record answers - the whole record, or one trade's rows - a page at a
- * time from its first event: each page asked from the cursor the one before answered, until one
- * comes back short of `size`. */
-export async function wholeRecord(read: (since: number) => Promise<ActivityPage>,
-                                  size = 200): Promise<ActivityRow[]> {
-  const rows: ActivityRow[] = [];
-  for (let since = 0; ;) {
-    const page = await read(since);
-    rows.push(...page.rows);
-    if (page.rows.length < size) return rows;
-    since = page.lsn;
-  }
+/** The rows each question to the record answers, under the `key` the questions are asked as, with
+ * the cursor each was read to. */
+export type RecordRows = { key: string; rows: ActivityRow[][]; since: number[] };
+
+/** Every row each of `reads` answers, read on from `held` where it holds the same `key` and from
+ * the first event where it does not: a page at a time, each asked from the cursor the one before
+ * answered, until one comes back short of `size`, the rows appended to those held. */
+export async function readOn(held: RecordRows | null, key: string,
+                             reads: ((since: number) => Promise<ActivityPage>)[],
+                             size = 200): Promise<RecordRows> {
+  const from = held?.key === key ? held : { key, rows: reads.map(() => []), since: reads.map(() => 0) };
+  const read = await Promise.all(reads.map(async (page, at) => {
+    const rows = [...from.rows[at]];
+    for (let since = from.since[at]; ;) {
+      const answer = await page(since);
+      rows.push(...answer.rows);
+      if (answer.rows.length < size) return { rows, since: answer.lsn };
+      since = answer.lsn;
+    }
+  }));
+  return { key, rows: read.map((one) => one.rows), since: read.map((one) => one.since) };
 }
 
 /** What happened to a trade, newest first, off the rows the record answers for it. */

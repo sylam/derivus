@@ -1,5 +1,5 @@
 import { Fragment, useMemo, useState } from 'react';
-import { failure, fillDeal, getBookActivity } from '../api';
+import { failure, fillDeal } from '../api';
 import {
   baseDateOf, cellText, nameOf, quoted, rowsByPath, sizeOf, toRows, type BlotterRow,
 } from '../blotter';
@@ -10,15 +10,14 @@ import {
   NO_PAPER, byPath, clientName, closed, netOf, nodeAt, type Position, type Ticket,
 } from '../positions';
 import { clientText, quoteAt, verdictOf, type Verdict } from '../quote';
-import { pinnedAt } from '../spine';
 import {
   bookRisk, clockOf, heldBack, marketOf, noneShown, readAs, riskNow, spineOf, unread, useApp,
-  useQuoteList, useQuotes, useRead, written,
+  useQuoteList, useQuotes, useRecordRows, written,
 } from '../state';
 import { formatNumber, ungrouped } from '../tokens';
 import {
   datesOf, favour, historyOf, legsOf, markOf, movedTerms, noMark, positionMark,
-  tradeAt, tradeName, tradeSize, unwindAgainst, unwindFill, unwindWords, wholeRecord, type Price,
+  tradeAt, tradeName, tradeSize, unwindAgainst, unwindFill, unwindWords, type Price,
 } from '../trade';
 import type { QuoteGiven } from '../types';
 import { Back, DealEditor, Gated, OnStrip, Stat, TradeCells } from '../components/Desk';
@@ -26,13 +25,12 @@ import { RecordRow } from '../components/Record';
 import { CreditCharge, TicketCard } from '../components/TicketCard';
 
 /** One trade's rows on the record, newest first, asked for by its path where the desk keeps one
- * and again whenever the record moves, as a read (`unread`): the service's own sentence where it
- * is refused, and no rows until the read of this path lands. */
-function useHistory(path: string | undefined, recording: boolean, at: string | null) {
-  const read = useRead(recording && path !== undefined ? async () => ({ path, rows: historyOf(
-    await wholeRecord((since) => getBookActivity(since, { deal_path: path }))) }) : null,
-  [path, recording, at]);
-  return { error: read.error, data: read.data && read.data.path === path ? read.data.rows : null };
+ * and read on from where the last read stopped whenever the record's `head` moves
+ * (`useRecordRows`), as a read (`unread`): the service's own sentence where it is refused, and no
+ * rows until the read of this path lands. */
+function useHistory(path: string | undefined, recording: boolean, head: number | null) {
+  const read = useRecordRows(recording && path !== undefined ? [{ deal_path: path }] : null, head);
+  return { ...read, data: read.data && historyOf(read.data[0]) };
 }
 type History = ReturnType<typeof useHistory>;
 
@@ -51,7 +49,7 @@ export function TradeView() {
   const trade = picked === undefined ? undefined : tradeAt(children, picked);
   const row = trade && rows.get(trade.path);
   const recording = spineOf(state) !== null;
-  const history = useHistory(trade?.path, recording, pinnedAt(state.record.spine));
+  const history = useHistory(trade?.path, recording, state.record.spine?.head_lsn ?? null);
   const paper = state.paper.data ?? NO_PAPER;
   const held = (trade && byPath(paper.positions).get(trade.path)) || [];
   const units = netOf(held);

@@ -436,6 +436,7 @@ export type XvaProfile = {
 export type SpineBlock = {
   lsn: number | null;
   head: string | null;
+  head_lsn: number;
   events_behind: number | null;
   positions_behind: number | null;
   paper: number;

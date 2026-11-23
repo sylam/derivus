@@ -155,6 +155,13 @@ check('a beat past the cursor is read and one at or behind it is not',
       + 'a reconnecting stream replays, and on every beat that arrives out of order',
       [spine.ringsAhead(RUNG[4], 21), spine.ringsAhead(RUNG[4], 22), spine.ringsAhead(RUNG[4], 99)],
       [true, false, false]);
+const standing = { ...PINNED, head_lsn: 22 };
+check('a beat asks the strip on its first paint and then only where the head moved past the cursor',
+      'the strip asked on every beat whatever the head did, a read of the log every two seconds '
+        + 'with nothing moved; or never asked on a first paint, which leaves the strip empty',
+      [spine.stripOwed(standing, null), spine.stripOwed(standing, 21), spine.stripOwed(standing, 22),
+       spine.stripOwed(null, null)],
+      [true, true, false, false]);
 check('a stream with every third beat dropped reads the same strip as one that lost none',
       'the page asked for from the BEAT\'s position rather than from the cursor the client holds, '
       + 'after which a dropped beat is an event this desk never sees at all',

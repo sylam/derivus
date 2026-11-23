@@ -1595,14 +1595,17 @@ def test_a_status_poll_is_answered_anew_once_the_record_moves_and_the_paper_has_
     what the first kept. A declaration lands a frame, so the status is asked anew: its
     `spine.paper`, 0 on a record declaring no paper, is an entity's LSN once one is declared and
     an agreement's after it, while a fixings policy declared between them moves the key and not
-    the paper.
+    the paper. Its `spine.head_lsn` is the record's head on every poll, moved by every frame.
 
     Killing mutations: the platter left out of a poll's key, where the key by hand differs and the
     status reads the paper where the first poll found it; the paper stamped with the head, where
-    it reads 4 on a record declaring none and the policy moves it.
+    it reads 4 on a record declaring none and the policy moves it; the head read off the book's
+    pin, which no declaration moves.
     """
     def paper():
-        return CLIENT.get('/book/status').json()['spine']['paper']
+        block = CLIENT.get('/book/status').json()['spine']
+        assert block['head_lsn'] == head(recorded), 'the status states where the record stands'
+        return block['paper']
 
     log, started = recorded / 'log', head(recorded)
     key = service.poll_key(service.BOOK, service.xva_path())

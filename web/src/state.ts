@@ -4,8 +4,8 @@
 
 import { createContext, useContext, useEffect, useRef, useState, type Dispatch } from 'react';
 import {
-  SEAT, failure, getBook, getBookStatus, getQuote, getQuotes, getResult, stored,
-  type BookDealOutcome,
+  SEAT, failure, getBook, getBookActivity, getBookStatus, getQuote, getQuotes, getResult, stored,
+  type About, type BookDealOutcome,
 } from './api';
 import { rowsByPath, toRows } from './blotter';
 import { bookClock, lagsBook } from './desk';
@@ -13,7 +13,7 @@ import { NO_PAPER, type Grouping, type Paper } from './positions';
 import { firmFor, pendingKey, ranAs } from './quote';
 import { pinnedAt, readRecord, reconciledRecord, type RecordHeld } from './spine';
 import { isObject } from './tokens';
-import { tradeAt } from './trade';
+import { readOn, tradeAt, type RecordRows } from './trade';
 import type {
   ActivityPage, BookMarket, BookResponse, BookRisk, BookXva, DescribeResult, JobDoc,
   Market, PathsAnswer, QuoteGiven, Reconcile, RefusalCode, ResultSummary, Schema, SeatGrants,
@@ -584,6 +584,22 @@ export function useRead<T>(read: (() => Promise<T>) | null, keys: unknown[]) {
     return () => { live = false; };
   }, keys);
   return held;
+}
+
+/** The rows each of `questions` to the record answers (`readOn`), held with each one's cursor: a
+ * moved `head` reads on from the cursors and appends, and other questions start from nothing. One
+ * read at a time, each from the rows the last one left. */
+export function useRecordRows(questions: About[] | null, head: number | null) {
+  const held = useRef<RecordRows | null>(null);
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
+  const key = JSON.stringify(questions);
+  const read = useRead(questions ? () => {
+    const next = queue.current.catch(() => null).then(async () => (held.current = await readOn(
+      held.current, key, questions.map((about) => (since: number) => getBookActivity(since, about)))));
+    queue.current = next;
+    return next;
+  } : null, [key, head]);
+  return { ...read, data: read.data?.key === key ? read.data.rows : null };
 }
 
 const QUEUE_POLL_MS = 500;

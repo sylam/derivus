@@ -651,7 +651,15 @@ ahead of the usage with it (`limitRead`). **Held by**
 `::test_the_consolidated_risk_and_the_explain_ask_the_queue_s_question`.
 
 `GET /book/activity` is the strip: with `?since=` the oldest rows after it, the cursor the last
-delivered, so a capped walk loses nothing. The fold reads envelopes alone; the service opens the
+delivered, so a capped walk loses nothing. The status's `head_lsn` (`service.spine_block`) is
+where the log stands, and the web's beat asks the strip for a page on its first paint and after it
+only where that head stands past the cursor it holds (`stripOwed` in `web/src/spine.ts`), so a
+beat with nothing moved reads no log. A client's and a trade's history are read the same way
+(`useRecordRows` in `web/src/state.ts`): each question's rows are held with its cursor, a moved
+head reads on from the cursor and appends, and another question starts from nothing (`readOn` in
+`web/src/trade.ts`). **Held by** `web/scripts/spine_check.mjs`, `web/scripts/trade_check.mjs`,
+`test_spine_engine.py::test_a_status_poll_is_answered_anew_once_the_record_moves_and_the_paper_has_its_own_stamp`.
+The fold reads envelopes alone; the service opens the
 bodies of the page it answers (`told`), so each row's `summary` names the trade and client, the
 agreement or the entity it is about, `by` says who did it - the seat a denial refused, the tier
 an automatic signature came from - and `deal_path`, `agreement` and `entity` are what it opens, a

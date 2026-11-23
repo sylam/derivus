@@ -10,7 +10,7 @@ import { JobHeader } from './components/JobHeader';
 import { ActivityStrip, ReconcileBanner, SeatControl, WorklistBanner } from './components/Record';
 import { OPEN_FILE } from './desk';
 import { WORKSPACES } from './registry';
-import { bookOwed, polled, ringsAhead, single, worklistAt } from './spine';
+import { bookOwed, polled, ringsAhead, single, stripOwed, worklistAt } from './spine';
 import {
   AppContext, INITIAL, PAPER_TABS, clockOf, paperAt, paperOwed, readBook, reducer, runHeld,
   seatClock, spineOf,
@@ -48,15 +48,16 @@ export function App() {
     return () => removeEventListener('visibilitychange', onVisibility);
   }, []);
 
-  // Where the record's strip has read up to, and the source the beat compares the stamp with:
-  // refs, so the beat below is made once and never re-reads the history.
-  const since = useRef(0);
+  // Where the record's strip has read up to, none before its first page, and the source the beat
+  // compares the stamp with: refs, so the beat below is made once and never re-reads the history.
+  const since = useRef<number | null>(null);
   const source = useRef(state.source);
   source.current = state.source;
 
   // THE BEAT, over the desk's own book and never a document opened from a file (`bookOwed`): the
   // status read says where the book and the record stand, the book is fetched only where its
-  // stamp moved, and the strip's next page rides along - all of it ONE transition, so a deal
+  // stamp moved, and the strip's next page rides along where the record moved past it
+  // (`stripOwed`) - all of it ONE transition, so a deal
   // booked by any client moves the clock once. One beat at a time (`single`), so a stalled
   // service stacks nothing; `spine` is read fresh each time, so a service restarted with a home
   // appears without a reload.
@@ -65,7 +66,7 @@ export function App() {
       const status = await getBookStatus();
       const [live, page] = await Promise.all([
         bookOwed(source.current, status.etag) ? getBook() : null,
-        status.spine === null ? null : getBookActivity(since.current || '')]);
+        stripOwed(status.spine, since.current) ? getBookActivity(since.current ?? '') : null]);
       if (page) since.current = page.lsn;
       dispatch({ type: 'BEAT', etag: status.etag, live, spine: status.spine, page });
     } catch { /* the beat outlives a service restart */ }
@@ -90,7 +91,7 @@ export function App() {
     if (!recording || !visible) return;
     const bell = new EventSource(DOORBELL);
     bell.onmessage = (ring) => {
-      if (ringsAhead(JSON.parse(ring.data), since.current)) beat();
+      if (ringsAhead(JSON.parse(ring.data), since.current ?? 0)) beat();
     };
     return () => bell.close();
   }, [recording, visible, beat]);

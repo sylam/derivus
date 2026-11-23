@@ -2458,7 +2458,8 @@ def pin_of(document):
 
 def spine_block(document):
     """The record's position beside the file's, for the one read a client starts with: the LSN the
-    file was hydrated at and how far the log has moved since; and `close`, the market the record
+    file was hydrated at and how far the log has moved since, and `head_lsn`, where the log stands -
+    what a client asks the strip past; and `close`, the market the record
     designates for the P&L - null where it designates none - whether an official close `stands`
     declared on it, what every read of a marked close reads, and whether the book is `marked` on
     it for its own base day (`pnl_marks`).
@@ -2471,8 +2472,8 @@ def spine_block(document):
     if not spine.configured():
         return None
     pinned, (market, closes, marks) = pin_of(document), pnl_marks(document, designated=False)
-    block = {'lsn': None, 'head': None, 'events_behind': None, 'positions_behind': None,
-             'paper': spine.papered(), 'close': {
+    block = {'lsn': None, 'head': None, 'head_lsn': spine.pin()['lsn'], 'events_behind': None,
+             'positions_behind': None, 'paper': spine.papered(), 'close': {
                  'market': market['name'], 'stands': bool(closes),
                  'marked': spine.base_day(document) in marks}}
     return block if pinned is None else dict(block, **pinned, **behind(pinned, book_name(document)))
