@@ -3284,7 +3284,7 @@ def marked_instruments(book, since, head=None):
     after LSN `since`: what its marks value."""
     return {row['instrument'] for row in spine.positions_of(book, head, folds())
             if row['quantity']} | {
-        fill['instrument'] for fill in spine.fills(after=since, until=head) if fill['book'] == book}
+        fill['instrument'] for fill in spine.fills(book, since, head)}
 
 
 #: How a read off the marks opens its refusal of a day none stand for: the day, the market and
@@ -3390,12 +3390,10 @@ def valued_between(first, last, document, marks, closes, scope, through=False, c
     cut = sorted((row['lsn'], day) for day, row in marks.items())
     if last['lsn'] > cut[-1][0]:
         cut.append((last['lsn'], last['day']))
-    fills = [fill for fill in spine.fills(after=first['lsn'], until=last['lsn'])
-             if fill['book'] == book]
-
     def between(after, until):
-        return [fill for fill in spine.fills(after=after, until=until) if fill['book'] == book]
+        return spine.fills(book, after, until)
 
+    fills = between(first['lsn'], last['lsn'])
     struck = PnL.rates_on(closes, reporting, base)
 
     def rates(day, lsn):

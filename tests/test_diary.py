@@ -552,9 +552,11 @@ def test_a_premium_is_due_on_its_value_date_until_a_premium_settles_it_into_cash
     reference. Not yet due on the trade day, the worklist lists it among the payments once the book
     stands on its day and the close of that day names it outstanding. Settled through
     `/book/transition` as a `premium`, it leaves the worklist, the close passes it and `/book/cash`
-    reads the movement on its value date and not before.
+    reads the movement on its value date and not before. A priced fill another book files on the
+    same record announces nothing here.
 
-    Killing mutations: the row not announced; the settlement's kind read as a payment.
+    Killing mutations: the row not announced; the settlement's kind read as a payment; the fills
+    of every book read as this one's, which announces the other book's premium here.
     """
     serving(tmp_path, [netting_set(CLIENT_SET, 'CPTY_A')])
     day = str((BASE + pd.DateOffset(days=2)).date())
@@ -567,6 +569,9 @@ def test_a_premium_is_due_on_its_value_date_until_a_premium_settles_it_into_cash
             row['due_date'], row['state']) == (
         'BOUGHT', 'EXEC-BOUGHT', instrument, -50_000.0, 'USD', day, Diary.DUE)
     assert row['key'] == spine.cashflow_key(instrument, 'EXEC-BOUGHT', spine.PREMIUM, day)
+    spine.book(json.loads(dump(fixed_leg('THEIRS'))), 2.0, 'CPTY_A', CLIENT_SET, 'EXEC-THEIRS',
+               book_name='another-book', price=25_000.0, value_date=day)
+    assert premiums(diary_rows()['rows']) == [row]
     assert CLIENT.get('/book/worklist').json()['payments'] == [], 'due before its value date'
 
     moved = CLIENT.post('/book/date', content=dump({'base_date': day}), headers=JSON)

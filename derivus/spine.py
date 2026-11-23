@@ -1556,14 +1556,14 @@ def closes(market):
     return [] if market is None else folded(walk)
 
 
-def fills(after=None, until=None):
-    """Every fill filed after LSN `after` and at or before `until`, each with where it sits in the
-    record, who booked it and when it is true."""
+def fills(book, after=None, until=None):
+    """Every fill of `book` filed after LSN `after` and at or before `until`, each with where it
+    sits in the record, who booked it and when it is true."""
     def walk(log):
         return [dict(log.open_body(frame), lsn=frame['lsn'], book=frame['book'],
                      actor=frame['actor'], as_of=frame['effective_time'] or frame['record_time'])
                 for frame in log.frames(start_lsn=(after or 0) + 1, end_lsn=until)
-                if frame['event_type'] == 'fill']
+                if frame['event_type'] == 'fill' and frame['book'] == book]
 
     return folded(walk)
 
@@ -2126,7 +2126,7 @@ def premiums(book, currency):
     `value_date`, keyed as the diary keys a row over its instrument and execution reference, and
     its deal named by the record's own terms. A fill stating no value date is due on no day, the
     row saying why (`UNDATED`)."""
-    priced = [fill for fill in fills() if fill['book'] == book and fill.get('price')]
+    priced = [fill for fill in fills(book) if fill.get('price')]
     terms = folded(lambda log: {fill['instrument']: stored(fill['instrument'], log)
                                 for fill in priced})
     return [dict(Diary._row(
