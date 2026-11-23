@@ -1417,6 +1417,12 @@ class NettingCollateralSet(Deal):
         alike."""
         return terms.get('Collateralized') == 'True'
 
+    @staticmethod
+    def balance_currency(terms):
+        """The currency a set's `terms` keep its collateral balance in: its `Balance_Currency`,
+        else its agreement's, None where they state neither."""
+        return terms.get('Balance_Currency') or terms.get('Agreement_Currency') or None
+
     def closeout_window(self):
         """The liquidation and settlement periods a collateralised set closes out over."""
         if self.collateralised(self.field):

@@ -209,11 +209,6 @@ export function sharedSections(types: Record<string, string[]>): string[] {
 /** The flag a netting set's collateral turns on. */
 export const COLLATERAL = 'Collateralized';
 
-/** The currency a netting set keeps its collateral balance in: Balance_Currency, else
- * Agreement_Currency, else blank. */
-export const setCurrency = (terms: Record<string, unknown>): string =>
-  label([terms.Balance_Currency, terms.Agreement_Currency].find(Boolean));
-
 /** The curve a netting set's collateral adjustment funds at: experimental, so no screen shows
  * the term, and a set stating it keeps it through every edit. */
 const SET_FUNDING = 'Funding_Rate';

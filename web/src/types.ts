@@ -400,6 +400,8 @@ export type XvaSet = {
   /** What the set's terms say the bank holds, in the book's reporting `currency` at the market's
    * spots - `balance` null where they cannot cross it - and null on a row whose set left the book. */
   held: { currency: string; balance: number | null } | null;
+  /** The currency the set's terms keep its collateral balance in, as the service reads them. */
+  balance_currency: string | null;
   /** The price factors the set's terms name that the market lacks, by the engine's walk of the set
    * alone - null on a row whose set left the book. */
   lacks: string[] | null;

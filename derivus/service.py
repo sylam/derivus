@@ -3750,7 +3750,8 @@ def book_agreement_declared(request: dict):
 @app.get('/book/agreements', summary="The record's agreements, each with its terms")
 def book_agreements():
     """`{agreements, settlement_state}` - every agreement the record declares, with the entity, the
-    kind and the terms it was declared under, whether a run collateralises them (`set_terms`), the
+    kind and the terms it was declared under, whether a run collateralises them (`set_terms`) and
+    the currency their collateral balance is kept in (`balance_currency`), the
     price factors they name that the served book's market holds no block for (`terms_read`), null
     where no book is served or its calculation refuses the walk, that refusal under
     `lacks_refused`, and what terms never state
@@ -3765,7 +3766,9 @@ def book_agreements():
 
     lacks, refused = ({}, None) if BOOK is None else polled(BOOK, 'agreements', walked)
     return {'agreements': [dict(row, collateralized=set_terms(row['terms'])[1],
-                                lacks=lacks.get(row['agreement'])) for row in rows],
+                                balance_currency=instruments.NettingCollateralSet.balance_currency(
+                                    row['terms']), lacks=lacks.get(row['agreement']))
+                           for row in rows],
             'settlement_state': {'fields': list(AGREEMENT_STATE),
                                  'collateral_columns': list(HOLDING_AMOUNTS)},
             'lacks_refused': refused}
@@ -4730,7 +4733,7 @@ def projection_entry(row, **book):
     row = row or {}
     entry = dict({'reference': None, 'deal_path': None, 'counterparty': row.get('counterparty'),
                   'collateralized': row.get('collateralized'), 'note': None, 'held': None,
-                  'lacks': None}, **book)
+                  'lacks': None, 'balance_currency': None}, **book)
     entry.update({key: row.get(key) for key in XVA_COLUMNS + ('error', 'missing')},
                  status=row.get('status', 'never run'))
     return entry
@@ -4931,7 +4934,8 @@ def xva_entries(document):
         seen.add(reference)
         entries.append(projection_entry(
             rows.get(reference), reference=reference, deal_path=deal_path,
-            counterparty=counterparty, collateralized=collateralized))
+            counterparty=counterparty, collateralized=collateralized,
+            balance_currency=instruments.NettingCollateralSet.balance_currency(deal)))
     for reference in sorted(set(rows) - seen):
         entries.append(projection_entry(rows[reference], reference=reference, note=(
             'no NettingCollateralSet called {!r} is in the book any more - this row is the last '
@@ -4974,7 +4978,7 @@ def stated_holding(terms, market, reporting):
     base = structures.base_currency(market)
     stated = declared_defaults(instruments.NettingCollateralSet, terms)
     rate = PnL.rates(market['Price Factors'], reporting, base).get(
-        stated['Balance_Currency'] or stated['Agreement_Currency'] or base)
+        instruments.NettingCollateralSet.balance_currency(stated) or base)
     return {'currency': reporting,
             'balance': None if rate is None else stated['Opening_Balance'] * rate}
 

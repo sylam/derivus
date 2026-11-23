@@ -53,6 +53,8 @@ export type Entity = { entity: string; name: string; parent: string | null };
 export type Agreement = {
   agreement: string; entity: string; kind: string; terms: Record<string, unknown>;
   collateralized: boolean;
+  /** The currency the terms keep their collateral balance in, as the service reads them. */
+  balance_currency: string | null;
   /** The price factors the terms name that the served book's market lacks, by the engine's walk;
    * null where no book is served. */
   lacks: string[] | null;

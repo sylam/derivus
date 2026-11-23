@@ -89,10 +89,4 @@ check('a field label is its description when short, else its key in words with t
        tokens.fieldLabel('Note', undefined)],
       [{ text: 'Buy Amount' }, { text: 'Strike Price', title: LONG }, { text: 'Note' }]);
 
-check('a netting set balance currency is Balance_Currency, else Agreement_Currency, else blank',
-      'Agreement_Currency read ahead of Balance_Currency, or a blank read as undefined',
-      [tokens.setCurrency({ Balance_Currency: 'EUR', Agreement_Currency: 'USD' }),
-       tokens.setCurrency({ Agreement_Currency: 'USD' }), tokens.setCurrency({})],
-      ['EUR', 'USD', '']);
-
 done();

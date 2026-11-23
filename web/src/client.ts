@@ -13,7 +13,7 @@ import {
 } from './positions';
 import { standing, type Action } from './state';
 import {
-  COLLATERAL, currencyOf, formatNumber, isBlank, label, onScreen, setCurrency, tenorLabel, token,
+  COLLATERAL, currencyOf, formatNumber, isBlank, label, onScreen, tenorLabel, token,
 } from './tokens';
 import { markOf } from './trade';
 import type {
@@ -42,7 +42,8 @@ export function agreementsOf(id: string, declared: Agreement[] | null,
     .map((row) => {
       const set = sets.find((one) => one.deal_path === row.path);
       return { agreement: row.reference, entity: id, kind: '', terms: row.deal,
-               collateralized: !!set?.collateralized, lacks: set?.lacks ?? null };
+               collateralized: !!set?.collateralized, lacks: set?.lacks ?? null,
+               balance_currency: set?.balance_currency ?? null };
     });
 }
 
@@ -329,7 +330,7 @@ export const paperText = ({ paper, collateralised }: Pick<CreditLine, 'paper' | 
 export function paperLine(set: string, agreements: Agreement[]): string {
   const paper = agreements.find((row) => row.agreement === set);
   if (!paper) return `${set}, which the record declares no agreement for`;
-  const currency = paper.collateralized && setCurrency(paper.terms);
+  const currency = paper.collateralized && paper.balance_currency;
   return `${set} (${paper.kind}), ${paperText({ paper: paper.kind, collateralised: paper.collateralized })}${
     currency ? ` in ${currency}` : ''}`;
 }
