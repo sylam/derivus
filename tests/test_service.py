@@ -6532,14 +6532,15 @@ def test_a_named_calculation_is_the_desks_own_and_prices_what_it_is_pointed_at(d
     IDENTITY, NOT A SECOND PATH: a named credit Monte Carlo stating what the XVA recalc states for
     `NS_A`, pointed at `NS_A`, prices the recalc's own numbers - both columns to the bit, the
     recalc's id being stamped off the set's document and files where this one is the replay tuple -
-    and a named base valuation with Greeks is the what-if verb's run with the same overrides. A
-    judged block is a normal answer naming what to fix, one level into a container included, with
-    the file untouched; a name nobody saved refuses naming the ones there are; and the book never
-    moves.
+    and a named base valuation with Greeks is the what-if verb's run with the same overrides. The
+    run answers the job it prices, which executed whole is that run. A judged block is a normal
+    answer naming what to fix, one level into a container included, with the file untouched; a
+    name nobody saved refuses naming the ones there are; and the book never moves.
 
     KILLING MUTATIONS: the saved block merged anywhere but over the book's own calculation, or the
-    subtree left whole, which moves the numbers off the recalc's; a container's keys unjudged,
-    which saves `Calculate: 'Maybe'` and dies inside the Monte Carlo instead.
+    subtree left whole, which moves the numbers off the recalc's; the book answered as the job,
+    another run's id; a container's keys unjudged, which saves `Calculate: 'Maybe'` and dies
+    inside the Monte Carlo instead.
     """
     book = desk_xva.read_bytes()
     cva_a = {'Object': 'CreditMonteCarlo',
@@ -6568,6 +6569,8 @@ def test_a_named_calculation_is_the_desks_own_and_prices_what_it_is_pointed_at(d
     row = xva_rows()['NS_A']
     assert row['cva'] > 0.0, 'a CVA of nothing makes the identity vacuous'
     named = run_named('CVA on A', deal_path='0').json()
+    assert CLIENT.post('/execute', content=dump(named['document']), headers=JSON).json()[
+        'result_id'] == named['result_id'], 'the document answered is not the job the run prices'
     service.EXECUTOR.queue.join()
     assert service.XvaJob.adjustments(service.EXECUTOR.result(named['result_id'])['tables']) == {
         'cva': row['cva'], 'fva': row['fva']}

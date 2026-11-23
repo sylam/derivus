@@ -1837,7 +1837,8 @@ def run_calculation(request: dict):
     its block merged over the book's own `Calculation` exactly as `/book/price` merges overrides,
     so the same dials asked for either way are ONE run, and the deal tree narrowed to the node at
     `deal_path` where one is named - a netting set, a structure, one trade. The book file never
-    moves and the lane is curiosity, so nothing is recorded. Answers `{result_id, status}`."""
+    moves and the lane is curiosity, so nothing is recorded. Answers `{result_id, status,
+    document}`, `document` the job the run prices."""
     saved = read_calculations()
     name = request.get('name')
     if name not in saved:
@@ -1852,8 +1853,9 @@ def run_calculation(request: dict):
         raise HTTPException(422, str(error))
     context = load(document)
     stamp = replay(context)
-    return queued(Job(content_hash(stamp), context, stamp, spine.CURIOSITY,
-                      actor=request.get('actor'), book=book_name(document)), cost_class(context))
+    return dict(queued(Job(content_hash(stamp), context, stamp, spine.CURIOSITY,
+                           actor=request.get('actor'), book=book_name(document)),
+                       cost_class(context)), document=document)
 
 
 def as_of():

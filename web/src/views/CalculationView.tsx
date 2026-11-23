@@ -32,10 +32,9 @@ const dials = (block: Record<string, unknown>) =>
   Object.fromEntries(Object.entries(block).filter(([key]) => key !== 'Object'));
 type Save = (name: string, calculation: Record<string, unknown> | null) =>
   Promise<string[] | null>;
-/** A run asked for by the page `origin`, at `calculation` over the top-level node `scope` names or
- * the whole book. */
-type Submit = (origin: string, calculation: Record<string, unknown>, scope: string | undefined,
-               post: () => Promise<{ result_id: string }>) => Promise<void>;
+/** A run asked for by the page `origin`, `post` answering its id and the job it prices. */
+type Submit = (origin: string,
+               post: () => Promise<{ result_id: string; document: JobDoc }>) => Promise<void>;
 
 /** The calculations a desk runs: the book's own, read-only here, and the ones this workstation
  * keeps under a name - filed by type, each its own dials over the book's and its own Run, over the
@@ -85,14 +84,11 @@ export function CalculationView() {
 
   /** One submission, filed under the page that asked with the book's clock as it was asked for
    * and the document it prices. */
-  const submit: Submit = async (origin, calculation, scope, post) => {
+  const submit: Submit = async (origin, post) => {
     const clock = clockOf(state);
-    const deals = doc.Calc.Deals;
-    const ran: JobDoc = { ...doc, Calc: { ...doc.Calc, Calculation: calculation,
-      Deals: scope === undefined ? deals
-        : { ...deals, Deals: { Children: [deals.Deals.Children[Number(scope)]] } } } };
     const submitted = await post();
-    dispatch({ type: 'RUN_SUBMITTED', resultId: submitted.result_id, origin, clock, doc: ran });
+    dispatch({ type: 'RUN_SUBMITTED', resultId: submitted.result_id, origin, clock,
+               doc: submitted.document });
   };
 
   /** A save answered by the file as it now stands, or by what to fix. */
@@ -113,8 +109,8 @@ export function CalculationView() {
       <>
         <DescriptorPanel title={`Calculation — ${type}`} fields={schema.Calculation.types[type]}
                          values={dials(calculation)} />
-        <RunStrip origin="book"
-                  submit={() => submit('book', calculation, undefined, () => postExecute(doc))} />
+        <RunStrip origin="book" submit={() => submit('book', async () =>
+          ({ ...await postExecute(doc), document: doc }))} />
       </>
     ) },
     ...Object.entries(saved).map(([name, block]) => ({
@@ -160,8 +156,7 @@ function NamedCalculation({ schema, name, block, own, scopes, save, submit }: {
         onAmend={(key, wire) => save(name, { ...block, [key]: wire })} />
       <RunStrip
         origin={name}
-        submit={() => submit(name, { ...own, ...block }, scope || undefined,
-                             () => runCalculation(name, scope || undefined))}
+        submit={() => submit(name, () => runCalculation(name, scope || undefined))}
         extra={
           <>
             <select value={scope} onChange={(event) => setScope(event.target.value)}>

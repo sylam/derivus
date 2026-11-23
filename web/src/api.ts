@@ -208,12 +208,13 @@ export const declareEntity = (entity: Record<string, unknown>) =>
 export const declareAgreement = (agreement: Record<string, unknown>) =>
   call<Recorded>('POST', '/book/agreements', signed(agreement));
 // the desk's own named calculations: kept on this workstation beside the book, saved one at a time
-// (a null removes one), and run over the live book - whole or one subtree - in the curiosity lane
+// (a null removes one), and run over the live book - whole or one subtree - in the curiosity lane,
+// the answer carrying the job the run prices
 export const getCalculations = () => call<CalculationsAnswer>('GET', '/calculations');
 export const saveCalculation = (name: string, calculation: Record<string, unknown> | null) =>
   call<CalculationOutcome>('POST', '/calculations', { name, calculation });
 export const runCalculation = (name: string, dealPath?: string) =>
-  call<{ result_id: string; status: string }>('POST', '/calculations/run',
+  call<{ result_id: string; status: string; document: JobDoc }>('POST', '/calculations/run',
     signed(dealPath === undefined ? { name } : { name, deal_path: dealPath }));
 // where this workstation reads the files a job names: the two maps the service keeps on this box,
 // never in a job, beside a row per file the served book names; a save replaces both maps whole
