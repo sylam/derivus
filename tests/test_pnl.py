@@ -1421,6 +1421,36 @@ def test_an_expired_trade_the_file_lost_stands_until_it_settles(recorded, desk):
                                        expired=None, settles=None)
 
 
+def test_the_positions_compile_on_what_the_diary_reads_of_a_calculation_the_engine_refuses(
+        recorded, desk):
+    """THE DIARY NEEDS ONLY WHAT IT READS. A book whose `Calculation` states a `Greeks` setting the
+    engine refuses still answers its positions and their expiries, the diary compiled on the base
+    date and currency alone; a run of the book answers the refusal by name; and the calculation's
+    other fields move no diary etag, its base date does.
+
+    Killing mutations: the diary compiled on the book's whole `Calculation`, which refuses the
+    diary once the book rolls under the Greeks setting; `diary_etag` stamping the whole block,
+    which moves the etag when the Greeks setting does.
+    """
+    booked(BINARY, 1.0, 'EXEC-G', BOOK + '/FX', 5_000.0)
+    rolled(desk, END, 18.0)
+    etag = CLIENT.get('/book/diary').json()['etag']
+    body = json.loads(desk.read_text())
+    body['Calc']['Calculation']['Greeks'] = 'Yes'
+    desk.write_text(json.dumps(body, indent=2), newline='\n')
+
+    answer = CLIENT.get('/book/positions')
+    assert answer.status_code == 200, answer.text
+    assert [(row['expired'], row['settles']) for row in answer.json()['positions']] == [
+        ('2024-06-30', '2024-07-02')]
+    priced = drained(CLIENT.post('/book/price', content=dump({}), headers=JSON).json())
+    assert (priced['status'], priced['error']) == (
+        'error', "BaseValuation: Greeks is 'Yes', not one of All, First, No"), priced
+    assert CLIENT.get('/book/diary').json()['etag'] == etag
+    rolled(desk, THIRD, 18.0)
+    assert CLIENT.get('/book/diary').json()['etag'] != etag
+
+
 #: A cashflow paying inside the first window, bought after it paid.
 LATE = cashflow('CF-H', 50_000.0, pd.Timestamp('2024-06-30'))
 

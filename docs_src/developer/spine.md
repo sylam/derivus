@@ -549,6 +549,13 @@ the key names any.
 `test_bond_holding_json.py::test_the_diary_of_a_holding_pays_to_its_horizon_and_settles_there_and_nothing_after`,
 `test_price_swap_json.py::test_the_diary_announces_one_settlement_on_the_maturity_and_of_the_children_their_fixings_to_it`.
 
+The service compiles the book's diary on what it reads of the `Calculation` (`Diary.READS`: the base
+date and the reporting currency, `service.diary_document`), and `service.diary_etag` stamps those,
+so a field only a valuation reads - a `Greeks` setting the engine refuses - neither refuses the
+diary and the positions read off it nor moves its cache; a run of the book answers that refusal.
+**Held by**
+`test_pnl.py::test_the_positions_compile_on_what_the_diary_reads_of_a_calculation_the_engine_refuses`.
+
 **Premiums.** The book's diary also announces what its fills paid or received
 (`service.announced`, `spine.premiums`): one `premium` row per fill of the book whose price moves
 money, its consideration from the bank's side - minus the quantity times the price - in the fill's

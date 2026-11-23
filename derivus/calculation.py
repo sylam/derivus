@@ -2587,6 +2587,10 @@ class Diary(BaseValuation):
     #: that says the book could not be read - and a close is never legal while one stands.
     UNREADABLE = 'unreadable'
 
+    #: What the diary reads of a job's `Calculation`: the day its schedules are read on and the
+    #: currency its compile reports in. No other field of the block moves a row.
+    READS = ('Base_Date', 'Currency')
+
     #: The book READ rather than valued: that row is how a reading refuses, so the compile skips an
     #: unreadable deal whatever `Exclude_Deals_With_Missing_Market_Data` says.
     valuation = False

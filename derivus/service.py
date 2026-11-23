@@ -2264,7 +2264,7 @@ class DiaryJob:
     def run_job(self):
         # a READ never refuses: the book is compiled as written plus whatever the declared source
         # orders can fill, and an index nobody ordered reads unresolved on its own rows
-        compiled = spine.compiled_job(self.document, strict=False, runs=False)
+        compiled = spine.compiled_job(diary_document(self.document), strict=False, runs=False)
         return None, {'Results': {}, 'Stats': {'Diary': {'as_of': as_of(), 'rows': diary(
             load(compiled), booked_instruments(self.document))}}}
 
@@ -2550,15 +2550,23 @@ def announced(document, rows=None):
         if spine.configured() else rows)
 
 
+def diary_document(document):
+    """`document` with its `Calculation` held to what the diary reads of it (`Diary.READS`), so a
+    field only a valuation reads neither refuses a diary nor moves its etag."""
+    calculation = document['Calc']['Calculation']
+    return dict(document, Calc=dict(document['Calc'], Calculation={
+        key: calculation[key] for key in Diary.READS if key in calculation}))
+
+
 def diary_etag(document):
     """What a DIARY compile reads, hashed - its cache key and the etag the answer carries.
 
-    The deals, the calculation, which is where the base date is, and the calendar the schedules
-    roll on (`stamp`). NOT the market: a schedule is built from terms and a day, so
+    The deals, what the diary reads of the calculation (`diary_document`) and the calendar the
+    schedules roll on (`stamp`). NOT the market: a schedule is built from terms and a day, so
     a tick that moves every value moves no row, and keying on the market would throw the compile
     away on every beat of the cadence.
     """
-    return stamp(document, 'Deals', 'Calculation', 'CalendDataFile')
+    return stamp(diary_document(document), 'Deals', 'Calculation', 'CalendDataFile')
 
 
 def diary_of(document, actor):
