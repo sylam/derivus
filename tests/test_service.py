@@ -1527,8 +1527,8 @@ def test_a_bootstrap_that_complains_writes_nothing(book):
     about. Both refusals, and the file untouched by either.
 
     THE COMPLAINT is a configured family that writes no factor: the USDZAR surface ticks in
-    perfectly well and the Hull-White fit declared beside it has a block it cannot fit, so the run
-    says so and the whole edit is dropped.
+    perfectly well and the Hull-White fit declared beside it is handed, in the same write, a block
+    it cannot fit, so the run says so and the whole edit is dropped.
 
     THE ORPHAN is a block no configured family READS, which never reaches a bootstrapper at all -
     `Config.bootstrap` refuses it by name, with the families it does read, and the endpoint answers
@@ -1540,13 +1540,12 @@ def test_a_bootstrap_that_complains_writes_nothing(book):
     doc = json.loads(book.read_text())
     doc['Calc']['MergeMarketData']['ExplicitMarketData'].update({
         'Bootstrapper Configuration': {'FXVol': {},
-                                       'HullWhite2FactorModelParameters': {}},
-        'Market Prices': UNFITTABLE})
+                                       'HullWhite2FactorModelParameters': {}}})
     book.write_text(json.dumps(doc, indent=2), newline='\n')
     before = book.read_bytes()
 
     outcome = CLIENT.post('/book/market', content=dump(
-        {'quotes': fx_vol_quotes()}), headers=JSON).json()
+        {'quotes': dict(fx_vol_quotes(), **UNFITTABLE)}), headers=JSON).json()
 
     assert outcome['written'] is False
     assert any('wrote no' in message for message in outcome['refused'])
@@ -2343,6 +2342,46 @@ def test_a_moved_curve_re_solves_what_reads_it_and_nothing_else(desk_curves):
     assert alone['bootstrapped'] == ['InterestRatePrices.USD']
     assert after.pop('InterestRate.USD') != standing.pop('InterestRate.USD')
     assert after == standing, 'a tick of one curve rewrote another'
+
+
+def test_a_block_written_re_solves_itself_what_reads_it_and_a_family_newly_configured(
+        desk_curves):
+    """AN INSTALL RE-SOLVES WHAT IT INSTALLED, as a tick re-solves what it moved. On the three
+    curves standing, one counterparty's credit quotes held unsolved - posted with the bootstrap
+    declined, no family configured for them - are solved with the next counterparty's, whose write
+    adds the family's entry and so covers its every block; a third counterparty's write, the entry
+    standing, re-solves its own curve alone, every other factor standing to the bytes. The market
+    re-solved whole afterwards moves no factor: the narrowed writes wrote what the whole market
+    writes, to the bit.
+
+    Killing mutations: a block installed re-solving the whole market again (`bootstrap_selection`
+    answering None for it), which names no `bootstrapped` blocks; the added entry's family left out
+    of the selection, which leaves the held counterparty's curve unsolved.
+    """
+    def credit(counterparty, spread):
+        return CLIENT.post('/book/survival', content=dump({
+            'counterparty': counterparty, 'spread': spread, 'currency': 'USD',
+            'discount_rate': 'USD'}), headers=JSON).json()
+
+    held = {'SurvivalProbPrices.CP_A': {'instrument': {
+        'Currency': 'USD', 'Discount_Rate': 'USD', 'Recovery_Rate': 0.4, 'Points': [{
+            'Use': 'Yes', 'Descriptor': 'CP_A 1Y', 'Tenor': '1Y', 'DealType': 'DealDefaultSwap',
+            'Quote_Type': 'Par_Spread', 'Quoted_Market_Value': 120.0, 'Deal': {}}]}}}
+    assert CLIENT.post('/book/market', content=dump({'quotes': held, 'bootstrap': 'No'}),
+                       headers=JSON).json()['installed'] == ['SurvivalProbPrices.CP_A']
+    first = credit('CP_B', 150.0)
+    standing = written_factors(desk_curves)
+    second = credit('CP_C', 200.0)
+    narrowed = written_factors(desk_curves)
+    whole = CLIENT.post('/book/market', content=dump({'bootstrap': 'Yes'}), headers=JSON).json()
+
+    assert first['bootstrapped'] == ['SurvivalProbPrices.CP_A', 'SurvivalProbPrices.CP_B'], first
+    assert {'SurvivalProb.CP_A', 'SurvivalProb.CP_B'} <= set(standing)
+    assert second['bootstrapped'] == ['SurvivalProbPrices.CP_C'], second
+    assert {name: block for name, block in narrowed.items() if name != 'SurvivalProb.CP_C'} == \
+        standing, 'a credit write rewrote another'
+    assert whole['written'] is True and 'bootstrapped' not in whole, whole
+    assert written_factors(desk_curves) == narrowed, 'the whole market wrote another market'
 
 
 def test_a_discount_curve_stated_on_the_entry_re_solves_what_discounts_on_it(desk_curves):

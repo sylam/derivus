@@ -5053,23 +5053,26 @@ UNPROVISIONED = ('this desk has no security map, and {} never verifies its secur
                  'holding mark does, by ticking the market from a Bloomberg terminal once')
 
 
-def bootstrap_selection(market, outcome, patch):
+def bootstrap_selection(market, outcome, patch, families=()):
     """The `Market Prices` blocks this edit's bootstrap covers, or None - every block.
 
-    A VALUE TICK RE-SOLVES WHAT IT MOVED: the blocks it value-updated and, off the families' own
-    declarations, every block that reads one of them. The whole market re-solves where the READ
-    side moved instead - a block arriving authored is a new plan, a patched factor a family prices
-    on is a new input to every block of that family, and a bootstrap asked for with nothing moved
-    at all is a dial change.
+    A WRITE RE-SOLVES WHAT IT MOVED: the blocks it installed or value-updated, every block of the
+    `families` it covers whole, and, off the families' own declarations, every block that reads one
+    of them. The whole market re-solves where the READ side moved instead - a patched factor a
+    family prices on is a new input to every block of that family, and a bootstrap asked for with
+    nothing moved at all is a dial change.
     """
     read = {kind for family in bootstrappers.FAMILIES for kind in family.reads}
-    if outcome['installed'] or not outcome['updated'] or any(
-            utils.check_rate_name(name)[0] in read for name in patch):
+    whole = {bootstrappers.family_class(family).market_factor_type for family in families}
+    moved = outcome['installed'] + outcome['updated'] + [
+        name for name in market['Market Prices'] if utils.check_rate_name(name)[0] in whole]
+    if not moved or any(utils.check_rate_name(name)[0] in read for name in patch):
         return None
-    return bootstrappers.bootstrap_dependents(market, outcome['updated'])
+    return bootstrappers.bootstrap_dependents(market, moved)
 
 
-def market_edit(document, quotes, patch, bootstrap=None, authored=(), reading=Context, retire=()):
+def market_edit(document, quotes, patch, bootstrap=None, authored=(), reading=Context, retire=(),
+                families=()):
     """The market tick as ONE edit closure over a wire document, for `Book.mutate`: quote blocks
     installed or value-updated, a values patch applied, the bootstrap run, `(write, outcome)` back.
 
@@ -5096,8 +5099,10 @@ def market_edit(document, quotes, patch, bootstrap=None, authored=(), reading=Co
     `authored` - re-authored here, so installed whatever the market carries under its name.
 
     THE BOOTSTRAP COVERS WHAT MOVED (`bootstrap_selection`) and names it under `bootstrapped`
-    where it was narrowed, so a tick of one curve costs that curve and its dependents rather than
-    the whole market. `reading` makes the contexts it loads on (`spine.reading`).
+    where it was narrowed, so a tick or a block of one curve costs that curve and its dependents
+    rather than the whole market; `families` names those whose every block it covers too - a
+    family whose entry the write added (`configure`), whose blocks nothing solved before.
+    `reading` makes the contexts it loads on (`spine.reading`).
     """
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
     dated = 'Base_Date' in market.get('System Parameters', {})
@@ -5133,7 +5138,8 @@ def market_edit(document, quotes, patch, bootstrap=None, authored=(), reading=Co
 
     standing = as_json(params['Price Factors'])
     context.patch_market(patch)
-    only = bootstrap_selection(params, outcome, patch) if wants_bootstrap and not retire else None
+    only = bootstrap_selection(params, outcome, patch, families) \
+        if wants_bootstrap and not retire else None
     if wants_bootstrap:
         # `Config.bootstrap` reports a family that could not run at ERROR and carries on
         with utils.CapturedErrors() as captured:
@@ -5163,9 +5169,9 @@ def book_market(request: dict):
     re-authoring, refused by name. `patch` is the values delta as `patch_market` takes it, less the
     `Market Prices` half. The bootstrap (default: run iff quotes arrived) turns the quotes into the
     price factors the pricers read, all in one atomic write - a bootstrap that reports an error
-    writes NOTHING and hands the messages back. It covers the blocks that moved and every block
-    that READS one of them, answered under `bootstrapped`; a block arriving authored, a patch
-    naming a factor a family reads, or nothing moved at all re-solves the whole market.
+    writes NOTHING and hands the messages back. It covers the blocks that moved, ticked or
+    arriving authored, and every block that READS one of them, answered under `bootstrapped`; a
+    patch naming a factor a family reads, or nothing moved at all re-solves the whole market.
 
     `retire` deletes entries the book's explicit block states, each named by its path from the
     section down, so the file's entry stands again, and re-bootstraps the whole market where it
@@ -5278,10 +5284,10 @@ def book_survival(request: dict):
             for row in rows]}}
 
     def edit(document, etag):
-        bootstrapper_entry(document, SURVIVAL.__name__, {})
+        added = configure(document, [SURVIVAL.__name__])
         document['Calc']['MergeMarketData']['ExplicitMarketData'].get('Market Prices', {}).pop(
             name, None)
-        return market_edit(document, {name: block}, {}, 'Yes', authored=(name,))
+        return market_edit(document, {name: block}, {}, 'Yes', authored=(name,), families=added)
 
     with refusals():
         written = live.mutate(edit)
@@ -5312,6 +5318,16 @@ def bootstrapper_entry(document, entry, fields):
         document['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault(
             'Bootstrapper Configuration', {})[entry] = merged
     return entry, merged
+
+
+def configure(document, entries):
+    """Each family of `entries` configured on `document` with no dial of its own
+    (`bootstrapper_entry`), and those its market configured none of before: the families whose
+    every block the write's bootstrap covers, nothing having solved them (`bootstrap_selection`)."""
+    standing = market_of(document)['Bootstrapper Configuration']
+    for entry in entries:
+        bootstrapper_entry(document, entry, {})
+    return [entry for entry in entries if entry not in standing]
 
 
 def interpolation_method(factor_type, method):
@@ -5598,10 +5614,11 @@ def authored_curve(document, request):
 
 
 def curve_edit(document, curves, base_date, quotes={}, patch={}, held=(), stated=False,
-               reading=Context):
-    """Curve blocks installed as ONE edit closure for `Book.mutate`, then the whole market
-    bootstrapped through `market_edit` where the book declares a `Bootstrapper Configuration` - a
-    book declaring none moves its dates and blocks and solves nothing.
+               reading=Context, families=()):
+    """Curve blocks installed as ONE edit closure for `Book.mutate`, then what moved bootstrapped
+    through `market_edit` where the book declares a `Bootstrapper Configuration`, with every block
+    of the `families` whose entry the caller added - a book declaring none moves its dates and
+    blocks and solves nothing.
 
     A block whose PLAN moved - a rolled date, a row held out - is dropped and re-installed, a
     structural change never being a value tick; one whose plan stands moves its values alone, so
@@ -5640,7 +5657,7 @@ def curve_edit(document, curves, base_date, quotes={}, patch={}, held=(), stated
     before = dict(market.get('Price Factors', {}))
     outcome = market_edit(document, dict(quotes, **curves), patch,
                           'Yes' if loaded['Bootstrapper Configuration'] else 'No',
-                          reading=reading)[1]
+                          reading=reading, families=families)[1]
     write = outcome['written']
     return write, (dict(outcome, base_date=base_date.isoformat(), reauthored=reauthored,
                         rewrote=rewrote(before, market.get('Price Factors', {})), held_out=held)
@@ -5729,7 +5746,7 @@ def book_curve(request: dict):
     since a benchmark with no number identifies no knot.
 
     The block is AUTHORED and never ticked - dropped and re-installed, the `InterestRate`
-    bootstrapper entry added where the book configures none - and the whole market is then
+    bootstrapper entry added where the book configures none - and it and what reads it are then
     re-bootstrapped in the same atomic write, so a bootstrap that complains writes NOTHING and
     answers 422 in its own words. The answer names the date it was authored on, the block, the
     knots it solved on, and the price factors the run rewrote.
@@ -5749,12 +5766,12 @@ def book_curve(request: dict):
 
         def edit(document, etag):
             # a book that has never carried a curve configures the family that solves one
-            bootstrapper_entry(document, CURVE_BOOTSTRAPPER, {})
+            added = configure(document, [CURVE_BOOTSTRAPPER])
             # a request that says nothing about the scheme leaves the curve's rule as it stands
             if 'interpolation' in request:
                 interpolation_rule(document, CURVE_BOOTSTRAPPER, request['curve'],
                                    request['interpolation'] or '')
-            return curve_edit(document, {name: block}, as_of)
+            return curve_edit(document, {name: block}, as_of, families=added)
 
         written = live.mutate(edit)
     if not written['written']:
@@ -7021,12 +7038,12 @@ class SetupJob(Progressing):
                     market.setdefault('Price Factors', {})[name] = {
                         'Domestic_Currency': None, 'Spot': value['Spot'],
                         'Interest_Rate': discounts.get(currency, currency)}
-            for entry in ([CURVE_BOOTSTRAPPER] if curves else []) + (
-                    [VOL_BOOTSTRAPPER] if quotes else []):
-                bootstrapper_entry(document, entry, {})
+            added = configure(document, ([CURVE_BOOTSTRAPPER] if curves else []) + (
+                [VOL_BOOTSTRAPPER] if quotes else []))
             write, outcome = curve_edit(
                 document, curves, as_of, quotes,
-                {name: value for name, value in spots.items() if name not in factors}, held)
+                {name: value for name, value in spots.items() if name not in factors}, held,
+                families=added)
             if not write:
                 return write, outcome
             return True, dict(outcome, installed=sorted(
@@ -7185,13 +7202,10 @@ def spot_model_edit(document, pair, family):
     # the section is keyed by what a family writes, and its entry names the stem it routes on
     entry = calibrator.__name__
     market.get('Market Prices', {}).pop(name, None)
-    borrowed = entry not in configured
-    if borrowed:
-        market.setdefault('Bootstrapper Configuration', {})[entry] = {
-            'Prices': calibrator.market_factor_type[:-len('Prices')]}
+    borrowed = configure(document, [entry])
     try:
         written, outcome = market_edit(document, {name: as_json(block)}, {}, 'Yes',
-                                       authored={name})
+                                       authored={name}, families=borrowed)
     except (ValueError, KeyError) as error:
         # what `/book/market` makes a 422 of, made into the refusal a queued job lands as - a
         # message under this run's own Stats, never an exception out of the worker

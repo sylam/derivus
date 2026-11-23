@@ -167,8 +167,13 @@ very curve a block names, so a curve re-solves the curves discounting on it and 
 survival or inflation block reads the curve its swaps discount on, its `Discount_Rate`, and no
 other. Each block is read as its family reads it, completed by the entry,
 so a `Discount_Rate` the entry states couples as one the block states. `wanted=` narrows to what
-named factors stand on, so a calculation bootstraps only what its book reads. **Held by**
+named factors stand on, so a calculation bootstraps only what its book reads. A write narrows the
+same way (`service.bootstrap_selection`): the blocks it installed or ticked, every block of a
+family whose entry it added (`service.configure`), nothing having solved them, and what reads
+them; a patch of a factor a family reads, a retire, or nothing moved re-solves the whole market.
+**Held by**
 `test_service.py::test_a_moved_curve_re_solves_what_reads_it_and_nothing_else`,
+`test_service.py::test_a_block_written_re_solves_itself_what_reads_it_and_a_family_newly_configured`,
 `test_service.py::test_a_discount_curve_stated_on_the_entry_re_solves_what_discounts_on_it`,
 `test_simm.py::test_a_survival_curve_reads_the_curve_its_default_swaps_discount_on_and_no_other`,
 `test_inflation_prices.py::test_a_curve_move_re_solves_the_inflation_curve_solved_on_it_and_no_other`.
