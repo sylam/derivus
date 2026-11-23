@@ -1907,20 +1907,16 @@ def test_the_explain_and_the_call_of_a_past_close_read_the_files_its_marks_read(
     a two-year rand cashflow and one paying on the second day sit under a collateralised agreement
     through two marked closes, the book rolled between them. The explain between them - the
     start's job valued with its sensitivities in the quotes, the end's job for the levels there,
-    and the start rolled onto the end's day, its curve re-authored and re-solved - reads a carry of
-    -1,843,741.11, a market move of 85,472.45 and a residual of 33.65. The file is then rewritten
-    on disk - the two-year quote moved 25 basis points, the curve interpolated another way and the
-    setting turned off - and the explain read again is the same answer to the bit, and the second
-    close's call, read for the first time, an exposure of 15,904,678.76, the day's 1,860,000.00
-    left out as the marks' file said: every job loaded on the bytes its marks run read, which the
-    record holds.
+    and the start rolled onto the end's day, its curve re-authored and re-solved - is read once.
+    The file is then rewritten on disk - the two-year quote moved 25 basis points, the curve
+    interpolated another way and the setting turned off - and the explain read again is the same
+    answer to the bit, and the second close's call, read for the first time, leaves the day's
+    1,860,000.00 out as the marks' file said: every job loaded on the bytes its marks run read,
+    which the record holds.
 
-    Killing mutations, each moving the explain off the path: the start's job, to a carry of
-    -1,839,392.60, a market move of 165,485.17 and a residual of -78,642.90; its sensitivities
-    alone, to -1,758,671.63, 84,993.44 and -78,872.14; the end's job, to a market move of 4,304.73
-    and a residual of 81,176.34; the roll's own loads, to a carry of -1,918,459.05; the rolled
-    job's valuation, to a carry of -1,838,098.94. The close's market read off the path
-    (`close_market`) adds the day's payment back, an exposure of 17,764,678.76.
+    Killing mutations, each moving the explain off the path: the start's job; its sensitivities
+    alone; the end's job; the roll's own loads; the rolled job's valuation. The close's market read
+    off the path (`close_market`), which adds the day's payment back to the call.
     """
     book, market = filed
 
