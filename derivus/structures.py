@@ -1155,18 +1155,17 @@ def prices_block(surface):
 
 
 def quote_points(market, surface):
-    """The quotes `surface` was built from - `bootstrappers.FXVol.used`'s filter over the
-    `FXVolPrices` block, and empty where the book carries no such block at all.
+    """The quotes `surface` was built from - `bootstrappers.FXVol.used` over the `FXVolPrices`
+    block, each row completed by its declarations, and empty where the book carries no such block
+    at all.
 
     One reader for the pillar-keyed halves and the skew's own rebuild: a spread charged off a row
     the surface was not built from is a spread charged on nothing, and `Use` holds a quote out of
     the quote layer for the same reason it holds one out of the bootstrap.
-
-    The filter is spelled here for the DEFAULT alone: `Use` is stated to hold a row out, so its
-    absence is 'Yes' and a hand-authored mid-only block must quote rather than raise.
     """
+    from . import bootstrappers
     block = (market['Market Prices'].get(prices_block(surface)) or {}).get('instrument')
-    return [point for point in block['Points'] if point.get('Use', 'Yes') == 'Yes'] \
+    return bootstrappers.FXVol.used(block, prices_block(surface)) \
         if block and block.get('Points') else []
 
 
@@ -1719,20 +1718,14 @@ def risk_document(book, nodes, surface):
     `FXVolPrices` block, which is what leaves the surface connected to the quotes it was built from.
 
     That switch is worth exactly zero in the forward pass, so turning it on cannot move a price.
-
-    `Use` is written out per point on the same copy: the bootstrap reads the field BY NAME while
-    this module's own contract is that its absence is 'Yes' (`quote_points`), so a hand-authored
-    mid-only block that quotes must also be one the quote's own greeks run can read.
     """
     run = copy.deepcopy(book.document)
     run['Calc']['Calculation'] = priced_job(run['Calc']['Calculation'], Greeks='First')
     schema.job_children(run).extend(nodes)
     block = book.market()['Market Prices'][prices_block(surface)]
-    points = [dict(point, Use=point.get('Use', 'Yes'))
-              for point in block['instrument'].get('Points') or []]
     run['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault('Market Prices', {})[
-        prices_block(surface)] = dict(block, instrument=dict(
-            block['instrument'], Points=points, Quote_Sensitivity='Yes'))
+        prices_block(surface)] = dict(block, instrument=dict(block['instrument'],
+                                                             Quote_Sensitivity='Yes'))
     return run
 
 

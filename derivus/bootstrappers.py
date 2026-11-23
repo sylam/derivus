@@ -1112,7 +1112,7 @@ class OptionQuoteFamily(ImpliedCalibration):
         quote_type = instrument['Quote_Type']
         use_forward = instrument.get('Use_Forward') == 'Yes'
         invert_moneyness = instrument.get('Invert_Moneyness') == 'Yes'
-        for option in quote_table(instrument, market_price, 'European_Options'):
+        for option in quote_table(type(self), instrument, market_price, 'European_Options'):
             t, r, q, forward = self.expiry_forward(
                 spot, base_date, (option['Expiry_Date'] - base_date).days, convention,
                 discount, funding, carry)
@@ -5321,7 +5321,7 @@ class InterestRate(Construction):
         coupling but needs every curve to exist first.
         """
         return {'.'.join(utils.check_rate_name(deal[field]))
-                for point in quote_table(block, market_price) if point.get('Use', 'Yes') == 'Yes'
+                for point in quote_table(InterestRate, block, market_price) if point['Use'] == 'Yes'
                 for path, deal in schema.walk([point['Deal']])
                 for field, candidates in getattr(getattr(
                 instruments, point['DealType'] if path == '0' else deal.get('Object', ''),
@@ -5585,7 +5585,7 @@ class InterestRate(Construction):
         second filter beside this one is how a ridden theta ends up indexed differently from the
         artifact it rode.
         """
-        return [point for point in quote_table(block, market_price)
+        return [point for point in quote_table(cls, block, market_price)
                 if point['Use'] == 'Yes' and cls.takes(point, market_price)]
 
     @classmethod
@@ -5869,7 +5869,7 @@ class SurvivalProb(Construction):
     @classmethod
     def used_quotes(cls, block, market_price):
         """The quotes that enter the solve, in the order the residual and `q` are indexed by."""
-        return [point for point in quote_table(block, market_price)
+        return [point for point in quote_table(cls, block, market_price)
                 if point['Use'] == 'Yes' and cls.takes(point, market_price)]
 
     @classmethod
@@ -6072,7 +6072,7 @@ class InflationRate(Construction):
     @classmethod
     def used_quotes(cls, block, market_price):
         """The quotes that enter the solve, in the order the residual and `q` are indexed by."""
-        return [point for point in quote_table(block, market_price)
+        return [point for point in quote_table(cls, block, market_price)
                 if point['Use'] == 'Yes' and cls.takes(point, market_price)]
 
     @classmethod
@@ -6337,7 +6337,7 @@ class FXVol(Construction):
     @staticmethod
     def used(block, market_price=None):
         """The block's quotes that enter the surface - `Use` holds one out without deleting it."""
-        return [point for point in quote_table(block, market_price) if point['Use'] == 'Yes']
+        return [point for point in quote_table(FXVol, block, market_price) if point['Use'] == 'Yes']
 
     @staticmethod
     def descriptor(point):

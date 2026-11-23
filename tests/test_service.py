@@ -4044,7 +4044,9 @@ def test_a_set_up_a_bootstrap_complains_about_writes_nothing(desk_setup, tmp_pat
     result, outcome = set_up({'pair': 'EURZAR'})
 
     assert result['status'] == 'done' and outcome['written'] is False, result
-    assert outcome['refused'] == ['the bootstrap asked for Deal and this market does not carry it']
+    # the row's `Deal` reads its declared default, an empty deposit, which states no maturity
+    assert outcome['refused'] == [
+        'the bootstrap asked for Maturity_Date and this market does not carry it']
     assert [row for row in outcome['held_out'] if row.startswith('InterestRatePrices.OLD left as')]
     assert desk_setup.read_bytes() == before, 'a refused set-up moved the book'
 

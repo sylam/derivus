@@ -946,17 +946,19 @@ def test_a_book_with_no_wing_two_way_quotes_exactly_as_it_always_did(book):
 
 
 def test_a_book_that_never_states_use_quotes_rather_than_raising(book):
-    """`Use` is an OPTIONAL field, so its absence is a quote that counts.
+    """`Use` declares its default, so its absence is a quote that counts.
 
     `quote_two_way` walks the block on EVERY quote - that is how it learns which pillars there are
-    to charge - so a strict `point['Use']` made a `KeyError` of a book that prices perfectly well,
-    inside `quote()` rather than at a refusal seam.
+    to charge - so a strict `point['Use']` on the row as authored made a `KeyError` of a book that
+    prices perfectly well, inside `quote()` rather than at a refusal seam. The rows are read
+    completed by their declarations (`schema.quote_table`), so the bare block's quotes are the
+    stated block's.
 
     The gate is the whole quote, not the reader: the same collar off the same surface, the same
     pillars charged, the same cap to the float as the book that states the field.
 
-    Killing mutation: `Use` read as a required field of a quote row, which raises on a block that
-    never states it.
+    Killing mutation: `quote_table` handing back the rows as authored, which raises on a block that
+    never states `Use`.
     """
     stated = two_way(book, wings=None)
     useless = copy.deepcopy(stated)
@@ -967,7 +969,8 @@ def test_a_book_that_never_states_use_quotes_rather_than_raising(book):
     ask = params(floor=SPOT * 0.95)
     quoted = structures.quote(useless, COLLAR, ask)
 
-    assert structures.quote_points(structures.market_of(useless), 'USD.ZAR') == points
+    assert structures.quote_points(structures.market_of(useless), 'USD.ZAR') == \
+        structures.quote_points(structures.market_of(stated), 'USD.ZAR')
     assert pillars_of(quoted) == {'ATM 0.25', 'ATM 1'}, 'a pillar this block does not quote'
     # the charged pass re-solves a bracket seeded on the mid root, so the cap is pinned to the
     # solve's own tolerance rather than to the bit

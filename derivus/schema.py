@@ -957,8 +957,9 @@ def without_clocks(patch):
     return projected
 
 
-def quote_table(block, market_price, key='Points'):
-    """The quote ROWS of one `Market Prices` block, refused by name where the block carries none.
+def quote_table(family, block, market_price, key='Points'):
+    """The quote ROWS of one `Market Prices` block, each completed by the row its `family` declares
+    under `key` (`declared_block`), refused by name where the block carries none.
 
     A Table's declared blank is the string `'null'`, so a block completed from its declarations
     rather than authored carries that where a document carries rows, and every reader that walks
@@ -972,7 +973,9 @@ def quote_table(block, market_price, key='Points'):
             'list of quote rows belongs. Author the quotes under {1}, or drop the block'.format(
                 market_price or 'A Market Prices block', key,
                 found if len(found) < 48 else found[:45] + '...'))
-    return rows
+    table = declared_fields(family)[key]
+    return [declared_block(table.row.fields if table.row is not None else table.sub_fields, row)
+            for row in rows]
 
 
 def quote_rows(instrument):

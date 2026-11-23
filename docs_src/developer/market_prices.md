@@ -175,7 +175,12 @@ named factors stand on, so a calculation bootstraps only what its book reads. **
 
 **Outside `bootstrap`**, the swaption residual (`calc_loss`) and the curve ride (`propagate`,
 `plan_key`) complete their block from the declarations, so the declared default is the fallback
-everywhere.
+everywhere. A quote ROW is read the same way: `schema.quote_table`, the one read of a block's
+table, hands each row back completed by the row its family declares there, so a row stating its
+tenor and quote alone solves as the row stating every default does, and no reader spells a
+default of its own. **Held by**
+`test_credit_prices.py::test_a_block_of_bare_rows_solves_as_its_rows_stated_whole`,
+`test_structures.py::test_a_book_that_never_states_use_quotes_rather_than_raising`.
 
 ## The verbs that author market data {#verbs}
 

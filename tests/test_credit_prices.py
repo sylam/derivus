@@ -206,6 +206,22 @@ def test_the_bootstrap_recovers_the_survival_curve_its_quotes_came_from(quote_ty
         assert np.abs(solved[1:, 1] / spreads[1:, 1] - 1.0).max() < 1e-13
 
 
+def test_a_block_of_bare_rows_solves_as_its_rows_stated_whole():
+    """A QUOTE ROW IS COMPLETED FROM ITS DECLARATIONS. Rows stating a tenor and a par spread alone -
+    no `Use`, `DealType`, `Quote_Type`, `Deal` or `Descriptor` - solve, to the bit, the survival
+    curve the same rows solve stating each at what the family's `Points` declares or as free text.
+
+    Killing mutation: `schema.quote_table` handing back the rows as authored, which fails the bare
+    block on `KeyError: 'Use'`.
+    """
+    stated = block('Par_Spread')
+    bare = {'instrument': dict(stated['instrument'], Points=[
+        {key: row[key] for key in ('Tenor', 'Quoted_Market_Value')}
+        for row in stated['instrument']['Points']])}
+    assert curve(bootstrapped({BLOCK: bare})).tobytes() == \
+        curve(bootstrapped({BLOCK: stated})).tobytes()
+
+
 def test_a_curve_quoted_off_itself_solves_to_itself_in_no_iteration(caplog):
     """A CURVE QUOTED OFF ITSELF IS ITS OWN ROOT. The world's survival curve standing in `Price
     Factors` beside its par spreads bootstraps back to itself to the bit in no Newton iteration,

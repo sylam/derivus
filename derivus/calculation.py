@@ -4795,8 +4795,8 @@ class SIMM(NettingSetCalculation):
                 # a credit quote's sensitivity is at its tenor's vertex, as ISDA quotes them
                 vertices = self.credit_vertices
                 tenors = [self.years(point['Tenor']) for point in used]
-            positions = [position for position, point in enumerate(instrument['Points'])
-                         if any(point is quote for quote in used)]
+            positions = [position for position, point in enumerate(
+                schema.quote_table(family, instrument, block)) if point in used]
             moves.extend(self.Bump(factor, stated, utils.vertex_weights(tenor, vertices),
                                    (self.MOVES[stated['RiskType']][1], block, position))
                          for position, tenor in zip(positions, tenors))
@@ -5078,7 +5078,7 @@ class SIMM(NettingSetCalculation):
             used = SurvivalProb.used_quotes(instrument, name)
             standing, direction = self.config.params['Price Factors'], np.zeros(len(used))
             # a par spread moves by the point, an upfront by what a point of coupon is worth
-            direction[[quote is instrument['Points'][move[2]] for quote in used].index(True)] = (
+            direction[used.index(schema.quote_table(SurvivalProb, instrument, name)[move[2]])] = (
                 self.spread(name, instrument, move[2], standing, shift) -
                 self.spread(name, instrument, move[2], standing, 0.0)) / shift
             return {name: direction}
