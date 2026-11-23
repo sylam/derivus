@@ -292,27 +292,15 @@ export function unmarked(spine: SpineBlock | null, day = false): { title: string
 export const closeRead = (day: string | undefined, noClose: boolean, unread = 'unread'): string =>
   (day ? `close of ${day}` : noClose ? 'no close marked' : unread);
 
-/** What the desk stands to lose on a line today, in the value's `currency`: its value to the desk
- * less the collateral held under it at the close's spots, a holding stated in `currency` at one -
- * what the bank posted adding to it - and nothing where the client is owed; null where the value,
- * or a collateralised set's holding, is unread. */
-export function exposureAfter(line: CreditLine, currency: string | null): number | null {
-  if (line.value === null) return null;
-  if (!line.collateralised) return Math.max(0, line.value);
-  const rate = !currency ? undefined
-    : line.call?.currency === currency ? 1 : line.call?.fx?.[currency];
-  return line.call?.balance === null || line.call?.balance === undefined || !rate ? null
-    : Math.max(0, line.value - line.call.balance / rate);
-}
-
 /** A sum over a client's lines where every one reads, and null where one does not: a client is
  * never said to owe less for a set nobody read. */
 export const summed = (values: (number | null)[]): number | null =>
   (values.includes(null) ? null : values.reduce<number>((total, value) => total + value!, 0));
 
-/** A client's adjustment over the book's own sets, in the one currency their runs reported in:
- * null where none ran, where one has none to add, or where two currencies would be added. */
-export function runSum(lines: CreditLine[], key: 'cva' | 'fva'):
+/** A client's figure off its book's own sets' runs - an adjustment, or the exposure after
+ * collateral - in the one currency their runs reported in: null where none ran, where one has none
+ * to add, or where two currencies would be added. */
+export function runSum(lines: CreditLine[], key: 'cva' | 'fva' | 'after_collateral'):
   { value: number | null; currency: string | null } {
   const runs = lines.flatMap((line) => (line.run && !line.run.note ? [line.run] : []));
   const currencies = new Set(runs.map((run) => run.currency));
@@ -337,7 +325,8 @@ export function paperLine(set: string, agreements: Agreement[]): string {
 
 /** The credit table as its export writes it, its heads first: a row per set under its client, a
  * client with none a row of its own; every amount the number itself, its currency in a column
- * beside it and a peak's day in the next; a PFE column per percentile the runs kept; the
+ * beside it - a run's in its run currency - and a peak's day in the next; a PFE column per
+ * percentile the runs kept; the
  * service's note on a set that has left the book; and the client's credit limit, with the usage
  * and the headroom it states (`limitRead`). A client's sums are left to the reader. */
 export function creditExport(
@@ -349,8 +338,8 @@ export function creditExport(
   const peak = (found?: Peak) => [found?.value, found?.day];
   return [
     ['Client', 'Netting set', 'Spread bp', 'Spread tenor', 'Paper', 'Trades',
-      'Waiting on a second seat', 'Value to the desk', 'After collateral', 'Ccy', 'Collateral held',
-      'Call', 'Collateral ccy', 'Peak EE', 'Peak EE day',
+      'Waiting on a second seat', 'Value to the desk', 'Ccy', 'Collateral held', 'Call',
+      'Collateral ccy', 'After collateral', 'Peak EE', 'Peak EE day',
       ...quantiles.flatMap((quantile) => [`Peak PFE ${quantile}`, `Peak PFE ${quantile} day`]),
       'CVA', 'FVA', 'Run ccy', 'Run', 'Note', 'Credit limit', 'Limit usage', 'Headroom',
       'Limit ccy'],
@@ -358,8 +347,8 @@ export function creditExport(
       const held = line?.collateralised && typeof line.call?.balance === 'number' ? line.call : null;
       return [name, line?.reference, spread && spread[1], spread && tenorLabel(spread[0]),
         line && paperText(line), line?.trades, line?.pending, line?.value,
-        line && exposureAfter(line, currency), line && currency, held?.balance, held?.call,
-        held?.currency, ...peak(kept(line).ee),
+        line && currency, held?.balance, held?.call, held?.currency, line?.run?.after_collateral,
+        ...peak(kept(line).ee),
         ...quantiles.flatMap((quantile) => peak(kept(line).pfe.find((at) => at.quantile === quantile))),
         line?.run?.cva, line?.run?.fva, line?.run?.currency, line?.run?.as_of, line?.run?.note,
         limit?.limit, limit?.usage, limit?.headroom, limit?.currency];

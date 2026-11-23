@@ -732,7 +732,7 @@ acting seat and shows a refusal in the service's own words. **Held by** what the
 `::test_the_agreements_read_says_whether_a_run_collateralises_each`,
 `::test_the_agreements_read_names_the_factors_each_names_that_the_market_lacks`,
 `test_service.py::test_a_set_reads_collateralised_exactly_as_a_run_prices_it`,
-`::test_a_set_holds_what_its_terms_state_in_the_reporting_currency_the_base_at_one`,
+`::test_a_set_holds_what_its_terms_state_as_they_state_it`,
 `test_collateral.py::test_a_set_states_whether_it_is_collateralised_and_a_collateralised_one_its_balance_currency`,
 `::test_each_set_row_names_the_factors_its_terms_name_that_the_market_lacks`,
 `web/scripts/paper_check.mjs`, `web/scripts/client_check.mjs` and `web/scripts/trade_check.mjs`

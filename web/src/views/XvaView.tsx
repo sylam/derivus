@@ -3,7 +3,7 @@ import { getBookCollateral, getXvaProfile } from '../api';
 import { EXPORTS, rowsByPath, saveCsv, toRows } from '../blotter';
 import {
   LIMIT_USAGE, RUNS, WRONG, actionFirst, actsOf, actsText, agreementsOf, bookedText, closeRead,
-  creditExport, creditLines, exposureAfter, fundedAt, limitOf, openClient, paperText, runSum,
+  creditExport, creditLines, fundedAt, limitOf, openClient, paperText, runSum,
   summed, unmarked, wrongWith, type CreditLine, type LimitRead, type Wrong,
 } from '../client';
 import { EmptyState } from '../components/EmptyState';
@@ -76,6 +76,7 @@ export function XvaView() {
   const { currency } = reads;
   const clients = actionFirst(credit.ids.map(credit.client));
   const acting = clients.filter((client) => actsOf(client).length);
+  const after = runSum(clients.flatMap((client) => client.lines), 'after_collateral');
 
   return (
     <div className="main">
@@ -108,7 +109,7 @@ export function XvaView() {
           <span className="hint">
             {plural(clients.length, 'client')} · value to the desk <b>{amount(summed(
               clients.map((client) => client.value)))}</b> {currency} · after collateral{' '}
-            <b>{amount(summed(clients.map((client) => client.after)))}</b> {currency}
+            <b>{amount(after.value)}</b> {after.currency ?? ''}
             {xvaTotals(view).sums.map((sum) => (
               <span key={sum.currency ?? ''}> · CVA over the {sum.counted} run{' '}
                 <b>{formatNumber(sum.cva, 'money')}</b>{' '}
@@ -176,7 +177,7 @@ export function useCredit() {
     return {
       id, name: entityText(paper?.entities ?? null, id), lines, wrong: wrongWith(lines),
       spread: first && [first[0], first[1]], value: summed(own.map((line) => line.value)),
-      after: summed(own.map((line) => exposureAfter(line, currency))),
+      after: runSum(lines, 'after_collateral').value,
       limit: limitOf(id, view.limits),
     };
   };
@@ -206,7 +207,7 @@ export function CreditTable({ clients, reads }: { clients: Client[]; reads: Read
             <th className="n">Trades<div className="sub">on · waiting on a second seat</div></th>
             <th className="n">Value to the desk<div className="sub">{reads.currency} now · + the client owes</div></th>
             <th className="n">Collateral held<div className="sub">{reads.heldOn}</div></th>
-            <th className="n">After collateral<div className="sub">{reads.currency} · nought if owed</div></th>
+            <th className="n">After collateral<div className="sub">run currency · its first day</div></th>
             <th className="n">Peak EE<div className="sub">run currency · its day</div></th>
             <th className="n">Peak PFE<div className="sub">its percentile · its day</div></th>
             <th className="n">CVA<div className="sub">{PLUS.CVA}</div></th>
@@ -242,6 +243,7 @@ function ClientRows({ client, reads, opened, onOpen }: {
   const shown = lines.find((line) => line.reference === opened);
   const cva = runSum(lines, 'cva');
   const fva = runSum(lines, 'fva');
+  const after = runSum(lines, 'after_collateral');
   const by = <td className="hint n">{lines.length ? 'by set' : ''}</td>;
   const opener = (line: CreditLine) => (
     <td className="opener"><span>{line === shown ? '×' : '⋯'}</span></td>);
@@ -267,7 +269,8 @@ function ClientRows({ client, reads, opened, onOpen }: {
                 {own.reduce((sum, line) => sum + line.pending, 0)} waiting</span>}</td>
             <Amount value={client.value} absent={reads.riskError ?? 'a set is unread'} />
             {by}
-            <Amount value={client.after} absent="a set's value or collateral is unread" />
+            <Amount value={after.value} currency={after.currency}
+                    absent="a set has no run that is done in one currency" />
             {by}{by}
             <Amount kind="money" value={cva.value} currency={cva.currency} absent="a set has no CVA to add" />
             <Amount kind="money" value={fva.value} currency={fva.currency} absent="a set has no FVA to add" />
@@ -352,8 +355,8 @@ function LineCells({ line, reads }: { line: CreditLine; reads: Reads }) {
             ) : <span className="hint" title={reads.collateralError ?? call?.unknown
               ?.map((row) => row.what).join('; ')}>{closeRead(undefined, reads.noClose)}</span>}
       </td>
-      <Amount value={exposureAfter(line, reads.currency)}
-              absent={line.collateralised ? 'its collateral is unread' : 'its value is unread'} />
+      <Amount value={run?.after_collateral ?? null} currency={run?.currency ?? null}
+              absent={run?.status === 'failed' ? 'its run failed' : 'no completed run'} />
       {peak(top.ee ? [amount(top.ee, top.ee.day)] : [])}
       {peak(top.pfe.map((pfe) => amount(pfe, `${formatNumber(pfe.quantile)}th · ${pfe.day}`)))}
       <Amount kind="money" value={run?.cva ?? null} currency={run?.currency ?? null}

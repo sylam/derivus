@@ -6999,18 +6999,17 @@ def test_a_deal_its_compile_skips_names_itself_and_the_factor_it_wanted_in_its_s
         ('failed', 'EquityPriceVol.NOVOL')] * 2 + [('failed', 'InterestRate.GATE')]
 
 
-def test_a_set_holds_what_its_terms_state_in_the_reporting_currency_the_base_at_one(
-        tmp_path, monkeypatch):
+def test_a_set_holds_what_its_terms_state_as_they_state_it(tmp_path, monkeypatch):
     """WHAT A SET'S TERMS SAY IT HOLDS, read on every XVA row with nothing run: where they
-    collateralise it, its `Opening_Balance`, nought by convention where unstated, held in its
-    `Balance_Currency` and crossed into the book's reporting dollars at the market's spots as the
-    record crosses a balance (`PnL.rates`), the base at one though its `FxRate.USD` states no spot;
-    where they do not, nothing. 1,000 rand at a spot of 18.5 hold 18,500 dollars, a set stating no
-    balance nought, one held in euros, which the market has no spot for, unread, and the 1,000 rand
-    an uncollateralised set states nought.
+    collateralise it, its `Opening_Balance`, nought by convention where unstated, in its
+    `Balance_Currency`, crossed into no other; where they do not, nothing. 1,000 rand are 1,000
+    rand though the market quotes the rand at 18.5, a set stating no balance holds nought dollars,
+    one held in euros, which the market has no spot for, nought euros, and the 1,000 rand an
+    uncollateralised set states are nothing it holds.
 
-    Killing mutations: the base left to a block of its own, which leaves every holding unread; a
-    set its terms do not collateralise read as holding a balance, which reads its rand as unread.
+    Killing mutations: the balance crossed at the market's spots into the reporting currency, which
+    reads the rand as 18,500 dollars and the euros as unread; a set its terms do not collateralise
+    read as holding its balance.
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path))
     sets = [netting_set(reference, 'CPTY_A', [])
@@ -7020,19 +7019,51 @@ def test_a_set_holds_what_its_terms_state_in_the_reporting_currency_the_base_at_
     for node in (sets[0], sets[3]):
         node['Instrument']['.Deal']['Opening_Balance'] = 1000.0
     sets[3]['Instrument']['.Deal']['Collateralized'] = 'False'
-    book = xva_book(tmp_path, sets)
-    document = json.loads(book.read_text())
-    del document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']['FxRate.USD'][
-        'Spot']
-    book.write_text(json.dumps(document), newline='\n')
+    xva_book(tmp_path, sets)
     try:
         held = {reference: row['held'] for reference, row in xva_rows().items()}
     finally:
         service.BOOK = None
-    assert held == {'NS_ZAR': {'currency': 'USD', 'balance': pytest.approx(18_500.0, rel=1e-12)},
+    assert held == {'NS_ZAR': {'currency': 'ZAR', 'balance': 1000.0},
                     'NS_USD': {'currency': 'USD', 'balance': 0.0},
-                    'NS_EUR': {'currency': 'USD', 'balance': None},
-                    'NS_NONE': {'currency': 'USD', 'balance': 0.0}}
+                    'NS_EUR': {'currency': 'EUR', 'balance': 0.0}, 'NS_NONE': None}
+
+
+def test_a_set_s_exposure_after_collateral_is_its_run_s_expected_exposure_on_its_first_day(
+        tmp_path, monkeypatch):
+    """THE EXPOSURE AFTER COLLATERAL IS THE ENGINE'S. A set's XVA row carries the expected exposure
+    of the first day of its last run's profile, the base date, in the run's currency: where its
+    terms collateralise it, its value there net of the balance they state, the received haircut
+    taken off. Two sets holding the same option, one holding 1,000 dollars cut by a quarter, read
+    750 apart (to two single-precision steps at their size), and a set never run reads null.
+
+    Killing mutations: the figure read off the profile's last row rather than its first; the
+    received haircut left out of the closeout's credit (`collateral_credit`), which reads them
+    1,000 apart.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    sets = [netting_set(reference, counterparty, [dict(VANILLA, Reference='OPT_' + reference)])
+            for reference, counterparty in (('NS_C', 'CPTY_A'), ('NS_U', 'CPTY_B'), ('NS_N', 'CPTY_B'))]
+    sets[0]['Instrument']['.Deal'].update(
+        Collateralized='True', Balance_Currency='USD', Opening_Balance=1000.0,
+        Collateral_Assets={'Cash_Collateral': [{'Currency': 'USD', 'Amount': 1.0,
+                                                'Haircut_Received': {'.Percent': 25.0}}]})
+    xva_book(tmp_path, sets)
+    try:
+        recalc(['NS_C', 'NS_U'])
+        rows = xva_rows()
+        profiles = {reference: CLIENT.get('/book/xva/{}/profile'.format(reference)).json()['profile']
+                    for reference in ('NS_C', 'NS_U')}
+    finally:
+        service.BOOK = None
+    for reference, profile in profiles.items():
+        assert profile['index'][0] == BASE.strftime('%Y-%m-%d')
+        assert rows[reference]['after_collateral'] == profile['data'][0][
+            profile['columns'].index('EE')], reference
+        assert rows[reference]['currency'] == 'USD'
+    assert rows['NS_U']['after_collateral'] - rows['NS_C']['after_collateral'] == pytest.approx(
+        750.0, abs=2e-3)
+    assert (rows['NS_N']['status'], rows['NS_N']['after_collateral']) == ('never run', None)
 
 
 def test_each_set_row_names_the_factors_its_terms_name_that_the_market_lacks(tmp_path, monkeypatch):

@@ -371,9 +371,14 @@ ride a tick, so `DV_HOME/xva.json` holds the last run of each set — written at
 a time — and a desk asks for a FULL or PARTIAL recalc when it wants the file to move. The
 projection is a mosaic on purpose: each row carries its own `as_of`, a partial recalc moves only
 the rows it names, and staleness is data rather than a failure. Each row carries `held`, what its
-set's terms say the bank holds - its `Opening_Balance` in the book's reporting currency at the
-market's spots, the base at one, null where they cannot cross it - and a failed row `missing`, the
-price factor its run wanted with what supplies it, as `/book/dependencies` answers one.
+set's terms say the bank holds as they state it - its `Opening_Balance` in its `Balance_Currency`,
+null where they do not collateralise it; `after_collateral`, its last run's expected exposure on
+the base date, the profile's first row, where the set's value is net of the collateral it holds
+(a received haircut taken off), in the run's `currency` and null where it never ran; and a failed
+row `missing`, the price factor its run wanted with what supplies it, as `/book/dependencies`
+answers one. **Held by**
+`tests/test_service.py::test_a_set_holds_what_its_terms_state_as_they_state_it`,
+`::test_a_set_s_exposure_after_collateral_is_its_run_s_expected_exposure_on_its_first_day`.
 What ONE trade does to a set's
 XVA is the what-if's question instead - `POST /book/price` with `xva_increment: true` and a
 candidate, a `quote_id`, or the `deal_path` of a trade the book already holds, which splices

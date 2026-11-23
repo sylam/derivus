@@ -268,11 +268,12 @@ const CREDIT_DOC = { Calc: { Deals: { Deals: { Children: [
 const CREDIT_ROWS = blotter.rowsByPath(blotter.toRows(CREDIT_DOC.Calc.Deals.Deals.Children, [], undefined));
 const run = (reference, deal_path, extra = {}) => ({
   reference, deal_path, counterparty: 'KES', collateralized: false, note: null, status: 'done',
-  cva: 10, fva: 1, currency: 'USD', as_of: '2026-11-19T22:27:28.743+02:00', result_id: reference,
-  error: null, recalc: null, ...extra });
+  cva: 10, fva: 1, after_collateral: 900, currency: 'USD', as_of: '2026-11-19T22:27:28.743+02:00',
+  result_id: reference, error: null, recalc: null, ...extra });
 const RUNS = [run('ISDA-KES', '0'),
-              run('CSA-KES', '1/0', { status: 'never run', as_of: null, collateralized: true }),
-              run('KES-OLD', '2', { status: 'failed', cva: null, fva: null,
+              run('CSA-KES', '1/0', { status: 'never run', as_of: null, collateralized: true,
+                                      after_collateral: null }),
+              run('KES-OLD', '2', { status: 'failed', cva: null, fva: null, after_collateral: null,
                                      error: 'Cannot find SurvivalProb.KES',
                                      missing: { factor: 'SurvivalProb.KES', supply: null,
                                                 note: 'the CVA desk writes it from its spread' } }),
@@ -322,27 +323,6 @@ check("a run set's line counts the trades booked under it since its run off the 
        client.creditLines('KES', PLAIN).map((line) => line.booked)],
       [[['ISDA-KES', 1], ['CSA-KES', 0], ['KES-OLD', 0], ['KES-GONE', 0], ['ISDA-NEW-KES', null]],
        [null, null, null, null]]);
-
-const after = (value, collateralised, balance) => client.exposureAfter({
-  value, collateralised, call: balance === undefined ? null
-    : { balance, fx: { EUR: 1, USD: 0.8 } } }, 'USD');
-check('the exposure after collateral is the value to the desk less the collateral held, crossed at '
-      + "the close's spots, what the bank posted adding to it, nothing where the client is owed, and "
-      + "unread where a collateralised set's call is",
-      'the balance taken in its own currency, or crossed the wrong way; the floor dropped, which '
-      + 'reads a client owed money as a negative exposure; posted collateral subtracted; or a '
-      + 'collateralised set with no close marked read as if it held nothing',
-      [after(1000, false), after(-200, false), after(1500, true, 400), after(1500, true, -400),
-       after(300, true, 400), after(1500, true), after(1500, true, null), after(null, false)],
-      [1000, 0, 1000, 2000, 0, null, null, null]);
-
-const stated = (balance, currency = 'USD') => client.exposureAfter(
-  { value: 1000, collateralised: true, call: { agreement: 'S', currency, balance } }, 'USD');
-check("on a desk keeping no record a set holds what its row says its terms state, in the reporting "
-      + 'currency the service crossed it into, read at one; unread where the service could not cross it',
-      "the stated holding's currency not read at one, which leaves every holding on a desk keeping no "
-      + 'record unread; or an unread holding read as nothing held',
-      [stated(400), stated(0), stated(null), stated(400, 'EUR')], [600, 1000, null, null]);
 
 const closed = (market, stands, marked = false) => ({
   lsn: 4, events_behind: 0, positions_behind: 0, paper: 1, close: { market, stands, marked } });
@@ -474,14 +454,19 @@ check('a credit charge reads each limit its set draws on as the usage without th
 
 const KES_LINES = client.creditLines('KES', CREDIT);
 check("a client's sums are over every one of its book's sets or none - an unread set blanks it, and "
-      + 'adjustments in two currencies, or a set that left the book, are never added',
+      + 'adjustments in two currencies, or a set that left the book, are never added; the exposure '
+      + "after collateral is summed off the runs' own figure as an adjustment is",
       "an unread set's value skipped, which says a client owes less than it does; two currencies "
-      + "added; or a set that left the book counted in its client's CVA",
+      + "added; a set that left the book counted in its client's CVA; or a set never run read as "
+      + 'exposing nothing after collateral',
       [client.summed([1, null, 2]), client.summed([1, 2]),
        client.runSum([KES_LINES[0], KES_LINES[3]], 'cva'), client.runSum(KES_LINES, 'cva'),
-       client.runSum([KES_LINES[0], { run: { ...RUNS[0], currency: 'EUR' } }], 'fva')],
+       client.runSum([KES_LINES[0], { run: { ...RUNS[0], currency: 'EUR' } }], 'fva'),
+       client.runSum([KES_LINES[0], KES_LINES[3]], 'after_collateral'),
+       client.runSum(KES_LINES, 'after_collateral')],
       [null, 3, { currency: 'USD', value: 10 }, { currency: 'USD', value: null },
-       { currency: null, value: null }]);
+       { currency: null, value: null }, { currency: 'USD', value: 900 },
+       { currency: 'USD', value: null }]);
 
 check("a failed run names who puts it right off the factor its row says it wanted, in the service's "
       + 'note, and the sentence itself where the row names no factor',
@@ -555,20 +540,23 @@ check("the credit table exports a row per set under its client, a client with no
       'an amount written as displayed - `formatNumber` over a CVA - which exports 1,234,567.89 as '
       + "text a spreadsheet cannot add and rounds what it keeps; a currency left in its amount's "
       + 'cell; a column written for one row and not the next, every value after it under the '
-      + 'wrong head; the limit left out, which exports a breach as nothing; or a headroom written '
-      + 'where a set has no run',
+      + 'wrong head; the limit left out, which exports a breach as nothing; a headroom written '
+      + "where a set has no run; or the exposure after collateral worked out of the value to the "
+      + "desk and the collateral held, in place of its run's own figure",
       [SHEET[0], SHEET.slice(1), SHEET.every((line) => line.length === SHEET[0].length)],
       [['Client', 'Netting set', 'Spread bp', 'Spread tenor', 'Paper', 'Trades',
-        'Waiting on a second seat', 'Value to the desk', 'After collateral', 'Ccy', 'Collateral held',
-        'Call', 'Collateral ccy', 'Peak EE', 'Peak EE day', 'Peak PFE 95', 'Peak PFE 95 day', 'CVA',
-        'FVA', 'Run ccy', 'Run', 'Note', 'Credit limit', 'Limit usage', 'Headroom', 'Limit ccy'],
-       [['Kestrel (KES)', 'ISDA-KES', 150, '1Y', 'uncollateralised', 2, 1, 1000, 1000, 'USD',
-         null, null, null, 2500000.5, '2027-02-16', 9000000.25, '2027-05-16', 1234567.891,
+        'Waiting on a second seat', 'Value to the desk', 'Ccy', 'Collateral held', 'Call',
+        'Collateral ccy', 'After collateral', 'Peak EE', 'Peak EE day', 'Peak PFE 95',
+        'Peak PFE 95 day', 'CVA', 'FVA', 'Run ccy', 'Run', 'Note', 'Credit limit', 'Limit usage',
+        'Headroom', 'Limit ccy'],
+       [['Kestrel (KES)', 'ISDA-KES', 150, '1Y', 'uncollateralised', 2, 1, 1000, 'USD',
+         null, null, null, 900, 2500000.5, '2027-02-16', 9000000.25, '2027-05-16', 1234567.891,
          0.30000000000000004, 'USD', RAN_AT, null, 25000, 30000, -5000, 'USD'],
-        ['Kestrel (KES)', 'CSA-KES', 150, '1Y', 'collateralised', 1, 0, null, null, 'USD',
-         400, null, 'EUR', null, null, null, null, 10, 1, 'USD', null, null, 25000, 30000, -5000, 'USD'],
-        ['Kestrel (KES)', 'KES-GONE', 150, '1Y', 'no agreement', 0, 0, null, null, 'USD',
-         null, null, null, null, null, null, null, null, 1, 'USD', RAN_AT, 'left the book', 25000,
+        ['Kestrel (KES)', 'CSA-KES', 150, '1Y', 'collateralised', 1, 0, null, 'USD',
+         400, null, 'EUR', null, null, null, null, null, 10, 1, 'USD', null, null, 25000, 30000, -5000,
+         'USD'],
+        ['Kestrel (KES)', 'KES-GONE', 150, '1Y', 'no agreement', 0, 0, null, 'USD',
+         null, null, null, 900, null, null, null, null, null, 1, 'USD', RAN_AT, 'left the book', 25000,
          30000, -5000, 'USD'],
         ['Marrick (MAR)', ...Array(21).fill(null), 50000, 30000, null, 'USD'],
         ['Ostrava (OST)', ...Array(25).fill(null)]],

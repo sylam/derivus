@@ -404,9 +404,10 @@ export type XvaSet = {
   /** Where the run failed for want of a price factor, that factor, the seed's entry that would
    * supply it, null where none would, and `note`, who supplies it. */
   missing: { factor: string; supply: { block: string; key: string } | null; note: string } | null;
-  /** What the set's terms say the bank holds, in the book's reporting `currency` at the market's
-   * spots - `balance` null where they cannot cross it - and null on a row whose set left the book. */
-  held: { currency: string; balance: number | null } | null;
+  /** What the set's terms say the bank holds, as they state it: its `Opening_Balance` in its
+   * `Balance_Currency` - null where they do not collateralise it, and on a row whose set left the
+   * book. */
+  held: { currency: string; balance: number } | null;
   /** The currency the set's terms keep its collateral balance in, as the service reads them. */
   balance_currency: string | null;
   /** The price factors the set's terms name that the market lacks, by the engine's walk of the set
@@ -417,6 +418,10 @@ export type XvaSet = {
   /** The run's largest `EE` and each `PFE_<percentile>`, each with the day it first falls on -
    * null on a row filed before rows kept them. */
   peaks: Record<string, { value: number; day: string }> | null;
+  /** The run's expected exposure on its first day, the base date: the set's value net of the
+   * collateral it holds, nought where the client is owed, in the run's `currency` - null where it
+   * never ran and on a row filed before rows kept it. */
+  after_collateral: number | null;
 };
 
 /** The two curves a credit run asked now funds its FVA at, null for one its calculation does not

@@ -4384,8 +4384,8 @@ XVA_FVA_BLOCK = {'Calculate': 'Yes', 'Counterparty': '', 'Bank': '',
                  'Deflate_Stochastically': 'No', 'Stochastic_Funding': 'No', 'Gradient': 'No'}
 
 #: What one run files on its set's row beside its status, each a null where the run said nothing.
-XVA_COLUMNS = ('cva', 'fva', 'peaks', 'currency', 'as_of', 'result_id', 'plan_hash', 'values_hash',
-               'seed', 'quasi_seed')
+XVA_COLUMNS = ('cva', 'fva', 'peaks', 'after_collateral', 'currency', 'as_of', 'result_id',
+               'plan_hash', 'values_hash', 'seed', 'quasi_seed')
 
 
 def xva_path():
@@ -4480,17 +4480,20 @@ def xva_document(document, node, counterparty):
 
 
 def exposure(profile):
-    """`{peaks, profile}` off a run's `exposure_profile` table in wire form: the largest number of
-    `EE` and of each `PFE_` column, `{value, day}` with the day it first falls on, and the table
-    itself as `{columns, index, data}`, every day `YYYY-MM-DD`."""
-    frame, peaks = profile['.DataFrame'], {}
+    """`{peaks, after_collateral, profile}` off a run's `exposure_profile` table in wire form: the
+    largest number of `EE` and of each `PFE_` column, `{value, day}` with the day it first falls
+    on; the `EE` of its first row, the base date's, where a set's value is net of the collateral
+    it holds, nought where the client is owed; and the table itself as `{columns, index, data}`,
+    every day `YYYY-MM-DD`."""
+    frame, peaks, after = profile['.DataFrame'], {}, None
     days = [plain(label) for label in frame['index']]
     for at, column in enumerate(frame['columns']):
         if column == 'EE' or column.startswith('PFE_'):
             values = [row[at] for row in frame['data']]
             peak = max(values)
             peaks[column] = {'value': peak, 'day': days[values.index(peak)]}
-    return {'peaks': peaks, 'profile': dict(frame, index=days)}
+            after = values[0] if column == 'EE' else after
+    return {'peaks': peaks, 'after_collateral': after, 'profile': dict(frame, index=days)}
 
 
 class XvaJob:
@@ -4998,29 +5001,22 @@ def terms_read(document, sets):
         config = load(around(document, *(
             {'Instrument': {'.Deal': terms}} for terms in sets))).current_cfg
         refused = config.calculation_refusals() or None
-        market = market_of(document)
-        reporting = structures.reporting_currency(document, lambda _: market)
         kept = BOOK.sets.put(key, ([
-            {'held': stated_holding(terms, market, reporting),
+            {'held': stated_holding(terms),
              'lacks': None if refused else config.factor_universe(children=[node])['missing']}
             for terms, node in zip(sets, config.deals['Deals']['Children'])], refused))
     return kept
 
 
-def stated_holding(terms, market, reporting):
-    """`{currency, balance}` - what a netting set's own `terms` say the bank holds, in the
-    `reporting` currency: where they collateralise it, its `Opening_Balance`, at its declared
-    convention where it states none, held in its `Balance_Currency` (`CSA.balance_currency`) and
-    crossed at the market's spots as the record crosses a balance (`PnL.rates`), `balance` None
-    where they cannot cross it; nothing where they do not."""
+def stated_holding(terms):
+    """`{currency, balance}` - what a netting set's own `terms` say the bank holds, as they state
+    it: where they collateralise it, its `Opening_Balance`, at its declared convention where it
+    states none, in its `Balance_Currency` (`CSA.balance_currency`); None where they do not."""
     csa = spine.package().projections.CSA
     if not csa.collateralised(terms):
-        return {'currency': reporting, 'balance': 0.0}
+        return None
     stated = declared_defaults(instruments.NettingCollateralSet, terms)
-    rate = PnL.rates(market['Price Factors'], reporting, structures.base_currency(market)).get(
-        csa.balance_currency(stated))
-    return {'currency': reporting,
-            'balance': None if rate is None else stated['Opening_Balance'] * rate}
+    return {'currency': csa.balance_currency(stated), 'balance': stated['Opening_Balance']}
 
 
 @app.get('/book/xva/{reference}/profile', summary="One netting set's exposure profile, off its row")
