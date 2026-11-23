@@ -1032,10 +1032,11 @@ def test_a_failure_no_verb_refuses_answers_its_type_and_message(book, caplog):
 
 def test_a_request_not_stating_what_its_verb_reads_is_refused_by_name(recorded, book, monkeypatch):
     """A body that leaves out a key its verb reads, or states one the verb cannot read, answers a
-    422 naming it with its kind - never the bare key or a 500 - and nothing is written: on a desk
-    that records, a survival curve and an agreement for a counterparty stated as a list; on one that
-    records nothing, a dial with no section, the paths with no maps, a curve with no currency, a
-    date with no day, a spot model named by a number and a job with no `Calculation`.
+    422 naming it with its kind - a credit curve's the field it refuses - never the bare key or a
+    500, and nothing is written: on a desk that records, a survival curve and an agreement for a
+    counterparty stated as a list; on one that records nothing, a dial with no section, the paths
+    with no maps, a curve with no currency, a date with no day, a spot model named by a number and
+    a job with no `Calculation`.
 
     Killing mutations: `refusals` answering a missing key bare, which says `'section'`; the posted
     job loaded outside it, a 500 `KeyError`; the record's entity check reading the names it is
@@ -1056,8 +1057,8 @@ def test_a_request_not_stating_what_its_verb_reads_is_refused_by_name(recorded, 
                'entity first'.format
     stated = '{!r} is not stated, and nothing is done without it'.format
     assert [(answer.status_code, answer.json()['code'], answer.json()['detail'])
-            for answer in asked] == [(422, 'refused', detail) for detail in (
-                stranger('counterparty', 'CPTY_A'), stranger('entity', 'LEI-A'),
+            for answer in asked] == [(422, 'counterparty', stranger('counterparty', 'CPTY_A'))] + [
+                (422, 'refused', detail) for detail in (stranger('entity', 'LEI-A'),
                 stated('section'), stated('path_transform'), stated('currency'),
                 stated('base_date'), '7 names no spot model this verb calibrates - '
                 '7ModelParameters authors no quote block off a built surface. The model this book '

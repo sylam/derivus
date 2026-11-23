@@ -1965,8 +1965,8 @@ def test_a_failure_the_service_has_no_refusal_for_reaches_a_model_as_its_type_an
 def test_a_refusal_reaches_a_model_whole_after_its_kind(recorded, book):
     """The relay raises the service's refusal whole, its kind and then its sentence, and never the
     method or the route: a survival curve for a counterparty the record does not declare, refused
-    naming the forty entities it does - over a thousand characters - reaches a model as `refused: `
-    and that sentence to its last word.
+    naming the forty entities it does - over a thousand characters - reaches a model as
+    `counterparty: `, the field it refuses, and that sentence to its last word.
 
     Killing mutation: the relayed body cut at 500 characters, which loses the tail of the list.
     """
@@ -1977,4 +1977,4 @@ def test_a_refusal_reaches_a_model_whole_after_its_kind(recorded, book):
         mcp_server.declare_survival_curve('GHOST', 150.0)
     said = ("counterparty 'GHOST' is no legal entity the record declares - it declares {}: declare "
             'the entity first'.format(', '.join(entities)))
-    assert len(said) > 1000 and str(refused.value) == 'refused: ' + said
+    assert len(said) > 1000 and str(refused.value) == 'counterparty: ' + said
