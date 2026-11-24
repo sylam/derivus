@@ -34,8 +34,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import derivus
 from derivus import spine, utils
-from derivus.instruments import NettingCollateralSet
-from derivus.schema import declared_fields
+from derivus.instruments import NettingCollateralSet, construct_instrument
+from derivus.schema import declared_fields, validate_instrument
 from derivus.spine import Collateral
 from derivus.structures import market_of
 from derivus_spine.projections import CSA
@@ -620,6 +620,30 @@ def test_a_set_states_whether_it_is_collateralised_and_a_collateralised_one_its_
     plain = loaded(dict(bare, Collateralized='False'))
     assert plain.validate()['deals'] == {}
     out = derivus.run_cmc(plain.current_cfg, prec=torch.float64)[1]
+    assert np.isfinite(out['Netting'].sub_structures[0].obj.Calc_res['Value'][0]).all()
+
+
+def test_a_set_stating_collateralized_as_a_boolean_is_refused_saying_what_it_takes():
+    """`Collateralized` is a menu of two texts, and a set stating the JSON boolean `false` states
+    a value - neither left out nor blank - which its declaration refuses by name, saying what the
+    field takes, as the booking verdict and `validate` read it; the text `'False'` is one of them,
+    so the same set validates and its run prices.
+
+    Killing mutation: `value_message` skipping every falsy value again, under which `false` passes
+    unjudged and the engine reads it as not `'True'`.
+    """
+    def loaded(terms):
+        context = derivus.Context()
+        context.load_json((json.dumps(engine_job(terms)), 'stated'))
+        return context
+
+    said = 'Collateralized is False, not one of True, False'
+    boolean = dict(TERMS, Collateralized=False)
+    assert loaded(boolean).validate()['deals'] == {'CSA-1': [said]}
+    assert said in validate_instrument(construct_instrument(dict(boolean), {}))
+    text = loaded(dict(TERMS, Collateralized='False'))
+    assert text.validate()['deals'] == {}
+    out = derivus.run_cmc(text.current_cfg, prec=torch.float64)[1]
     assert np.isfinite(out['Netting'].sub_structures[0].obj.Calc_res['Value'][0]).all()
 
 
