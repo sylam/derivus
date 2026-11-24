@@ -1555,6 +1555,16 @@ class NettingCollateralSet(Deal):
         row = DealFields(row, declared={f.key: engine_default(f) for f in cls.HAIRCUTS})
         return {f.key: float(row[f.key]) for f in cls.HAIRCUTS}
 
+    def required(self, value, fx):
+        """The credit support the agreement asks for at `value`, tensors or floats alike, `fx`
+        pricing its agreement currency in the currency of `value`: the independent amount, plus the
+        excess over the received threshold above it, plus the excess below the posted threshold
+        below it, each crossed - positive support the bank holds, negative support it posts."""
+        support = self.field['Credit_Support_Amounts']
+        above, below = (support[key].value() * fx for key in ('Received_Threshold', 'Posted_Threshold'))
+        return (support['Independent_Amount'].value() * fx + (value - above) * (value > above)
+                + (value - below) * (value < below))
+
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
         field = {}
@@ -1686,8 +1696,6 @@ class NettingCollateralSet(Deal):
                                          field['Balance_Currency'], static_offsets, stochastic_offsets),
                                      Funding_Rate=None, Collateral_Rate=None,
                                      Collateral=1.0)]
-
-            field_index['Independent_Amount'] = self.field['Credit_Support_Amounts']['Independent_Amount'].value()
 
             t = time_grid.time_grid[:, utils.TIME_GRID_MTM]
             # collateral call dates (interpolated - assuming daily)
@@ -1830,8 +1838,6 @@ class NettingCollateralSet(Deal):
 
             fx_base = utils.calc_time_grid_spot_rate(shared.Report_Currency, local_time_grid, shared)
             fx_agreement = utils.calc_time_grid_spot_rate(factor_dep['Agreement_Currency'], local_time_grid, shared)
-            H = self.field['Credit_Support_Amounts']['Received_Threshold'].value() * fx_agreement
-            G = self.field['Credit_Support_Amounts']['Posted_Threshold'].value() * fx_agreement
             min_received = self.field['Credit_Support_Amounts']['Minimum_Received'].value()
             min_posted = self.field['Credit_Support_Amounts']['Minimum_Posted'].value()
 
@@ -1846,7 +1852,7 @@ class NettingCollateralSet(Deal):
                                 torch.cat([Cf_Pay[0].reshape(1, -1), Cf_Pay[1:] - Cf_Pay[:-1]], dim=0)
                 Vt -= mtm_today_adj
 
-            At = factor_dep['Independent_Amount'] * fx_agreement + (Vt - H) * (Vt > H) + (Vt - G) * (Vt < G)
+            At = self.required(Vt, fx_agreement)
 
             opening = self.field['Opening_Balance'] * utils.calc_time_grid_spot_rate(
                 factor_dep['Balance_Currency'], np.array([[0, 0, 0]]), shared)
@@ -1996,8 +2002,6 @@ class NettingCollateralSet(Deal):
                 # (At, required balance, bands, scan) - see docstring.
                 g_fx, g_fx_local = fx_base.detach(), fx_base_local.detach()
                 g_St, g_cut, g_fxa = St.detach(), posted_cut.detach(), fx_agreement.detach()
-                g_H, g_G, g_IA = H.detach(), G.detach(), (
-                        factor_dep['Independent_Amount'] * fx_agreement).detach()
                 g_Vt, g_B0, g_Te = Vt.detach(), Bt[0].detach(), factor_dep['Te']
                 g_mask = factor_dep['call_mask'].astype(bool)
                 # the C_ts_te window edges per the declared settlement-risk convention;
@@ -2045,9 +2049,8 @@ class NettingCollateralSet(Deal):
                     value gate. From b_Vte, gross_to_net(0) == the reported net BY CONSTRUCTION."""
                     delta = delta[:g_Vt.shape[0]]
                     Vt_cf = g_Vt + delta * g_fx_local
-                    At_cf = g_IA + (Vt_cf - g_H) * (Vt_cf > g_H) + (Vt_cf - g_G) * (Vt_cf < g_G)
                     balance, _ = scan_collateral_balance(g_B0, *collateral_bands(
-                        At_cf, g_St, g_cut, g_fxa, min_received, min_posted), g_mask)
+                        self.required(Vt_cf, g_fxa), g_St, g_cut, g_fxa, min_received, min_posted), g_mask)
                     # Vte from the REPORTED b_Vte, never re-indexed off g_Vt (see docstring). g_fx
                     # is already the Te-grid fx, so only the delta takes the Te index here.
                     vte = b_Vte + delta[g_Te] * g_fx
