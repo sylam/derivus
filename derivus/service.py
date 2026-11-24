@@ -1426,7 +1426,7 @@ def deal_size(market, base, deal):
     """`{currency: amount}`, the most `deal` deals in each currency it states one in, read off what
     its type declares SA-CCR reads (`schema.Exposure`), the largest of several - a container's the
     largest of its children's, never its own terms. An amount is its field's, an FX trade's other
-    side too where it states one (`other`, CRE52.35), a table's its largest `sized` cell, units' at
+    side too as SA-CCR reads it (`Exposure.against`), a table's its largest `sized` cell, units' at
     today's price of one where `market` states that as one number, in the price's currency
     (CRE52.36), and a strip's times its rows dated on or after `base` (`per`, CRE52.37(4)); a
     digital paying cash its amount in the currency its settlement states (`Exposure.pays`), the
@@ -1457,21 +1457,21 @@ def deal_size(market, base, deal):
             rows = fields.get(part.per)
             times = sum(structures.timestamp(row[0]) >= base for row in (
                 rows if isinstance(rows, list) else [])) if part.per else 1
-            amounts = [times * max(sized(declared[key], fields.get(key)), default=0.0)
-                       for key in (part.amount, part.other) if key]
+            amount = max(sized(declared[part.amount], fields.get(part.amount)), default=0.0)
             if part.pays(fields) == 'cash':
-                stated += [(fields.get(cash.currency or 'Currency') or fields.get('Currency'), amounts[0])
+                stated += [(fields.get(cash.currency or 'Currency') or fields.get('Currency'), times * amount)
                            for *_, cash in declared_settlements(cls)]
                 continue
             if not part.priced(fields):
-                # an FX trade stating its other side too is the larger of the two (CRE52.35)
-                stated += zip([fields.get(part.currency), fields.get(part.underlying)], amounts)
+                # an FX trade is the larger of its two sides (CRE52.35)
+                stated += [(fields.get(part.currency), times * amount),
+                           (fields.get(part.underlying), times * (part.against(fields, amount) or 0.0))]
                 continue
             named = part.price or part.underlying
             unit = (market.get('Price Factors') or {}).get('{}.{}'.format(
                 declared_factors(cls)[named][0], fields.get(named))) or {}
             if isinstance(unit.get('Spot'), (int, float)):
-                stated.append((unit.get('Currency'), amounts[0] * unit['Spot']))
+                stated.append((unit.get('Currency'), times * amount * unit['Spot']))
     size = {}
     for currency, amount in stated:
         if currency and isinstance(amount, (int, float)) and abs(amount) > size.get(currency, 0.0):

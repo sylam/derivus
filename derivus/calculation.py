@@ -6000,7 +6000,7 @@ class SACCR(NettingSetCalculation):
                                       end) if steps else size) * self.fx(
                 fields[terms.currency]) * self.duration(start, end)
         elif asset == 'FX':
-            other = abs(fields[terms.other]) if terms.other else size * fields[terms.strike]
+            other = terms.against(fields, size)
             notional = max(leg * self.fx(currency) for leg, currency in (
                 (size, fields[terms.currency]), (other, fields[terms.underlying]))
                 if utils.check_rate_name(currency) != utils.check_rate_name(self.params['Currency']))

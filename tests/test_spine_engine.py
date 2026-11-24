@@ -3137,12 +3137,12 @@ def test_a_currency_the_tick_has_not_valued_is_not_a_currency_the_ticket_states(
     assert 'EUR' not in terms['notional_in'] and set(terms['notional_in']) == {'USD', 'ZAR'}
 
     # THE OTHER DIRECTION, with the zero on top: the NOTIONAL's own currency unvalued. Its amount
-    # still stands - an amount of a currency needs no rate - and every cross off it reads zero,
-    # which is not a notional a cap can be compared against and so is not stated
+    # still stands - an amount of a currency needs no rate - as does its legs' rand at their
+    # strikes, and every cross reads zero or none, which no cap can be compared against
     unvalued = json.loads(quoting.read_text())
     unvalued['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'][
         'FxRate.USD']['Spot'] = 0.0
-    assert terms_of(unvalued, pending)['notional_in'] == {'USD': AMOUNT}
+    assert terms_of(unvalued, pending)['notional_in'] == {'USD': AMOUNT, 'ZAR': struck_side(pending)}
     before = quoting.read_bytes()
 
     answer = accept(quote).json()
@@ -3155,6 +3155,12 @@ def test_a_currency_the_tick_has_not_valued_is_not_a_currency_the_ticket_states(
 def terms_of(document, pending):
     """What the tiers read of a pending quote, as the acceptance hands them over."""
     return service.ticket_terms(document, pending['deal'], pending['pinned']['values_hash'])
+
+
+def struck_side(pending):
+    """The most a pending quote's FX option legs deal at their strikes, in their `Currency`."""
+    return max(child['Instrument']['.Deal']['Underlying_Amount'] * child['Instrument']['.Deal']['Strike_Price']
+               for child in pending['deal']['Children'])
 
 
 def test_size_tenor_and_market_route_a_ticket_through_the_tiers(recorded, quoting):
@@ -3501,6 +3507,28 @@ def test_a_structure_is_its_largest_leg_and_an_fx_trade_its_larger_side(recorded
         dealt = booked(deal, 'EXEC-' + deal['Reference'])
         assert dealt['written'] is True and dealt['tier']['name'] == 'desk', dealt
         assert dollars(quoting, dealt['deal_path']) == size
+
+
+#: A year's call on a million dollars struck a tenth over spot: 1,100,000 dollars of rand at its
+#: strike on this book's axis.
+FX_CALL = {'Object': 'FXOptionDeal', 'Reference': 'FX_CALL', 'Currency': 'ZAR', 'Underlying_Currency': 'USD',
+           'Discount_Rate': 'ZAR', 'FX_Volatility': 'USD.ZAR', 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
+           'Strike_Price': USDZAR * 1.1, 'Underlying_Amount': AMOUNT, 'Expiry_Date': BASE + pd.DateOffset(years=1),
+           'Delivery_Date': BASE + pd.DateOffset(years=1)}
+
+
+def test_an_fx_option_is_its_amount_or_its_amount_at_its_strike_as_sa_ccr_reads_it(recorded, quoting):
+    """AN FX OPTION DEALS THE LARGER OF ITS AMOUNT AND ITS AMOUNT AT ITS STRIKE, the other side
+    SA-CCR reads (CRE52.35, `Exposure.against`): a call on a million dollars struck a tenth over
+    spot carries 1,100,000 dollars, which an automatic tier capped at 1,050,000 passes to four eyes.
+
+    Killing mutation: the strike side dropped from `Exposure.against` - the call a million dollars,
+    signed by the hub.
+    """
+    capped(recorded, 1_050_000.0)
+    dealt = booked(FX_CALL, 'EXEC-FX-CALL')
+    assert dealt['written'] is True and dealt['tier']['name'] == 'desk', dealt
+    assert dollars(quoting, dealt['deal_path']) == pytest.approx(1.1 * AMOUNT, rel=1e-14)
 
 
 #: A deposit of a thousand rand: 18,500 dollars on this book's axis, were its type to declare it.
@@ -4013,8 +4041,9 @@ def test_a_booking_s_own_answer_says_what_its_ticket_fell_past(recorded, quoting
     """A BOOKER READS WHY ON THE ANSWER. Under an automatic tier capped at 100,000 dollars and a
     four-eyes tier past it, a direct booking of 250,000 rand - 4,625,000 dollars at 18.5 on this
     book's axis - its restrike to 300,000 - 5,550,000 - and the acceptance of a collar on a million
-    dollars each answer their `tier` with the four-eyes tier's name and, as `fell_past`, the
-    automatic tier's cap sentence at that size, exactly what the position's ticket reads back.
+    dollars - its cap's rand at its strike, struck over spot - each answer their `tier` with the
+    four-eyes tier's name and, as `fell_past`, the automatic tier's cap sentence at that size,
+    exactly what the position's ticket reads back.
 
     Killing mutation: the answer's tier left without the route's sentences, which sends a booker to
     read the position back to learn why its ticket waits.
@@ -4032,12 +4061,15 @@ def test_a_booking_s_own_answer_says_what_its_ticket_fell_past(recorded, quoting
                 for row in CLIENT.get('/book/positions').json()['positions']
                 for entry in row['tickets']}
 
+    def collar():
+        quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
+        size = struck_side(pending_of(quoting.parent, quote)) * SPOT
+        return accept(quote).json(), size
+
     booked = ticketed('EXEC-1').json()
-    for act, dollars in ((lambda: booked, 4_625_000.0),
-                         (lambda: restruck(booked['deal_path'], Amount=300_000.0), 5_550_000.0),
-                         (lambda: accept(quote_of('ZeroCostCollar', COLLAR,
-                                                  netting_set=CLIENT_SET)).json(), 1_000_000.0)):
-        answer = act()
+    for act in (lambda: (booked, 4_625_000.0),
+                lambda: (restruck(booked['deal_path'], Amount=300_000.0), 5_550_000.0), collar):
+        answer, dollars = act()
         assert answer['tier'] == {'name': 'desk', 'four_eyes': True, 'approval_lsn': None,
                                   'fell_past': capped(dollars)}, answer
         assert tickets()[answer['ticket']] == capped(dollars)

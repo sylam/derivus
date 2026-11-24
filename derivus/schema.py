@@ -152,6 +152,14 @@ class Exposure(namedtuple('Exposure', 'amount currency underlying price start lo
             return 'cash'
         return 'units' if digital and fields[digital[0]] in digital[2:] else None
 
+    def against(self, fields, amount):
+        """What a deal stating `fields` deals in the currency `underlying` names against `amount` of
+        the one `currency` names (CRE52.35): its `other` field's magnitude, else `amount` at its
+        strike; None where this declares neither or names no underlying."""
+        if self.other:
+            return abs(fields[self.other])
+        return amount * fields[self.strike] if self.strike and self.underlying else None
+
 #: Amounts fixed today (`Exposure`): no risk factor CRE52 charges, their value in V alone.
 KNOWN_CASH = Exposure(None)
 
