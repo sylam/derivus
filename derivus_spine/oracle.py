@@ -58,7 +58,7 @@ INVARIANTS = ('copies_agree', 'nothing_outside_its_seat', 'every_refusal_is_a_de
               'an_amended_plan_is_a_new_approval', 'closes_superseded_never_edited',
               'every_numbers_replay_tuple', 'the_diary_equals_the_filings', 'no_delete',
               'duplicates_coalesce', 'nothing_outside_its_scope', 'the_pnl_is_additive',
-              'cash_reconciles', 'every_close_marked', 'the_call_is_the_formula',
+              'cash_reconciles', 'every_close_marked', 'the_call_reads_the_record_s_holding',
               'files_declared')
 
 #: The one projector that opens no body, which is the whole of what a keyless copy can compare.
@@ -870,19 +870,18 @@ def every_close_marked(log):
                              'run(s)'.format(len(days), len(marks))] + readings)
 
 
-def the_call_is_the_formula(log, script):
-    """Every collateral call a seat read is `CSA.call` over the record's own cash and the
-    agreement's declared terms at the position the read names, and the balance it reported is the
-    record's.
+def the_call_reads_the_record_s_holding(log, script):
+    """Every collateral call a seat read reports the record's own holding under an agreement whose
+    terms collateralise at the position the read names, and a call nobody could work out carries
+    no numbers.
 
-    The balance is the `cash` fold at the read's `lsn` held as of its `date` and the dials are the
-    terms the `agreements` fold stood on there, both advanced ONCE forward through the reads in LSN
-    order (`_walked`), so the service's `held` and every figure `CSA.WORKED` names are
-    compared as the numbers they are. The exposure and `fx` are compiles - the P&L's value of the
-    positions under the agreement at a close, and the close's spots in its currency - so both are
-    DATA this trusts as the service answered them. A call nobody could work out carries no numbers
-    and is not worked, one that carries them is named, and a day every call of which was unknown
-    puts no question.
+    The holding is the `cash` fold at the read's `lsn` held as of its `date` and the terms are the
+    ones the `agreements` fold stood on there, both advanced ONCE forward through the reads in LSN
+    order (`_walked`), so the service's `held` is compared as the numbers it is. What a call works
+    out of it - the support required, the holding's worth and the transfer - is the netting set's
+    arithmetic over the close's market, which the record does not hold, so this works none of it.
+    A call nobody could work out is not held to a holding, one that carries numbers anyway is
+    named, and a day every call of which was unknown puts no question.
     """
     called = [] if script is None else [
         call for act in script.get(ACTS, ()) for call in act.get(CALLED, ())]
@@ -904,9 +903,9 @@ def the_call_is_the_formula(log, script):
                     continue
                 declared = agreements.get(call['agreement'])
                 if declared is not None and declared['terms'] not in terms:
-                    terms[declared['terms']] = CSA.of(
+                    terms[declared['terms']] = CSA.collateralised(
                         json.loads(log.store.get(declared['terms']).decode('utf-8')))
-                if declared is None or terms[declared['terms']] is None:
+                if declared is None or not terms[declared['terms']]:
                     failures.append('{}: the record holds no collateralising terms under it '
                                     'there'.format(named))
                     continue
@@ -914,13 +913,10 @@ def the_call_is_the_formula(log, script):
                     balances[call['date']] = CSA.held(movements, call['date'])
                 held = balances[call['date']].get(call['agreement'], CSA.NOTHING)[
                     'collateral']
-                said = dict(CSA.call(call['exposure'], held, terms[declared['terms']], call['fx']),
-                            held=held)
                 worked += 1
-                failures.extend('{}: the service answered {} {!r} and the formula over the record '
-                                'says {!r}'.format(named, field, call.get(field), said[field])
-                                for field in CSA.WORKED + (('held',) if 'held' in call else ())
-                                if call.get(field) != said[field])
+                if call.get('held') != held:
+                    failures.append('{}: the service answered held {!r} and the record holds '
+                                    '{!r}'.format(named, call.get('held'), held))
     except SpineRefusal as missing:
         return unasked('a call is held to the terms an agreement declared and this copy does not '
                        'hold them ({}) - follow with `--blobs` and ask again'.format(missing))
@@ -929,9 +925,8 @@ def the_call_is_the_formula(log, script):
                        'the question')
     unknown = sorted(set(call['date'] for call in called) - set(
         call['date'] for call in called if not call.get('unknown')))
-    return answer(failures, ['{} call(s) worked again over the record, of {} read; the exposure '
-                             'and the spots are the service\'s, taken as data'.format(
-                                 worked, len(called))] + [
+    return answer(failures, ['{} call(s) held to the record\'s holding, of {} read; what each '
+                             'works out of it is the netting set\'s'.format(worked, len(called))] + [
         '{}: every call unknown, {}'.format(day, NOT_ASSESSED) for day in unknown])
 
 
@@ -989,7 +984,7 @@ def report(home, script=None, against=None, diary_keys=None, pnl=None):
             the_pnl_is_additive(log, pnl) if entitled else sealed,
             cash_reconciles(log, script, diary_keys) if entitled else sealed,
             every_close_marked(log) if entitled else sealed,
-            the_call_is_the_formula(log, script) if entitled else sealed,
+            the_call_reads_the_record_s_holding(log, script) if entitled else sealed,
             files_declared(log) if entitled else sealed)))
     finally:
         log.close()

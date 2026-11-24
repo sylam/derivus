@@ -1196,7 +1196,10 @@ face and what it posted at one less the `Haircut_Posted` of its cash row
 as one step of the recursion moves it (`collateral_bands`, `scan_collateral_balance`), only
 strictly past the minimum transfer on its side (`NettingCollateralSet.call`). `Haircut_Received` is
 the closeout's credit on what is held (`collateral_credit`), which no call reads. Margin is a
-separate balance.
+separate balance. The oracle holds each call a seat read to what the record can know - the holding
+the `cash` fold gives at its position and day, under terms collateralising there - and works none
+of the arithmetic, which reads the close's market (`the_call_reads_the_record_s_holding`, **Held
+by** `test_spine_oracle.py::test_a_call_reporting_a_holding_the_record_does_not_hold_is_named`).
 `GET /book/collateral` answers each agreement on a marked close, its exposure the P&L's value of its
 positions with the day's payment added back where the set holds it, its own `Exclude_Paid_Today`
 off (`Collateral.paid_today`); an unknown mark makes the call null, never zero. **Held by**
@@ -1236,7 +1239,7 @@ question could not be put.
 | 11 the P&L is additive | days sum to windows and portfolios to the book within the `pnl` tolerance |
 | 12 cash reconciles | payments match the diary, a row is paid once under each agreement |
 | 13 every close marked | each `pnl` close has marks while the book held anything |
-| 14 the call is the formula | each call read is `CSA.call` over the record |
+| 14 the call reads the record's holding | each call read reports the `cash` fold's holding at its position and day, under terms collateralising there; one nobody could work out carries no numbers |
 | 15 files declared | each file an attested run read is a blob a `file_declared` at or before it cites; not asked where runs read files and none is declared |
 
 A keyless copy answers 1, 8, 9 and half of 2 and names the rest not assessed. **Held by**

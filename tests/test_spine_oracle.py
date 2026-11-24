@@ -136,7 +136,7 @@ def test_the_report_answers_fifteen_and_names_what_it_could_not_assess(tmp_path)
     assert oracle.failed(answers) == [], answers
     assert sorted(name for name, found in answers.items() if found['held'] is None) == sorted(
         ('copies_agree', 'every_numbers_replay_tuple', 'every_refusal_is_a_denial',
-         'the_pnl_is_additive', 'every_close_marked', 'the_call_is_the_formula'))
+         'the_pnl_is_additive', 'every_close_marked', 'the_call_reads_the_record_s_holding'))
     assert '2 close(s) over 1 market(s)' in answers['closes_superseded_never_edited']['evidence'][0]
     assert answers['duplicates_coalesce']['evidence'] == ['23 tag(s) over 23 frame(s)']
 
@@ -1119,15 +1119,16 @@ def test_a_close_nobody_marked_is_named(tmp_path):
         "{}, and the day reads as it was marked".format(head + 1, BOOK, head)), restated
 
 
-def test_a_call_the_formula_does_not_give_is_named(tmp_path):
-    """THE CALL IS THE FORMULA: every call a seat read is `CSA.call` over the exposure and
-    the spots it was read at, the `cash` fold at the read's position held as of its day and the
-    terms the agreement stood on there - so terms restated after the read do not reach back into
-    it. A read a dollar off the formula, or reporting a balance the record does not hold, is named;
-    a call nobody could work out carries no numbers, and a script of nothing else puts no question.
+def test_a_call_reporting_a_holding_the_record_does_not_hold_is_named(tmp_path):
+    """THE CALL READS THE RECORD'S HOLDING: every call a seat read reports the `cash` fold at the
+    read's position held as of its day, under terms that collateralise where the agreement stood
+    there - so a movement filed and terms restated after the read do not reach back into it. A read
+    reporting a holding the record does not hold is named; a call nobody could work out carries no
+    numbers, and a script of nothing else puts no question. What the call works out of the holding
+    is the netting set's, which the record does not hold.
 
-    Killing mutations: the balance read at the head rather than at the read's own position; the
-    terms read there too; the balance the service reported never compared; and an unknown call's
+    Killing mutations: the holding read at the head rather than at the read's own position; the
+    terms read there too; the holding the service reported never compared; and an unknown call's
     numbers never read.
     """
     terms = {'Object': 'NettingCollateralSet', 'Reference': 'CSA-1', 'Collateralized': 'True',
@@ -1146,34 +1147,29 @@ def test_a_call_the_formula_does_not_give_is_named(tmp_path):
         transition(log, ACTOR, 'CSA-1', 'settled', amount=360.0, asset='USD', kind='collateral',
                    reference='COL-2', effective_time='2026-08-26T00:00:00.000000Z')
         declare_agreement(log, ACTOR, 'CSA-1', 'LEI-1', 'ISDA with CSA', canonical_bytes(dict(
-            terms, Credit_Support_Amounts=dict(terms['Credit_Support_Amounts'], Received_Threshold={
-                '.CreditSupportList': [[1, 200.0]]}))))
+            terms, Collateralized='False')))
     finally:
         log.close()
-    fx = {'USD': 1.0}
-    read = dict(CSA.call(500.0, {'USD': 40.0}, CSA.of(terms), fx),
-                agreement='CSA-1', date='2026-08-26', lsn=at, exposure=500.0, fx=fx,
-                held={'USD': 40.0}, unknown=[])
-    assert read['call'] == 360.0
+    read = {'required': 400.0, 'balance': 40.0, 'call': 360.0, 'direction': 'call',
+            'minimum_transfer': 10.0, 'agreement': 'CSA-1', 'date': '2026-08-26', 'lsn': at,
+            'exposure': 500.0, 'fx': {'USD': 1.0}, 'held': {'USD': 40.0}, 'unknown': []}
     assert oracle.report(home, script=script({'called': [read]}))[
-        'the_call_is_the_formula']['held'] is True
+        'the_call_reads_the_record_s_holding']['held'] is True
 
     named = 'CSA-1 on 2026-08-26 at LSN {}: '.format(at)
     unknown = [{'instrument': None, 'what': 'no mark at the end'}]
     for wrong, said in (
-            (dict(read, call=361.0), 'the service answered call 361.0 and the formula over the '
-                                     'record says 360.0'),
             (dict(read, held={'USD': 41.0}), "the service answered held {'USD': 41.0} and the "
-                                             "formula over the record says {'USD': 40.0}"),
+                                             "record holds {'USD': 40.0}"),
             (dict(read, unknown=unknown), 'the call names what nobody can know and carries '
                                           'required, balance, call, direction, minimum_transfer '
                                           'anyway')):
         answers = oracle.report(home, script=script({'called': [wrong]}))
-        assert oracle.failed(answers) == ['the_call_is_the_formula'], answers
-        assert answers['the_call_is_the_formula']['evidence'][0] == named + said
+        assert oracle.failed(answers) == ['the_call_reads_the_record_s_holding'], answers
+        assert answers['the_call_reads_the_record_s_holding']['evidence'][0] == named + said
     blank = dict(read, unknown=unknown, **dict.fromkeys(CSA.WORKED))
     assert oracle.report(home, script=script({'called': [blank]}))[
-        'the_call_is_the_formula']['held'] is None
+        'the_call_reads_the_record_s_holding']['held'] is None
 
 
 def test_a_run_on_a_file_nobody_declared_is_named_and_passes_once_it_is_declared(tmp_path):

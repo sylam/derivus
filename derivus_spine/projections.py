@@ -12,7 +12,7 @@
 ########################################################################
 
 """The projections - positions, the blotter, lifecycle state, cash and the strip, folded out of the
-log - and `CSA`, the credit support annex's arithmetic read over the cash fold.
+log - and `CSA`, what the record knows of a credit support annex, read over the cash fold.
 
 A projection is a pure fold. `fold` streams the frames a projector names, applies them in LSN order
 and answers state nobody edited; a knock, an expiry, an accrual, a position and the seat that struck
@@ -641,29 +641,16 @@ class Activity(Projector):
 
 
 class CSA:
-    """The collateral call at one date - the engine's own recursion, read on a close.
+    """What the record knows of a credit support annex: whether an agreement's terms collateralise
+    it, the currency its balance is kept in, and what is held under it, read over the cash fold.
 
-    A CSA asks for the credit support its dials make of the exposure: the independent amount, plus
-    the exposure's excess over the received threshold where it is above it, plus its excess below
-    the posted threshold where it is below it - the engine's `At`, thresholds and independent amount
-    stated in the agreement currency and crossed from it. The CALL is that less the balance held,
-    what the bank holds counted at face and what it posted at one less its `Haircut_Posted`, as the
-    engine's balance counts each (`Haircut_Received` is the closeout's credit on what is held,
-    which no call reads), and it moves only where it clears the minimum transfer on its side
-    STRICTLY, as `scan_collateral_balance` transfers: the bank calls where it is short by more than
-    `Minimum_Received`, and posts where it holds more than `Minimum_Posted` over what is required.
-    Nothing is rounded, the netting set declaring no rounding. COLLATERAL AND MARGIN ARE TWO
-    BALANCES: the call reads the collateral alone. Pure functions over plain data, so the service
-    and the oracle run one spelling.
+    The call at one date - the support required, what a holding is worth and the transfer - is the
+    netting set's own arithmetic, which the service reads off the engine. COLLATERAL AND MARGIN ARE
+    TWO BALANCES: the call reads the collateral alone.
     """
 
-    #: The two sides of a call, from the bank's: it calls collateral in, or posts it out.
-    CALL, POST = 'call', 'post'
-    #: What `call` answers - the fields a call nobody can work out carries as nulls.
+    #: What a call answers - the fields a call nobody can work out carries as nulls.
     WORKED = ('required', 'balance', 'call', 'direction', 'minimum_transfer')
-    #: The dials a CSA states under `Credit_Support_Amounts`, each a `CreditSupportList`.
-    DIALS = ('Independent_Amount', 'Received_Threshold', 'Posted_Threshold', 'Minimum_Received',
-             'Minimum_Posted')
     #: What an agreement nothing moved under holds: two empty balances.
     NOTHING = dict.fromkeys(HELD, {})
 
@@ -680,26 +667,6 @@ class CSA:
         holds no stated collateral."""
         return terms.get('Balance_Currency') or None if cls.collateralised(terms) else None
 
-    @classmethod
-    def of(cls, terms):
-        """The CSA a netting set's `terms` declare, as the engine reads them - or None where they
-        collateralise nothing (`collateralised`), the engine then holding no collateral at all.
-
-        `{Agreement_Currency, Balance_Currency, <each of DIALS>, haircuts}`: every
-        `CreditSupportList` at its first value, nothing where the terms state none, the balance
-        currency `balance_currency`, and `haircuts` `{currency: Haircut_Posted}` off the cash rows
-        of `Collateral_Assets`, a currency being the one asset a close's spots value.
-        """
-        if not cls.collateralised(terms):
-            return None
-        support = terms.get('Credit_Support_Amounts') or {}
-        dials = {dial: cls._first(support.get(dial)) or 0.0 for dial in cls.DIALS}
-        rows = (terms.get('Collateral_Assets') or {}).get('Cash_Collateral') or []
-        return dict(dials, Agreement_Currency=terms.get('Agreement_Currency'),
-                    Balance_Currency=cls.balance_currency(terms),
-                    haircuts={row['Currency']: cls._percent(row.get('Haircut_Posted'))
-                              for row in rows})
-
     @staticmethod
     def held(movements, until=None):
         """`{agreement: {kind: {asset: amount}}}` - the collateral and the margin held under every
@@ -713,52 +680,6 @@ class CSA:
                 kinds[row['kind']][row['asset']] = (kinds[row['kind']].get(row['asset'], 0.0)
                                                     + row['amount'])
         return balances
-
-    @staticmethod
-    def valued(holding, csa, fx):
-        """What `holding` (`{asset: amount}`) is worth to the CSA in the currency `fx` values every
-        asset in: each amount crossed, at face where the bank holds it and at one less its
-        `Haircut_Posted` where the bank posted it, and an asset held at nothing worth nothing,
-        crossed or not."""
-        return sum((amount * fx[asset] * (1.0 - csa['haircuts'].get(asset, 0.0) if amount < 0 else 1.0)
-                    for asset, amount in sorted(holding.items()) if amount), 0.0)
-
-    @staticmethod
-    def required(exposure, csa, fx):
-        """The credit support the CSA asks for at `exposure`, in the currency `exposure` is in and
-        `fx` values every currency in - the engine's `At`, term for term: positive is support the
-        bank should hold, negative support it should have posted."""
-        agreement = fx[csa['Agreement_Currency']]
-        above, below = csa['Received_Threshold'] * agreement, csa['Posted_Threshold'] * agreement
-        return (csa['Independent_Amount'] * agreement + (exposure - above) * (exposure > above)
-                + (exposure - below) * (exposure < below))
-
-    @classmethod
-    def call(cls, exposure, holding, csa, fx):
-        """The call at `exposure` with the collateral `holding` held: `{required, balance, call,
-        direction, minimum_transfer}` in the currency `fx` values in. `call` is the signed amount
-        the settlement moves - received positive - and nothing where the difference clears neither
-        minimum, `direction` saying which the bank does, and `minimum_transfer` the minimum on the
-        side the difference falls."""
-        needed, balance = cls.required(exposure, csa, fx), cls.valued(holding, csa, fx)
-        agreement, short = fx[csa['Agreement_Currency']], needed - balance
-        received = csa['Minimum_Received'] * agreement
-        posted = csa['Minimum_Posted'] * agreement
-        direction = cls.CALL if short > received else cls.POST if -short > posted else None
-        return {'required': needed, 'balance': balance, 'call': short if direction else 0.0,
-                'direction': direction, 'minimum_transfer': received if short >= 0 else posted}
-
-    @staticmethod
-    def _first(table):
-        """A `CreditSupportList` at its first value - a dict over its `[rating, amount]` rows, as
-        the engine reads one - or None where it states none."""
-        rows = table.get('.CreditSupportList') if isinstance(table, dict) else None
-        return float(next(iter(dict(rows).values()))) if rows else None
-
-    @staticmethod
-    def _percent(value):
-        """A haircut as the fraction the engine reads its `Percent` as, nothing where unstated."""
-        return value['.Percent'] / 100.0 if isinstance(value, dict) else float(value or 0.0)
 
 
 #: The projectors this module ships, by name. A reader picks one; nothing here is a default.

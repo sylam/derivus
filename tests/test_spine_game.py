@@ -291,7 +291,8 @@ def test_the_oracle_names_what_a_copy_cannot_assess(blue, tmp_path):
         blob.unlink()
     pulled = oracle.report(blobless, script=blue[0], against=blue[0]['home'])
     for name in ('nothing_outside_its_seat', 'an_amended_plan_is_a_new_approval',
-                 'nothing_outside_its_scope', 'every_close_marked', 'the_call_is_the_formula'):
+                 'nothing_outside_its_scope', 'every_close_marked',
+                 'the_call_reads_the_record_s_holding'):
         assert pulled[name]['held'] is None, pulled[name]
         assert '--blobs' in pulled[name]['evidence'][0], pulled[name]
     assert oracle.failed(pulled) == ['no_delete'], pulled
@@ -302,7 +303,7 @@ def test_the_oracle_names_what_a_copy_cannot_assess(blue, tmp_path):
         'an_amended_plan_is_a_new_approval', 'closes_superseded_never_edited',
         'every_numbers_replay_tuple', 'every_refusal_is_a_denial', 'the_diary_equals_the_filings',
         'nothing_outside_its_scope', 'the_pnl_is_additive', 'cash_reconciles',
-        'every_close_marked', 'the_call_is_the_formula', 'files_declared'))
+        'every_close_marked', 'the_call_reads_the_record_s_holding', 'files_declared'))
     for name, found in keyless.items():
         if found['held'] is None:
             assert found['evidence'][0].startswith('not assessed:'), name

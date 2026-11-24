@@ -188,8 +188,8 @@ Grouped by where a validator meets them.
   equity swap leg reads its known dividends: M.
 - **Rating-dependent credit support is read at its first row** (2026-10-11).
   `utils.CreditSupportList.value` returns the first row's threshold, minimum transfer or independent
-  amount whatever the counterparty's rating, in the engine and the spine's collateral call. Exact
-  for one row; UNMEASURED otherwise.
+  amount whatever the counterparty's rating, in the netting set's recursion and the collateral call
+  it answers. Exact for one row; UNMEASURED otherwise.
 - **An upstream document's `Base_Time_Grid`, `Scenario_Time_Grid` and `Percentiles` are not read**
   (2026-11-21). A credit run's grid is `Time_Grid` and its percentile `Percentile`, each at its
   declared default where the document states neither, so a document stating its grids and
