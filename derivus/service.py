@@ -146,7 +146,7 @@ JOB_SKELETON = {'Calc': {
     'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
         'System Parameters': {'Base_Currency': 'USD', 'Base_Date': {'.Timestamp': '2024-06-28'}},
         'Price Factors': {
-            'FxRate.USD': {'Domestic_Currency': None, 'Interest_Rate': 'USD', 'Spot': 1.0},
+            'FxRate.USD': {'Interest_Rate': 'USD', 'Spot': 1.0},
             'InterestRate.USD': {
                 'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
                 'Curve': {'.Curve': {'meta': [], 'data': [[0.0, 0.02], [5.0, 0.02]]}}}}}}}}
@@ -7076,8 +7076,7 @@ class SetupJob(Progressing):
                 currency = name.split('.', 1)[1]
                 if name in factors:
                     market.setdefault('Price Factors', {})[name] = {
-                        'Domestic_Currency': None, 'Spot': value['Spot'],
-                        'Interest_Rate': discounts.get(currency, currency)}
+                        'Spot': value['Spot'], 'Interest_Rate': discounts.get(currency, currency)}
             added = configure(document, ([CURVE_BOOTSTRAPPER] if curves else []) + (
                 [VOL_BOOTSTRAPPER] if quotes else []))
             write, outcome = curve_edit(

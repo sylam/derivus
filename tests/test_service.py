@@ -4041,8 +4041,7 @@ def test_a_pair_is_set_up_and_then_quotes(desk_setup, tmp_path, monkeypatch):
     assert outcome['not_supplied'] == [] and outcome['held_out'] == []
     assert outcome['discovered'] == {'added': {}, 'revived': {}}
     assert sorted(market['Market Prices']) == ['FXVolPrices.EUR.ZAR', 'InterestRatePrices.EUR']
-    assert market['Price Factors']['FxRate.EUR'] == {
-        'Domestic_Currency': None, 'Spot': 1.0855, 'Interest_Rate': 'EUR'}
+    assert market['Price Factors']['FxRate.EUR'] == {'Spot': 1.0855, 'Interest_Rate': 'EUR'}
     assert market['Bootstrapper Configuration']['InterestRate']['Prices'] == 'InterestRate'
     assert abs(par_residuals(desk_setup, 'EUR')).max() < 1e-6, 'a benchmark that does not reprice'
     assert any('EUR was set up on the conventions this build ships' in row
