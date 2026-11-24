@@ -240,7 +240,12 @@ and the web's type check; the rendering is **Not gated**. A writing verb holds f
   `::test_a_retired_override_restores_the_files_entry_and_the_market_re_bootstraps`,
   `::test_a_retire_reaches_into_a_section_and_re_solves_the_whole_market`,
   `::test_a_retire_the_market_cannot_stand_on_writes_nothing`,
-  `::test_a_retired_system_date_is_the_date_verb_back_to_the_files_day`.
+  `::test_a_retired_system_date_is_the_date_verb_back_to_the_files_day`. A market stating no date
+has none: `GET /book/status` and `GET /book/curve` answer its `base_date` null (`service.market_day`),
+every verb authoring or rolling a curve reads the day through `service.book_base_date`, which
+refuses by name saying which field to state where, and the date verb, which states it, reads no
+day of its own. **Held by**
+`::test_a_book_whose_market_states_no_date_shows_none_and_a_curve_verb_names_it`.
 
 | verb | what it does | its own rule |
 | --- | --- | --- |

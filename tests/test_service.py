@@ -9474,6 +9474,41 @@ def test_a_document_opened_is_served_as_the_book_and_the_desks_own_stands(book, 
         service.DESK = None
 
 
+def test_a_book_whose_market_states_no_date_shows_none_and_a_curve_verb_names_it(book, tmp_path,
+                                                                                 monkeypatch):
+    """A MARKET STATING NO DATE HAS NONE. A document from another system whose market data file
+    states no `Base_Date` is opened as the book: the status and the curves show its date null; a
+    curve set up on it is refused naming the field to state and where; the date verb states it,
+    and the status then shows it.
+
+    Killing mutations: the status reading the date through the refusing reader - the read fails on
+    the date the market lacks; the refusal dropped - the curve verb dies on `fromisoformat(None)`,
+    naming nothing; the date verb reading the day it replaces - refused as the curve verb is.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    service.DESK = str(book)
+    market = tmp_path / 'legacy_market.json'
+    market.write_text(dump({'MarketData': {'System Parameters': {'Base_Currency': 'USD'},
+                                           'Price Factors': FACTORS}}))
+    document = json.loads(dump(job()))
+    document['Calc']['MergeMarketData'] = {'MarketDataFile': str(market), 'ExplicitMarketData': {}}
+    try:
+        assert CLIENT.post('/book/open', json={'name': 'LEGACY.json', 'document': document}
+                           ).status_code == 200
+        assert CLIENT.get('/book/status').json()['base_date'] is None
+        assert CLIENT.get('/book/curve').json()['base_date'] is None
+        refused = CLIENT.post('/book/curve', json={'curve': 'USD', 'rows': [
+            {'tenor': '1Y', 'quote': 4.0}]})
+        assert (refused.status_code, refused.json()['detail']) == (422, (
+            "the book's market states no Base_Date, the day its curves are authored and rolled on: "
+            'state System Parameters.Base_Date in its market data file or in '
+            "MergeMarketData.ExplicitMarketData, or set the book's date"))
+        assert CLIENT.post('/book/date', json={'base_date': '2024-06-28'}).json()['written'] is True
+        assert CLIENT.get('/book/status').json()['base_date'] == '2024-06-28'
+    finally:
+        service.DESK = None
+
+
 def test_a_desk_that_records_refuses_to_open_a_document(recorded, book, tmp_path):
     """Under a spine home `POST /book/open` refuses a document from another system with a 422
     saying why - a recording desk's book is what its record holds, and the document is opened on a

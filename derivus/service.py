@@ -5515,11 +5515,23 @@ def read_stamp(stated):
         raise ValueError('{!r} is no date - a date is YYYY-MM-DD'.format(stated))
 
 
+def market_day(market):
+    """The ISO day `market` states as its `System Parameters.Base_Date`, None where it states
+    none: a market stating no date has none, and a view shows it so."""
+    stated = market['System Parameters'].get('Base_Date')
+    return read_stamp(stated).isoformat() if stated else None
+
+
 def book_base_date(document, market=None):
     """The book's own base date as a `datetime.date` - what a curve's benchmarks are rolled off. A
     block authored on it moves its values alone; one authored before it re-rolls. Read off
-    `market` where the caller holds the document's."""
-    return read_stamp((market or market_of(document))['System Parameters']['Base_Date'])
+    `market` where the caller holds the document's, and refused by name where it states none."""
+    day = market_day(market or market_of(document))
+    if day is None:
+        raise ValueError("the book's market states no Base_Date, the day its curves are authored "
+                         'and rolled on: state System Parameters.Base_Date in its market data file '
+                         "or in MergeMarketData.ExplicitMarketData, or set the book's date")
+    return datetime.date.fromisoformat(day)
 
 
 def stamp_base_date(document, base_date):
@@ -5639,13 +5651,14 @@ def curve_edit(document, curves, base_date, quotes={}, patch={}, held=(), stated
     """
     from derivus_bloomberg.ir_curve import reauthor
 
-    standing = book_base_date(document)
-    if base_date < standing and not stated:
-        raise ValueError(
-            'the book rolled to {} while the terminal priced these rows, which are authored as of '
-            '{} - a curve is never dated behind its own book and a snap never rolls one back, so '
-            'post it again'.format(standing.isoformat(), base_date.isoformat()))
-    dated = base_date != standing or stated
+    if not stated:
+        standing = book_base_date(document)
+        if base_date < standing:
+            raise ValueError(
+                'the book rolled to {} while the terminal priced these rows, which are authored as '
+                'of {} - a curve is never dated behind its own book and a snap never rolls one '
+                'back, so post it again'.format(standing.isoformat(), base_date.isoformat()))
+    dated = stated or base_date != standing
     rolled, rolled_held = curve_quotes(None, document, base_date, reading)[:2] if dated else (
         {}, [])
     curves, held = dict(rolled, **curves), list(dict.fromkeys([*held, *rolled_held]))
@@ -5704,7 +5717,9 @@ def curve_quotes(source, document, base_date=None, reading=Context):
     from derivus_bloomberg import ir_curve
     from derivus_bloomberg.errors import BloombergFXError
 
-    dated, read, quotes, held, seed = book_base_date(document), {}, {}, [], desk_seed()
+    read, quotes, held, seed = {}, {}, [], desk_seed()
+    # a day a desk states re-rolls the rows as they stand, the book's own day unread
+    dated = base_date if source is None and base_date else book_base_date(document)
     as_of = base_date or dated
     prices = market_of(document, reading())['Market Prices']
     for name, curve in curve_names(prices):
@@ -5811,8 +5826,7 @@ def book_curves(curve: str = None):
     document, etag = live_book().read()
     market = market_of(document)
     seed = desk_seed()
-    answer = {'etag': etag, 'base_date': book_base_date(document, market).isoformat(),
-              'curves': curve_blocks(market, curve)}
+    answer = {'etag': etag, 'base_date': market_day(market), 'curves': curve_blocks(market, curve)}
     for name, entry in answer['curves'].items():
         try:
             entry['conventions'] = dict(ir_curve.block_conventions(
@@ -5934,7 +5948,7 @@ def status_of(document, etag):
                 'interpolation': curve_interpolation(market, curve)[0], 'rows': []})
     return {
         'etag': etag,
-        'base_date': book_base_date(document, market).isoformat(),
+        'base_date': market_day(market),
         'base_currency': market.get('System Parameters', {}).get('Base_Currency'),
         # the inner path count is the one number a quote and a mark share, so a book stating too
         # few for a simulated deal is NAMED here with the remedy rather than healed behind the desk
