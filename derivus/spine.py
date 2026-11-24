@@ -60,7 +60,7 @@ from . import schema
 from .schema import (declared_fields, flipped, index_named, instrument_of, job_children, mapping,
                      netting_sets, stated_messages, tables_of, walk_job_deals, without_clocks)
 from .config import Config, as_json, decode_wire
-from .structures import base_currency, market_of
+from .structures import base_currency, market_of, quoted_crosses
 
 #: The whole switch, the actor beside it, and the folder a reader's folds start from. Read per
 #: call, like `DV_HOME` one module over.
@@ -2364,15 +2364,9 @@ class PnL:
 
     @staticmethod
     def rates(values, reporting, base):
-        """`{currency: units of the reporting currency per unit}` off a values vector's spots - the
-        engine's axis, every spot priced in `base`, which carries none of its own and is one."""
-        spots = {name[len('FxRate.'):]: fields['Spot'] for name, fields in values.items()
-                 if name.startswith('FxRate.') and '.' not in name[len('FxRate.'):]
-                 and 'Spot' in fields}
-        if base:
-            spots[base] = 1.0
-        return {} if not spots.get(reporting) else {
-            currency: spot / spots[reporting] for currency, spot in spots.items() if spot}
+        """`{currency: units of the reporting currency per unit}` at a values vector's quoted spots
+        (`structures.quoted_crosses`), every spot priced in `base`, which is one."""
+        return quoted_crosses(dict(values, **{'FxRate.' + base: {'Spot': 1.0}}), reporting)
 
     @classmethod
     def rates_on(cls, closes, reporting, base):

@@ -1048,22 +1048,27 @@ def market_data(market):
     return market['Price Factors']
 
 
-def engine_spot(market, underlying_currency, settlement_currency):
-    """Today's rate on the DEAL's axis: units of `Currency` per unit of `Underlying_Currency`.
+def quoted_crosses(factors, into):
+    """`{currency: units of `into` per unit}` at the quoted spots of `factors`, a `Price Factors`
+    section or a values vector: each `FxRate.<ccy>.Spot` is that currency in base units, so a cross
+    is the ratio of two, `calc_fx_cross`'s with `quoted` read off the market instead of a tensor. A
+    rate stating no spot, or a zero, has none, and `into` having none answers nothing."""
+    spots = {name.split('.', 1)[1]: float(block['Spot']) for name, block in factors.items()
+             if name.startswith('FxRate.') and name.count('.') == 1 and block.get('Spot')}
+    return {ccy: spot / spots[into] for ccy, spot in spots.items()} if into in spots else {}
 
-    The engine's `FxRate.<ccy>.Spot` is that currency in base-currency units, so the cross is the
-    ratio - `calc_fx_cross`'s own arithmetic, read off the market instead of a tensor. It is the
-    seed and the bracket centre for a strike solve; no price is taken from it.
-    """
+
+def engine_spot(market, underlying_currency, settlement_currency):
+    """Today's rate on the DEAL's axis: units of `Currency` per unit of `Underlying_Currency`, the
+    quoted cross (`quoted_crosses`). It is the seed and the bracket centre for a strike solve; no
+    price is taken from it."""
     factors = market_data(market)
-    spots = {}
     for currency in (underlying_currency, settlement_currency):
         name = 'FxRate.{}'.format(currency)
         if name not in factors:
             raise ValueError('{} is missing - a {} quote cannot be struck on this book'.format(
                 name, currency))
-        spots[currency] = float(factors[name]['Spot'])
-    return spots[underlying_currency] / spots[settlement_currency]
+    return quoted_crosses(factors, settlement_currency)[underlying_currency]
 
 
 def margin_value(book, margin):

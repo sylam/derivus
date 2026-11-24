@@ -254,6 +254,14 @@ than one coordinate. **Held by**
 
 ### Solves are bracketed {#solves}
 
+The market spot is `engine_spot`, one entry of `quoted_crosses`, the one reading of a cross at
+the book's `FxRate` spots: a sales margin, a ticket's notional and a crossed fill's rate read
+`engine_spot` too, refused by name for a currency with no `FxRate`, and a close's rates through
+`PnL.rates`, the base at one. **Held by**
+`test_a_live_cross_lands_exactly_where_engine_spot_reads_it_back`,
+`test_pnl.py::test_the_book_makes_its_marks_move_plus_its_cash_and_a_month_is_its_days` and
+`test_collateral.py::test_the_record_s_balance_opens_the_engine_s_recursion_and_the_call_is_its_transfer`.
+
 `run_solve` brackets around the market spot, crossed to the engine axis and sorted, and `brentq`
 owns the root — a secant seeded at the spot lands in a strike's flat region on a small engine-axis
 strike:
