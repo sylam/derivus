@@ -2998,7 +2998,8 @@ def test_a_blank_is_not_a_statement(book):
     came back as a zero; read as a statement for selection and not for completion, a ticket is
     stated for one and missing for the other twenty lines apart.
 
-    Killing mutation: a blank parameter read as stated.
+    Killing mutations: a blank parameter read as stated; the ticket judged by the schema's own
+    `stated`, under which a notional posted 0.0 is not required.
     """
     assert structures.variation_for(
         structures.ForwardExtra, params(floor=SPOT * 0.97, cap=0.0))[0] == 'floor'
@@ -3017,6 +3018,8 @@ def test_a_blank_is_not_a_statement(book):
         with pytest.raises(ValueError) as refusal:
             structures.quote(book, 'ForwardExtra', params(cap=blank))
         assert 'state the cap or the floor' in str(refusal.value), (blank, str(refusal.value))
+    with pytest.raises(ValueError, match='^notional is required$'):
+        structures.declared(structures.ZeroCostCollar, params(floor=SPOT * 0.97, notional=0.0))
 
 
 def test_what_a_variation_takes_is_required_and_what_no_form_takes_refuses(book):

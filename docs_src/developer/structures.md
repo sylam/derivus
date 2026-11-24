@@ -77,9 +77,10 @@ consistent with everything the ticket states. `buy_currency` / `sell_currency` m
 pair and fix which side the client buys; a stated parameter that is some variation's own admits only
 the variations declaring it. None consistent refuses naming the contradiction; more than one refuses
 naming what to state — a structure quoted on the desk's guess of which way round it went is a
-booking nobody agreed. "Stated" is one predicate, `stated()`, the falsy rule a `REQUIRED` field is
-held to: a blank (`0.0`, `''`) is not a statement, because a front end round-trips unfilled fields
-that way. **Held by**
+booking nobody agreed. "Stated" is one predicate, `stated()`, the falsy rule a ticket's `REQUIRED`
+parameter is held to as well (`declared`): a blank (`0.0`, `''`) is not a statement, because a front
+end round-trips unfilled fields that way, where a deal's required number stated as zero is stated
+(`schema.stated`). **Held by**
 `test_the_selection_rule_answers_every_way_a_ticket_can_state_it`, `test_a_blank_is_not_a_statement`.
 
 The selectors are published with no value and `selector: 'required' | 'optional'`, computed in

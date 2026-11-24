@@ -927,12 +927,14 @@ def declared(structure, params):
     nor the id they are hashed into, nor the pending file, nor the ticket.
     """
     fields = list(structure.fields)
-    if not schema.validate_block(schema.Group(structure.__name__, None, fields), params):
+    # what the ticket states is `stated`'s, a level posted 0.0 being a blank here
+    ticket = {key: value for key, value in params.items() if stated(params, key)}
+    if not schema.validate_block(schema.Group(structure.__name__, None, fields), ticket):
         variation = variation_for(structure, params)[1]
         fields += variation.fields if variation else []
     others = {f.key for form in getattr(structure, 'variations', {}).values()
               for f in form.fields}.difference(f.key for f in fields)
-    refused = (schema.validate_block(schema.Group(structure.__name__, None, fields), params)
+    refused = (schema.validate_block(schema.Group(structure.__name__, None, fields), ticket)
                or schema.stated_messages(structure.__name__, fields, params, others))
     if refused:
         raise ValueError('; '.join(refused))

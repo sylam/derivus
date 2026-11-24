@@ -204,7 +204,8 @@ cx.validate()
   refused block is not walked, so `'factors'` is empty beside it.
 
 All three empty means nothing here can tell you the job will fail. A field a deal's declarations
-require left unstated stops every run of the job, refused by name before anything compiles; any
+require left out, stated null or blank (a zero is a number stated) stops every run of the job,
+refused by name before anything compiles; any
 other message never stops a deal pricing: the engine still fails exactly where it always failed,
 and this says so first.
 

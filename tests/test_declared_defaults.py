@@ -703,18 +703,19 @@ FX_OPTIONS = sorted(deal_type for deal_type, sections in schema.mapping['Instrum
 
 
 @pytest.mark.parametrize('deal_type', FX_OPTIONS)
-def test_an_fx_option_is_refused_a_zero_or_missing_strike(deal_type):
-    """An FX strike is a level of a rate, never zero: omitted or stated at zero it is refused by
-    name at booking on every FX option type, and a stated level books.
+def test_an_fx_option_is_refused_a_strike_left_out(deal_type):
+    """An FX strike is required: left out or stated null it is refused by name at booking on every
+    FX option type, and a stated level books, zero included.
 
-    Killing mutation: the strike declared with a 0.0 placeholder - a zero strike books, and the
-    partial-time barrier prices it NaN."""
+    Killing mutation: the strike declared with a 0.0 placeholder - one left out is not stated
+    rather than required."""
     def said(**stated):
         block = dict({'Object': deal_type, 'Reference': 'K'}, **stated)
         return schema.validate_instrument(construct_instrument(block, {}))
     assert 'Strike_Price is required' in said()
-    assert 'Strike_Price is required' in said(Strike_Price=0.0)
-    assert 'Strike_Price is required' not in said(Strike_Price=1.1)
+    assert 'Strike_Price is required' in said(Strike_Price=None)
+    for level in (0.0, 1.1):
+        assert 'Strike_Price is required' not in said(Strike_Price=level)
 
 
 #: Two types stacking the pricing block, each stated in full.
@@ -1127,6 +1128,24 @@ def test_a_deal_leaving_a_term_out_prices_nothing(key):
     with pytest.raises(ValueError) as refused:
         marks([{name: value for name, value in deal.items() if name != key}, BOOK[1]])
     assert str(refused.value) == 'BaseValuation: {}: {} is required'.format(deal['Reference'], key)
+
+
+def test_a_required_number_stated_zero_is_stated():
+    """A required number stated as zero is stated: a EUR call struck at zero runs as a base
+    valuation and is worth the euros it delivers, their spot discounted on the euro curve, while
+    the same call leaving its strike out or stating it null is refused by name before anything
+    compiles.
+
+    Killing mutation: `schema.unstated` reading every falsy value as unstated (`not value`), under
+    which the zero strike refuses the book as the null one does."""
+    deal = fx_leg('FXOptionDeal', 'FXO', Expiry_Date=WORLD_EXPIRY, Strike_Price=0.0)
+    delivered = deal['Underlying_Amount'] * X0 * math.exp(
+        -R_EUR * (WORLD_EXPIRY - WORLD_BASE).days / 365.0)
+    assert float.fromhex(marks([deal])[0]['FXO']) == pytest.approx(delivered, rel=1e-12)
+    for blank in ({'Strike_Price': None}, {}):
+        with pytest.raises(ValueError, match='^BaseValuation: FXO: Strike_Price is required$'):
+            marks([dict({key: value for key, value in deal.items() if key != 'Strike_Price'},
+                        **blank)])
 
 
 #: How a book may file each currency's own curve (`world`): under the currency's name with its

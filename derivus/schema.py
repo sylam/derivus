@@ -389,9 +389,10 @@ def settlement_days(fields, declared):
             yield key, column, cash, position, day if stated(day) else None
 
 
-def stated(day):
-    """Whether a date field holds a day, rather than the blank an unstated one reads as."""
-    return day is not None and not (isinstance(day, str) and not day)
+def stated(value):
+    """Whether a field holds what its author stated, rather than what one left out reads as: a
+    null, a blank string, an empty table or container. A number is stated, zero included."""
+    return isinstance(value, numbers.Number) or bool(value)
 
 
 def index_named(fields, terms, base=None):
@@ -534,9 +535,9 @@ def value_message(field, value):
     A wire tag is the author's spelling and the loader has already turned it into what the engine
     reads, so a bare string where a date belongs survives decoding unchanged - which is what naming
     the wire form is for. A `bool` is not a number, `True` pricing as 1.0, and a field declaring
-    `values` accepts nothing outside them. A FALSY value states nothing and is read against
-    nothing: an optional field declares an empty default, and a required one missing is a
-    different message.
+    `values` accepts nothing outside them. A FALSY value is read against nothing: an optional field
+    declares an empty default, a required one missing is a different message, and a zero passes a
+    number's check.
     """
     if not value:
         return None
@@ -565,11 +566,11 @@ def validate_block(cls, block):
     order; empty when they have nothing to say.
 
     The declarations give the fields an author MUST STATE and what every authored value has to BE.
-    A REQUIRED field is missing when FALSY, having no default to be confused with; a PLACEHOLDER -
-    any other declared default the class does not call a convention - is missing when it is ABSENT,
-    NULL OR A BLANK STRING, because `Swap_Rate: 0.0` is a rate a benchmark states while a null or a
-    blank is what a front end round-trips for an empty box, and `Swap_Rate` unsaid is a swap with no
-    fixed leg. A falsy value is checked against nothing else, having nothing to state.
+    A REQUIRED field is missing where it is not `stated`, having no default to be confused with; a
+    PLACEHOLDER - any other declared default the class does not call a convention - is missing when
+    it is ABSENT, NULL OR A BLANK STRING. Either way `Swap_Rate: 0.0` is a rate a benchmark states
+    while a null or a blank is what a front end round-trips for an empty box, and `Swap_Rate` unsaid
+    is a swap with no fixed leg. A falsy value is checked against nothing else.
     """
     messages = []
     for key, field in declared_fields(cls).items():
@@ -587,8 +588,8 @@ def validate_block(cls, block):
 
 def unstated(field, value):
     """Whether `value` leaves `field` unstated where its declaration makes the author state it: a
-    REQUIRED field, falsy, which no read of its block survives."""
-    return not value and field.default is REQUIRED
+    REQUIRED field not `stated`, which no read of its block survives."""
+    return field.default is REQUIRED and not stated(value)
 
 
 def stated_messages(owner, fields, block, known=()):

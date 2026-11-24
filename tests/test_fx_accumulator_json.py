@@ -298,10 +298,10 @@ def test_a_settled_fixing_beyond_the_barrier_kills_the_deal(tmp_path):
 
 def test_a_blank_barrier_is_refused_rather_than_priced_at_zero(tmp_path):
     """`Barrier_Price` is `default=REQUIRED`: a document leaving it blank is refused by name before
-    anything compiles, and one stating it below zero anyway is refused by the deal, which would
-    otherwise survive NO fixing and price to a silent scalar zero, a whole trade vanishing from a
-    book with no error. BOTH directions, because below zero a `Down_And_Out` is merely unbarriered
-    and prices its full strip, so a one-direction fixture scores the hole harmless.
+    anything compiles, and one stating it at or below zero anyway is refused by the deal, which
+    would otherwise survive NO fixing and price to a silent scalar zero, a whole trade vanishing
+    from a book with no error. BOTH directions, because below zero a `Down_And_Out` is merely
+    unbarriered and prices its full strip, so a one-direction fixture scores the hole harmless.
 
     Killing mutations: the run judging its block alone (`Config.unstated` left out of
     `Calculation.parameters`), the blank refused by the deal instead; the positive-barrier refusal
@@ -309,10 +309,11 @@ def test_a_blank_barrier_is_refused_rather_than_priced_at_zero(tmp_path):
     """
     for btype in ('Up_And_Out', 'Down_And_Out'):
         with pytest.raises(ValueError, match='^BaseValuation: ACC1: Barrier_Price is required$'):
-            _run(_job(Barrier_Type=btype, Barrier_Price=0.0), tmp_path, f'blank{btype}')
-        rows = _run(_job(Barrier_Type=btype, Barrier_Price=-1.0), tmp_path, f'below{btype}')[
-            'Results']['mtm']
-        assert rows[rows['Reference'] == 'ACC1'].empty, (btype, rows)
+            _run(_job(Barrier_Type=btype, Barrier_Price=None), tmp_path, f'blank{btype}')
+        for barrier in (0.0, -1.0):
+            rows = _run(_job(Barrier_Type=btype, Barrier_Price=barrier), tmp_path,
+                        f'below{btype}{barrier}')['Results']['mtm']
+            assert rows[rows['Reference'] == 'ACC1'].empty, (btype, barrier, rows)
 
 
 def test_a_fixing_dated_today_follows_the_price_factor(tmp_path):

@@ -88,9 +88,9 @@ def refuse_zero_payoff(field, deal_type, fieldname='Cash_Payoff'):
     """Refuse a digital whose payoff amount `fieldname` is exactly 0.0.
 
     The leg pays nothing on every path it is in the money, so it prices to zero and the structure
-    it was booked to CANCEL keeps its whole payoff - a leg of no value is not a contra, and the
-    amount is REQUIRED precisely because 0.0 is falsy and reads as unauthored. A named SKIP, not
-    the fatal class: the netting set prices without the leg and the log names it.
+    it was booked to CANCEL keeps its whole payoff - a leg of no value is not a contra, while one
+    leaving the amount out is refused as required. A named SKIP, not the fatal class: the netting
+    set prices without the leg and the log names it.
     """
     if field[fieldname] == 0.0:
         raise ValueError(
