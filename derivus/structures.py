@@ -1097,11 +1097,10 @@ def base_currency(market):
     return market['System Parameters']['Base_Currency']
 
 
-def reporting_currency(document, market=market_of):
+def reporting_currency(document):
     """The currency `document` reports in, which every premium it prices is in: its
-    `Calculation.Currency`, else the base of its market, which `market(document)` loads only where
-    the document states none."""
-    return document['Calc']['Calculation'].get('Currency') or base_currency(market(document))
+    `Calculation.Currency`, None where it states none, which every run of it refuses by name."""
+    return document['Calc']['Calculation'].get('Currency')
 
 
 def crossed_spots(base, crosses):

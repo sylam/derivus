@@ -331,7 +331,11 @@ the runner is that data's only reader.
   nothing (straddle, strangle) charges the premium instead; `charged_on` names which.
 
 Outcome fields, all in the client's sign convention and in the outcome's `currency` (the book's
-reporting currency, `structures.reporting_currency`): `net_mid` (the legs at mid), `net` (plus
+`Calculation.Currency`, which every view serving a book's currency reads through
+`structures.reporting_currency`, a book stating none being refused by name by every run of it;
+**Held by** `tests/test_structures.py::test_a_collar_at_a_margin_is_minus_it_on_paper_and_plus_it_on_the_book`,
+`tests/test_service.py::test_the_consolidated_risk_is_the_book_priced_once_and_it_follows_a_booking`,
+`tests/test_loud_refusals.py::test_a_calculation_stating_no_currency_is_refused_by_name`): `net_mid` (the legs at mid), `net` (plus
 everything charged), `edge` (the two-way charge alone, non-negative by construction), and per leg
 `spread_charge`, `spread_source` and `spread` rows `{pillar, vega, half, cost}`, where `half` is always
 the market's half-spread and `cost` the money charged. A leg no reading reaches carries `null`, never

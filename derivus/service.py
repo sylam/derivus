@@ -2123,7 +2123,7 @@ def consolidated_risk(document):
     """
     run = dict(document, Calc=dict(document['Calc'], Calculation=dict(
         document['Calc']['Calculation'], Object='BaseValuation', Greeks='First')))
-    answer = {'as_of': as_of(), 'currency': run['Calc']['Calculation'].get('Currency'),
+    answer = {'as_of': as_of(), 'currency': structures.reporting_currency(document),
               'mtm': 0.0, 'per_deal': [], 'in_sets': [], 'greeks': [], 'quotes': [],
               'quoted': [], 'quote_note': None}
     if not live_deals(job_children(run)):
@@ -2542,7 +2542,7 @@ def announced(document, rows=None):
     record answers it (`answered`) - none where no home is configured."""
     rows = hub_diary(document)['rows'] if rows is None else rows
     return answered(spine.ordered(rows + spine.premiums(
-        book_name(document), structures.reporting_currency(document, market_of)))
+        book_name(document), structures.reporting_currency(document)))
         if spine.configured() else rows)
 
 
@@ -2942,7 +2942,7 @@ def telling(rows):
            if instrument}
     names = named_trades(document, set(now) | set(now.values()))
     writer = spine.package().vocabulary.WRITER
-    reporting = structures.reporting_currency(document, market_of) if document else ''
+    reporting = structures.reporting_currency(document) if document else ''
 
     def said(row):
         kind, body, actor = row['event_type'], bodies.get(row['lsn']), row['actor']
@@ -3373,7 +3373,7 @@ def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreemen
     if explain:
         answer['explain'] = PnL.explain(answer['rows'], last_days, first['day'], last['day'],
                                         explaining(first, last, document))
-    return dict(answer, currency=first['document']['Calc']['Calculation'].get('Currency'),
+    return dict(answer, currency=structures.reporting_currency(first['document']),
                 scope=dict(scope, clients=None if client is None else sorted(scope['clients'])),
                 **{side: {field: marks_of[field] for field in (
                     'day', 'lsn', 'values_hash', 'job', 'result', 'live') if field in marks_of}
@@ -3389,8 +3389,7 @@ def valued_between(first, last, document, marks, closes, scope, through=False, c
     netting set holds a deal until its cash moves. The base currency is the start's job's, off the
     files it read as they stood (`close_mkt` where the caller already loaded it)."""
     book = book_name(document)
-    calculation = first['document']['Calc']['Calculation']
-    reporting = calculation.get('Currency')
+    reporting = structures.reporting_currency(first['document'])
     base = structures.base_currency(close_mkt if close_mkt is not None else close_market(first))
     for marks_of in (first, last) if first is not last else (first,):
         marks_of['rates'] = PnL.rates(marks_of.pop('values', None) or spine.stored(
@@ -3512,7 +3511,7 @@ def consideration(document, price, currency):
     book's own reporting currency, else that currency and what one unit of it is worth in the
     book's, at this booking's own board - or the 422 naming a currency the book carries no spot for.
     """
-    reporting = structures.reporting_currency(document, market_of)
+    reporting = structures.reporting_currency(document)
     if currency is None or currency == reporting:
         return None, None
     if price is None:
@@ -4096,7 +4095,7 @@ def book_worklist(actor: str = None):
         nodes = {row['key']: filed_at(placed[row['key']]) for row in found}
         granted = {} if sight is None else spine.may(actor, sorted(set(nodes.values())), {})[
             'approval']
-        reporting = structures.reporting_currency(document, market_of)
+        reporting = structures.reporting_currency(document)
         return [dict(row, price=booked[row['lsn']].get('price'),
                      currency=booked[row['lsn']].get('currency') or reporting,
                      tier=entries[row['lsn']]['tier'], fell_past=entries[row['lsn']]['fell_past'],
@@ -4541,7 +4540,7 @@ class XvaJob:
         row = dict.fromkeys(XVA_COLUMNS + ('profile', 'missing'))
         row.update({key: self.stamp[key] for key in XVA_COLUMNS if key in self.stamp},
                    counterparty=self.counterparty, collateralized=self.collateralized,
-                   currency=self.document['Calc']['Calculation'].get('Currency'),
+                   currency=structures.reporting_currency(self.document),
                    result_id=self.result_id, as_of=as_of())
         return dict(row, **fields)
 
@@ -4684,7 +4683,7 @@ def xva_pair(document, deal_path):
     counterparty = set_terms(node['Instrument']['.Deal'])[0]
     return [xva_document(job, deal_at(job, path), counterparty) for job in (document, without)], {
         'netting_set': node['Instrument']['.Deal'].get('Reference'), 'counterparty': counterparty,
-        'currency': document['Calc']['Calculation'].get('Currency')}
+        'currency': structures.reporting_currency(document)}
 
 
 class IncrementJob:
@@ -5940,7 +5939,7 @@ def status_of(document, etag):
         # the inner path count is the one number a quote and a mark share, so a book stating too
         # few for a simulated deal is NAMED here with the remedy rather than healed behind the desk
         'calculation': {'Object': calculation.get('Object'),
-                        'Currency': calculation.get('Currency'),
+                        'Currency': structures.reporting_currency(document),
                         'Base_Date': spine.base_day(document),
                         'paths': calculation.get('MCMC_Simulations') or structures.declared_paths(),
                         'paths_note': structures.thin_paths(calculation)},

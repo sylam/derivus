@@ -2428,34 +2428,6 @@ def test_a_tarf_on_a_fitted_pair_stops_riding_gbm(accrual_book):
         17.379426406278363, rel=1e-9), 'the orientation that already joined moved'
 
 
-def test_a_book_stating_its_currency_reports_in_it_without_its_market_being_read(book):
-    """THE REPORTING CURRENCY IS THE CALCULATION'S, AND THE MARKET'S BASE WHERE IT STATES NONE. A
-    book stating `Calculation.Currency` reports in it with no market read - one naming a market
-    file that is not there answers all the same - and a book stating none reports in its market's
-    base currency.
-
-    Its second argument means one thing, the loader of the document's market: asked of the document
-    where it states no currency, and of nothing where it states one.
-
-    Killing mutations: the market loaded before `Calculation.Currency` is asked, which fails the
-    book whose market file is missing; the fall back to the market's base dropped, which answers
-    no currency for the book stating none; and the market loaded by `market_of` whatever loader
-    is handed, which fails the book stating none over its missing file.
-    """
-    stated = copy.deepcopy(book)
-    stated['Calc']['Calculation']['Currency'] = 'ZAR'
-    stated['Calc']['MergeMarketData'] = {'MarketDataFile': 'missing_market_file.json'}
-    assert structures.reporting_currency(stated) == 'ZAR'
-    asked = []
-    assert structures.reporting_currency(stated, asked.append) == 'ZAR' and not asked
-
-    unstated = copy.deepcopy(book)
-    unstated['Calc']['Calculation'].pop('Currency', None)
-    assert structures.reporting_currency(unstated) == 'USD'
-    unstated['Calc']['MergeMarketData'] = {'MarketDataFile': 'missing_market_file.json'}
-    assert structures.reporting_currency(unstated, lambda document: asked.append(document) or {
-        'System Parameters': {'Base_Currency': 'GBP'}}) == 'GBP' and asked == [unstated]
-
 @pytest.mark.card
 def test_the_accumulator_solves_one_strike_from_either_axis_under_the_model(accrual_book):
     """RECIPROCAL CONSISTENCY under the fitted law - the axis gate's shape, one model on.
