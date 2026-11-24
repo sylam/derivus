@@ -2125,9 +2125,9 @@ UNDATED = ('fill {} was booked with a price and no value date, so the day its co
            'settles is not known')
 
 
-def premiums(book, currency):
+def premiums(book):
     """A `premium` row for every fill of `book` whose price moves money: its consideration from the
-    bank's side, in the fill's own currency - else `currency`, the book's - due on its
+    bank's side, in the currency the fill states, None where it states none, due on its
     `value_date`, keyed as the diary keys a row over its instrument and execution reference, and
     its deal named by the record's own terms. A fill stating no value date is due on no day, the
     row saying why (`UNDATED`)."""
@@ -2136,7 +2136,7 @@ def premiums(book, currency):
                                 for fill in priced})
     return [dict(Diary._row(
         PREMIUM, terms[fill['instrument']].get('Reference'), fill['execution_reference'], 0,
-        fill.get('value_date'), currency=fill.get('currency') or currency, determined=True,
+        fill.get('value_date'), currency=fill.get('currency'), determined=True,
         amount=-float(fill['quantity']) * float(fill['price']),
         reason=None if fill.get('value_date') else UNDATED.format(fill['execution_reference'])),
         deal_path=None, netting_set=fill['netting_set'], instrument=fill['instrument'],

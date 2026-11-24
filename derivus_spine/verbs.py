@@ -129,11 +129,11 @@ def book(log, actor, instrument, quantity, counterparty, netting_set, execution_
     facts. `quantity` is the signed position CHANGE in units of the instrument - 1 is the instrument
     as written, -1 closes it, -0.5 unwinds half - never a position: position is a fold. `agreement`
     and `portfolio` say where the position sits and `price` what it was done at, each filed only
-    where stated. A price stated in another currency than the book's carries that `currency` and
-    the `rate` the booking crossed it at - units of the book's currency per unit of it - so the
-    consideration is on the record as it was agreed and as it was booked, and `value_date` the day
-    it settles. `ticket` is what an approval of this booking signs. The instrument blob is fsynced
-    before the event citing it appends.
+    where stated. A price names the `currency` it is stated in, and one stated in another currency
+    than the book's the `rate` the booking crossed it at - units of the book's currency per unit of
+    it - so the consideration is on the record as it was agreed and as it was booked, and
+    `value_date` the day it settles. `ticket` is what an approval of this booking signs. The
+    instrument blob is fsynced before the event citing it appends.
     """
     body = fill(log, instrument, quantity, counterparty, netting_set, execution_reference,
                 price=price, agreement=agreement, portfolio=portfolio, currency=currency,
@@ -162,14 +162,15 @@ def fill(log, instrument, quantity, counterparty, netting_set, execution_referen
             raise MalformedEvent(
                 'book: price is {!r} - what a fill was done at is a finite number in the '
                 'instrument\'s own quote, or it is left out'.format(price))
-        body['price'] = price
-    if currency is not None or rate is not None:
-        if price is None or not is_number(rate) or rate <= 0:
-            raise MalformedEvent(
-                'book: a price in another currency is the price, its `currency` and the `rate` it '
-                'was crossed at, a positive number - this states price {!r}, currency {!r} and '
-                'rate {!r}'.format(price, currency, rate))
-        body['currency'], body['rate'] = _name(currency, 'currency', 'book'), rate
+        body['price'], body['currency'] = price, _name(currency, 'currency', 'book')
+    if price is None and (currency, rate) != (None, None) or rate is not None and not (
+            is_number(rate) and rate > 0):
+        raise MalformedEvent(
+            'book: a `currency` is what a price is stated in, and a `rate` what one in another '
+            'currency was crossed at, a positive number - this states price {!r}, currency {!r} '
+            'and rate {!r}'.format(price, currency, rate))
+    if rate is not None:
+        body['rate'] = rate
     if value_date is not None:
         if price is None:
             raise MalformedEvent(

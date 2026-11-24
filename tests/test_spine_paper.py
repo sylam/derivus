@@ -78,7 +78,7 @@ def test_a_position_is_keyed_where_it_sits(tmp_path):
             ('EXEC-DEALER', -1.0, 'ISDA-B', emerging),
             ('EXEC-G10', 1.0, 'ISDA-A', g10)):
         book(log, ACTOR, TERMS, quantity, 'LEI-5493001KJTIIGC8Y1R12', agreement, reference,
-             book=BOOK, effective_time=TUE, price=101.25, agreement=agreement,
+             book=BOOK, effective_time=TUE, price=101.25, currency='USD', agreement=agreement,
              portfolio=portfolio)
     positions = PROJECTORS['positions']
     assert keyed(positions.rows(fold(log, positions))) == [

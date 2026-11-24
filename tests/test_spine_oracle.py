@@ -927,10 +927,10 @@ def desk(tmp_path, name):
     try:
         policy.declare(log, ACTOR, policy.TOLERANCE_POLICY, {'tolerances': {'pnl': 1e-9}})
         book(log, ACTOR, b'{"Reference":"CF1"}', 1.0, 'LEI-1', 'CSA-1', 'EXEC-FX', book=BOOK,
-             price=0.5, portfolio=FX)
+             price=0.5, currency='USD', portfolio=FX)
         marks = [marked(log, '2026-08-26', 1.0851)]
         book(log, ACTOR, b'{"Reference":"CF1"}', 2.0, 'LEI-1', 'CSA-1', 'EXEC-RATES', book=BOOK,
-             price=0.25, portfolio=RATES)
+             price=0.25, currency='USD', portfolio=RATES)
         marks += [marked(log, day, rate) for day, rate in (('2026-08-27', 1.0853),
                                                            ('2026-08-28', 1.0855))]
     finally:

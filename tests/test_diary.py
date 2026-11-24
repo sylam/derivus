@@ -570,7 +570,7 @@ def test_a_premium_is_due_on_its_value_date_until_a_premium_settles_it_into_cash
         'BOUGHT', 'EXEC-BOUGHT', instrument, -50_000.0, 'USD', day, Diary.DUE)
     assert row['key'] == spine.cashflow_key(instrument, 'EXEC-BOUGHT', spine.PREMIUM, day)
     spine.book(json.loads(dump(fixed_leg('THEIRS'))), 2.0, 'CPTY_A', CLIENT_SET, 'EXEC-THEIRS',
-               book_name='another-book', price=25_000.0, value_date=day)
+               book_name='another-book', price=25_000.0, currency='ZAR', value_date=day)
     assert premiums(diary_rows()['rows']) == [row]
     assert CLIENT.get('/book/worklist').json()['payments'] == [], 'due before its value date'
 
@@ -636,6 +636,27 @@ def test_a_premium_with_no_value_date_is_due_on_no_day_and_one_with_no_price_is_
     assert refused.status_code == 422 and 'value_date' in refused.text \
         and 'states no price' in refused.text, refused.text
     assert at(recorded) == head and path.read_bytes() == before, 'a refused booking moved something'
+
+
+def test_a_premium_keeps_its_fill_s_currency_when_the_book_s_is_restated(recorded, tmp_path):
+    """A price stating no currency is in the book's reporting currency on the day it is booked,
+    and the fill files that currency, so restating the book's currency later moves neither the
+    premium the fill announces nor the currency the activity strip shows its price in.
+
+    Killing mutation: the fallback restored, a price in the book's own currency filed with none -
+    which the record refuses, the booking written nowhere.
+    """
+    path = serving(tmp_path, [netting_set(CLIENT_SET, 'CPTY_A')])
+    assert premium_booked('RAND', price=10_000.0).json()['written'] is True
+    restated = json.loads(path.read_text())
+    restated['Calc']['Calculation']['Currency'] = 'USD'
+    path.write_text(json.dumps(restated, indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    (row,) = premiums(diary_rows()['rows'])
+    assert (row['reference'], row['amount'], row['currency']) == ('RAND', -20_000.0, 'ZAR')
+    (told,) = [row for row in CLIENT.get('/book/activity').json()['rows']
+               if 'EXEC-RAND' in row['summary']]
+    assert 'at 10,000.00 ZAR' in told['summary'], told
 
 
 def test_the_close_check_and_reconcile_are_a_404_on_a_box_that_records_nothing(unrecorded,

@@ -560,8 +560,8 @@ diary and the positions read off it nor moves its cache; a run of the book answe
 
 **Premiums.** The book's diary also announces what its fills paid or received
 (`service.announced`, `spine.premiums`): one `premium` row per fill of the book whose price moves
-money, its consideration from the bank's side - minus the quantity times the price - in the fill's
-own `currency`, else the book's reporting currency, due on the fill's `value_date`, keyed
+money, its consideration from the bank's side - minus the quantity times the price - in the
+`currency` the fill states, null on a fill stating none, due on the fill's `value_date`, keyed
 `cashflow_key(instrument, execution_reference, 'premium', value_date)`. A priced fill stating no
 value date is due on no day, its `reason` naming it, so no close waits on it; a fill with no price
 or a price of nothing announces none. The worklist lists a premium due by the book's day among its
@@ -572,7 +572,8 @@ under `premiums` at the fill, and a premium settlement is no payment it reads. *
 `test_diary.py::test_a_premium_is_due_on_its_value_date_until_a_premium_settles_it_into_cash`,
 `::test_a_premium_with_no_value_date_is_due_on_no_day_and_one_with_no_price_is_none`,
 `test_pnl.py::test_a_premium_announced_and_settled_moves_no_figure_of_the_p_and_l`,
-`test_mcp.py::test_a_booking_s_value_date_reaches_the_record_and_the_diary_announces_its_premium`.
+`test_mcp.py::test_a_booking_s_value_date_reaches_the_record_and_the_diary_announces_its_premium`,
+`test_diary.py::test_a_premium_keeps_its_fill_s_currency_when_the_book_s_is_restated`.
 
 The book file keeps its content and gains `Spine: {lsn, head, hydrated_at}`, a sibling of `Calc`,
 so the pin cannot move a plan. A booking appends first and writes the file second. `GET
@@ -1081,12 +1082,16 @@ compared as written, and the fold reads two ids a log already holds under one na
 agreement's id belongs to one entity: `verbs.declare_agreement` refuses, by name, a declaration
 under an id standing under another entity, and the fold reads an agreement a log already holds
 moved to another as it did. A fill's `quantity` is the signed
-change in units; its optional `agreement`, `portfolio` and `price` say where and at what, and
-`value_date` the day that price's consideration settles - refused by name without a price. One
+change in units; its optional `agreement`, `portfolio` and `price` say where and at what. A price
+names the `currency` it is stated in, the book's reporting currency where a booking names none
+(`service.consideration`), one in another currency the `rate` it was crossed at, and
+`value_date` the day its consideration settles; a currency, rate or value date without a price,
+and a price without a currency, are refused by name. One
 instrument under two agreements is two positions, credit exposure being per agreement; in two
 portfolios, two. The first booking or quote under a declared agreement splices its set from the
 declared terms, and every compile writes the terms standing at its LSN over it
 ([the plan](#the-plan)). **Held by** `test_spine_paper.py::test_a_position_is_keyed_where_it_sits`,
+`test_spine_verbs.py::test_a_consideration_carries_its_currency_and_rate_and_a_close_its_day`,
 `::test_a_return_to_earlier_paper_is_a_new_fact_and_a_repeat_of_the_standing_paper_is_one`,
 `::test_a_name_identifies_one_legal_entity`,
 `::test_an_agreement_s_id_belongs_to_one_legal_entity`,

@@ -1806,14 +1806,15 @@ def test_a_declared_policy_is_stored_canonically_so_one_policy_is_one_blob(tmp_p
 
 
 def test_a_consideration_carries_its_currency_and_rate_and_a_close_its_day(tmp_path):
-    """WHAT A FILL WAS DONE AT, AS AGREED AND AS BOOKED. A price stated in another currency than
-    the book's is filed with that currency and the rate the booking crossed it at, so the
-    consideration stands on the record both ways and the cost basis reads it in the book's
-    currency; and a close names the calendar day it is declared FOR, which is what that day's cash
-    is converted at.
+    """WHAT A FILL WAS DONE AT, AS AGREED AND AS BOOKED. A price names the currency it is stated
+    in, and one in another currency than the book's is filed with the rate the booking crossed it
+    at, so the consideration stands on the record both ways and the cost basis reads it in the
+    book's currency; a price naming no currency is refused by name; and a close names the calendar
+    day it is declared FOR, which is what that day's cash is converted at.
 
-    Killing mutations: the rate left out of the basis, which costs a rand premium as dollars; a
-    close's day taken as any string at all.
+    Killing mutations: the rate left out of the basis, which costs a rand premium as dollars; the
+    currency requirement dropped, which files a price in no currency; a close's day taken as any
+    string at all.
     """
     home, log = minted(tmp_path)
     booked = verbs.book(log, DESK, INSTRUMENT, 2.0, COUNTERPARTY, CLIENT, 'EXEC-ZAR', book=BOOK,
@@ -1824,12 +1825,18 @@ def test_a_consideration_carries_its_currency_and_rate_and_a_close_its_day(tmp_p
         projections.fold(log, projections.PROJECTORS['costs']))
     assert costs[0]['basis'] == pytest.approx(2.0 * 500_000.0 * 0.055), 'in the book currency'
 
+    own = verbs.book(log, DESK, INSTRUMENT, 1.0, COUNTERPARTY, CLIENT, 'EXEC-USD', book=BOOK,
+                     price=25_000.0, currency='USD')
+    body = log.open_body(log.frame_at(own['lsn']))
+    assert (body['price'], body['currency'], 'rate' in body) == (25_000.0, 'USD', False)
+
     head = log.head()[0]
-    for price, currency, rate in ((1.0, 'ZAR', None), (1.0, None, 0.05), (None, 'ZAR', 0.05),
+    for price, currency, rate in ((1.0, None, None), (1.0, None, 0.05), (None, 'ZAR', 0.05),
                                   (1.0, 'ZAR', 0.0), (1.0, 'ZAR', -0.05), (1.0, '', 0.05)):
-        with pytest.raises(MalformedEvent):
+        with pytest.raises(MalformedEvent) as refusal:
             verbs.book(log, DESK, INSTRUMENT, 1.0, COUNTERPARTY, CLIENT, 'EXEC-BAD', book=BOOK,
                        price=price, currency=currency, rate=rate)
+        assert 'currency' in str(refusal.value), (price, currency, rate)
     assert log.head()[0] == head, 'a refused consideration recorded something'
 
     closed = verbs.declare_close(log, MINT, 'official', VALUES, date='2026-08-28')

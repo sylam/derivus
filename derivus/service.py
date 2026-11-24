@@ -2543,9 +2543,8 @@ def announced(document, rows=None):
     premiums its fills move beside them (`spine.premiums`), in the diary's order and each as the
     record answers it (`answered`) - none where no home is configured."""
     rows = hub_diary(document)['rows'] if rows is None else rows
-    return answered(spine.ordered(rows + spine.premiums(
-        book_name(document), structures.reporting_currency(document)))
-        if spine.configured() else rows)
+    return answered(spine.ordered(rows + spine.premiums(book_name(document)))
+                    if spine.configured() else rows)
 
 
 def diary_document(document):
@@ -2944,7 +2943,6 @@ def telling(rows):
            if instrument}
     names = named_trades(document, set(now) | set(now.values()))
     writer = spine.package().vocabulary.WRITER
-    reporting = structures.reporting_currency(document) if document else ''
 
     def said(row):
         kind, body, actor = row['event_type'], bodies.get(row['lsn']), row['actor']
@@ -2967,7 +2965,7 @@ def telling(rows):
                 'booked' if quantity > 0 else 'unwound',
                 '' if abs(quantity) == 1 else '{:g} of '.format(abs(quantity)), what,
                 answer['agreement'], '' if price is None else ' at {:,.2f} {}'.format(
-                    price, body.get('currency') or reporting).rstrip(),
+                    price, body.get('currency') or 'in a currency it does not name'),
                 body['execution_reference']))
         if instrument is not None:
             if kind == 'amendment':
@@ -3509,13 +3507,13 @@ def carried(job, day, reading):
 
 
 def consideration(document, price, currency):
-    """`(currency, rate)` a fill files beside its `price`: none where the price is stated in the
-    book's own reporting currency, else that currency and what one unit of it is worth in the
-    book's, at this booking's own board - or the 422 naming a currency the book carries no spot for.
-    """
+    """`(currency, rate)` a fill files beside its `price`: the currency it is stated in, the book's
+    reporting currency where it names none, and for another currency what one unit of it is worth
+    in the book's, at this booking's own board - or the 422 naming a currency the book carries no
+    spot for. None of either for no price."""
     reporting = structures.reporting_currency(document)
     if currency is None or currency == reporting:
-        return None, None
+        return None if price is None else reporting, None
     if price is None:
         raise spine.SpineRefused('this booking states price_currency {!r} and no price - the '
                                  'currency is what the price is stated in'.format(currency))
@@ -4097,9 +4095,8 @@ def book_worklist(actor: str = None):
         nodes = {row['key']: filed_at(placed[row['key']]) for row in found}
         granted = {} if sight is None else spine.may(actor, sorted(set(nodes.values())), {})[
             'approval']
-        reporting = structures.reporting_currency(document)
         return [dict(row, price=booked[row['lsn']].get('price'),
-                     currency=booked[row['lsn']].get('currency') or reporting,
+                     currency=booked[row['lsn']].get('currency'),
                      tier=entries[row['lsn']]['tier'], fell_past=entries[row['lsn']]['fell_past'],
                      waits_on=entries[row['lsn']]['waits_on'],
                      may=granted.get(nodes[row['key']]) or spine.package().tiers.refuses(
