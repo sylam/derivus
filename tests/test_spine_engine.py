@@ -4286,6 +4286,22 @@ def test_a_trade_is_as_long_as_the_last_day_its_declarations_name(recorded, desk
                                                for one in refused['refused']), refused
 
 
+def test_a_tenor_is_counted_in_the_years_sa_ccr_counts_so_five_years_over_a_leap_day_are_five(recorded, desk):
+    """A TENOR IS THE ENGINE'S YEAR COUNT, 30/360 from the base date as SA-CCR counts a trade's
+    (`SACCR.years`): a forward settling five years from 28 June 2024, over 29 February 2028, is
+    5.0 years, which an automatic tier capped at five years signs.
+
+    Killing mutation: the tenor counted ACT/365 - 1,826 days, 5.0027 years - which no tier admits.
+    """
+    with_client(desk)
+    declare(recorded, policy.TIERS_POLICY, tiers({'name': 'short', 'max_tenor_years': 5.0}))
+    dealt = booked(dict(FORWARD, Reference='FWD-5Y', Settlement_Date=BASE + pd.DateOffset(years=5)), 'EXEC-5Y')
+    assert dealt['written'] is True and dealt['tier']['name'] == 'short', dealt
+    document = json.loads(desk.read_text())
+    assert service.ticket_terms(document, service.instrument_of(deal_at(
+        document, dealt['deal_path'])), None)['tenor_years'] == 5.0
+
+
 # --------------------------------------------------------------------------------------------
 # The decision verbs.
 

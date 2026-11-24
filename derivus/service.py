@@ -1495,8 +1495,9 @@ def ticket_terms(document, deal, values_hash, quantity=1.0):
     them, nor is any where the type declares no size, which is what makes a cap in it fail its
     tier by name rather than taking the booking down.
 
-    `tenor_years` is ACT/365 from the book's base date to the day `deal` expires or matures
-    (`deal_expiry`), and null where it names none, which fails a tier that bounds the tenor.
+    `tenor_years` is the years from the book's base date to the day `deal` expires or matures
+    (`deal_expiry`), counted 30/360 as SA-CCR counts a trade's (`SACCR.years`), and null where it
+    names none, which fails a tier that bounds the tenor.
     """
     market = market_of(document)
     base = pd.Timestamp(spine.base_day(document))
@@ -1514,7 +1515,8 @@ def ticket_terms(document, deal, values_hash, quantity=1.0):
                 notional_in[other] = crossed
     expires = deal_expiry(deal)
     return {'notional_in': notional_in, 'values_hash': values_hash,
-            'tenor_years': None if expires is None else (expires - base).days / 365.0}
+            'tenor_years': None if expires is None else utils.DayCount.accrual(
+                base, (expires - base).days, utils.DayCount.ACT30_360)}
 
 
 def materialised(document, reference):

@@ -896,13 +896,15 @@ declares for SA-CCR (`schema.Exposure`), an FX trade's larger side as SA-CCR rea
 fixing still to come, a container's largest child; a restrike's is taken at every unit of the
 positions it moves (`spine.amend`). No check reads a market, and a currency the ticket carries no
 size in - a type declaring none, a cross the book cannot value - fails that tier;
-`max_tenor_years` reads the latest day the type declares (`schema.tenor_fields`); `market`
+`max_tenor_years` reads the latest day the type declares (`schema.tenor_fields`), in years of 30/360
+from the base date as SA-CCR counts a trade's (`SACCR.years`); `market`
 requires the quote's values to stand under that name. A tier is automatic - the hub's approval in
 the writer's voice - unless it declares `four_eyes`; staleness is `firmness`'s alone. **Held by**
 `test_spine_tiers.py`,
 `test_spine_engine.py::test_a_strip_is_sized_at_its_amount_at_every_fixing_still_to_come`,
 `::test_a_structure_is_its_largest_leg_and_an_fx_trade_its_larger_side`,
 `::test_an_fx_option_is_its_amount_or_its_amount_at_its_strike_as_sa_ccr_reads_it`,
+`::test_a_tenor_is_counted_in_the_years_sa_ccr_counts_so_five_years_over_a_leap_day_are_five`,
 `::test_a_fill_is_its_quantity_times_the_instrument_and_an_undeclared_type_no_size`,
 `::test_a_restrike_is_sized_at_every_unit_of_the_positions_it_moves`.
 
