@@ -897,7 +897,7 @@ fixing still to come, a container's largest child; a restrike's is taken at ever
 positions it moves (`spine.amend`). No check reads a market, and a currency the ticket carries no
 size in - a type declaring none, a cross the book cannot value - fails that tier;
 `max_tenor_years` reads the latest day the type declares (`schema.tenor_fields`), in years of 30/360
-from the base date as SA-CCR counts a trade's (`SACCR.years`); `market`
+from the base date as SA-CCR counts a trade's (`SACCR.year_fraction`); `market`
 requires the quote's values to stand under that name. A tier is automatic - the hub's approval in
 the writer's voice - unless it declares `four_eyes`; staleness is `firmness`'s alone. **Held by**
 `test_spine_tiers.py`,

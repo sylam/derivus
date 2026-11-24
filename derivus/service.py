@@ -89,7 +89,7 @@ from .schema import (EXPOSURES, PRICES_KEY, mapping, deal_at, declared_block,
 from ._version import __version__
 from .config import Config, ModelParams, as_json, family_entries
 from .instruments import construct_instrument
-from .calculation import Diary, calculation_class
+from .calculation import SACCR, Diary, calculation_class
 from .spine import (AGREEMENT_STATE, HOLDING_AMOUNTS, SETTLED, SETTLES, Collateral, PnL, book_name,
                     decoded, diary, export_settlements, judge_calculation, paper, replay)
 
@@ -1496,7 +1496,7 @@ def ticket_terms(document, deal, values_hash, quantity=1.0):
     tier by name rather than taking the booking down.
 
     `tenor_years` is the years from the book's base date to the day `deal` expires or matures
-    (`deal_expiry`), counted 30/360 as SA-CCR counts a trade's (`SACCR.years`), and null where it
+    (`deal_expiry`), counted as SA-CCR counts a trade's (`SACCR.year_fraction`), and null where it
     names none, which fails a tier that bounds the tenor.
     """
     market = market_of(document)
@@ -1515,8 +1515,8 @@ def ticket_terms(document, deal, values_hash, quantity=1.0):
                 notional_in[other] = crossed
     expires = deal_expiry(deal)
     return {'notional_in': notional_in, 'values_hash': values_hash,
-            'tenor_years': None if expires is None else utils.DayCount.accrual(
-                base, (expires - base).days, utils.DayCount.ACT30_360)}
+            'tenor_years': None if expires is None else SACCR.year_fraction(
+                base, (expires - base).days)}
 
 
 def materialised(document, reference):

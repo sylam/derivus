@@ -5611,13 +5611,19 @@ class SACCR(NettingSetCalculation):
         with self.prepared():
             return self.report(self.base())
 
+    @staticmethod
+    def year_fraction(base, days):
+        """`days` after `base` in the years a trade's dates are counted in, 30/360."""
+        return utils.DayCount.accrual(base, days, utils.DayCount.ACT30_360)
+
     def years(self, day):
-        """`day`, a date or the float days from the base date a compile counts, in years of 30/360
-        from the base date, nothing once it has passed, kept per day on the run (`year_of`)."""
+        """`day`, a date or the float days from the base date a compile counts, in years from the
+        base date (`year_fraction`), nothing once it has passed, kept per day on the run
+        (`year_of`)."""
         if day not in self.year_of:
             base = self.valuation['Base_Date']
             days = int(day) if isinstance(day, float) else (day - base).days
-            self.year_of[day] = max(utils.DayCount.accrual(base, days, utils.DayCount.ACT30_360), 0.0)
+            self.year_of[day] = max(self.year_fraction(base, days), 0.0)
         return self.year_of[day]
 
     def fx(self, currency):

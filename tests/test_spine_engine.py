@@ -4288,7 +4288,7 @@ def test_a_trade_is_as_long_as_the_last_day_its_declarations_name(recorded, desk
 
 def test_a_tenor_is_counted_in_the_years_sa_ccr_counts_so_five_years_over_a_leap_day_are_five(recorded, desk):
     """A TENOR IS THE ENGINE'S YEAR COUNT, 30/360 from the base date as SA-CCR counts a trade's
-    (`SACCR.years`): a forward settling five years from 28 June 2024, over 29 February 2028, is
+    (`SACCR.year_fraction`): a forward settling five years from 28 June 2024, over 29 February 2028, is
     5.0 years, which an automatic tier capped at five years signs.
 
     Killing mutation: the tenor counted ACT/365 - 1,826 days, 5.0027 years - which no tier admits.
