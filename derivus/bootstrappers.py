@@ -112,8 +112,8 @@ class RiskNeutralInterestRate_State(utils.Calculation_State):
 
 
 class Family:
-    """What every price family is built from: the block it was configured with, completed by
-    its own declared defaults (`blocks` reads a quote block's instrument over it), and the device
+    """What every price family is built from: the `dials` of the entry it was configured with
+    (`blocks` reads a quote block's instrument over them), and the device
     and precision of the job. A family that pins its own precision - the LogVar2FJ fit is double
     whatever the job is - declares `prec` on the class and keeps it.
     """
@@ -123,24 +123,24 @@ class Family:
     connected = {}
 
     def __init__(self, param, device, dtype):
-        self.param = declared_defaults(type(self), param)
+        self.param = self.dials(param)
         self.device = device
         if self.prec is None:
             self.prec = dtype
 
-    @staticmethod
-    def dials(entry):
-        """A `Bootstrapper Configuration` entry's own dials: the entry less its `Prices` routing
-        key, none off the legacy CSV string."""
-        return {key: value for key, value in entry.items() if key != PRICES_KEY} \
-            if isinstance(entry, dict) else {}
+    @classmethod
+    def dials(cls, entry):
+        """A `Bootstrapper Configuration` entry's dials completed by this family's declarations: the
+        entry less its `Prices` routing key, the declarations alone off the legacy CSV string."""
+        return declared_defaults(cls, {key: value for key, value in entry.items()
+                                       if key != PRICES_KEY} if isinstance(entry, dict) else {})
 
     @classmethod
     def blocks(cls, entry, market_prices):
         """`{name: block}`: this family's `Market Prices` blocks (`market_prices_for`), each block's
         `instrument` read under the `dials` of the family's `Bootstrapper Configuration` entry
-        `entry` completed by its declarations, the block winning on a conflict."""
-        entry = declared_defaults(cls, cls.dials(entry))
+        `entry`, the block winning on a conflict."""
+        entry = cls.dials(entry)
         return {name: dict(block, instrument=dict(entry, **block['instrument']))
                 for name, block in market_prices_for(cls.__name__, market_prices).items()}
 
@@ -524,15 +524,14 @@ class OptionQuoteFamily(ImpliedCalibration):
 
     @classmethod
     def fx_ladder(cls, section=None):
-        """The ladder off a `Bootstrapper Configuration` entry completed by this family's own
-        declarations; `None` - or the legacy CSV string, which declares no dial - is those
-        declarations alone.
+        """The ladder off a `Bootstrapper Configuration` entry's `dials`; `None` - or the legacy
+        CSV string, which declares no dial - is this family's declarations alone.
 
         Months and days become YEARS here, which is the surface's own clock and the only one past
         this point. Refuses BY NAME on a ladder out of order, a delta pillar outside (0, 0.5] and
         a floor below one contract.
         """
-        read = declared_defaults(cls, section if isinstance(section, dict) else {})
+        read = cls.dials(section)
         days = float(read['Days_Per_Year'])
         months = lambda name: tuple(
             x / 12.0 for x in utils.LogVar2FJ.parse_floats(read[name], name))
@@ -6731,7 +6730,7 @@ def construct_bootstrapper(btype, param, dtype=torch.float32):
     """One family built off its `Bootstrapper Configuration` entry's `dials` - none off the legacy
     CSV string, whose positional tail declares none - every field it does not carry being the
     declaration's own default."""
-    return family_class(btype)(Family.dials(param), utils.calculation_device(), dtype)
+    return family_class(btype)(param, utils.calculation_device(), dtype)
 
 
 #: THE EIGHT PRICE FAMILIES: `family_class` and every refusal naming them read this one tuple.

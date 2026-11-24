@@ -133,7 +133,8 @@ is a hyperparameter, stated once per book in the family's entry. The author's ru
 blocks is read under them, the block winning: `Family.blocks` is that reading, the one every
 family's run, the dependency walk (`bootstrappers.block_readers`), the curve ride and its slot
 (`InterestRate.propagate`, `plan_key`), SIMM's moves (`SIMM.bumps`, `requoted`, `configured`) and
-the service's credit view (`service.held_credit`) take.
+the service's credit view (`service.held_credit`) take, and the option families' ladder reads the
+same dials (`OptionQuoteFamily.fx_ladder`).
 Construction types every dial, so a malformed value refuses by name before a quote is read and
 `Config.bootstrap` raises naming the entry: a bad entry writes no factor rather than a wrong one.
 **Held by** `test_loud_refusals.py::test_a_family_refusing_at_construction_is_refused_by_name`,
