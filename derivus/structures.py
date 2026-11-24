@@ -1048,28 +1048,18 @@ def market_data(market):
     return market['Price Factors']
 
 
-def quoted_crosses(factors, into):
-    """`{currency: units of `into` per unit}` at the quoted spots of `factors`, a `Price Factors`
-    section or a values vector: each `FxRate.<ccy>.Spot` is that currency in base units, so a cross
-    is the ratio of two, `calc_fx_cross`'s with `quoted` read off the market instead of a tensor. A
-    rate stating no spot, or a zero, has none, and `into` having none answers nothing."""
-    spots = {name.split('.', 1)[1]: float(block['Spot']) for name, block in factors.items()
-             if name.startswith('FxRate.') and name.count('.') == 1 and block.get('Spot')}
-    return {ccy: spot / spots[into] for ccy, spot in spots.items()} if into in spots else {}
-
-
 def engine_spot(market, underlying_currency, settlement_currency):
     """Today's rate on the DEAL's axis: units of `Currency` per unit of `Underlying_Currency`, the
-    quoted cross (`quoted_crosses`). It is the seed and the bracket centre for a strike solve; no
-    price is taken from it. A rate the market carries no block for, or whose block states no spot
-    yet, is refused by name."""
+    quoted cross (`utils.quoted_crosses`). It is the seed and the bracket centre for a strike
+    solve; no price is taken from it. A rate the market carries no block for, or whose block
+    states no spot yet, is refused by name."""
     factors = market_data(market)
     for currency in (underlying_currency, settlement_currency):
         name = 'FxRate.{}'.format(currency)
         if not factors.get(name, {}).get('Spot'):
             raise ValueError('{} {} - a {} quote cannot be struck on this book'.format(
                 name, 'states no spot yet' if name in factors else 'is missing', currency))
-    return quoted_crosses(factors, settlement_currency)[underlying_currency]
+    return utils.quoted_crosses(factors, settlement_currency)[underlying_currency]
 
 
 def margin_value(book, margin):

@@ -4819,6 +4819,16 @@ def calc_fx_cross(rate1, rate2, time_grid, shared, quoted=False):
     return shared.t_Buffer[key_code]
 
 
+def quoted_crosses(factors, into):
+    """`{currency: units of `into` per unit}` at the quoted spots of `factors`, a `Price Factors`
+    section or a values vector: each `FxRate.<ccy>.Spot` is that currency in base units, so a cross
+    is the ratio of two, `calc_fx_cross`'s with `quoted` read off the market instead of a tensor. A
+    rate stating no spot, or a zero, has none, and `into` having none answers nothing."""
+    spots = {name.split('.', 1)[1]: float(block['Spot']) for name, block in factors.items()
+             if name.startswith('FxRate.') and name.count('.') == 1 and block.get('Spot')}
+    return {ccy: spot / spots[into] for ccy, spot in spots.items()} if into in spots else {}
+
+
 def fx_fixings(factor_dep, schedule, shared):
     """The deal's FX cross at each row of a fixing `schedule` - one row per fixing, a static spot's
     single row broadcast to them all."""

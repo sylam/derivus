@@ -5152,10 +5152,9 @@ class SIMM(NettingSetCalculation):
         return pd.DataFrame(rows, columns=list(self.CRIF_COLUMNS))
 
     def usd(self):
-        """A unit of the calculation currency in USD, off the `FxRate` factors."""
-        factors, currency = self.config.params['Price Factors'], self.valuation['Currency']
-        return 1.0 if currency == 'USD' else factors['FxRate.' + currency]['Spot'] / factors[
-            'FxRate.USD']['Spot']
+        """A unit of the calculation currency in USD at the quoted spots (`utils.quoted_crosses`)."""
+        return utils.quoted_crosses(self.config.params['Price Factors'], 'USD')[
+            self.valuation['Currency']]
 
     def margins(self, crif):
         """`{'Margin': ..., 'Margin_Rows': ...}` off the CRIF `crif`: each netting set's margin in
