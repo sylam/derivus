@@ -6115,10 +6115,10 @@ class SACCR(NettingSetCalculation):
 
     def collateral(self, terms):
         """`(C, TH + MTA - NICA)` of a margined set at the base date in the calculation currency:
-        its opening balance as the engine's balance counts it, held at one less its received
-        haircut and posted at face over one less its posted one (`instruments.collateral_credit`),
-        and its credit support amounts at their first values, crossed from its agreement's
-        currency."""
+        its opening balance as the engine's balance counts it, in the cash its compile reads
+        (`NettingCollateralSet.cash`), held at one less its received haircut and posted at face
+        over one less its posted one (`instruments.collateral_credit`), and its credit support
+        amounts at their first values, crossed from its agreement's currency."""
         support, agreement = terms['Credit_Support_Amounts'], self.fx(terms['Agreement_Currency'])
         margin = agreement * (support['Received_Threshold'].value() + support[
             'Minimum_Received'].value() - support['Independent_Amount'].value())
@@ -6127,15 +6127,12 @@ class SACCR(NettingSetCalculation):
             raise ValueError('SACCR: netting set {} holds bond or equity collateral, whose value at '
                              'the base date the calculation does not price'.format(
                                  terms.get('Reference')))
-        currency = terms['Balance_Currency']
-        rows = assets.get('Cash_Collateral') or [{'Currency': currency}]
-        worth = [(1.0 if row.get('Amount') is None else row['Amount']) * self.fx(row['Currency'])
-                 for row in rows]
-        cuts = [instruments.NettingCollateralSet.haircuts(row) for row in rows]
+        cash = instruments.NettingCollateralSet.cash(terms)
+        worth = [row.Amount * self.fx(row.Currency) for row in cash]
         face = sum(worth)
-        posted, held = (sum(unit * cut[key] for unit, cut in zip(worth, cuts))
+        posted, held = (sum(unit * getattr(row, key) for unit, row in zip(worth, cash))
                         for key in ('Haircut_Posted', 'Haircut_Received'))
-        opening = terms['Opening_Balance'] * self.fx(currency)
+        opening = terms['Opening_Balance'] * self.fx(terms['Balance_Currency'])
         balance = opening / (face - posted * (opening < 0))
         return instruments.collateral_credit(balance, face, held), margin
 

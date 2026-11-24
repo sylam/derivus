@@ -1555,6 +1555,28 @@ class NettingCollateralSet(Deal):
         row = DealFields(row, declared={f.key: engine_default(f) for f in cls.HAIRCUTS})
         return {f.key: float(row[f.key]) for f in cls.HAIRCUTS}
 
+    @classmethod
+    def cash(cls, terms):
+        """The cash collateral of the set `terms` state, a `utils.Collateral` of names per
+        `Cash_Collateral` row, cash in its `Balance_Currency` where it states no cash, bond or
+        equity: each row's haircuts (`haircuts`), and its `Amount` the weight of its asset in the
+        collateral, one where it is the sole asset and states none. A row stating none beside
+        another asset is refused by name."""
+        assets = cls.collateral(terms.get('Collateral_Assets'))
+        others = assets.get('Bond_Collateral') or assets.get('Equity_Collateral')
+        rows = assets.get('Cash_Collateral') or ([] if others else [{'Currency': terms['Balance_Currency']}])
+        found = []
+        for row in rows:
+            # a sole asset's balance cancels its weight, so a sole row stating none is a unit
+            if row.get('Amount') is None and (others or len(rows) > 1):
+                raise ValueError('{}: a Cash_Collateral row states no Amount, its weight among '
+                                 'several collateral assets'.format(terms.get('Reference')))
+            found.append(utils.Collateral(
+                **cls.haircuts(row), Amount=1.0 if row.get('Amount') is None else row['Amount'],
+                Currency=row['Currency'], Funding_Rate=row.get('Funding_Rate'),
+                Collateral_Rate=row.get('Collateral_Rate'), Collateral=1.0))
+        return found
+
     def required(self, value, fx):
         """The credit support the agreement asks for at `value`, tensors or floats alike, `fx`
         pricing its agreement currency in the currency of `value`: the independent amount, plus the
@@ -1598,10 +1620,8 @@ class NettingCollateralSet(Deal):
                 field_index['Settlement_Currencies'].setdefault(
                     currency, get_fxrate_factor(utils.check_rate_name(currency), static_offsets, stochastic_offsets))
 
-            collateral_defined = False
             field_index['Equity_Collateral'] = []
             field_index['Bond_Collateral'] = []
-            field_index['Cash_Collateral'] = []
 
             collateral_assets = self.collateral(self.field.get('Collateral_Assets'))
 
@@ -1620,7 +1640,6 @@ class NettingCollateralSet(Deal):
                                              Collateral=get_equity_rate_factor(
                                                  equity_rate, static_offsets, stochastic_offsets))
                         )
-                    collateral_defined = True
 
                 if collateral_assets.get('Bond_Collateral'):
                     collateral_bond = collateral_assets['Bond_Collateral']
@@ -1654,48 +1673,12 @@ class NettingCollateralSet(Deal):
                                                      time_grid.mtm_time_grid, np.arange(time_index)),
                                                  Calc_res=None))
                         )
-                    collateral_defined = True
 
-                if collateral_assets.get('Cash_Collateral'):
-                    collateral_cash = collateral_assets['Cash_Collateral']
-                    # `Amount` weighs an asset in the collateral the balance counts: a sole asset's
-                    # balance cancels it, so a sole row stating none is a unit; among several it is not
-                    sole = len(collateral_cash) == 1 and not collateral_defined
-                    for col_cash in collateral_cash:
-                        if col_cash.get('Amount') is None and not sole:
-                            raise ValueError('{}: a Cash_Collateral row states no Amount, its weight '
-                                             'among several collateral assets'.format(
-                                self.field.get('Reference')))
-                        field_index['Cash_Collateral'].append(
-                            utils.Collateral(**self.haircuts(col_cash),
-                                             Amount=1.0 if col_cash.get('Amount') is None
-                                             else col_cash['Amount'],
-                                             Currency=get_fxrate_factor(
-                                                 utils.check_rate_name(col_cash['Currency']),
-                                                 static_offsets, stochastic_offsets),
-                                             Funding_Rate=get_interest_factor(
-                                                 utils.check_rate_name(
-                                                     col_cash['Funding_Rate']), static_offsets,
-                                                 stochastic_offsets, all_tenors)
-                                             if col_cash.get('Funding_Rate') else None,
-                                             Collateral_Rate=get_interest_factor(
-                                                 utils.check_rate_name(
-                                                     col_cash['Collateral_Rate']),
-                                                 static_offsets, stochastic_offsets, all_tenors)
-                                             if col_cash.get('Collateral_Rate') else None,
-                                             Collateral=1.0)
-                        )
-                    collateral_defined = True
-
-            if not collateral_defined:
-                # default the collateral to the balance currency
-                field_index['Cash_Collateral'] = [
-                    utils.Collateral(Haircut_Posted=0.0, Haircut_Received=0.0,
-                                     Amount=1.0,
-                                     Currency=get_fxrate_factor(
-                                         field['Balance_Currency'], static_offsets, stochastic_offsets),
-                                     Funding_Rate=None, Collateral_Rate=None,
-                                     Collateral=1.0)]
+            field_index['Cash_Collateral'] = [cash._replace(
+                Currency=get_fxrate_factor(utils.check_rate_name(cash.Currency), static_offsets, stochastic_offsets),
+                **{key: get_interest_factor(utils.check_rate_name(getattr(cash, key)), static_offsets,
+                                            stochastic_offsets, all_tenors) if getattr(cash, key) else None
+                   for key in ('Funding_Rate', 'Collateral_Rate')}) for cash in self.cash(self.field)]
 
             t = time_grid.time_grid[:, utils.TIME_GRID_MTM]
             # collateral call dates (interpolated - assuming daily)

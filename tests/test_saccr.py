@@ -1039,6 +1039,30 @@ def test_a_margined_sets_collateral_is_its_balance_as_the_engine_counts_it(world
     assert posted['RC'] == posted['V'] - posted['C'], posted
 
 
+def test_a_margined_sets_cash_is_the_cash_its_compile_reads(tmp_path):
+    """A SET'S CASH HAS ONE READER, its compile's (`NettingCollateralSet.cash`). A million dollars
+    held in a euro cut 8% and a dollar, each weighing one, is C 955,555.56, the balance over the
+    two at 2.25 credited at 2.15; the same two rows stating no `Amount` refuse the run in the
+    sentence the compile refuses the set in, where SA-CCR once read each as one and reported that
+    C for a set it could not value.
+
+    Killing mutation: SA-CCR reading the table its own way, a blank `Amount` one.
+    """
+    mapping = mapping_file(tmp_path / 'mapping.json')
+    rows = [{'Currency': 'EUR', 'Haircut_Received': utils.Percent(8.0)}, {'Currency': 'USD'}]
+
+    def held(*amounts):
+        terms = dict(margined(0.0, 0.0, 0.0, 1e6, 10), Collateral_Assets={'Cash_Collateral': [
+            dict(row, **amount) for row, amount in zip(rows, amounts)]})
+        return run(document({'TWO': (terms, [node(swap('SWAP_5Y', years(5), 'Fixed'))])}, saccr(mapping)))
+
+    found = netting_sets(held({'Amount': 1.0}, {'Amount': 1.0})).loc['TWO']
+    assert found['C'] == pytest.approx(1e6 / 2.25 * 2.15, rel=1e-15), found
+    with pytest.raises(ValueError, match='TWO: a Cash_Collateral row states no Amount, its weight '
+                                         'among several collateral assets'):
+        held({}, {})
+
+
 def test_an_over_collateralised_set_keeps_its_add_on_at_the_five_percent_floor(world):
     """CRE52.22-52.23. The payer under the set holding 4.6 million of collateral and no margin
     terms: V - C is 69 times its margined add-on below zero, so the multiplier is its floor of 5%
