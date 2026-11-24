@@ -398,6 +398,46 @@ def test_a_benchmark_matured_at_the_base_date_refuses_by_name():
     assert np.abs(solved[:, 1] - true_factors[curve_name]['Curve'].array[:, 1]).max() < 1e-10
 
 
+def test_a_market_stating_no_date_has_none(tmp_path):
+    """NOTHING READS THE CLOCK. A job whose market file states no `Base_Date` values a cash flow on
+    the rand curve on the date its calculation states, as the same job whose file states that date
+    does, to the bit; a bootstrap, which solves the quotes on the market's own date, is refused by
+    name where the market states none, and solves where it states one.
+
+    Killing mutations: the blank filled with today at load - the bootstrap reads the quotes as of
+    today, refusing the three-month deposit as matured by then; the refusal dropped - the solve
+    dies subtracting a date from the blank, `TypeError`, naming nothing.
+    """
+    market_prices, price_factors, _ = authored_world('zar')
+    cash = {'Object': 'FixedCashflowDeal', 'Reference': 'CF', 'Currency': 'ZAR',
+            'Discount_Rate': 'ZAR-JIBAR-3M', 'Amount': 1e6,
+            'Payment_Date': BASE + pd.DateOffset(years=2)}
+
+    def loaded(name, system):
+        market = tmp_path / name
+        market.write_text(json.dumps({'MarketData': {
+            'System Parameters': dict({'Base_Currency': 'ZAR'}, **system),
+            'Price Factors': price_factors, 'Market Prices': market_prices,
+            'Bootstrapper Configuration': {'InterestRate': {}}}}, cls=CustomJsonEncoder))
+        return derivus.Context().load_json((json.dumps({'Calc': {
+            'Calculation': {'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': 'ZAR'},
+            'Deals': {'Reference': name, 'Deals': {'Children': [{'Instrument': {'.Deal': cash}}]}},
+            'MergeMarketData': {'MarketDataFile': str(market), 'ExplicitMarketData': {}}}},
+            cls=CustomJsonEncoder), name))
+
+    def marked(context):
+        frame = context.run_job()[1]['Results']['mtm']
+        return frame[frame['Reference'] == 'CF']['Value'].item()
+
+    dated, dateless = loaded('dated.json', {'Base_Date': BASE}), loaded('dateless.json', {})
+    value = marked(dated)
+    assert marked(dateless).hex() == value.hex() and value > 0.0
+    with pytest.raises(ValueError, match='System Parameters states no Base_Date, the day '
+                                         'InterestRate solves its quotes on'):
+        dateless.bootstrap()
+    dated.bootstrap()
+
+
 @pytest.mark.parametrize('knob,value', [('N_Iter', 1), ('Damping_Halvings', -1)])
 def test_the_solver_knobs_are_read_off_the_block(knob, value):
     """The knobs are JSON, so a job tightens or loosens the solve with no code edit. Each value here

@@ -1150,17 +1150,16 @@ def test_a_book_pointed_at_another_calendar_is_not_answered_from_the_diary_s_cac
     assert before != after
 
 
-def test_the_risk_is_kept_under_today_beside_all_it_reads(book):
-    """A market stating no `Base_Date` is read as of today (`Context.load_config`), so the
-    consolidated risk is kept under the hash of the whole `Calc`, which names the files it reads,
-    and today's date, worked by hand below, and a new day is a new key.
+def test_the_risk_is_kept_under_all_it_reads(book):
+    """Nothing the engine reads is the clock, so the consolidated risk is kept under the hash of
+    the whole `Calc`, which names the files it reads, worked by hand below, and a new day over an
+    unmoved book is the same key.
 
-    Killing mutation: the risk keyed without the day, which serves yesterday's vector.
+    Killing mutation: the risk keyed beside today's date again, another key each day.
     """
     document = json.loads(book.read_text())
-    hand = derivus.content_hash({'calc': document['Calc'],
-                                 'today': datetime.date.today().isoformat()})
-    assert CLIENT.get('/book/risk').json()['etag'] == hand
+    assert CLIENT.get('/book/risk').json()['etag'] == derivus.content_hash(
+        {'calc': document['Calc']})
 
 
 def test_a_book_pointed_at_another_calendar_refits_the_quotes_the_risk_is_read_in(book, tmp_path):

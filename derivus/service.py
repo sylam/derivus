@@ -179,20 +179,18 @@ def beside(context, job):
     return other
 
 
-def stamp(document, *sections, today=False):
+def stamp(document, *sections):
     """The hash of what an answer worked out from `document` read: the named sections of its
-    `Calc` - every one where none is named - and with `today` the day a base date no file states
-    reads as (`Context.load_config`). A file a section names is a read-only input, a new market
-    being a new file named, so its name stands for its content and no file is read."""
+    `Calc` - every one where none is named. A file a section names is a read-only input, a new
+    market being a new file named, so its name stands for its content and no file is read."""
     calc = document['Calc']
-    read = {'calc': {key: calc[key] for key in sections or calc if key in calc}}
-    return content_hash(dict(read, today=time.strftime('%Y-%m-%d')) if today else read)
+    return content_hash({'calc': {key: calc[key] for key in sections or calc if key in calc}})
 
 
 def market_stamp(document):
     """The `stamp` of what the market `document` prices on is read from: its `Calc` less its
-    deals, and today."""
-    return stamp(document, *(key for key in document['Calc'] if key != 'Deals'), today=True)
+    deals."""
+    return stamp(document, *(key for key in document['Calc'] if key != 'Deals'))
 
 
 def market_of(document, context=None, stamp=None):
@@ -1896,11 +1894,10 @@ def as_of():
 def risk_etag(document):
     """What a consolidated risk run READS, hashed - the cache key, and the etag the answer carries.
 
-    The whole `Calc`, which names the files it reads, and today (`stamp`). Anything less serves
-    yesterday's vector: a rolled `Base_Date` over an unmoved deal tree, or a market stating no date
-    read on a new day, is a different risk.
+    The whole `Calc`, which names the files it reads (`stamp`). Anything less serves another
+    book's vector: a rolled `Base_Date` over an unmoved deal tree is a different risk.
     """
-    return stamp(document, today=True)
+    return stamp(document)
 
 
 def priced_paths(children, under=''):
@@ -2048,17 +2045,16 @@ def quote_run(run, reading=Context):
     instead, and why. `reading` makes the contexts it loads on (`spine.reading`).
 
     THE REFIT IS THE MARKET'S, NOT THE BOOK'S: kept on the live book (`Book.calibrations`) by the
-    hash of all a fit reads - the market, the digests of the files it loaded (the calendar its
-    benchmarks roll on among them) and the day a market stating no date reads as - and the blocks
-    refitted, a later run over that market - a booking, a second reader - values its own deals on
-    it, one at a time from a zero gradient."""
+    hash of all a fit reads - the market and the digests of the files it loaded, the calendar its
+    benchmarks roll on among them - and the blocks refitted, a later run over that market - a
+    booking, a second reader - values its own deals on it, one at a time from a zero gradient."""
     loaded = load(run, reading())
     prices = loaded.current_cfg.params['Market Prices']
     universe = set(loaded.current_cfg.factor_universe()['resolved']) if prices else set()
     blocks = sorted(quote_blocks(loaded.current_cfg.params, universe))
     if not blocks:
         return utils.run_whole(loaded.run_job)[1], [], [], None
-    key = content_hash({'market': stamp(run, 'MergeMarketData', today=True),
+    key = content_hash({'market': stamp(run, 'MergeMarketData'),
                         'files': loaded.current_cfg.files, 'blocks': blocks})
     kept = BOOK and BOOK.calibrations.get(key)
     if kept:

@@ -286,15 +286,9 @@ class Context:
         self.stressed_config_file = None
 
     def load_config(self, path_name, data):
+        """A new `Config` holding the market data file `path_name` as its bytes `data` state it."""
         new_cfg = Config()
         new_cfg.parse_json(path_name, data)
-
-        # check we need to set the base_date - the declared default is the empty string
-        if not new_cfg.params['System Parameters'].get('Base_Date'):
-            # today as a DATE: a wall-clock default is a nondeterministic plan input - two loads
-            # of one job must hash the same, and Base_Date is a date everywhere it is read
-            new_cfg.params['System Parameters']['Base_Date'] = pd.Timestamp.now().normalize()
-
         return new_cfg
 
     @staticmethod

@@ -628,7 +628,7 @@ home and the size of each log segment: a segment is appended to and never rewrit
 exactly when a frame lands and costs no open. A poll with nothing moved is a lookup
 (`service.polled`), and an answer is kept only where its key still stands once it is worked out.
 The risk asks admission before either of its two levels on every poll, and keeps its second level,
-the hash of its `Calc` and the day (`service.risk_etag`), so a frame that moves none of it runs
+the hash of its `Calc` (`service.risk_etag`), so a frame that moves none of it runs
 nothing. The status's
 `spine.paper` is the LSN of the last entity or agreement declaration standing (`spine.papered`):
 what a client holding the paper re-reads it on, the web client its entities and agreements

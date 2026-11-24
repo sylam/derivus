@@ -403,13 +403,10 @@ class Calculation(object):
     @classmethod
     def parameters(cls, context, overrides=None):
         """The block a run of `context` reads, each step over the last: its `runner_keys`, the
-        job's `Calculation` block (the system parameters' date and currency where it has none) and
-        `overrides` merged deeply - judged with every field the book's deals leave unstated that
-        their declarations require (`judged`, `Config.unstated`), which every run passes before
-        anything compiles."""
-        system = context.params['System Parameters']
-        block = context.deals.get('Calculation', {
-            'Base_Date': system['Base_Date'], 'Currency': system['Base_Currency']})
+        job's `Calculation` block and `overrides` merged deeply - judged with every field the book's
+        deals leave unstated that their declarations require (`judged`, `Config.unstated`), which
+        every run passes before anything compiles."""
+        block = context.deals['Calculation']
         params = dict(cls.runner_keys(block), **block)
         if overrides is not None:
             utils.update_dict(params, overrides)

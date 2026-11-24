@@ -643,7 +643,8 @@ class Config(object):
 
         A bootstrapper handed blocks that leaves no `<type>.*` price factor behind silently did
         nothing (misnamed Market Prices block), so every family handed blocks is checked against
-        the type it writes, its own name; one handed none is logged and passed over.
+        the type it writes, its own name; one handed none is logged and passed over. A family is
+        handed its blocks on the market's own `Base_Date`, and one stating none refuses by name.
         """
         prices = self.params.get('Market Prices')
         if prices is None:
@@ -690,6 +691,9 @@ class Config(object):
                 family = family_class(bootstrapper_name).market_factor_type
                 logging.warning('Bootstrapper {} is configured and the book carries no {} block '
                                 'for it - nothing to fit'.format(bootstrapper_name, family))
+            elif not self.params['System Parameters']['Base_Date']:
+                raise ValueError('{}: System Parameters states no Base_Date, the day {} solves its '
+                                 'quotes on'.format(self.file_ref, bootstrapper_name))
             try:
                 bootstrapper = construct_bootstrapper(bootstrapper_name, params)
             except Exception as refusal:
