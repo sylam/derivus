@@ -5976,23 +5976,19 @@ def status_of(document, etag):
 
 def held_credit(market):
     """`{SurvivalProb.<id>: {recovery, currency, discount_rate, rows}}` - each credit curve as its
-    quotes block in `market` states it, read as its family reads it over its entry (`SURVIVAL`):
-    the recovery, the default swaps' currency and discount curve, and `{tenor, quote, type}` for
-    each row the solve uses (`used_quotes`), a quote nobody stated read as none."""
+    quotes block in `market` states it, read as its family reads it over its entry
+    (`Family.blocks`): the recovery, the default swaps' currency and discount curve, and
+    `{tenor, quote, type}` for each row the solve uses (`used_quotes`), a quote nobody stated read
+    as none."""
     entry = market.get('Bootstrapper Configuration', {}).get(SURVIVAL.__name__)
-    stated = declared_defaults(SURVIVAL, entry if isinstance(entry, dict) else {})
-    held = {}
-    for name, block in market.get('Market Prices', {}).items():
-        rate = utils.check_rate_name(name)
-        if rate[0] == SURVIVAL.market_factor_type:
-            instrument = dict(stated, **block['instrument'])
-            held[utils.check_tuple_name(utils.Factor(SURVIVAL.__name__, rate[1:]))] = {
-                'recovery': instrument['Recovery_Rate'], 'currency': instrument.get('Currency', ''),
-                'discount_rate': instrument.get('Discount_Rate', ''),
-                'rows': [{'tenor': row['Tenor'], 'quote': row.get('Quoted_Market_Value'),
-                          'type': row['Quote_Type']}
-                         for row in SURVIVAL.used_quotes(instrument, name)]}
-    return held
+    return {
+        utils.check_tuple_name(utils.Factor(SURVIVAL.__name__, utils.check_rate_name(name)[1:])): {
+            'recovery': instrument['Recovery_Rate'], 'currency': instrument.get('Currency', ''),
+            'discount_rate': instrument.get('Discount_Rate', ''),
+            'rows': [{'tenor': row['Tenor'], 'quote': row.get('Quoted_Market_Value'),
+                      'type': row['Quote_Type']} for row in SURVIVAL.used_quotes(instrument, name)]}
+        for name, block in SURVIVAL.blocks(entry, market.get('Market Prices', {})).items()
+        for instrument in [block['instrument']]}
 
 
 @app.get('/book/market', summary='The market the book prices on - its file, its block over it')

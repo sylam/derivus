@@ -129,10 +129,15 @@ is a hyperparameter, stated once per book in the family's entry. The author's ru
 [the JSON page](../json/bootstrapper_configuration.md); this is the mechanism.
 
 **Two levels.** A family is built from its entry completed by its declarations
-(`schema.declared_defaults`), and each block is read as `dict(section, **block)`, the block winning.
+(`schema.declared_defaults`), and each of its blocks is read under that entry, the block winning:
+`Family.blocks` is that reading, the one every family's run, the dependency walk
+(`bootstrappers.block_readers`) and the service's credit view (`service.held_credit`) take.
 Construction types every dial, so a malformed value refuses by name before a quote is read and
 `Config.bootstrap` raises naming the entry: a bad entry writes no factor rather than a wrong one.
-**Held by** `test_loud_refusals.py::test_a_family_refusing_at_construction_is_refused_by_name`.
+**Held by** `test_loud_refusals.py::test_a_family_refusing_at_construction_is_refused_by_name`,
+and the reading by `test_credit_prices.py::test_the_solver_knobs_are_read_off_the_block_and_its_entry`,
+`test_interest_rate_prices.py::test_the_solver_knobs_are_read_off_the_block` and
+`test_service.py::test_a_credit_curve_is_read_back_as_its_family_reads_its_quotes`.
 
 **Keyed by what a family writes** (`InterestRate`, `FXVol`, `LogVar2FJModelParameters`), the
 family's class name, so a section reads as the factors a run writes. The loader files an entry keyed

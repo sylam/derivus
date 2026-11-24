@@ -113,9 +113,9 @@ class RiskNeutralInterestRate_State(utils.Calculation_State):
 
 class Family:
     """What every price family is built from: the block it was configured with, completed by
-    its own declared defaults (a quote's own instrument is unioned onto it and wins on conflict),
-    and the device and precision of the job. A family that pins its own precision - the
-    LogVar2FJ fit is double whatever the job is - declares `prec` on the class and keeps it.
+    its own declared defaults (`blocks` reads a quote block's instrument over it), and the device
+    and precision of the job. A family that pins its own precision - the LogVar2FJ fit is double
+    whatever the job is - declares `prec` on the class and keeps it.
     """
     prec = None
     #: The connected factors standing when this family runs, `{Factor: theta*}`, which
@@ -127,6 +127,15 @@ class Family:
         self.device = device
         if self.prec is None:
             self.prec = dtype
+
+    @classmethod
+    def blocks(cls, entry, market_prices):
+        """`{name: block}`: this family's `Market Prices` blocks (`market_prices_for`), each block's
+        `instrument` read under the family's `Bootstrapper Configuration` entry `entry` completed by
+        its declarations, the block winning on a conflict."""
+        entry = declared_defaults(cls, entry if isinstance(entry, dict) else {})
+        return {name: dict(block, instrument=dict(entry, **block['instrument']))
+                for name, block in market_prices_for(cls.__name__, market_prices).items()}
 
 
 class Construction(Family):
@@ -287,83 +296,76 @@ class CSForwardPriceModelParameters(ImpliedCalibration):
         def calc_error(x, options):
             return sum(option['Weight'] * (option['Premium'] - premium(x, option)) ** 2 for option in options)
 
-        for market_price, implied_params in market_prices.items():
-            rate = utils.check_rate_name(market_price)
-            market_factor = utils.Factor(rate[0], rate[1:])
+        for market_price, implied_params in self.blocks(self.param, market_prices).items():
+            # the fit writes its working onto COPIES of the rows, so a Strike 0 reads this run's
+            # forward on every run; the three factors this block names, an absent one a KeyError
+            block = implied_params['instrument']
+            block['Energy_Futures_Options'] = [
+                dict(option) for option in block['Energy_Futures_Options']]
+            vol_surface, forward, discount = [riskfactors.construct_factor(
+                utils.Factor(kind, utils.check_rate_name(block[field])), price_factors, factor_interp)
+                for kind, field in (('ForwardPriceVol', 'Forward_Volatility'), ('ForwardPrice', 'Energy'),
+                                    ('InterestRate', 'Discount_Rate'))]
+            vol_surface.delta = sys_params.get('Volatility_Delta', 0.0)
 
-            if market_factor.type == self.market_factor_type:
-                # the quote's own instrument wins on conflict; the fit writes its working onto
-                # COPIES of the rows, so a Strike 0 reads this run's forward on every run
-                implied_params = dict(implied_params, instrument=dict(
-                    self.param, **implied_params['instrument']))
-                # the three factors this block names; an absent one is a KeyError naming it
-                block = implied_params['instrument']
-                block['Energy_Futures_Options'] = [
-                    dict(option) for option in block['Energy_Futures_Options']]
-                vol_surface, forward, discount = [riskfactors.construct_factor(
-                    utils.Factor(kind, utils.check_rate_name(block[field])), price_factors, factor_interp)
-                    for kind, field in (('ForwardPriceVol', 'Forward_Volatility'), ('ForwardPrice', 'Energy'),
-                                        ('InterestRate', 'Discount_Rate'))]
-                vol_surface.delta = sys_params.get('Volatility_Delta', 0.0)
+            # need to loop over this and create some market prices.
+            quote_type = block['Quote_Type']
+            for option in block['Energy_Futures_Options']:
+                t = discount.get_day_count_accrual(
+                    sys_params['Base_Date'], (option['Expiry_Date'] - sys_params['Base_Date']).days)
+                d = discount.get_day_count_accrual(
+                    sys_params['Base_Date'], (option['Settlement_Date'] - sys_params['Base_Date']).days)
+                expiry_excel = (option['Expiry_Date'] - utils.excel_offset).days
+                settlement_excel = (option['Settlement_Date'] - utils.excel_offset).days
+                forward_at_exp = forward.current_value(expiry_excel)
+                forward_at_settle = forward.current_value(settlement_excel)
+                r = discount.current_value(t)
+                if quote_type == 'Implied_Volatility':
+                    sigma = vol_surface.current_value([[t, d, 1.0]])[0] if not option['Quoted_Market_Value'] else \
+                        option['Quoted_Market_Value']
+                    sigma += vol_surface.delta
+                else:
+                    logging.error('quote_type {} not supported yet'.format(quote_type))
+                    continue
 
-                # need to loop over this and create some market prices.
-                quote_type = implied_params['instrument']['Quote_Type']
-                for option in implied_params['instrument']['Energy_Futures_Options']:
-                    t = discount.get_day_count_accrual(
-                        sys_params['Base_Date'], (option['Expiry_Date'] - sys_params['Base_Date']).days)
-                    d = discount.get_day_count_accrual(
-                        sys_params['Base_Date'], (option['Settlement_Date'] - sys_params['Base_Date']).days)
-                    expiry_excel = (option['Expiry_Date'] - utils.excel_offset).days
-                    settlement_excel = (option['Settlement_Date'] - utils.excel_offset).days
-                    forward_at_exp = forward.current_value(expiry_excel)
-                    forward_at_settle = forward.current_value(settlement_excel)
-                    r = discount.current_value(t)
-                    if quote_type == 'Implied_Volatility':
-                        sigma = vol_surface.current_value([[t, d, 1.0]])[0] if not option['Quoted_Market_Value'] else \
-                            option['Quoted_Market_Value']
-                        sigma += vol_surface.delta
-                    else:
-                        logging.error('quote_type {} not supported yet'.format(quote_type))
-                        continue
+                option['Strike'] = forward_at_exp if not option['Strike'] else option['Strike']
+                option['Forward'] = forward_at_settle
+                option['r'] = r
+                option['S'] = d
+                option['T'] = t
+                option['sigma'] = sigma
+                option['Premium'] = utils.black_european_option_price(
+                    option['Forward'], option['Strike'], r, sigma, t,
+                    option['Units'], 1.0 if option['Option_Type'] == 'Call' else -1.0)
 
-                    option['Strike'] = forward_at_exp if not option['Strike'] else option['Strike']
-                    option['Forward'] = forward_at_settle
-                    option['r'] = r
-                    option['S'] = d
-                    option['T'] = t
-                    option['sigma'] = sigma
-                    option['Premium'] = utils.black_european_option_price(
-                        option['Forward'], option['Strike'], r, sigma, t,
-                        option['Units'], 1.0 if option['Option_Type'] == 'Call' else -1.0)
+            seed, sigma_box, alpha_box = self.typed(block)
+            price_param = utils.check_tuple_name(
+                utils.Factor(self.__class__.__name__, utils.check_rate_name(market_price)[1:]))
+            # this family's own written factor IS the warm start: present, the minimisation
+            # starts at it (clipped to the declared boxes) rather than at Seed
+            previous = price_factors.get(price_param)
+            if previous is not None:
+                seed = [np.clip(previous['Sigma'], *sigma_box),
+                        np.clip(previous['Alpha'], *alpha_box)]
+                logging.info('{} - warm start off {}'.format(market_price, price_param))
+            result = scipy.optimize.minimize(
+                calc_error, seed, args=(block['Energy_Futures_Options'],),
+                bounds=[sigma_box, alpha_box])
 
-                seed, sigma_box, alpha_box = self.typed(block)
-                price_param = utils.check_tuple_name(
-                    utils.Factor(self.__class__.__name__, market_factor.name))
-                # this family's own written factor IS the warm start: present, the minimisation
-                # starts at it (clipped to the declared boxes) rather than at Seed
-                previous = price_factors.get(price_param)
-                if previous is not None:
-                    seed = [np.clip(previous['Sigma'], *sigma_box),
-                            np.clip(previous['Alpha'], *alpha_box)]
-                    logging.info('{} - warm start off {}'.format(market_price, price_param))
-                result = scipy.optimize.minimize(
-                    calc_error, seed, args=(block['Energy_Futures_Options'],),
-                    bounds=[sigma_box, alpha_box])
+            # log the results
+            for option in block['Energy_Futures_Options']:
+                vol = np.sqrt(V(*result.x, option['T'], option['S']) / option['T'])
+                fitted_premium = premium(result.x, option)
+                err = (fitted_premium - option['Premium']) ** 2
+                logging.info(
+                    'Commodity {} strike {}, expiry {}, vol {}, c_vol {}, premium {}, c_premium {}, err {}'.format(
+                        block['Energy'], option['Strike'], option['Expiry_Date'],
+                        option['sigma'], vol, option['Premium'], fitted_premium, err))
 
-                # log the results
-                for option in implied_params['instrument']['Energy_Futures_Options']:
-                    vol = np.sqrt(V(*result.x, option['T'], option['S']) / option['T'])
-                    fitted_premium = premium(result.x, option)
-                    err = (fitted_premium - option['Premium']) ** 2
-                    logging.info(
-                        'Commodity {} strike {}, expiry {}, vol {}, c_vol {}, premium {}, c_premium {}, err {}'.format(
-                            implied_params['instrument']['Energy'], option['Strike'], option['Expiry_Date'],
-                            option['sigma'], vol, option['Premium'], fitted_premium, err))
-
-                price_factors[price_param] = {
-                    'Property_Aliases': None,
-                    'Sigma': result.x[0],
-                    'Alpha': result.x[1]}
+            price_factors[price_param] = {
+                'Property_Aliases': None,
+                'Sigma': result.x[0],
+                'Alpha': result.x[1]}
 
 
 #: The six ladder dials of one family's `Bootstrapper Configuration` entry, in the units
@@ -1435,8 +1437,8 @@ class LVFit(utils.Residual):
         self.prec, self.device = family.prec, family.device
         self.factors = factors
         utils.LogVar2FJ.retired('{} block'.format(market_price), instrument)
-        #: the block completed by its own declarations, so every read is an index
-        self.instrument = read = declared_defaults(type(family), instrument)
+        #: the block as its family reads it (`Family.blocks`), so every read is an index
+        self.instrument = read = instrument
         self.mode = read['Fit_Mode']
         self.delta = 1.0 / float(read['Steps_Per_Year'])
         self.c_min, self.rcond = float(read['C_Min']), float(read['Jacobian_Rcond'])
@@ -3026,7 +3028,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         verbs; what is here is the quotes, the grid they are priced on, and the order the stages
         run in.
         """
-        for market_price, implied_params in market_prices.items():
+        for market_price, implied_params in self.blocks(self.param, market_prices).items():
             fit = self.fit_for(market_price, implied_params, sys_params, price_models,
                                price_factors, factor_interp, calendars)
             if fit is None:
@@ -3085,16 +3087,13 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
     def fit_for(self, market_price, implied_params, sys_params, price_models, price_factors,
                 factor_interp, calendars, declared=None):
         """One block's prepared `LVFit`, warm started off the factor already written for it - the
-        quotes, the grid and the seed, with no stage run. None where the block belongs to another
-        family or carries nothing to fit.
+        quotes, the grid and the seed, with no stage run. None where the block carries nothing to
+        fit.
 
-        The quote's own instrument wins over the `Bootstrapper Configuration` block, and
-        `declared` over both: a reading of a written factor says what it wants priced without
-        editing the document.
+        `implied_params` is the block as `blocks` reads it, and `declared` wins over it: a reading
+        of a written factor says what it wants priced without editing the document.
         """
-        if utils.check_rate_name(market_price)[0] != self.market_factor_type:
-            return None
-        instrument = {**self.param, **implied_params['instrument'], **(declared or {})}
+        instrument = dict(implied_params['instrument'], **(declared or {}))
         factors, spot, convention = self.resolve_block(
             market_price, instrument, price_factors, factor_interp, sys_params, calendars)
         fit = LVFit(self, market_price, instrument, factors,
@@ -3108,7 +3107,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         factor just written on a grid built to carry them exactly - one forward pass, no stage run,
         the same route `forward_smiles` takes. Empty where this ladder reaches no declared window,
         and the fit's own block-end rows stand."""
-        instrument = dict(self.param, **implied_params['instrument'])
+        instrument = implied_params['instrument']
         strikes = utils.LogVar2FJ.parse_floats(instrument['Psi_Strikes'], 'Psi_Strikes', 3)
         fit = self.fit_for(
             market_price, implied_params, sys_params, price_models, price_factors, factor_interp, calendars,
@@ -3132,8 +3131,8 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         ratio expectation under `Reference`, which is what a block declaring neither is read as.
         """
         smiles = {}
-        for market_price, implied_params in market_prices.items():
-            instrument = dict(self.param, **implied_params['instrument'])
+        for market_price, implied_params in self.blocks(self.param, market_prices).items():
+            instrument = implied_params['instrument']
             windows = [[utils.LogVar2FJ.tenor(x) for x in pair.split(':')]
                        for pair in str(instrument['Forward_Tenors']).split(',')]
             table = rows or [
@@ -3708,63 +3707,58 @@ class GBMAssetPriceTSModelParameters(Construction):
         `Calculation.factor_leaf` can offer the connected tensor rather than minting a `Vol` leaf out
         of numpy. The map is explicit - no solve, no implicit function theorem.
         '''
-        for market_price, implied_params in market_prices.items():
+        for market_price, implied_params in self.blocks(self.param, market_prices).items():
             rate = utils.check_rate_name(market_price)
             market_factor = utils.Factor(rate[0], rate[1:])
+            # get the vol surface
+            vol_factor = resolve_factor(implied_params['instrument']['Asset_Price_Volatility'],
+                                        price_factors, self.factor_types['Asset_Price_Volatility'])
+            implied_param = vol_factor.name
+            # whether the thing being MODELLED is an fx rate - the model is named after the
+            # underlying, while the surface's tag names its own asset class
+            is_fx = utils.check_tuple_name(utils.Factor('FxRate', rate[1:])) in price_factors
+            vol_surface = riskfactors.construct_factor(vol_factor, price_factors, factor_interp)
 
-            if market_factor.type == self.market_factor_type:
-                # the quote's own instrument wins on conflict
-                implied_params = dict(implied_params, instrument=dict(
-                    self.param, **implied_params['instrument']))
-                # get the vol surface
-                vol_factor = resolve_factor(implied_params['instrument']['Asset_Price_Volatility'],
-                                            price_factors, self.factor_types['Asset_Price_Volatility'])
-                implied_param = vol_factor.name
-                # whether the thing being MODELLED is an fx rate - the model is named after the
-                # underlying, while the surface's tag names its own asset class
-                is_fx = utils.check_tuple_name(utils.Factor('FxRate', rate[1:])) in price_factors
-                vol_surface = riskfactors.construct_factor(vol_factor, price_factors, factor_interp)
+            connect = implied_params['instrument']['Quote_Sensitivity'] == 'Yes'
+            expiry, atm_vol, source = self.atm_column(
+                vol_factor, vol_surface, market_prices, price_factors)
+            quotes = torch.tensor(atm_vol, dtype=self.dtype, requires_grad=connect)
+            tenors, curve, floored = self.integrated_vol(quotes, expiry)
 
-                connect = implied_params['instrument']['Quote_Sensitivity'] == 'Yes'
-                expiry, atm_vol, source = self.atm_column(
-                    vol_factor, vol_surface, market_prices, price_factors)
-                quotes = torch.tensor(atm_vol, dtype=self.dtype, requires_grad=connect)
-                tenors, curve, floored = self.integrated_vol(quotes, expiry)
+            # store the output
+            price_param = utils.Factor(self.__class__.__name__, market_factor.name)
+            model_param = utils.Factor('GBMAssetPriceTSModelImplied', market_factor.name)
+            vol = utils.Curve([], list(zip(tenors, curve.tolist())))
 
-                # store the output
-                price_param = utils.Factor(self.__class__.__name__, market_factor.name)
-                model_param = utils.Factor('GBMAssetPriceTSModelImplied', market_factor.name)
-                vol = utils.Curve([], list(zip(tenors, curve.tolist())))
+            if is_fx:
+                quanto_fx_corr = 0.0
+            else:
+                # the name and sign a quanto deal reads it with (`equity_fx_correlation`): the
+                # surface against the equity's own currency priced in the base
+                currency = price_factors.get(utils.check_tuple_name(utils.Factor(
+                    'EquityPrice', rate[1:])), {}).get('Currency', sys_params['Base_Currency'])
+                sign, pair = utils.check_fx_name([currency, sys_params['Base_Currency']])
+                held = price_factors.get('Correlation.EquityPrice.{}/FxRate.{}'.format(
+                    '.'.join(implied_param), '.'.join(pair)))
+                quanto_fx_corr = sign * held['Value'] if held else 0.0
 
-                if is_fx:
-                    quanto_fx_corr = 0.0
-                else:
-                    # the name and sign a quanto deal reads it with (`equity_fx_correlation`): the
-                    # surface against the equity's own currency priced in the base
-                    currency = price_factors.get(utils.check_tuple_name(utils.Factor(
-                        'EquityPrice', rate[1:])), {}).get('Currency', sys_params['Base_Currency'])
-                    sign, pair = utils.check_fx_name([currency, sys_params['Base_Currency']])
-                    held = price_factors.get('Correlation.EquityPrice.{}/FxRate.{}'.format(
-                        '.'.join(implied_param), '.'.join(pair)))
-                    quanto_fx_corr = sign * held['Value'] if held else 0.0
+            price_factors[utils.check_tuple_name(price_param)] = {
+                'Property_Aliases': None,
+                'Vol': vol,
+                'Quanto_FX_Volatility': None,
+                'Quanto_FX_Correlation': quanto_fx_corr}
+            price_models[utils.check_tuple_name(model_param)] = {'Risk_Premium': None}
 
-                price_factors[utils.check_tuple_name(price_param)] = {
-                    'Property_Aliases': None,
-                    'Vol': vol,
-                    'Quanto_FX_Volatility': None,
-                    'Quanto_FX_Correlation': quanto_fx_corr}
-                price_models[utils.check_tuple_name(model_param)] = {'Risk_Premium': None}
+            if connect:
+                self.calibrated[utils.Factor(price_param.type, price_param.name + ('Vol',))] = curve
+                self.quote_leaves[market_price] = (
+                    ['ATM {:g}'.format(T) for T in expiry], quotes)
 
-                if connect:
-                    self.calibrated[utils.Factor(price_param.type, price_param.name + ('Vol',))] = curve
-                    self.quote_leaves[market_price] = (
-                        ['ATM {:g}'.format(T) for T in expiry], quotes)
-
-                logging.info('{} built from {} ATM vols off {}'.format(
-                    utils.check_tuple_name(price_param), len(atm_vol), source))
-                if floored:
-                    logging.warning('Fixed declining variance for {} at {}'.format(
-                        market_price, ', '.join('{:g}'.format(expiry) for expiry in floored)))
+            logging.info('{} built from {} ATM vols off {}'.format(
+                utils.check_tuple_name(price_param), len(atm_vol), source))
+            if floored:
+                logging.warning('Fixed declining variance for {} at {}'.format(
+                    market_price, ', '.join('{:g}'.format(expiry) for expiry in floored)))
 
 
 class swaption_objective_class(namedtuple('swaption_objective', 'loss reduce reprice')):
@@ -3997,7 +3991,7 @@ class RiskNeutralInterestRateModel(ImpliedCalibration):
         quote of THIS calibration: `get_par_swap_rate` and `set_fixed_amount`.
         """
         # completed by the family's declarations, because this closure is also built directly by
-        # a gate off a hand-authored block; `bootstrap` hands it the section union already
+        # a gate off a hand-authored block; `bootstrap` hands it the block `blocks` read
         block = declared_defaults(type(self), implied_params['instrument'])
         objective = block['Objective']
         quote_sensitivity = block['Quote_Sensitivity']
@@ -4134,103 +4128,98 @@ class RiskNeutralInterestRateModel(ImpliedCalibration):
         else:
             ATM_Premiums = None
 
-        for market_price, implied_params in market_prices.items():
+        for market_price, implied_params in self.blocks(self.param, market_prices).items():
             rate = utils.check_rate_name(market_price)
             market_factor = utils.Factor(rate[0], rate[1:])
-            if market_factor.type == self.market_factor_type:
-                # the quote's own instrument wins on conflict; every downstream read of
-                # implied_params['instrument'] (including calc_loss) sees the union
-                implied_params = dict(implied_params, instrument=dict(
-                    self.param, **implied_params['instrument']))
-                # fetch the factors
-                ir_factor = utils.Factor('InterestRate', rate[1:])
-                vol_factor = utils.Factor('InterestYieldVol', utils.check_rate_name(
-                    implied_params['instrument']['Swaption_Volatility']))
+            # fetch the factors
+            ir_factor = utils.Factor('InterestRate', rate[1:])
+            vol_factor = utils.Factor('InterestYieldVol', utils.check_rate_name(
+                implied_params['instrument']['Swaption_Volatility']))
 
-                # this shouldn't fail - if it does, need to log it and move on
-                try:
-                    swaptionvol = riskfactors.construct_factor(vol_factor, price_factors, factor_interp)
-                    swaptionvol.delta = sys_params.get('Volatility_Delta', 0.0)
-                    ir_curve = riskfactors.construct_factor(ir_factor, price_factors, factor_interp)
-                    swaptionvol.set_premiums(ATM_Premiums, ir_curve.get_currency())
-                except KeyError as k:
-                    logging.warning('Missing price factor {} - Unable to bootstrap {}'.format(k.args, market_price))
-                    continue
-                except Exception:
-                    logging.error('Unable to bootstrap {0} - skipping'.format(market_price), exc_info=True)
-                    continue
+            # this shouldn't fail - if it does, need to log it and move on
+            try:
+                swaptionvol = riskfactors.construct_factor(vol_factor, price_factors, factor_interp)
+                swaptionvol.delta = sys_params.get('Volatility_Delta', 0.0)
+                ir_curve = riskfactors.construct_factor(ir_factor, price_factors, factor_interp)
+                swaptionvol.set_premiums(ATM_Premiums, ir_curve.get_currency())
+            except KeyError as k:
+                logging.warning('Missing price factor {} - Unable to bootstrap {}'.format(k.args, market_price))
+                continue
+            except Exception:
+                logging.error('Unable to bootstrap {0} - skipping'.format(market_price), exc_info=True)
+                continue
 
-                if master_curve_list and master_curve_list.get(ir_curve.get_currency()[0]) != rate[1]:
-                    logging.warning('curve is not Risk Free {} - skipping and will reassign later'.format(market_price))
-                    continue
+            if master_curve_list and master_curve_list.get(ir_curve.get_currency()[0]) != rate[1]:
+                logging.warning('curve is not Risk Free {} - skipping and will reassign later'.format(market_price))
+                continue
 
-                # set of dates for the calibration
-                mtm_dates = set(
-                    [base_date + x['Start'] for x in implied_params['instrument']['Instrument_Definitions']])
+            # set of dates for the calibration
+            mtm_dates = set(
+                [base_date + x['Start'] for x in implied_params['instrument']['Instrument_Definitions']])
 
-                # this family's own written factor for this curve IS the warm start - there either
-                # are parameters in the price factors or there are not
-                warm = self.param_name(rate) in price_factors
-                if warm:
-                    logging.info(
-                        '{} - warm start off {}: the basin search is skipped and the least squares '
-                        'runs from that factor'.format(market_factor.name[0], self.param_name(rate)))
+            # this family's own written factor for this curve IS the warm start - there either
+            # are parameters in the price factors or there are not
+            warm = self.param_name(rate) in price_factors
+            if warm:
+                logging.info(
+                    '{} - warm start off {}: the basin search is skipped and the least squares '
+                    'runs from that factor'.format(market_factor.name[0], self.param_name(rate)))
 
-                # grab the implied process
-                implied_obj, process, vol_tenors = self.implied_process(
-                    base_currency, price_factors, price_models, ir_curve, rate,
-                    vol_tenors=self.sigma_knots(implied_params['instrument']['Sigma_Knots']))
+            # grab the implied process
+            implied_obj, process, vol_tenors = self.implied_process(
+                base_currency, price_factors, price_models, ir_curve, rate,
+                vol_tenors=self.sigma_knots(implied_params['instrument']['Sigma_Knots']))
 
-                # set up the time grid
-                time_grid = utils.TimeGrid(mtm_dates, mtm_dates, mtm_dates)
-                # add a delta of 10 days to the time_grid_years (without changing the scenario grid
-                # this is needed for stochastically deflating the exposure later on
-                time_grid.set_base_date(base_date, delta=(10, vol_tenors * utils.DayCount.DAYS_IN_YEAR))
+            # set up the time grid
+            time_grid = utils.TimeGrid(mtm_dates, mtm_dates, mtm_dates)
+            # add a delta of 10 days to the time_grid_years (without changing the scenario grid
+            # this is needed for stochastically deflating the exposure later on
+            time_grid.set_base_date(base_date, delta=(10, vol_tenors * utils.DayCount.DAYS_IN_YEAR))
 
-                # calculate the error
-                objective, optimizers, implied_var, market_swaptions = self.calc_loss(
-                    implied_params, base_date, time_grid, process, implied_obj, ir_factor,
-                    swaptionvol, warm)
+            # calculate the error
+            objective, optimizers, implied_var, market_swaptions = self.calc_loss(
+                implied_params, base_date, time_grid, process, implied_obj, ir_factor,
+                swaptionvol, warm)
 
-                # check the time
-                time_now = time.monotonic()
-                calibration = SwaptionCalibration(
-                    market_factor.name[0], objective, implied_var, optimizers, process,
-                    market_swaptions)
-                # through the implicit-function wrapper either way: with no quotes on the tape no
-                # edge is recorded and the wrapper is a pass-through
-                theta = utils.LeastSquaresSolve.apply(
-                    calibration,
-                    float(implied_params['instrument']['Jacobian_Rcond']),
-                    float(implied_params['instrument']['Stationarity_Tol']),
-                    *calibration.quotes)
+            # check the time
+            time_now = time.monotonic()
+            calibration = SwaptionCalibration(
+                market_factor.name[0], objective, implied_var, optimizers, process,
+                market_swaptions)
+            # through the implicit-function wrapper either way: with no quotes on the tape no
+            # edge is recorded and the wrapper is a pass-through
+            theta = utils.LeastSquaresSolve.apply(
+                calibration,
+                float(implied_params['instrument']['Jacobian_Rcond']),
+                float(implied_params['instrument']['Stationarity_Tol']),
+                *calibration.quotes)
 
-                # reported by name rather than checked against a tolerance - see `honesty_reprice`
-                reprice = calibration.honesty_reprice(theta)
-                if reprice is not None:
-                    logging.info(
-                        '{} - Analytic objective - at theta* the engine\'s own Monte Carlo prices '
-                        'its worst benchmark, {}, {:+.2f}% away from market'.format(
-                            market_factor.name[0], reprice[0], 100.0 * reprice[1]))
+            # reported by name rather than checked against a tolerance - see `honesty_reprice`
+            reprice = calibration.honesty_reprice(theta)
+            if reprice is not None:
+                logging.info(
+                    '{} - Analytic objective - at theta* the engine\'s own Monte Carlo prices '
+                    'its worst benchmark, {}, {:+.2f}% away from market'.format(
+                        market_factor.name[0], reprice[0], 100.0 * reprice[1]))
 
-                # save this - `unflatten` detaches, so `Price Factors` gets plain numpy
-                self.save_params(calibration.unflatten(theta), price_factors, implied_obj, rate)
+            # save this - `unflatten` detaches, so `Price Factors` gets plain numpy
+            self.save_params(calibration.unflatten(theta), price_factors, implied_obj, rate)
 
-                # the connected half: one entry per named parameter, under the key
-                # `_build_factor_state` mints its leaf with
-                if calibration.quotes:
-                    params_factor = utils.Factor(self.__class__.__name__, rate[1:])
-                    self.calibrated.update({
-                        utils.Factor(params_factor.type, params_factor.name + (name,)): value
-                        for name, value in calibration.split(theta).items()})
-                    # the chain called backward() per evaluation, so a `.grad` standing here is the
-                    # sum over its whole path - the leaf is handed over clean
-                    for quote in calibration.quotes:
-                        quote.grad = None
-                    self.quote_leaves[market_price] = (calibration.descriptors, calibration.quotes)
+            # the connected half: one entry per named parameter, under the key
+            # `_build_factor_state` mints its leaf with
+            if calibration.quotes:
+                params_factor = utils.Factor(self.__class__.__name__, rate[1:])
+                self.calibrated.update({
+                    utils.Factor(params_factor.type, params_factor.name + (name,)): value
+                    for name, value in calibration.split(theta).items()})
+                # the chain called backward() per evaluation, so a `.grad` standing here is the
+                # sum over its whole path - the leaf is handed over clean
+                for quote in calibration.quotes:
+                    quote.grad = None
+                self.quote_leaves[market_price] = (calibration.descriptors, calibration.quotes)
 
-                # record the time
-                logging.info('This took {} seconds.'.format(time.monotonic() - time_now))
+            # record the time
+            logging.info('This took {} seconds.'.format(time.monotonic() - time_now))
 
 
 class HullWhite2FactorModelParameters(RiskNeutralInterestRateModel):
@@ -5336,15 +5325,9 @@ class InterestRate(Construction):
         configuration and orders nothing. A cycle is refused by name here rather than as the bare
         `RuntimeError` the sort would raise.
         """
-        blocks = {}
-        for name, implied_params in market_prices.items():
-            rate = utils.check_rate_name(name)
-            market_factor = utils.Factor(rate[0], rate[1:])
-            if market_factor.type == self.market_factor_type:
-                # the quote's own instrument wins on conflict; everything downstream of here -
-                # the dependency graph, the coupled sets, the solve and `publish` - sees the union
-                blocks[name] = dict(implied_params, instrument=dict(
-                    self.param, **implied_params['instrument']))
+        # everything downstream of here - the dependency graph, the coupled sets, the solve and
+        # `publish` - reads the blocks as `blocks` reads them
+        blocks = self.blocks(self.param, market_prices)
         # keyed by the curve name a `Discount_Rate` carries - the block's name without its type
         builds = {'.'.join(utils.check_rate_name(name)[1:]): name for name in blocks}
         graph = {}
@@ -5904,11 +5887,9 @@ class SurvivalProb(Construction):
                   calendars):
         """Solve each block for the survival curve that holds its used quotes at par, one block at a
         time: a block reads the discount curve the curve family wrote and no other block's curve."""
-        for market_price, implied_params in market_prices.items():
-            if utils.check_rate_name(market_price)[0] == self.market_factor_type:
-                # the quote's own instrument wins on conflict
-                self.solve(market_price, dict(self.param, **implied_params['instrument']),
-                           price_factors, factor_interp, sys_params['Base_Date'], calendars)
+        for market_price, implied_params in self.blocks(self.param, market_prices).items():
+            self.solve(market_price, implied_params['instrument'], price_factors, factor_interp,
+                       sys_params['Base_Date'], calendars)
 
     def solve(self, market_price, block, price_factors, factor_interp, base_date, calendars):
         """Seed the curve as flat hazards at the knots (`InterestRate.seed_factor`), solve the knots
@@ -6137,11 +6118,9 @@ class InflationRate(Construction):
                   calendars):
         """Solve each block for the inflation curve that holds its used quotes at par, one block at
         a time: a block reads the discount curve the curve family wrote and its index's prints."""
-        for market_price, implied_params in market_prices.items():
-            if utils.check_rate_name(market_price)[0] == self.market_factor_type:
-                # the quote's own instrument wins on conflict
-                self.solve(market_price, dict(self.param, **implied_params['instrument']),
-                           price_factors, factor_interp, sys_params['Base_Date'], calendars)
+        for market_price, implied_params in self.blocks(self.param, market_prices).items():
+            self.solve(market_price, implied_params['instrument'], price_factors, factor_interp,
+                       sys_params['Base_Date'], calendars)
 
     def solve(self, market_price, block, price_factors, factor_interp, base_date, calendars):
         """Seed the curve at the breakevens as continuous rates on the knots
@@ -6559,71 +6538,68 @@ class FXVol(Construction):
         The grid is NOT differentiated. It is refined against the quotes when built and pinned from
         then on, which is what makes a tick a values patch; the twin moves the vols on frozen nodes.
         """
-        for market_price, implied_params in market_prices.items():
+        for market_price, implied_params in self.blocks(self.param, market_prices).items():
             rate = utils.check_rate_name(market_price)
             market_factor = utils.Factor(rate[0], rate[1:])
+            block = implied_params['instrument']
+            vol_name = utils.check_tuple_name(
+                utils.Factor(type(self).__name__, market_factor.name))
 
-            if market_factor.type == self.market_factor_type:
-                # the quote's own instrument wins on conflict
-                block = dict(self.param, **implied_params['instrument'])
-                vol_name = utils.check_tuple_name(
-                    utils.Factor(type(self).__name__, market_factor.name))
+            tolerance = float(block['Grid_Tolerance'])
+            # the one bounds= the engine reads: outside it there is no grid to refine to
+            if not self.grid_tolerance_bounds[0] <= tolerance <= self.grid_tolerance_bounds[1]:
+                raise ValueError(
+                    '{}: Grid_Tolerance {:g} is outside [{:g}, {:g}] - the refinement does not '
+                    'terminate there'.format(market_price, tolerance,
+                                             *self.grid_tolerance_bounds))
 
-                tolerance = float(block['Grid_Tolerance'])
-                # the one bounds= the engine reads: outside it there is no grid to refine to
-                if not self.grid_tolerance_bounds[0] <= tolerance <= self.grid_tolerance_bounds[1]:
-                    raise ValueError(
-                        '{}: Grid_Tolerance {:g} is outside [{:g}, {:g}] - the refinement does not '
-                        'terminate there'.format(market_price, tolerance,
-                                                 *self.grid_tolerance_bounds))
+            quotes = self.used(block, market_price)
+            delta_surface = self.smile(quotes)
+            expiries = np.unique(delta_surface[:, 1])
+            skews = riskfactors.Factor2D.malz_skews(
+                delta_surface, expiries, block['Premium_Adjusted'] == 'Yes')
 
-                quotes = self.used(block, market_price)
-                delta_surface = self.smile(quotes)
-                expiries = np.unique(delta_surface[:, 1])
-                skews = riskfactors.Factor2D.malz_skews(
-                    delta_surface, expiries, block['Premium_Adjusted'] == 'Yes')
+            grid = self.pinned_grid(price_factors.get(vol_name), expiries, tolerance)
+            pinned = grid is not None
+            if not pinned:
+                grid = riskfactors.Factor2D.malz_grid(skews, tolerance)
 
-                grid = self.pinned_grid(price_factors.get(vol_name), expiries, tolerance)
-                pinned = grid is not None
-                if not pinned:
-                    grid = riskfactors.Factor2D.malz_grid(skews, tolerance)
+            surface = riskfactors.Factor2D.malz_surface(skews, grid)
+            stamps = [point['Timestamp'] for point in quotes if point.get('Timestamp')]
+            price_factors[vol_name] = {
+                'Property_Aliases': None, 'Surface_Type': self.surface_type,
+                'Moneyness_Rule': self.moneyness_rule,
+                'Premium_Adjusted': block['Premium_Adjusted'],
+                'Currency': block['Currency'],
+                'Grid_Tolerance': tolerance,
+                'Quote_Timestamp': max(stamps) if stamps else '',
+                'Surface': utils.Curve([], surface)}
 
-                surface = riskfactors.Factor2D.malz_surface(skews, grid)
-                stamps = [point['Timestamp'] for point in quotes if point.get('Timestamp')]
-                price_factors[vol_name] = {
-                    'Property_Aliases': None, 'Surface_Type': self.surface_type,
-                    'Moneyness_Rule': self.moneyness_rule,
-                    'Premium_Adjusted': block['Premium_Adjusted'],
-                    'Currency': block['Currency'],
-                    'Grid_Tolerance': tolerance,
-                    'Quote_Timestamp': max(stamps) if stamps else '',
-                    'Surface': utils.Curve([], surface)}
+            if block['Quote_Sensitivity'] == 'Yes':
+                leaves = torch.tensor([point['Quoted_Market_Value'] for point in quotes],
+                                      dtype=self.dtype, requires_grad=True)
+                carried = self.carried_surface(skews, self.carried_skews(
+                    delta_surface, expiries, self.carried_smile(quotes, leaves)), grid)
+                # `Factor2D` sorts by (expiry, moneyness) and mints a leaf out of THAT column,
+                # so the twin is put in the same order rather than assumed to be in it
+                rows = np.array(surface)
+                order = np.lexsort((rows[:, 0], rows[:, 1]))
+                self.calibrated[utils.Factor(type(self).__name__, market_factor.name)] = \
+                    torch.tensor(rows[order, 2], dtype=self.dtype) + (
+                            carried[order] - carried[order].detach())
+                self.quote_leaves[market_price] = (
+                    [self.descriptor(point) for point in quotes], leaves)
 
-                if block['Quote_Sensitivity'] == 'Yes':
-                    leaves = torch.tensor([point['Quoted_Market_Value'] for point in quotes],
-                                          dtype=self.dtype, requires_grad=True)
-                    carried = self.carried_surface(skews, self.carried_skews(
-                        delta_surface, expiries, self.carried_smile(quotes, leaves)), grid)
-                    # `Factor2D` sorts by (expiry, moneyness) and mints a leaf out of THAT column,
-                    # so the twin is put in the same order rather than assumed to be in it
-                    rows = np.array(surface)
-                    order = np.lexsort((rows[:, 0], rows[:, 1]))
-                    self.calibrated[utils.Factor(type(self).__name__, market_factor.name)] = \
-                        torch.tensor(rows[order, 2], dtype=self.dtype) + (
-                                carried[order] - carried[order].detach())
-                    self.quote_leaves[market_price] = (
-                        [self.descriptor(point) for point in quotes], leaves)
-
-                logging.info('{} built from {} quotes on a {} grid of {} nodes as at {}'.format(
-                    vol_name, len(quotes), 'pinned' if pinned else 'refined',
-                    sum(len(nodes) for nodes in grid.values()),
-                    price_factors[vol_name]['Quote_Timestamp'] or 'no stated time'))
-                for T, nodes in grid.items():
-                    logging.info('  expiry {:.4f}: {} nodes resolving the smile to {:.3g} vol, '
-                                 'built at {:.3g}'.format(
-                        T, len(nodes),
-                        float(riskfactors.Factor2D.malz_error(
-                            skews[T], T, nodes).max()), tolerance))
+            logging.info('{} built from {} quotes on a {} grid of {} nodes as at {}'.format(
+                vol_name, len(quotes), 'pinned' if pinned else 'refined',
+                sum(len(nodes) for nodes in grid.values()),
+                price_factors[vol_name]['Quote_Timestamp'] or 'no stated time'))
+            for T, nodes in grid.items():
+                logging.info('  expiry {:.4f}: {} nodes resolving the smile to {:.3g} vol, '
+                             'built at {:.3g}'.format(
+                    T, len(nodes),
+                    float(riskfactors.Factor2D.malz_error(
+                        skews[T], T, nodes).max()), tolerance))
 
 
 def family_class(btype):
@@ -6665,8 +6641,8 @@ def bootstrap_order(section):
 
 def block_readers(market):
     """`{block: [every block reading what it writes]}` over `market`'s `Market Prices`, each block
-    completed by its family's `Bootstrapper Configuration` entry as the family reads it
-    (`dict(entry, **block)`).
+    read under its family's `Bootstrapper Configuration` entry as the family reads it
+    (`Family.blocks`).
 
     A block is read two ways and both are the families' own declarations. `reads` names the price
     factor TYPES a family prices on, which is the whole of it for a surface or a spot model; the
@@ -6681,12 +6657,10 @@ def block_readers(market):
     blocks = {name: writer[utils.check_rate_name(name)[0]] for name in market_prices
               if utils.check_rate_name(name)[0] in writer}
     curves = InterestRate
-    named = {name: {block.get('Discount_Rate')} | (
-                 curves.benchmark_curves(block, name) if cls is curves else set())
-             for name, cls in blocks.items() if cls in (curves, SurvivalProb, InflationRate)
-             for entry in [entries.get(cls.__name__)]
-             for block in [dict(entry if isinstance(entry, dict) else {},
-                                **market_prices[name].get('instrument', {}))]}
+    named = {name: {block['instrument'].get('Discount_Rate')} | (
+                 curves.benchmark_curves(block['instrument'], name) if cls is curves else set())
+             for cls in (curves, SurvivalProb, InflationRate)
+             for name, block in cls.blocks(entries.get(cls.__name__), market_prices).items()}
     readers = {}
     for reader, cls in blocks.items():
         for written, wrote in blocks.items():
