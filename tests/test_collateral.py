@@ -11,15 +11,15 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""The collateral call - a CSA's arithmetic at one date, and the balance the record holds written
-into the plan - held to the engine's own recursion.
+"""The collateral call - the netting set's own arithmetic at one date, read by the service's bridge
+- and the balance the record holds written into the plan.
 
-`derivus_spine.projections.CSA` is pure over plain data, so most of this file hands it numbers,
-exact in binary so every assertion is an equality. The engine gates run a collateralised credit
-Monte Carlo over a job the record compiled: the balance the record holds is the one the engine
-starts from, and on every path the spine's call is the engine's own transfer - its required support
-where the engine moved the balance, the balance where it did not - on the day a deal under the set
-pays too, under either reading of that day's payment.
+The set an agreement's terms construct (`Collateral.agreement`) is handed numbers, exact in binary
+so every assertion is an equality. The engine gates run a collateralised credit Monte Carlo over a
+job the record compiled: the balance the record holds is the one the engine starts from, and on
+every path the call at one date is the recursion's own transfer - its required support where the
+recursion moved the balance, the balance where it did not - on the day a deal under the set pays
+too, under either reading of that day's payment.
 """
 import json
 import os
@@ -37,6 +37,7 @@ from derivus import spine, utils
 from derivus.instruments import NettingCollateralSet
 from derivus.schema import declared_fields
 from derivus.spine import Collateral
+from derivus.structures import market_of
 from derivus_spine.projections import CSA
 
 BASE, NEXT = '2024-06-28', '2024-06-29'
@@ -68,103 +69,85 @@ HAIRCUTS = dict(TERMS, Collateral_Assets={'Cash_Collateral': [
      'Haircut_Received': {'.Percent': 25.0}}]})
 
 
-def test_the_dials_are_read_as_the_engine_reads_them():
-    """THE CSA IS THE ENGINE'S. Every `CreditSupportList` is read at its FIRST value exactly as
-    `utils.CreditSupportList.value` reads it - a dict over the rows, so a rating listed twice keeps
-    its first place and its last amount - `Haircut_Posted` as the fraction the engine's `Percent`
-    decodes to, and the balance currency as stated, none where unstated, the agreement's no
-    fallback. Terms that collateralise nothing have no CSA, and a dial the terms state none of
-    reads zero, the engine's convention for it.
-
-    Killing mutations: the first row's rating read as its amount, which puts every threshold at 1;
-    an unstated dial read as None, which fails the call the engine prices.
-    """
-    dials = CSA.of(HAIRCUTS)
-    stated = TERMS['Credit_Support_Amounts']
-    for dial in CSA.DIALS:
-        assert dials[dial] == utils.CreditSupportList(stated[dial]['.CreditSupportList']).value()
-    assert dials['Received_Threshold'] == 2_000_000.0, 'the first rating, not the last'
-    twice = listed((1, 5.0), (2, 6.0), (1, 7.0))
-    assert CSA.of(dict(TERMS, Credit_Support_Amounts=dict(stated, Minimum_Posted=twice)))[
-        'Minimum_Posted'] == utils.CreditSupportList(twice['.CreditSupportList']).value() == 7.0
-    assert dials['haircuts'] == {'USD': float(utils.Percent(50.0))}
-    assert (dials['Agreement_Currency'], dials['Balance_Currency']) == ('ZAR', 'EUR')
-    assert CSA.of(dict(TERMS, Balance_Currency=''))['Balance_Currency'] is None
-    assert CSA.of(dict(TERMS, Collateralized='False')) is None
-    assert CSA.of({'Object': 'NettingCollateralSet'}) is None
-    bare = CSA.of(dict(TERMS, Credit_Support_Amounts={
-        'Received_Threshold': listed((1, 5.0))}))
-    assert (bare['Independent_Amount'], bare['Received_Threshold'], bare['Posted_Threshold'],
-            bare['haircuts']) == (0.0, 5.0, 0.0, {})
-    assert CSA.call(7.0, {}, bare, {'ZAR': 1.0})['call'] == 2.0
+def agreed(terms, job=None):
+    """The netting set `terms` declare as the bridge constructs it, under the market of `job`, or
+    a `Valuation Configuration` stating nothing where none is named."""
+    return Collateral.agreement(terms, market_of(job) if job else {'Valuation Configuration': {}})
 
 
 def test_the_support_required_is_the_engine_s_own_at():
-    """THE SUPPORT REQUIRED IS THE ENGINE'S `At`, term for term: the independent amount, plus the
-    excess over the received threshold above it, plus the excess below the posted threshold below
-    it - the three crossed from the agreement currency - and at either threshold itself nothing
-    beyond the independent amount.
+    """THE SUPPORT A CALL REQUIRES IS THE RECURSION'S `At`, one method of the set: the independent
+    amount, plus the excess over the received threshold above it, plus the excess below the posted
+    threshold below it - the three crossed from the agreement currency - and at either threshold
+    itself nothing beyond the independent amount. A threshold stated alone calls its excess, every
+    amount the terms leave out being zero.
 
     Killing mutation: the thresholds read in the agreement's currency uncrossed, which puts the
     received threshold at 2,000,000 dollars and calls nothing on a 300,000 exposure.
     """
-    dials = CSA.of(TERMS)
-    assert [CSA.required(exposure, dials, FX) for exposure in (
+    deal = agreed(TERMS)
+    assert [deal.call(exposure, {}, FX)['required'] for exposure in (
         300_000.0, 125_000.0, 0.0, -100_000.0, -250_000.0)] == [
         176_000.0, 1_000.0, 1_000.0, 1_000.0, -149_000.0]
+    bare = agreed(dict(TERMS, Credit_Support_Amounts={'Received_Threshold': listed((1, 5.0))}))
+    assert bare.call(7.0, {}, {'ZAR': 1.0})['call'] == 2.0
 
 
 def test_a_call_clears_its_minimum_strictly_on_the_side_it_falls():
-    """THE MINIMUM TRANSFER IS STRICT, as the engine's scan transfers: a shortfall exactly at the
+    """THE MINIMUM TRANSFER IS STRICT, the recursion's own step: a shortfall exactly at the
     minimum received calls nothing and one a cent over it calls the whole of it; an excess exactly
     at the minimum posted posts nothing and one over it posts the whole of it, signed as the
     settlement moves it - received positive. The minimum reported is the one on the side the
     difference falls. Nothing is rounded: a netting set declares no rounding, so the call is the
     difference itself, to the last digit the arithmetic carries.
 
-    Killing mutation: `>=` for the minimum transfer, which calls 20,000 at exactly the minimum.
+    Killing mutation: `<=` for the scan's transfer test, which calls 20,000 at exactly the minimum.
     """
-    dials = CSA.of(TERMS)
-    at, over = (CSA.call(exposure, {}, dials, FX) for exposure in (144_000.0, 144_000.5))
+    deal = agreed(TERMS)
+    at, over = (deal.call(exposure, {}, FX) for exposure in (144_000.0, 144_000.5))
     assert (at['required'], at['balance'], at['call'], at['direction'], at['minimum_transfer']) \
         == (20_000.0, 0.0, 0.0, None, 20_000.0)
-    assert (over['call'], over['direction']) == (20_000.5, CSA.CALL)
+    assert (over['call'], over['direction']) == (20_000.5, 'call')
     held = {'EUR': 24_800.0}
-    at, over = (CSA.call(0.0, holding, dials, FX) for holding in (
+    at, over = (deal.call(0.0, holding, FX) for holding in (
         held, {'EUR': 24_800.5}))
     assert (at['balance'], at['call'], at['direction'], at['minimum_transfer']) == (
         31_000.0, 0.0, None, 30_000.0)
-    assert (over['call'], over['direction']) == (-30_000.625, CSA.POST)
+    assert (over['call'], over['direction']) == (-30_000.625, 'post')
 
     declared = declared_fields(NettingCollateralSet).values()
     names = [field.key for field in declared] + [
         part.key for field in declared for part in field.sub_fields or ()]
     assert not [name for name in names if 'round' in name.lower()],         'a rounding the terms declare is one the call must read'
-    said = CSA.call(144_000.123, {}, dials, FX)
-    assert said['call'] == CSA.required(144_000.123, dials, FX) != round(said['call'], 2)
+    said = deal.call(144_000.123, {}, FX)
+    assert said['call'] == said['required'] != round(said['call'], 2)
 
 
 def test_what_the_bank_holds_counts_at_face_and_what_it_posted_one_less_its_haircut():
-    """A CALL CUTS ONLY WHAT THE BANK POSTED, as the engine's balance counts each side: what it holds
-    is worth its crossed amount and what it posted its crossed amount less `Haircut_Posted`, so a
-    posting is delivered at face over one less it; `Haircut_Received` is the closeout's credit on
-    what is held, which no call reads. An asset the terms declare no haircut for is worth its
-    crossed amount on either side.
+    """A CALL CUTS ONLY WHAT THE BANK POSTED, as the set's balance counts each side: what it holds
+    is worth its crossed amount and what it posted its crossed amount less the `Haircut_Posted` of
+    its cash row, so a posting is delivered at face over one less it; `Haircut_Received` is the
+    closeout's credit on what is held, which no call reads. An asset the terms declare no haircut
+    for is worth its crossed amount on either side, and a paper listing two currencies, stating no
+    amounts as paper does, cuts each by its own row.
 
     Killing mutation: `Haircut_Posted` taken on what the bank holds too, which values 100,000
     dollars held at 50,000.
     """
-    dials = CSA.of(HAIRCUTS)
-    assert CSA.valued({'USD': 100_000.0}, dials, FX) == 100_000.0
-    assert CSA.valued({'USD': -100_000.0}, dials, FX) == -50_000.0
-    assert CSA.valued({'EUR': 8.0, 'USD': 4.0}, dials, FX) == 14.0
-    assert CSA.valued({'EUR': -8.0, 'USD': -4.0}, dials, FX) == -12.0
+    deal = agreed(HAIRCUTS)
+    assert deal.valued({'USD': 100_000.0}, FX) == 100_000.0
+    assert deal.valued({'USD': -100_000.0}, FX) == -50_000.0
+    assert deal.valued({'EUR': 8.0, 'USD': 4.0}, FX) == 14.0
+    assert deal.valued({'EUR': -8.0, 'USD': -4.0}, FX) == -12.0
+    paper = agreed(dict(HAIRCUTS, Collateral_Assets={'Cash_Collateral': HAIRCUTS[
+        'Collateral_Assets']['Cash_Collateral'] + [{'Currency': 'EUR', 'Haircut_Posted': {'.Percent': 75.0}}]}))
+    assert paper.valued({'EUR': -8.0, 'USD': -4.0}, FX) == -4.5
 
 
 def test_each_side_is_cut_by_its_own_haircut_and_the_call_is_the_engine_s_transfer():
-    """HAIRCUTS PER DIRECTION, the engine's balance and the spine's call alike. Dollars cut by half
-    where posted and a quarter where held, the bank opening on 30,000 of them posted: a day on, on
-    every one of 4,096 paths, the call moves the balance where the engine's scan moves it and to
+    """HAIRCUTS PER DIRECTION, the recursion's balance and the call at one date alike. Dollars cut
+    by half where posted and a quarter where held, the bank opening on 30,000 of them posted: a day
+    on, on every one of 4,096 paths, the call moves the balance where the recursion moves it and to
     the support it requires, counted as the call counts it - what the bank holds at face and what
     it posted at one less `Haircut_Posted`, a posting being delivered at twice the support it
     meets. With nothing to close out but the day, the set's value is its gross less the
@@ -180,10 +163,10 @@ def test_each_side_is_cut_by_its_own_haircut_and_the_call_is_the_engine_s_transf
     value off by a quarter of their collateral; and an edge left in the unit of the support
     required, which transfers on 2,185 paths the call does not.
     """
-    holding, dials = {'USD': -30_000.0}, CSA.of(HAIRCUTS)
+    holding, deal = {'USD': -30_000.0}, agreed(HAIRCUTS)
     job = engine_job(HAIRCUTS)
     job['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal']['Opening_Balance'] = \
-        CSA.valued(holding, dials, FX) / FX['EUR']
+        deal.valued(holding, FX) / FX['EUR']
     context = derivus.Context()
     context.load_json((json.dumps(job), 'haircuts'))
     calc, out = derivus.run_cmc(context.current_cfg, prec=torch.float64)
@@ -195,10 +178,10 @@ def test_each_side_is_cut_by_its_own_haircut_and_the_call_is_the_engine_s_transf
     gross = np.asarray(result['GrossMTM'][0][dates.index(pd.Timestamp(NEXT))])
     assert np.array_equal(np.asarray(result['Collateral'][0][opened]), np.full(gross.shape, -30_000.0))
 
-    said = [CSA.call(float(exposure), holding, dials, FX) for exposure in gross]
+    said = [deal.call(float(exposure), holding, FX) for exposure in gross]
     moved = held != -30_000.0
     assert np.array_equal(moved, [call['direction'] is not None for call in said]), \
-        'the spine calls where the engine does not transfer, or the other way'
+        'the call moves where the recursion does not transfer, or the other way'
     assert np.array_equal(np.where(held < 0, held / 2, held)[moved],
                           np.array([call['required'] for call in said])[moved]), \
         'the engine holds other support than the call requires'
@@ -234,9 +217,8 @@ def test_collateral_and_margin_are_two_balances_and_the_call_reads_the_first():
                         'CSA-2': {'collateral': {'EUR': 7.0}, 'margin': {}}}
     assert CSA.held(movements)['CSA-1']['collateral']['EUR'] == 25_799.0
     held = balances['CSA-1']
-    said = CSA.call(0.0, held['collateral'], CSA.of(TERMS), FX)
-    assert (said['balance'], said['call'], said['direction']) == (41_000.0, -40_000.0,
-                                                                  CSA.POST)
+    said = agreed(TERMS).call(0.0, held['collateral'], FX)
+    assert (said['balance'], said['call'], said['direction']) == (41_000.0, -40_000.0, 'post')
 
 
 def test_a_mark_nobody_has_is_named_and_calls_nothing():
@@ -268,7 +250,7 @@ def test_a_mark_nobody_has_is_named_and_calls_nothing():
     assert (unknown['exposure'], unknown['call'], unknown['direction'], unknown['unknown']) == (
         None, None, None, valued['unknown'])
     assert (known['exposure'], known['direction'], known['unknown']) == (
-        300_000.0 / FX['ZAR'], CSA.CALL, []), 'in rand, the agreement currency'
+        300_000.0 / FX['ZAR'], 'call', []), 'in rand, the agreement currency'
     assert (uncrossed['call'], uncrossed['unknown']) == (None, [
         {'instrument': None, 'what': 'the close carries no spot for XAU'}])
     assert (unstated['call'], unstated['unknown']) == (None, [
@@ -318,11 +300,12 @@ def test_the_record_s_balance_opens_the_engine_s_recursion_and_the_call_is_its_t
     compiled job writes the collateral held by its base date as the set's `Opening_Balance`, in
     its `Balance_Currency` at the job's own spots, the margin and the later movement left out; a
     credit Monte Carlo over that job opens its recursion on exactly that balance. A day on, on
-    every one of 4,096 paths spanning both thresholds and both minimums, the spine's call on the
-    engine's own gross exposure moves the balance where the engine's scan moves it - to the
-    support the spine requires, exactly on these dyadic spots and to rounding at the
-    minimum-transfer edge on others - and leaves it where the engine leaves it. A base valuation, which runs no recursion, is compiled with no balance. An asset the job's
-    spots cannot cross refuses by name wherever the book is valued - a plan, a read, a base
+    every one of 4,096 paths spanning both thresholds and both minimums, the call at one date on
+    the recursion's own gross exposure moves the balance where the recursion moves it - to the
+    support the call requires, exactly on these dyadic spots and to rounding at the
+    minimum-transfer edge on others - and leaves it where the recursion leaves it. A base
+    valuation, which runs no recursion, is compiled with no balance. An asset the job's spots
+    cannot cross refuses by name wherever the book is valued - a plan, a read, a base
     valuation - while a diary, which values nothing, compiles past it; it needs no spot once
     returned in full, and with nothing held the job is the file.
 
@@ -361,18 +344,18 @@ def test_the_record_s_balance_opens_the_engine_s_recursion_and_the_call_is_its_t
     assert held[opened] == pytest.approx(21_600.0 * FX['EUR'], rel=1e-14), \
         'the engine opens on the balance written'
 
-    dials = CSA.of(TERMS)
-    said = [CSA.call(float(exposure), holding, dials, FX) for exposure in gross]
+    deal = agreed(TERMS, job)
+    said = [deal.call(float(exposure), holding, FX) for exposure in gross]
     required = np.array([call['required'] for call in said])
     moved = held[later] != held[opened]
     assert np.array_equal(moved, [call['direction'] is not None for call in said]), \
-        'the spine calls where the engine does not transfer, or the other way'
+        'the call moves where the recursion does not transfer, or the other way'
     assert np.array_equal(held[later][moved], (required[moved] / FX['EUR']) * FX['EUR']), \
-        "the spine's required support is not the engine's"
+        "the call's required support is not the recursion's"
     assert said[0]['balance'] == 27_000.0
     directions = [call['direction'] for call in said]
     regimes = np.where(gross > 125_000.0, 1, np.where(gross < -100_000.0, -1, 0))
-    for count in ([directions.count(side) for side in (CSA.CALL, CSA.POST, None)]
+    for count in ([directions.count(side) for side in ('call', 'post', None)]
                   + [int(np.sum(regimes == side)) for side in (1, 0, -1)]):
         assert count >= 200, 'the paths do not span both thresholds and both minimums'
 
@@ -396,14 +379,15 @@ def test_the_day_s_payment_is_read_as_the_set_s_own_recursion_reads_it():
     matures on the call date, so the gross exposure there carries what it pays that day, path by
     path. The call's exposure is the P&L's value - the gross less that payment - with the payment
     added back where the set holds it, `Exclude_Paid_Today` off as the engine defaults it, and
-    standing where the set excludes it: under either setting, on every one of 4,096 paths, the
-    spine's call moves the balance where the engine's scan moves it and to the support it requires,
-    to rounding, while the other reading parts from the engine on hundreds of paths.
+    standing where the set excludes it, as the set the bridge constructs under the job's market
+    reads it: under either setting, on every one of 4,096 paths, the call moves the balance where
+    the recursion moves it and to the support it requires, to rounding, while the other reading
+    parts from the recursion on hundreds of paths.
 
     Killing mutations: the day's payment never added back, which parts from the engine's default;
     the payment added back under `Exclude_Paid_Today` too; the setting read inverted.
     """
-    holding, dials = {'EUR': 21_600.0}, CSA.of(TERMS)
+    holding = {'EUR': 21_600.0}
     for excluded in (False, True):
         job = engine_job(TERMS)
         netting = job['Calc']['Deals']['Deals']['Children'][0]
@@ -425,18 +409,19 @@ def test_the_day_s_payment_is_read_as_the_set_s_own_recursion_reads_it():
         moved = later != held[reported.index(pd.Timestamp(BASE))]
         gross = result['GrossMTM'][0][dates.index(pd.Timestamp(NEXT))]
         paid = out['Results']['cashflows']['USD'].loc[pd.Timestamp(NEXT)].to_numpy()
-        assert Collateral.paid_today(job) is not excluded
+        deal = agreed(TERMS, job)
+        assert Collateral.paid_today(deal) is not excluded
 
         def calls(today):
             # each path a P&L row: four units, each worth the gross less the day's payment
-            return [CSA.call(Collateral.exposure('CSA-1', {'rows': [{
+            return [deal.call(Collateral.exposure('CSA-1', {'rows': [{
                 'agreement': 'CSA-1', 'value_end': float(total - cash), 'quantity_end': 4.0,
-                'paid_end': float(cash) / 4.0}]}, FX, 'USD', today), holding, dials, FX)
+                'paid_end': float(cash) / 4.0}]}, FX, 'USD', today), holding, FX)
                 for total, cash in zip(gross, paid)]
 
-        said, other = calls(Collateral.paid_today(job)), calls(not Collateral.paid_today(job))
+        said, other = calls(Collateral.paid_today(deal)), calls(not Collateral.paid_today(deal))
         assert np.array_equal(moved, [call['direction'] is not None for call in said]), \
-            'the spine calls on another exposure than the set recurses on'
+            'the call reads another exposure than the set recurses on'
         assert later[moved] == pytest.approx(
             np.array([call['required'] for call in said])[moved], rel=1e-12, abs=1e-6)
         assert np.sum(moved != [call['direction'] is not None for call in other]) >= 200, \
@@ -501,9 +486,9 @@ def test_a_scenario_valuation_values_a_collateralised_set_as_a_base_valuation_do
 def test_a_support_amount_stated_as_an_empty_list_is_one_left_out():
     """NO AMOUNT SPECIFIED IS ZERO, as Paragraph 12 of the 1994 ISDA Credit Support Annex defines
     the Threshold, the Minimum Transfer Amount and the Independent Amount: each table of
-    `Credit_Support_Amounts` written as a `CreditSupportList` of no rows is the amount zero, as the
-    spine's CSA reads it, and the collateralised run marks and holds bit for bit as the set leaving
-    that table out - and not as the set stating it, so the table is one the run reads.
+    `Credit_Support_Amounts` written as a `CreditSupportList` of no rows is the amount zero: the
+    collateralised run marks and holds bit for bit as the set leaving that table out - and not as
+    the set stating it, so the table is one the run reads.
 
     KILLING MUTATIONS: `DealFields.__getitem__` back to completing a null alone, the empty
     container read as a value failing the run on a `StopIteration` that says nothing; `__len__`
@@ -518,9 +503,9 @@ def test_a_support_amount_stated_as_an_empty_list_is_one_left_out():
         return [np.asarray(result[key][0]) for key in ('Value', 'Collateral')]
 
     stated = held(TERMS['Credit_Support_Amounts'])
-    for dial in CSA.DIALS:
+    for dial in ('Independent_Amount', 'Received_Threshold', 'Posted_Threshold', 'Minimum_Received',
+                 'Minimum_Posted'):
         empty = dict(TERMS['Credit_Support_Amounts'], **{dial: listed()})
-        assert CSA.of(dict(TERMS, Credit_Support_Amounts=empty))[dial] == 0.0
         runs = held(empty), held({key: value for key, value in empty.items() if key != dial})
         assert all(np.array_equal(blank, omitted) for blank, omitted in zip(*runs)), dial
         assert not all(np.array_equal(blank, said) for blank, said in zip(runs[0], stated)), dial

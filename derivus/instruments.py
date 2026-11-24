@@ -1556,24 +1556,25 @@ class NettingCollateralSet(Deal):
         return {f.key: float(row[f.key]) for f in cls.HAIRCUTS}
 
     @classmethod
-    def cash(cls, terms):
+    def cash(cls, terms, weighed=True):
         """The cash collateral of the set `terms` state, a `utils.Collateral` of names per
         `Cash_Collateral` row, cash in its `Balance_Currency` where it states no cash, bond or
         equity: each row's haircuts (`haircuts`), and its `Amount` the weight of its asset in the
         collateral, one where it is the sole asset and states none. A row stating none beside
-        another asset is refused by name."""
+        another asset is refused by name where `weighed`, and weighs None where not, as the
+        agreement's paper states no amounts."""
         assets = cls.collateral(terms.get('Collateral_Assets'))
         others = assets.get('Bond_Collateral') or assets.get('Equity_Collateral')
         rows = assets.get('Cash_Collateral') or ([] if others else [{'Currency': terms['Balance_Currency']}])
-        found = []
+        several, found = bool(others) or len(rows) > 1, []
         for row in rows:
             # a sole asset's balance cancels its weight, so a sole row stating none is a unit
-            if row.get('Amount') is None and (others or len(rows) > 1):
+            if weighed and several and row.get('Amount') is None:
                 raise ValueError('{}: a Cash_Collateral row states no Amount, its weight among '
                                  'several collateral assets'.format(terms.get('Reference')))
             found.append(utils.Collateral(
-                **cls.haircuts(row), Amount=1.0 if row.get('Amount') is None else row['Amount'],
-                Currency=row['Currency'], Funding_Rate=row.get('Funding_Rate'),
+                **cls.haircuts(row), Amount=1.0 if row.get('Amount') is None and not several else
+                row.get('Amount'), Currency=row['Currency'], Funding_Rate=row.get('Funding_Rate'),
                 Collateral_Rate=row.get('Collateral_Rate'), Collateral=1.0))
         return found
 
@@ -1586,6 +1587,34 @@ class NettingCollateralSet(Deal):
         above, below = (support[key].value() * fx for key in ('Received_Threshold', 'Posted_Threshold'))
         return (support['Independent_Amount'].value() * fx + (value - above) * (value > above)
                 + (value - below) * (value < below))
+
+    def valued(self, holding, fx):
+        """What `holding` (`{currency: amount}`) is worth to the set in the currency `fx` prices
+        every currency in: each amount crossed, at face where the bank holds it and at one less the
+        `Haircut_Posted` of its cash row where it posted it, an amount of nothing worth nothing."""
+        cut = {row.Currency: row.Haircut_Posted for row in self.cash(self.field, weighed=False)}
+        return sum((amount * fx[asset] * (1.0 - cut.get(asset, 0.0) if amount < 0 else 1.0)
+                    for asset, amount in sorted(holding.items()) if amount), 0.0)
+
+    def call(self, value, holding, fx):
+        """The call at `value` with `holding` held, in the currency `fx` prices every currency in:
+        `{required, balance, call, direction, minimum_transfer}`, the support `required` asks for
+        and the `balance` the holding is worth (`valued`), moved as one step of the recursion moves
+        it (`collateral_bands`, `scan_collateral_balance`) at a face of one, the worth being counted
+        by side already. `call` is what the settlement moves, received positive, nothing where it
+        moves none, `direction` 'call' or 'post', and `minimum_transfer` the minimum on the side the
+        difference falls."""
+        support, fx_agreement = self.field['Credit_Support_Amounts'], fx[self.field['Agreement_Currency']]
+        received, posted = (support[key].value() for key in ('Minimum_Received', 'Minimum_Posted'))
+        required, balance = self.required(value, fx_agreement), self.valued(holding, fx)
+        asked = torch.full((2, 1), required, dtype=torch.float64)
+        _, recv, post = collateral_bands(
+            asked, torch.ones_like(asked), torch.zeros_like(asked), fx_agreement, received, posted)
+        path, _ = scan_collateral_balance(asked.new_tensor([balance]), asked, recv, post, (True, True))
+        moved = float(path[-1, 0]) - balance
+        return {'required': required, 'balance': balance, 'call': moved,
+                'direction': 'call' if moved > 0 else 'post' if moved < 0 else None,
+                'minimum_transfer': (received if required >= balance else posted) * fx_agreement}
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):

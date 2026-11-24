@@ -1185,16 +1185,21 @@ residual. **Held by**
 
 ## Collateral {#collateral}
 
-`projections.CSA` reads a set's terms as the engine does - each `CreditSupportList` at its first
-value - and `required` is the engine's `At`. `call` is that less the collateral held, what the bank
-holds counted at face and what it posted at one less its `Haircut_Posted`, as the engine's balance
-counts each side (`collateral_bands`), moving only strictly past the minimum transfer on its side,
-as `scan_collateral_balance` does; `Haircut_Received` is the closeout's credit on what is held
-(`collateral_credit`), which no call reads. Margin is a separate balance. Being pure, the oracle
-replays it.
+The record keeps the facts a call reads: whether a set's terms collateralise it
+(`CSA.collateralised`), the currency its balance is kept in (`CSA.balance_currency`) and what is
+held under each agreement, collateral and margin apart (`CSA.held`). The arithmetic is the
+engine's: the bridge constructs the netting set an agreement's terms declare as the engine
+constructs any deal (`Collateral.agreement`) and reads its answers. The support required at a value
+is the recursion's `At` (`NettingCollateralSet.required`); a holding is worth what the bank holds at
+face and what it posted at one less the `Haircut_Posted` of its cash row
+(`NettingCollateralSet.valued`, over `NettingCollateralSet.cash`); and the call moves the balance
+as one step of the recursion moves it (`collateral_bands`, `scan_collateral_balance`), only
+strictly past the minimum transfer on its side (`NettingCollateralSet.call`). `Haircut_Received` is
+the closeout's credit on what is held (`collateral_credit`), which no call reads. Margin is a
+separate balance.
 `GET /book/collateral` answers each agreement on a marked close, its exposure the P&L's value of its
-positions with the day's payment added back where the set holds it (`Exclude_Paid_Today` off); an
-unknown mark makes the call null, never zero. **Held by**
+positions with the day's payment added back where the set holds it, its own `Exclude_Paid_Today`
+off (`Collateral.paid_today`); an unknown mark makes the call null, never zero. **Held by**
 `test_collateral.py::test_the_support_required_is_the_engine_s_own_at`,
 `::test_a_call_clears_its_minimum_strictly_on_the_side_it_falls`,
 `::test_what_the_bank_holds_counts_at_face_and_what_it_posted_one_less_its_haircut`,

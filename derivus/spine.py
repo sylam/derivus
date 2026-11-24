@@ -824,11 +824,12 @@ def nets(rows):
 def _balances(document, papers, lsn=None, folds=None):
     """`{agreement: balance}` - the `Opening_Balance` of each collateralised netting set of
     `document` the record holds collateral under at `lsn`, each read on the paper `papers` holds
-    for it where it holds one: what it holds by the job's base date, counted as the call counts it
-    (`CSA.valued`), in the set's `Balance_Currency`, every other asset crossed at the job's own
-    spots (`PnL.rates`). The `cash` fold is ADVANCED in `folds`, and folded only where such a set
-    exists. A set holding an asset those spots cannot cross REFUSES by name, a plan and a read
-    alike: the book lacks that market, and nothing is valued on a zero."""
+    for it where it holds one: what it holds by the job's base date, worth what the set the paper
+    constructs counts it (`Collateral.agreement`, `NettingCollateralSet.valued`), in its
+    `Balance_Currency`, every other asset crossed at the job's own spots (`PnL.rates`). The `cash`
+    fold is ADVANCED in `folds`, and folded only where such a set exists. A set holding an asset
+    those spots cannot cross REFUSES by name, a plan and a read alike: the book lacks that market,
+    and nothing is valued on a zero."""
     sets = {deal.get('Reference'): papers.get(deal.get('Reference'), deal) for deal in (
         node['Instrument']['.Deal'] for _, node in netting_sets(document))}
     spine = package()
@@ -844,8 +845,7 @@ def _balances(document, papers, lsn=None, folds=None):
             continue
         # the market is loaded for the first set holding collateral, and for none where none does
         market = market or _market(document)
-        dials = spine.projections.CSA.of(terms)
-        currency = dials['Balance_Currency']
+        currency = spine.projections.CSA.balance_currency(terms)
         fx = dict(PnL.rates(market['Price Factors'], currency, base_currency(market)),
                   **{currency: 1.0})
         uncrossed = sorted(asset for asset, amount in holding.items() if amount and asset not in fx)
@@ -855,7 +855,7 @@ def _balances(document, papers, lsn=None, folds=None):
                 'it into {}, its Balance_Currency: a balance in an asset the book carries no spot '
                 'for is a market the book lacks; install the spot'.format(
                     ', '.join(uncrossed), agreement, currency))
-        balances[agreement] = spine.projections.CSA.valued(holding, dials, fx)
+        balances[agreement] = Collateral.agreement(terms, market).valued(holding, fx)
     return balances
 
 
@@ -2955,22 +2955,25 @@ class Collateral:
     mark less what the unit paid that day, a position held through its last day as the set holds it
     until its cash moves - with that day's payment added back where the set holds it (the engine's
     `Exclude_Paid_Today` off, its default), crossed into the agreement currency at the close's own
-    spots; a mark nobody has is named rather than read as zero. THE ARITHMETIC IS THE RECORD'S:
-    `derivus_spine.projections.CSA`, one formula the service and the oracle run and the engine's own
-    recursion at one date.
+    spots; a mark nobody has is named rather than read as zero. THE ARITHMETIC IS THE ENGINE'S: the
+    netting set the agreement's terms construct (`agreement`) answers the call, its own recursion
+    at one date (`NettingCollateralSet.call`).
 
-    Pure over plain data: the P&L over the close alone, the agreements declared, the `cash` rows.
+    Over the P&L of the close alone, the agreements declared, the `cash` rows and the market the
+    close was marked on.
     """
 
     @staticmethod
-    def paid_today(document, files=None, market=None):
-        """Whether the netting sets of `document` hold the day's payments in the exposure their
-        recursion reads: `Exclude_Paid_Today` off - the engine's default - as a set reads it off the
-        job's `Valuation Configuration`, each file the job names read as its marks run read it
-        (`files`, `reading`), or `market` where the caller already loaded it."""
-        options = (market_of(document, context=reading(document, files)())
-                   if market is None else market)['Valuation Configuration']
-        return not options.get('NettingCollateralSet', {}).get('Exclude_Paid_Today', False)
+    def agreement(terms, market):
+        """The netting set an agreement's `terms` declare, constructed as the engine constructs any
+        deal: decoded, under the `Valuation Configuration` of `market` (`market_of`)."""
+        return instruments.construct_instrument(decoded(terms), market['Valuation Configuration'])
+
+    @staticmethod
+    def paid_today(netting_set):
+        """Whether the constructed `netting_set` (`agreement`) holds the day's payments in the
+        exposure its recursion reads: its own `Exclude_Paid_Today` off."""
+        return not netting_set.options['Exclude_Paid_Today']
 
     @staticmethod
     def exposure(agreement, valued, rates, currency, today):
@@ -3007,18 +3010,22 @@ class Collateral:
         currency:
         `valued` is the P&L over that close alone, `movements` the `cash` rows and `until` the value
         date a balance is held as of - every movement filed, whatever its value date, where None.
+        `market` is the close's, loaded off its job, each file read as its marks run read it
+        (`reading`), where the caller has not.
 
         `held` and `margin` are the two balances under it per asset, and the call reads the first
         alone; `fx` is the close's spots in the agreement's currency, so with the exposure a call
-        replays off the record. What nobody can know - a mark, a spot the close carries none of, a
-        dial the terms state none of - is named under `unknown`, and the call is null over it.
+        replays off the record. What nobody can know - a mark, a spot the close carries none of, an
+        agreement currency the terms state none of - is named under `unknown`, and the call is null
+        over it.
         """
         record, rates, answer = package().projections.CSA, close['rates'], []
-        balances, today = record.held(movements, until), cls.paid_today(
-            close['document'], close['files'], market=market)
+        market = market_of(close['document'], context=reading(close['document'], close['files'])()) \
+            if market is None else market
+        balances = record.held(movements, until)
         for declared in agreements:
-            dials = record.of(declared['terms'])
-            agreement, currency = declared['agreement'], dials['Agreement_Currency']
+            netting_set = cls.agreement(declared['terms'], market)
+            agreement, currency = declared['agreement'], declared['terms'].get('Agreement_Currency')
             held = balances.get(agreement, record.NOTHING)
             fx = {} if currency not in rates else {
                 other: rate / rates[currency] for other, rate in rates.items()}
@@ -3028,13 +3035,13 @@ class Collateral:
                 asset for asset, amount in held['collateral'].items() if amount and asset not in fx}
             unknown = [entry for entry in valued['unknown'] if entry['instrument'] in mine] + [
                 {'instrument': None, 'what': 'the close carries no spot for {}'.format(other)}
-                for other in sorted(uncrossed)] + [
-                {'instrument': None, 'what': 'the terms of {} state no {}'.format(agreement, dial)}
-                for dial in record.DIALS + ('Agreement_Currency',) if dials[dial] in (None, '')]
-            value = cls.exposure(agreement, valued, rates, currency, today)
+                for other in sorted(uncrossed)] + ([
+                {'instrument': None, 'what': 'the terms of {} state no Agreement_Currency'.format(
+                    agreement)}] if currency in (None, '') else [])
+            value = cls.exposure(agreement, valued, rates, currency, cls.paid_today(netting_set))
             answer.append(dict(
-                dict.fromkeys(record.WORKED) if unknown else record.call(
-                    value, held['collateral'], dials, fx),
+                dict.fromkeys(record.WORKED) if unknown else netting_set.call(
+                    value, held['collateral'], fx),
                 agreement=agreement, entity=declared['entity'], currency=currency, exposure=value,
                 fx=fx, held=held['collateral'], margin=held['margin'], unknown=unknown))
         return answer
