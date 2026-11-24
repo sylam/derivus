@@ -264,7 +264,9 @@ the formula's limit, an FX option's taken on the pair in the order its `FXVol` s
 states, as the pricer's `Invert_Moneyness` reads that name, and a date in years of 30/360 from the
 base date. A set is margined
 where it is `Collateralized`, its MPOR its `Liquidation_Period` in business days floored at ten,
-its C its `Opening_Balance` as the engine's balance counts it (`instruments.collateral_credit`), its
+its C its `Opening_Balance` as the engine's balance counts it, in the cash its compile reads
+(`NettingCollateralSet.cash`, the one reader of a set's cash rows), held at one less its received
+haircut and posted at face over one less its posted one (`instruments.collateral_credit`), its
 TH, MTA and NICA its credit support amounts at their first values, and its EAD is capped at the
 set's unmargined one. **Held by** `tests/test_saccr.py::test_the_rates_example_is_cre99s_to_its_printed_figures`,
 `::test_the_credit_example_is_cre99s_to_its_printed_figures`,
@@ -274,6 +276,7 @@ set's unmargined one. **Held by** `tests/test_saccr.py::test_the_rates_example_i
 `::test_a_trade_inside_ten_business_days_is_floored_there_twice`,
 `::test_a_margined_set_past_its_threshold_is_capped_at_its_unmargined_exposure`,
 `::test_a_margined_sets_collateral_is_its_balance_as_the_engine_counts_it`,
+`::test_a_margined_sets_cash_is_the_cash_its_compile_reads`,
 `::test_an_over_collateralised_set_keeps_its_add_on_at_the_five_percent_floor`,
 `::test_the_fx_equity_and_commodity_classes_and_an_amortising_notional_read_by_hand`,
 `::test_an_fx_option_takes_its_delta_on_the_pair_as_its_surface_quotes_it`,
