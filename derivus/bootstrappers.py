@@ -3952,7 +3952,7 @@ class RiskNeutralInterestRateModel(ImpliedCalibration):
     def calc_loss_on_ir_curve(self, implied_params, base_date, time_grid, process,
                               implied_obj, ir_factor, vol_surface, resid=lambda x: x * x, jac=False):
         """The swaption calibration's residual closure: implied parameters in, one weighted error
-        per benchmark out.
+        per benchmark out, off `implied_params` as `Family.blocks` reads it.
 
         TWO OBJECTIVES, ONE DECLARED SWITCH, `Analytic` the default. It prices each benchmark with
         `stochasticprocess.HullWhite2FactorImpliedInterestRateModel.schrager_pelsser_swaption` and
@@ -3990,9 +3990,7 @@ class RiskNeutralInterestRateModel(ImpliedCalibration):
         severances stay open deliberately, their upstream being the calibrated curve rather than a
         quote of THIS calibration: `get_par_swap_rate` and `set_fixed_amount`.
         """
-        # completed by the family's declarations, because this closure is also built directly by
-        # a gate off a hand-authored block; `bootstrap` hands it the block `blocks` read
-        block = declared_defaults(type(self), implied_params['instrument'])
+        block = implied_params['instrument']
         objective = block['Objective']
         quote_sensitivity = block['Quote_Sensitivity']
         if objective not in ('Monte_Carlo', 'Analytic'):
@@ -4428,7 +4426,8 @@ class HullWhite2FactorModelParameters(RiskNeutralInterestRateModel):
 
     def calc_loss(self, implied_params, base_date, time_grid, process, implied_obj, ir_factor,
                   vol_surface, warm=False):
-        """The residual and the optimizer chain over it.
+        """The residual and the optimizer chain over it, off `implied_params` as `Family.blocks`
+        reads it.
 
         `warm` is the ruling: a block whose parameter factor already exists is a warm start -
         `implied_process` seeded `x0` off it, so the random search that finds a basin is skipped and
@@ -4538,7 +4537,7 @@ class HullWhite2FactorModelParameters(RiskNeutralInterestRateModel):
         var_to_bounds = np.vstack(bounds)
         # one generator for the whole random search - the step taker here, the Metropolis test in
         # `solve` - so the search is a function of `Random_Seed` alone
-        block = declared_defaults(type(self), implied_params['instrument'])
+        block = implied_params['instrument']
         rng = np.random.default_rng(int(block['Random_Seed']))
         bounds_ok, make_step = make_basin_callbacks(
             float(block['Basin_Step']), self.sigma_bounds, self.alpha_bounds, self.corr_bounds,

@@ -310,7 +310,8 @@ def fit_closure(config, market_price, device=torch.device('cpu'), dtype=DTYPE):
     time_grid = utils.TimeGrid(mtm, mtm, mtm)
     time_grid.set_base_date(base_date, delta=(10, vol_tenors * utils.DayCount.DAYS_IN_YEAR))
     implied_var, objective, swaps = boot.calc_loss_on_ir_curve(
-        {'instrument': block}, base_date, time_grid, process, implied_obj, ir_factor, surface)
+        boot.blocks(boot.param, config.params['Market Prices'])[market_price], base_date,
+        time_grid, process, implied_obj, ir_factor, surface)
     # `schrager_pelsser_swaption` reads what `covariance` builds, and building the closure
     # does not run it
     objective.loss(implied_var)

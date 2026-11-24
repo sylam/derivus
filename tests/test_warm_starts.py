@@ -178,7 +178,8 @@ def hw_calibration(move):
     time_grid = utils.TimeGrid(mtm, mtm, mtm)
     time_grid.set_base_date(base_date, delta=(10, vol_tenors * utils.DayCount.DAYS_IN_YEAR))
     objective, optimizers, implied_var, swaps = model.calc_loss(
-        {'instrument': block}, base_date, time_grid, process, implied_obj, ir_factor, vol)
+        model.blocks(model.param, params['Market Prices'])[HW_BLOCK], base_date, time_grid,
+        process, implied_obj, ir_factor, vol)
     return SwaptionCalibration('warm', objective, implied_var, optimizers, process, swaps)
 
 
