@@ -465,19 +465,3 @@ def test_a_mirror_cva_delta_carries_its_own_extension_flux():
         crn.append((up - dn) / (2.0 * h))
     best = min(crn, key=lambda c: abs(aad - c))
     assert abs(aad - best) / abs(best) < 5e-2, (aad, crn)
-
-
-def _collateralised(job):
-    """The deal under a zero-threshold NettingCollateralSet, in the wire form the decoder reads -
-    the autocall gate's CSA, one asset over."""
-    csa = {'.CreditSupportList': [[0.0, 0.0]]}
-    netting = {
-        'Object': 'NettingCollateralSet', 'Reference': 'NS1', 'Netted': 'True',
-        'Collateralized': 'True', 'Agreement_Currency': 'USD', 'Funding_Rate': 'USD',
-        'Balance_Currency': 'USD', 'Liquidation_Period': 10.0, 'Settlement_Period': 0.0,
-        'Credit_Support_Amounts': {
-            'Received_Threshold': csa, 'Posted_Threshold': csa, 'Independent_Amount': csa,
-            'Minimum_Received': csa, 'Minimum_Posted': csa}}
-    deals = job['Calc']['Deals']['Deals']
-    deals['Children'] = [{'Instrument': {'.Deal': netting}, 'Children': deals['Children']}]
-    return job
