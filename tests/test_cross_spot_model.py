@@ -740,7 +740,7 @@ def test_a_cross_under_an_outer_reads_its_own_law_and_re_seeds():
     law = market['Price Factors'][CROSS_FACTOR]
     deal = dict(only_leg(accrual(document, 'Accumulator', 'EUR', knockout=KNOCKOUT)),
                 Reference='XO1')
-    # a LogVar2FJ outer on an FxRate reads `Domestic_Currency` for its own discount leg, and each
+    # a LogVar2FJ outer on an FxRate reads the base currency's curve for its discount leg, and each
     # base-priced rate needs a one-token law of its own for the outer to walk
     rates = copy.deepcopy(market['Price Factors'])
     rates.update({'LogVar2FJModelParameters.EUR': copy.deepcopy(law),

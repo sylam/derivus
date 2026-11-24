@@ -4,7 +4,7 @@ The spot price of an asset $S(t)$ (assuming immediate delivery) is expressed in 
 The asset currency is specified by the corresponding property:
 
 - **Currency** for equity and commodity prices
-- **Domestic Currency** for FX rates
+- the base currency for FX rates
 
 The initial price $S(0)$ is given by its **Spot** property.
 

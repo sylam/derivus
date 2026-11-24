@@ -23,8 +23,8 @@ underlying's spot dates. A deal has one lag for every spot fixing it reads, a `C
 included. Commodity deals carry with none.
 
 An **FxRate**'s **Spot** is the price for delivery on its spot date, so a value converts into
-another currency at each currency's price today: the quote carried back from its spot date on its
-domestic curve less its own, as an FX forward reads them, the base currency's being one. A payoff,
+another currency at each currency's price today: the quote carried back from its spot date on the
+base currency's curve less its own, as an FX forward reads them, the base's being one. A payoff,
 a barrier and a fixing read the quote. An FX forward, deliverable or not, is agreed for delivery on
 its settlement date: its outright is the price today carried from $t$ to that date, which is the
 quote carried from its spot date.

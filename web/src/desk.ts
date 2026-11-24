@@ -283,11 +283,10 @@ export function positionsUnder(marks: DealMark[], positions: Position[]): Map<st
 export function spotQuoted(factor: string, level: number, market: Market | null):
   { pair: string; level: number; turned: boolean; held: string } | undefined {
   const [family, currency] = factor.split('.');
-  const domestic = String(token(market?.['Price Factors']?.[factor], 'Domestic_Currency')
-    || token(market?.['System Parameters'], 'Base_Currency') || '');
-  if (family !== 'FxRate' || !domestic) return undefined;
-  const read = levelOnAxis(currency, domestic, level, market);
-  return read && { ...read, held: `${domestic} per 1 ${currency}` };
+  const base = String(token(market?.['System Parameters'], 'Base_Currency') || '');
+  if (family !== 'FxRate' || !base) return undefined;
+  const read = levelOnAxis(currency, base, level, market);
+  return read && { ...read, held: `${base} per 1 ${currency}` };
 }
 
 /** A gradient row of an FX spot re-read on its pair: the level the market quotes, the derivative

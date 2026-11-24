@@ -710,7 +710,8 @@ class FxRate(Factor0D):
     positive = True
     risk_move = PERCENT
     fields = [
-        F('Domestic_Currency', 'Text', default=''),
+        F('Domestic_Currency', 'Text', default='',
+          description='Not read: a rate is priced in the base currency, whatever this states'),
         F('Interest_Rate', 'Text', default='',
           description='The currency\'s own curve, which its forward and a blank discount curve read, '
                       'its own code where blank'),
@@ -723,9 +724,6 @@ class FxRate(Factor0D):
 
     def get_repo_curve_name(self, default):
         return utils.check_rate_name(self.param.get('Interest_Rate') or default)
-
-    def get_domestic_currency(self, default):
-        return utils.check_rate_name(self.param.get('Domestic_Currency') or default)
 
 
 class FuturesPrice(Factor0D):

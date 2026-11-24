@@ -7,12 +7,10 @@ provided here. e.g. for the ZAR FxRate with USD as the **Base Currency**
 {
   "Price Factors": {
     "FxRate.USD": {
-      "Domestic_Currency": null,
       "Interest_Rate": "USD-MASTER",
       "Spot": 1
     },
     "FxRate.ZAR": {
-      "Domestic_Currency": "USD",
       "Interest_Rate": "ZAR-SWAP.ZAR-USD-BASIS",
       "Spot": 0.075475
     }
@@ -33,8 +31,8 @@ A currency pair counts the
 most days of its currencies other than USD on the calendars of each and settles on a business day
 of both and of USD, as the market does, so a pair against USD may pass a New York holiday before
 its spot date. An `FxRate`'s `Spot` is the price for delivery on its spot date: a value converts
-between currencies at that price carried back to the day on the domestic currency's curve less its
-own.
+between currencies at that price carried back to the day on the base currency's curve less its
+own. A rate is priced in the base currency: a `Domestic_Currency` it states is not read.
 
 e.g. USDCAD, which settles one business day on, with USD as the **Base Currency**
 
@@ -42,13 +40,11 @@ e.g. USDCAD, which settles one business day on, with USD as the **Base Currency*
 {
   "Price Factors": {
     "FxRate.USD": {
-      "Domestic_Currency": null,
       "Interest_Rate": "USD-SOFR",
       "Spot": 1,
       "Holiday_Calendar": "New York"
     },
     "FxRate.CAD": {
-      "Domestic_Currency": "USD",
       "Interest_Rate": "CAD-CORRA",
       "Spot": 0.73,
       "Settlement_Days": 1,

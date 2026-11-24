@@ -840,10 +840,7 @@ def test_a_logvar2fj_equity_realises_the_rows_its_four_sub_factors_declare():
     arm's 0.15.
     """
     four, se = _pair_reading(OUTER_PAIR, {'Price Factors': {
-        'LogVar2FJModelParameters.EUR': dict(GBM_LIMIT, **LIVE_NIG),
-        # the walking arm reads the pair's own two curves, so the sibling names its domestic leg -
-        # a plain `GBMAssetPriceModel` reads its drift off its own block and never asks
-        'FxRate.EUR': dict(_W['Price Factors']['FxRate.EUR'], Domestic_Currency='USD')}})
+        'LogVar2FJModelParameters.EUR': dict(GBM_LIMIT, **LIVE_NIG)}})
     one, one_se = _pair_reading(OUTER_LV)
     assert one > 0.0 and four > 0.0, ('the invented key was read', one, four)
     assert abs(one - 0.1520) <= 3.0 * one_se, (one, one_se)

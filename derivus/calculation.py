@@ -532,11 +532,11 @@ class Calculation(object):
             isinstance(value, dict)) else [(factor, value)]
 
     def carry_fx_quotes(self, shared, base_date):
-        """Onto `shared` the `spot_conventions` of every share and of every `FxRate` priced in another
-        currency, the pair of the two, and `fx_carry`, what carries each FX quote back from its spot
-        date (`utils.calc_time_grid_today_price`): for a rate counting days, the curve of the
-        currency it is priced in, its own and its `spot_lag`, each curve the one an FX forward
-        reads, where the job holds both."""
+        """Onto `shared` the `spot_conventions` of every share and of every `FxRate` but the base
+        currency's, the pair of it against the base, and `fx_carry`, what carries each FX quote back
+        from its spot date (`utils.calc_time_grid_today_price`): for a rate counting days, the base
+        currency's curve, its own and its `spot_lag`, each curve the one an FX forward reads, where
+        the job holds both."""
         def curve(currency):
             """`currency`'s curve code as `instruments.get_fx_zero_rate_factor` reads it, None where
             the job holds no rate of that name or not every part of its curve."""
@@ -547,11 +547,10 @@ class Calculation(object):
             return instruments.get_interest_factor(
                 name, self.static_factors, self.stoch_factors, self.all_tenors) if held else None
 
-        base = self.config.params['System Parameters']['Base_Currency']
+        base = utils.check_rate_name(self.config.params['System Parameters']['Base_Currency'])
         shared.spot_conventions, shared.fx_carry = {}, {}
         for key in [key for key in self.all_factors if key.type in ('EquityPrice', 'FxRate')]:
-            domestic = instruments.get_factor_component(key, self.all_factors).get_domestic_currency(
-                base) if key.type == 'FxRate' else None
+            domestic = base if key.type == 'FxRate' else None
             if domestic != key.name:
                 shared.spot_conventions[key] = instruments.spot_convention(
                     [key] + [utils.Factor('FxRate', domestic)] * bool(domestic), self.all_factors,
@@ -1425,7 +1424,7 @@ class CreditMonteCarlo(Calculation):
         self.carry_fx_quotes(shared_mem, base_date)
 
         self._factor_precalc_args = {}
-        base = self.config.params['System Parameters']['Base_Currency']
+        base = utils.check_rate_name(self.config.params['System Parameters']['Base_Currency'])
         for key, value in self.stoch_factors.items():
             if key.type not in utils.DimensionLessFactors:
                 if key in self.implied_var:
@@ -1434,8 +1433,8 @@ class CreditMonteCarlo(Calculation):
                 else:
                     implied_tensor = None
                 # its own factor key, so it can publish auxiliaries to t_Scenario_Buffer under the
-                # documented (factor_key, kind) convention, and the base an FxRate stating no
-                # Domestic_Currency is priced in
+                # documented (factor_key, kind) convention, and the base currency an FxRate is
+                # priced in
                 value.factor_key, value.base_currency = key, base
                 scenario_grid = ScenarioTimeGrid(dependent_factors[key], self.time_grid, base_date)
                 self._factor_precalc_args[key] = (scenario_grid, implied_tensor)

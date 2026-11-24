@@ -888,8 +888,9 @@ def test_under_simulation_a_foreign_cashflow_deflates_to_its_value_today_on_ever
     Killing mutation, in either model: the drift read row to row, the Saturday three calendar days
     from its spot date 5.5e-5 high against the base date's four, a Monday's two 1.1e-4.
 
-    EUR states no Domestic_Currency, so it is priced in the base: its exposure is the one stating USD
-    to the bit. Killing mutation: the domestic currency read with no default, an AttributeError.
+    A rate is priced in the base whatever `Domestic_Currency` it states: EUR stating EUR has the
+    exposure of EUR stating none, to the bit. Killing mutation: the stated currency read again, in
+    the quote's carry or in either model's drift, which then carries EUR on its own curve, at nothing.
     """
     # the GBM limit factor is that module's own, and only this gate reads it
     from test_logvar2fj_json import GBM_LIMIT, _curve
@@ -906,7 +907,7 @@ def test_under_simulation_a_foreign_cashflow_deflates_to_its_value_today_on_ever
             implied[model], **{'FxRate.EUR': dict(FACTORS['FxRate.EUR'], Domestic_Currency=domestic)}))['mtm']
 
     mtm = exposure(None)
-    assert mtm.equals(exposure('USD'))
+    assert mtm.equals(exposure('EUR'))
     assert {lag(day, 2) for day in mtm.index} == {2, 3, 4}
     worth = NOTIONAL * math.exp(-R_EUR * (cashflow['Payment_Date'] - BASE).days / 365.0) * today()
     for day in mtm.index:

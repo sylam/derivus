@@ -927,8 +927,7 @@ class GBMAssetPriceTSModelImplied(StochasticProcess):
                 factor.name, static_ofs, stoch_ofs, all_tenors)
         elif self.factor_type == 'FxRate':
             self.r_t = get_fx_zero_rate_factor(
-                self.factor.get_domestic_currency(self.base_currency), static_ofs, stoch_ofs, all_tenors,
-                all_factors)
+                self.base_currency, static_ofs, stoch_ofs, all_tenors, all_factors)
             self.q_t = get_fx_zero_rate_factor(factor.name, static_ofs, stoch_ofs, all_tenors, all_factors)
         else:
             raise Exception('Unknown factor type {}'.format(self.factor_type))
@@ -6573,8 +6572,7 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
             self.q_t = get_dividend_rate_factor(factor.name, static_ofs, stoch_ofs, all_tenors)
         elif self.factor_type == 'FxRate':
             self.r_t = get_fx_zero_rate_factor(
-                self.factor.get_domestic_currency(self.base_currency), static_ofs, stoch_ofs, all_tenors,
-                all_factors)
+                self.base_currency, static_ofs, stoch_ofs, all_tenors, all_factors)
             self.q_t = get_fx_zero_rate_factor(
                 factor.name, static_ofs, stoch_ofs, all_tenors, all_factors)
         else:

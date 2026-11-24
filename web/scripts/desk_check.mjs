@@ -328,19 +328,20 @@ check('a run read after the book moved under it says it is of an earlier book; a
 
 // --- an FX spot on its pair as the market quotes it, by the blotter's rule
 const PAIRS = { 'System Parameters': { Base_Currency: 'USD' }, 'Price Factors': {
-  'FXVol.USD.ZAR': {}, 'FXVol.EUR.USD': {}, 'FxRate.ZAR': { Spot: 0.0576369 },
+  'FXVol.USD.ZAR': {}, 'FXVol.EUR.USD': {}, 'FXVol.USD.JPY': {}, 'FxRate.ZAR': { Spot: 0.0576369 },
   'FxRate.EUR': { Spot: 1.158 }, 'FxRate.GBP': { Spot: 1.312 },
   'FxRate.JPY': { Domestic_Currency: 'EUR', Spot: 0.0061 } } };
-check("a spot reads on its pair: the base currency's price of a rand is USDZAR, turned",
+check("a spot reads on its pair against the base: the base currency's price of a rand is USDZAR, "
+      + 'turned, and a yen stating another domestic currency is still USDJPY',
       "the engine's level shown as is, USD per ZAR at 0.0576 where a desk reads 17.35; every "
-      + 'spot turned, which reads EURUSD as 0.86; or a spot with no pair the market names given '
-      + 'one',
+      + 'spot turned, which reads EURUSD as 0.86; a spot with no pair the market names given '
+      + 'one; or the domestic currency read, which the engine does not read',
       ['FxRate.ZAR', 'FxRate.EUR', 'FxRate.GBP', 'FxRate.JPY'].map((factor) => {
         const read = desk.spotQuoted(factor, PAIRS['Price Factors'][factor].Spot, PAIRS);
         return read ? [read.pair, Number(read.level.toFixed(4)), read.turned, read.held] : null;
       }),
       [['USDZAR', 17.35, true, 'USD per 1 ZAR'], ['EURUSD', 1.158, false, 'USD per 1 EUR'],
-       null, null]);
+       null, ['USDJPY', 163.9344, true, 'USD per 1 JPY']]);
 const zar = desk.onPair(GREEKS[0], PAIRS);
 check("a turned spot's delta is per 1% of the pair: the engine's number with its sign turned",
       'the 1% of FxRate.ZAR shown under USDZAR, a long rand read as long dollars; or the per-unit '

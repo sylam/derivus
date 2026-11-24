@@ -135,7 +135,6 @@ The sections a market-data file may carry; a file naming any other section is re
             "Sub_Type": null
           },
           "FxRate.ZAR": {
-            "Domestic_Currency": "USD",
             "Interest_Rate": "ZAR-SWAP",
             "Spot": 0.0566318758176227
           },
