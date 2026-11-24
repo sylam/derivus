@@ -4781,13 +4781,16 @@ class SIMM(NettingSetCalculation):
             raise ValueError('SIMM: trade {} reads what {} writes, and a move here re-solves the '
                              'curve and credit families alone'.format(reference, ', '.join(others)))
         moves, base_date = [], self.config.params['System Parameters']['Base_Date']
+        entries = self.config.params['Bootstrapper Configuration']
+        blocks = {name: block['instrument'] for family in families.values()
+                  for name, block in family.blocks(entries.get(family.__name__), prices).items()}
         for block in sorted(name for name in bootstrap_precedents(self.config.params, writers)
                             if utils.check_rate_name(name)[0] in families):
             rate = utils.check_rate_name(block)
             family = families[rate[0]]
             factor = utils.check_tuple_name(utils.Factor(family.__name__, rate[1:]))
             stated = self.coordinates(factor, reference)
-            instrument = declared_defaults(family, prices[block]['instrument'])
+            instrument = blocks[block]
             used = family.used_quotes(instrument, block)
             # what moves a price factor in place re-solves no block, so no block may read one
             read = sorted(curve for curve in {instrument['Discount_Rate']} |
@@ -4910,16 +4913,18 @@ class SIMM(NettingSetCalculation):
         from . import bootstrappers
 
         config, family = self.config, bootstrappers.InterestRate
-        prices, factors = config.params['Market Prices'], config.params['Price Factors']
-        standing = prices[block]
+        factors = config.params['Price Factors']
+        blocks = family.blocks(config.params['Bootstrapper Configuration'].get(family.__name__),
+                               config.params['Market Prices'])
+        standing = blocks[block]
         points = [dict(point, Quoted_Market_Value=point['Quoted_Market_Value'] +
                        self.params['Rate_Shift'] * 0.01) if at == position else point
                   for at, point in enumerate(standing['instrument']['Points'])]
         artifact = family.artifact(
             config.artifacts, utils.Factor(family.__name__, utils.check_rate_name(block)[1:]),
-            prices, config.params['Price Factor Interpolation'],
+            blocks, config.params['Price Factor Interpolation'],
             config.params['System Parameters']['Base_Date'])
-        theta = artifact.ride(family.quotes(artifact, dict(prices, **{block: dict(
+        theta = artifact.ride(family.quotes(artifact, dict(blocks, **{block: dict(
             standing, instrument=dict(standing['instrument'], Points=points))})))
         ridden = {(name := utils.check_tuple_name(curve)): dict(
             factors[name], Curve=family.solved_curve(artifact.benchmarks, theta, curve))
@@ -4927,15 +4932,15 @@ class SIMM(NettingSetCalculation):
         return ridden if tangent else dict(ridden, **self.resolved(
             bootstrappers.bootstrap_dependents(config.params, artifact.members), ridden))
 
-    def survival(self, block):
-        """`(solver, instrument)` - the survival family as configured, and the survival block
-        `block`'s instrument as that family completes it."""
+    def configured(self, family, block):
+        """`(solver, instrument)` - `family` as configured, and its block `block`'s instrument as
+        that family reads it (`Family.blocks`)."""
         from . import bootstrappers
 
-        name, config = bootstrappers.SurvivalProb.__name__, self.config.params
+        config = self.config.params
         solver = bootstrappers.construct_bootstrapper(
-            name, config['Bootstrapper Configuration'][name])
-        return solver, dict(solver.param, **config['Market Prices'][block]['instrument'])
+            family.__name__, config['Bootstrapper Configuration'][family.__name__])
+        return solver, solver.blocks(solver.param, config['Market Prices'])[block]['instrument']
 
     def spread(self, block, instrument, position, found, shift):
         """Quote `position` of the survival block `block`, its `instrument` completed, a basis point
@@ -4967,7 +4972,7 @@ class SIMM(NettingSetCalculation):
         base_date = config.params['System Parameters']['Base_Date']
         found, solved = dict(config.params['Price Factors'], **curves), []
         for block in sorted(self.credit.intersection(blocks)):
-            solver, instrument = self.survival(block)
+            solver, instrument = self.configured(family, block)
             if position is not None:
                 points = instrument['Points'] = list(instrument['Points'])
                 points[position] = dict(points[position], Quoted_Market_Value=self.spread(
@@ -4982,10 +4987,8 @@ class SIMM(NettingSetCalculation):
         curves with every breakeven a basis point up - nothing on the config written."""
         from . import bootstrappers
 
-        config, family = self.config, bootstrappers.InflationRate
-        solver = bootstrappers.construct_bootstrapper(
-            family.__name__, config.params['Bootstrapper Configuration'][family.__name__])
-        instrument = dict(solver.param, **config.params['Market Prices'][block]['instrument'])
+        config = self.config
+        solver, instrument = self.configured(bootstrappers.InflationRate, block)
         instrument['Points'] = [dict(point, Quoted_Market_Value=point['Quoted_Market_Value'] +
                                      self.params['Rate_Shift'] * 0.01)
                                 for point in instrument['Points']]
@@ -5092,7 +5095,7 @@ class SIMM(NettingSetCalculation):
 
         kind, name, shift = move[0], move[1], self.shifts[move[0]]
         if kind == 'cds':
-            _, instrument = self.survival(name)
+            _, instrument = self.configured(SurvivalProb, name)
             used = SurvivalProb.used_quotes(instrument, name)
             standing, direction = self.config.params['Price Factors'], np.zeros(len(used))
             # a par spread moves by the point, an upfront by what a point of coupon is worth

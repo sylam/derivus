@@ -74,8 +74,10 @@ def market(propagate, tick=0.0, tolerance=1e9, sensitivity=False):
     return market_prices
 
 
-def bootstrapped(market_prices, currency=CCY, spot_curve=CURVE, interpolation=None, base_date=BASE):
-    """A `Config` whose curves have been solved from their quotes, the way a job reaches this."""
+def bootstrapped(market_prices, currency=CCY, spot_curve=CURVE, interpolation=None, base_date=BASE,
+                 entry=None):
+    """A `Config` whose curves have been solved from their quotes, the way a job reaches this, the
+    curve family configured with `entry`."""
     config = Config(base_currency=currency)
     config.params['System Parameters']['Base_Date'] = base_date
     config.params['Price Factors'] = {'FxRate.{}'.format(currency): {
@@ -83,16 +85,18 @@ def bootstrapped(market_prices, currency=CCY, spot_curve=CURVE, interpolation=No
     if interpolation is not None:
         config.params['Price Factor Interpolation'] = interpolation
     config.params['Market Prices'] = market_prices
-    config.params['Bootstrapper Configuration'] = {'InterestRate': {}}
+    config.params['Bootstrapper Configuration'] = {'InterestRate': entry or {}}
     config.bootstrap()
     return config
 
 
 def key_of(config, *names):
-    """The artifact SLOT a set of blocks in this config addresses."""
-    market_prices = config.params['Market Prices']
+    """The artifact SLOT a set of blocks in this config addresses, each read under its entry."""
+    blocks = bootstrappers.InterestRate.blocks(
+        config.params['Bootstrapper Configuration'].get('InterestRate'),
+        config.params['Market Prices'])
     return bootstrappers.InterestRate.plan_key(
-        [(name, market_prices[name]['instrument']) for name in (names or (BLOCK,))],
+        [(name, blocks[name]['instrument']) for name in (names or (BLOCK,))],
         config.params['Price Factor Interpolation'],
         config.params['System Parameters']['Base_Date'])
 
@@ -855,6 +859,27 @@ def test_a_reauthored_partner_block_takes_the_slot_with_it():
     for factor in ('USD-OIS', 'USD-3M'):
         with pytest.raises(utils.CalibrationStale, match='different plan'):
             prepared.propagated_factor(utils.Factor('InterestRate', (factor,)))
+
+
+def test_a_ride_reads_its_blocks_under_their_family_entry():
+    """The ride reads a block as the bootstrap publishing its artifact reads it, under the family's
+    `Bootstrapper Configuration` entry (`Family.blocks`): a set whose entry declares the switch and
+    a solver knob, its `Prices` routing key beside them, rides a tick to the curve the same set
+    declaring both on its block rides to, to the bit.
+
+    Killing mutations: `propagate` reading the block alone, under which the entry's switch is not
+    seen and nothing rides; `Family.blocks` reading the entry whole, its routing key in the slot
+    the ride computes and not in the plan the bootstrap published, so no artifact answers.
+    """
+    on_entry = market(True)
+    switch = on_entry[BLOCK]['instrument'].pop('Quote_Propagation')
+    on_block = market(True)
+    on_block[BLOCK]['instrument']['N_Iter'] = 40
+    rode = [ticked(config, 0.02).propagated_factor(FACTOR) for config in (
+        bootstrapped(on_entry, entry={'Prices': 'InterestRate', 'Quote_Propagation': switch,
+                                      'N_Iter': 40}), bootstrapped(on_block))]
+    assert rode[0] is not None, 'the entry\'s switch was not read: nothing rode'
+    assert np.array_equal(rode[0][0], rode[1][0])
 
 
 class Slot(object):

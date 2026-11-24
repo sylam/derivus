@@ -742,14 +742,13 @@ class Config(object):
 
         The id travels with the numbers because a ride is the one thing the replay tuple cannot
         name: `plan_hash`, `values_hash`, the engine version and the seed are all blind to WHICH
-        artifact was in the store. Pure: reads `Market Prices`, the base date, the interpolation
-        scheme and a content-addressed artifact of this config's own store, and writes none of
-        them, so two EXECUTEs over one `(artifact, quotes)` mint the same leaf. One family answers
-        today: the one whose operator has a unique fixed point.
+        artifact was in the store. Pure: reads `Market Prices` under the family's `Bootstrapper
+        Configuration` entry, the base date, the interpolation scheme and a content-addressed
+        artifact of this config's own store, and writes none of them, so two EXECUTEs over one
+        `(artifact, quotes)` mint the same leaf. One family answers today: the one whose operator
+        has a unique fixed point.
         """
-        return bootstrappers.InterestRate.propagate(
-            self.artifacts, factor, self.params['Market Prices'],
-            self.params['Price Factor Interpolation'], self.params['System Parameters']['Base_Date'])
+        return bootstrappers.InterestRate.propagate(self.artifacts, factor, self.params)
 
     def calibrate_factors(self, from_date, to_date, factors, smooth=0.0, correlation_cuttoff=0.2,
                           overwrite_correlations=True, vol_shift=0.0):

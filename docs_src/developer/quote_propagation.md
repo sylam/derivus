@@ -43,8 +43,9 @@ re-bootstrapped central differences, to 1e-8 relative).
 
 ## Content addressing, and the two identities {#content-addressing}
 
-**The slot** is `plan_key`: the set's member blocks completed by the family's declarations, the
-base date, `Price Factor Interpolation` and the engine version, less the quote values and the
+**The slot** is `plan_key`: the set's member blocks as the family reads them, under its
+`Bootstrapper Configuration` entry and completed by its declarations (`Family.blocks`), the base
+date, `Price Factor Interpolation` and the engine version, less the quote values and the
 `lifecycle_fields` - `schema.partition_market_price`'s structural half, as `Context.plan_hash`
 takes it, so the two cannot drift. Every tick of a strip lands on one slot, which is what makes a
 ride possible, and re-authoring a discount strip moves the slot of every curve solved against it,
@@ -56,8 +57,9 @@ so an operator fitted to quotes that no longer exist cannot be found.
     `test_another_scheme_or_base_date_addresses_another_slot`,
     `test_a_reauthored_partner_block_takes_the_slot_with_it`. The lifecycle switches are shadowed
     out, since they move neither `θ*` nor `J` and in the key a looser tolerance would mean "refit".
-    A riding set declares its solver knobs on its blocks, since one in `Bootstrapper Configuration`
-    never reaches the key the ride computes.
+    The ride reads its blocks as the bootstrap publishing the artifact read them, so a switch or a
+    solver knob the family's entry declares rides as one the block states. **Held by**
+    `test_a_ride_reads_its_blocks_under_their_family_entry`.
 
 **The `artifact_id`** is the slot plus the quotes fitted at, so it moves with every refit and names
 the calibration a valuation rode. **Held by**

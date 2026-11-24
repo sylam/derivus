@@ -2105,6 +2105,33 @@ def test_a_curve_discounting_on_another_gets_a_fra_in_front():
     assert block['instrument']['Points'][0]['DealType'] == 'FRADeal'
 
 
+def test_a_curve_discounting_on_an_unquoted_one_is_refused_by_name_wherever_it_says_so():
+    """A curve block discounting on a curve no block quotes is refused by name, the move a quote's
+    basis point makes reading a curve nothing re-solves, whether its `Discount_Rate` is stated on
+    the block or on the family's `Bootstrapper Configuration` entry alone: the move list reads each
+    block under its entry (`Family.blocks`), as the bootstrap does.
+
+    Killing mutation: the move list reading the block alone, under which the entry's curve is not
+    seen and the run prices, holding the curve it discounts on where no move re-solves it.
+    """
+    unquoted = {'InterestRate.ZAR-OIS': {
+        'Currency': 'ZAR', 'Day_Count': 'ACT_365', 'Sub_Type': None,
+        'Curve': utils.Curve([], [[0.0, 0.068], [10.0, 0.072]])}}
+    found = dict(factors(), **unquoted)
+    on_block = dict([
+        bootstrappers.knot_prices('USD-OIS', found, ModelParams(), BASE, {}, OIS),
+        bootstrappers.knot_prices('ZAR-JIBAR', found, ModelParams(), BASE, {},
+                                  dict(TERM, Discount_Rate='ZAR-OIS'), '1Y')])
+    on_entry = copy.deepcopy(on_block)
+    del on_entry['InterestRatePrices.ZAR-JIBAR']['instrument']['Discount_Rate']
+    for prices, entry in ((on_block, {}), (on_entry, {'Discount_Rate': 'ZAR-OIS'})):
+        context = world(prices=prices, extra=unquoted,
+                        configuration={'InterestRate': dict(entry, Prices='InterestRate')})
+        with pytest.raises(ValueError, match=r'^SIMM: InterestRatePrices\.ZAR-JIBAR quotes '
+                                             r'InterestRate\.ZAR-JIBAR in .* priced off ZAR-OIS'):
+            context.run_job()
+
+
 def test_the_context_keeps_its_base_calibration_tape():
     """A run rides every quote it moves and writes nothing, so the config it leaves holds the
     BASE's calibration tape - the quote leaves and the connected curves a quote-space Greeks run

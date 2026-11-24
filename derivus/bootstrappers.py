@@ -128,12 +128,19 @@ class Family:
         if self.prec is None:
             self.prec = dtype
 
+    @staticmethod
+    def dials(entry):
+        """A `Bootstrapper Configuration` entry's own dials: the entry less its `Prices` routing
+        key, none off the legacy CSV string."""
+        return {key: value for key, value in entry.items() if key != PRICES_KEY} \
+            if isinstance(entry, dict) else {}
+
     @classmethod
     def blocks(cls, entry, market_prices):
         """`{name: block}`: this family's `Market Prices` blocks (`market_prices_for`), each block's
-        `instrument` read under the family's `Bootstrapper Configuration` entry `entry` completed by
-        its declarations, the block winning on a conflict."""
-        entry = declared_defaults(cls, entry if isinstance(entry, dict) else {})
+        `instrument` read under the `dials` of the family's `Bootstrapper Configuration` entry
+        `entry` completed by its declarations, the block winning on a conflict."""
+        entry = declared_defaults(cls, cls.dials(entry))
         return {name: dict(block, instrument=dict(entry, **block['instrument']))
                 for name, block in market_prices_for(cls.__name__, market_prices).items()}
 
@@ -5589,11 +5596,9 @@ class InterestRate(Construction):
         block does not carry them: without them two jobs on different days, or a Linear job and a
         Hermite one, would share a slot and one would ride the other's solve.
 
-        The block is COMPLETED by the family's declarations first, so an omitted knob and one
-        written at its own default share a slot. A knob declared in `Bootstrapper Configuration`
-        instead of on the block does not reach here - `propagate` runs off a document with no
-        bootstrapper in it - so a riding set declares its knobs on its blocks or the ride refuses
-        by name at the next EXECUTE.
+        Each member block is read as the family reads it (`Family.blocks`), under its entry and
+        completed by its declarations, so an omitted knob, one written at its own default and one
+        its `Bootstrapper Configuration` entry declares share a slot.
         """
         # `config` imports from this module, so the package edge runs one way only
         from . import content_hash
@@ -5601,19 +5606,19 @@ class InterestRate(Construction):
         return content_hash({
             'engine_version': __version__, 'base_date': base_date, 'interpolation': factor_interp,
             'set': [{'market_price': market_price,
-                     'block': dict(partition_market_price(
-                         {'instrument': declared_defaults(cls, block)})[0]['instrument'],
+                     'block': dict(partition_market_price({'instrument': block})[0]['instrument'],
                                    **{field: None for field in cls.lifecycle_fields})}
                     for market_price, block in members]})
 
     @classmethod
-    def slot(cls, names, market_prices, factor_interp, base_date):
-        """The key those member blocks address in `market_prices` NOW, or `None` if one is gone.
+    def slot(cls, names, blocks, factor_interp, base_date):
+        """The key those member blocks address in `blocks`, this family's as `Family.blocks` reads
+        them NOW, or `None` if one is gone.
 
         What turns `utils.ArtifactStore.find`'s scan back into content addressing: an artifact answers for
         a curve only if the plan it was fitted against is still the plan standing.
         """
-        members = [(name, market_prices.get(name, {}).get('instrument')) for name in names]
+        members = [(name, blocks.get(name, {}).get('instrument')) for name in names]
         if any(block is None for _, block in members):
             return None
         return cls.plan_key(members, factor_interp, base_date)
@@ -5629,13 +5634,13 @@ class InterestRate(Construction):
             benchmarks.quotes.detach(), benchmarks, min(float(block['Tol']) for _, block in members))
 
     @classmethod
-    def artifact(cls, artifacts, factor, market_prices, factor_interp, base_date):
+    def artifact(cls, artifacts, factor, blocks, factor_interp, base_date):
         """The artifact in `artifacts` covering `factor` whose slot is the plan standing in
-        `market_prices`, counted as a use of it, or `CalibrationStale` naming the miss."""
+        `blocks` (`slot`), counted as a use of it, or `CalibrationStale` naming the miss."""
         market_price = utils.check_tuple_name(utils.Factor(cls.market_factor_type, factor.name))
         covering = artifacts.covering(factor)
         artifact = next((found for found in covering if found.key == cls.slot(
-            found.members, market_prices, factor_interp, base_date)), None)
+            found.members, blocks, factor_interp, base_date)), None)
         if artifact is None:
             raise utils.CalibrationStale(
                 '{}: Quote_Propagation is Linear and no calibration artifact answers to this plan '
@@ -5651,19 +5656,21 @@ class InterestRate(Construction):
         return artifact
 
     @classmethod
-    def quotes(cls, artifact, market_prices):
-        """The quotes standing in `market_prices` for `artifact`'s members, in percent and in the
+    def quotes(cls, artifact, blocks):
+        """The quotes standing in `blocks` (`slot`) for `artifact`'s members, in percent and in the
         order its theta, `J` and q0 index them."""
         return torch.tensor(
             [point['Quoted_Market_Value'] for name in artifact.members
-             for point in cls.used_quotes(market_prices[name]['instrument'], name)],
+             for point in cls.used_quotes(blocks[name]['instrument'], name)],
             dtype=artifact.theta.dtype, device=artifact.theta.device)
 
     @classmethod
-    def propagate(cls, artifacts, factor, market_prices, factor_interp, base_date):
-        """The curve `factor` RIDDEN to the quotes standing in `market_prices` now off the config's
-        `artifacts`, or `None` where no block asks for one - the operator, evaluated per EXECUTE and
-        storing nothing.
+    def propagate(cls, artifacts, factor, market):
+        """The curve `factor` RIDDEN to the quotes standing now in `market`, market data's sections,
+        off the config's `artifacts`, or `None` where no block asks for one - the operator,
+        evaluated per EXECUTE and storing nothing. Its blocks are read under the family's
+        `Bootstrapper Configuration` entry (`Family.blocks`), as the bootstrap publishing the
+        artifact read them.
 
         Two ways to get `None`: a factor this family does not write, and a block that did not ask
         for `Quote_Propagation`.
@@ -5678,16 +5685,18 @@ class InterestRate(Construction):
         """
         if factor.type != cls.__name__:
             return None
+        blocks = cls.blocks(market['Bootstrapper Configuration'].get(cls.__name__),
+                            market['Market Prices'])
         market_price = utils.check_tuple_name(utils.Factor(cls.market_factor_type, factor.name))
-        block = market_prices.get(market_price, {}).get('instrument')
-        if block is None or declared_defaults(cls, block)['Quote_Propagation'] != 'Linear':
+        block = blocks.get(market_price, {}).get('instrument')
+        if block is None or block['Quote_Propagation'] != 'Linear':
             return None
 
-        artifact = cls.artifact(artifacts, factor, market_prices, factor_interp, base_date)
-        tolerance = min(
-            float(declared_defaults(cls, market_prices[name]['instrument'])['Drift_Tolerance'])
-            for name in artifact.members)
-        quotes = cls.quotes(artifact, market_prices)
+        artifact = cls.artifact(artifacts, factor, blocks, market['Price Factor Interpolation'],
+                                market['System Parameters']['Base_Date'])
+        tolerance = min(float(blocks[name]['instrument']['Drift_Tolerance'])
+                        for name in artifact.members)
+        quotes = cls.quotes(artifact, blocks)
         theta = artifact.ride(quotes)
         drift = float(artifact.mispricing(theta, quotes).abs().max())
         tick = float((quotes - artifact.quotes).abs().max())
@@ -6719,13 +6728,10 @@ def market_prices_for(btype, market_prices, declared=None):
 
 
 def construct_bootstrapper(btype, param, dtype=torch.float32):
-    """One family built off its `Bootstrapper Configuration` entry: the entry's hyperparameters
-    without the routing key, and `{}` for the legacy CSV string, whose positional tail declares
-    none - every field it does not carry is the declaration's own default."""
-    device = utils.calculation_device()
-    param = ({key: value for key, value in param.items() if key != PRICES_KEY}
-             if isinstance(param, dict) else {})
-    return family_class(btype)(param, device, dtype)
+    """One family built off its `Bootstrapper Configuration` entry's `dials` - none off the legacy
+    CSV string, whose positional tail declares none - every field it does not carry being the
+    declaration's own default."""
+    return family_class(btype)(Family.dials(param), utils.calculation_device(), dtype)
 
 
 #: THE EIGHT PRICE FAMILIES: `family_class` and every refusal naming them read this one tuple.

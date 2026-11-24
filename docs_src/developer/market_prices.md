@@ -128,16 +128,20 @@ A quote block carries quotes and the factors they price against; every other dia
 is a hyperparameter, stated once per book in the family's entry. The author's rules are on
 [the JSON page](../json/bootstrapper_configuration.md); this is the mechanism.
 
-**Two levels.** A family is built from its entry completed by its declarations
-(`schema.declared_defaults`), and each of its blocks is read under that entry, the block winning:
-`Family.blocks` is that reading, the one every family's run, the dependency walk
-(`bootstrappers.block_readers`) and the service's credit view (`service.held_credit`) take.
+**Two levels.** A family is built from its entry's dials (`Family.dials`, the entry less its
+`Prices` routing key) completed by its declarations (`schema.declared_defaults`), and each of its
+blocks is read under them, the block winning: `Family.blocks` is that reading, the one every
+family's run, the dependency walk (`bootstrappers.block_readers`), the curve ride and its slot
+(`InterestRate.propagate`, `plan_key`), SIMM's moves (`SIMM.bumps`, `requoted`, `configured`) and
+the service's credit view (`service.held_credit`) take.
 Construction types every dial, so a malformed value refuses by name before a quote is read and
 `Config.bootstrap` raises naming the entry: a bad entry writes no factor rather than a wrong one.
 **Held by** `test_loud_refusals.py::test_a_family_refusing_at_construction_is_refused_by_name`,
 and the reading by `test_credit_prices.py::test_the_solver_knobs_are_read_off_the_block_and_its_entry`,
 `test_interest_rate_prices.py::test_the_solver_knobs_are_read_off_the_block`,
-`test_gbm_term_structure.py::test_a_block_s_surface_wins_over_the_one_its_family_entry_names` and
+`test_gbm_term_structure.py::test_a_block_s_surface_wins_over_the_one_its_family_entry_names`,
+`test_quote_propagation.py::test_a_ride_reads_its_blocks_under_their_family_entry`,
+`test_simm.py::test_a_curve_discounting_on_an_unquoted_one_is_refused_by_name_wherever_it_says_so` and
 `test_service.py::test_a_credit_curve_is_read_back_as_its_family_reads_its_quotes`.
 
 **Keyed by what a family writes** (`InterestRate`, `FXVol`, `LogVar2FJModelParameters`), the
@@ -188,9 +192,8 @@ in years from the day, solving as it did. **Held by**
 `test_simm.py::test_a_survival_curve_reads_the_curve_its_default_swaps_discount_on_and_no_other`,
 `test_inflation_prices.py::test_a_curve_move_re_solves_the_inflation_curve_solved_on_it_and_no_other`.
 
-**Outside `bootstrap`**, the swaption residual (`calc_loss`) and the curve ride (`propagate`,
-`plan_key`) complete their block from the declarations, so the declared default is the fallback
-everywhere. A quote ROW is read the same way: `schema.quote_table`, the one read of a block's
+**Outside `bootstrap`** a block is read by `Family.blocks` too, so the declared default is the
+fallback everywhere. A quote ROW is read the same way: `schema.quote_table`, the one read of a block's
 table, hands each row back completed by the row its family declares there, so a row leaving its
 conventions out solves as the row stating them does, and no reader spells a default of its own.
 The quote and, on a curve's row, the instrument it prices - `Quoted_Market_Value` and `Deal` -
