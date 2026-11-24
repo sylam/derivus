@@ -136,7 +136,8 @@ Construction types every dial, so a malformed value refuses by name before a quo
 `Config.bootstrap` raises naming the entry: a bad entry writes no factor rather than a wrong one.
 **Held by** `test_loud_refusals.py::test_a_family_refusing_at_construction_is_refused_by_name`,
 and the reading by `test_credit_prices.py::test_the_solver_knobs_are_read_off_the_block_and_its_entry`,
-`test_interest_rate_prices.py::test_the_solver_knobs_are_read_off_the_block` and
+`test_interest_rate_prices.py::test_the_solver_knobs_are_read_off_the_block`,
+`test_gbm_term_structure.py::test_a_block_s_surface_wins_over_the_one_its_family_entry_names` and
 `test_service.py::test_a_credit_curve_is_read_back_as_its_family_reads_its_quotes`.
 
 **Keyed by what a family writes** (`InterestRate`, `FXVol`, `LogVar2FJModelParameters`), the

@@ -40,21 +40,23 @@ def skew(expiries, atm):
 SHARE = {'Spot': 100.0, 'Currency': 'USD'}
 
 
-def built(expiries, atm, vol=surface, share=SHARE):
+def built(expiries, atm, vol=surface, share=SHARE, entry=(), others=()):
     """The `Vol` knots a bootstrap writes off the equity surface `vol` makes of the ATM column
-    `atm`, on the share `share` (none where None)."""
+    `atm`, on the share `share` (none where None), the family's entry stating `entry` over its route
+    and the market carrying the price factors `others` beside."""
     base = {'.Timestamp': '2026-01-15'}
     document = {'Calc': {
         'Calculation': {'Object': 'BaseValuation', 'Base_Date': base, 'Currency': 'USD'},
         'Deals': {'Reference': 'gbm', 'Deals': {'Children': []}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
             'System Parameters': {'Base_Currency': 'USD', 'Base_Date': base},
-            'Price Factors': dict({'EquityPriceVol.EQ': vol(expiries, atm)}, **(
+            'Price Factors': dict({'EquityPriceVol.EQ': vol(expiries, atm)}, **dict(others), **(
                 {} if share is None else {'EquityPrice.EQ': share})),
             'Market Prices': {'GBMAssetPriceTSModelPrices.EQ': {
                 'instrument': {'Asset_Price_Volatility': 'EQ', 'Quote_Sensitivity': 'Yes'}}},
             'Bootstrapper Configuration': {
-                'GBMAssetPriceTSModelParameters': {'Prices': 'GBMAssetPriceTSModel'}}}}}}
+                'GBMAssetPriceTSModelParameters': dict({'Prices': 'GBMAssetPriceTSModel'},
+                                                       **dict(entry))}}}}}
     context = derivus.Context()
     context.load_json((json.dumps(document, cls=CustomJsonEncoder), 'gbm'))
     context.bootstrap()
@@ -109,6 +111,17 @@ def test_a_surface_is_read_at_the_atm_coordinate_of_its_type(vol):
     expiries, atm = [0.25, 1.0, 2.0, 5.0], [0.10, 0.20, 0.25, 0.30]
     np.testing.assert_allclose(built(expiries, atm, vol), built(expiries, atm), rtol=0.0,
                                atol=1e-12)
+
+
+def test_a_block_s_surface_wins_over_the_one_its_family_entry_names():
+    """A block naming its surface is built off it whatever the family's entry names: beside a flat
+    50% surface the entry names, the curve is the block's own to the bit.
+
+    Killing mutation: the entry read over the block (`Family.blocks`), the curve flat at 50%."""
+    expiries, atm = [0.25, 1.0, 2.0, 5.0], [0.10, 0.20, 0.25, 0.30]
+    np.testing.assert_array_equal(built(
+        expiries, atm, entry={'Asset_Price_Volatility': 'FLAT'},
+        others={'EquityPriceVol.FLAT': surface(expiries, [0.50] * 4)}), built(expiries, atm))
 
 
 #: Each currency's flat rate on the quanto book.
