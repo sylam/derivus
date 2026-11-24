@@ -421,6 +421,10 @@ def main(argv=None):
         'Object': 'SIMM', 'Currency': currency, 'Parameters': args.parameters,
         'Mapping': os.path.join(args.output, 'SIMM_MAPPING_{}.json'.format(date)),
         'Workers': args.workers, 'Method': args.method, 'Base_Date': base_date}
+    os.makedirs(args.output, exist_ok=True)
+    # each read loads the block naming the mapping, which the context reads: the stated one stands
+    with open(calculation['Mapping'], 'wt', encoding='utf-8') as f:
+        json.dump(stated, f)
     context = derivus.Context()
     reads = {trade: loaded(context, book(source, {trade: document}, calculation, args.calendar,
                                          args.market))
@@ -429,7 +433,6 @@ def main(argv=None):
     mapping, notes = derived_mapping(
         source, documents, reads, job['Calc']['MergeMarketData']['ExplicitMarketData'][
             'Price Factors'], stated, parameters)
-    os.makedirs(args.output, exist_ok=True)
     with open(calculation['Mapping'], 'wt', encoding='utf-8') as f:
         json.dump(mapping, f, indent=1)
     notes = pd.DataFrame(notes, columns=NOTE)

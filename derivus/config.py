@@ -487,6 +487,8 @@ class Config(object):
         self.holidays = {}
         # the sha256 of each file the loaded job names, by the key it names it under
         self.files = {}
+        # the JSON each mapping or parameters file the job names holds, by the name it writes
+        self.documents = {}
         self.archive = None
         self.archive_columns = {}
 

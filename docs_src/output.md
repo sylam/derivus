@@ -8,7 +8,8 @@ carries `Stats` and `Results` only; and a hedge run returns an attribute object 
 - **Netting** — the internal `DealStructure` tree, intended for developers walking the hierarchy.
 - **Stats** — timing and counter statistics (deals loaded/skipped, execution time), `Files`, the
   sha256 of the bytes of the market data file and the calendar the job named (`MarketDataFile`,
-  `CalendDataFile`, None where it named none), `Quasi_Seed`, the seed every quasi-random draw ran
+  `CalendDataFile`, None where it named none) and of the `Mapping` and `Parameters` files a SIMM or
+  SA-CCR calculation names, under those keys where it names them, `Quasi_Seed`, the seed every quasi-random draw ran
   on, beside the `Random_Seed` a credit or hedging Monte Carlo reports, and — when a calibration was
   ridden rather than refitted — the `Calibrations` entry naming the artifact each curve rode, which
   completes the replay identity.

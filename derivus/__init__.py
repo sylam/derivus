@@ -330,14 +330,18 @@ class Context:
     @staticmethod
     def named(document):
         """`{MarketDataFile, CalendDataFile}`: the file a job document names under each key, None
-        where it names none."""
+        where it names none, and beside them the `Mapping` and `Parameters` its calculation names
+        where it names them."""
         calc = document['Calc']
-        return {'MarketDataFile': calc.get('MergeMarketData', {}).get('MarketDataFile') or None,
-                'CalendDataFile': calc.get('CalendDataFile') or None}
+        calculation = calc.get('Calculation', {})
+        return dict({'MarketDataFile': calc.get('MergeMarketData', {}).get('MarketDataFile') or None,
+                     'CalendDataFile': calc.get('CalendDataFile') or None},
+                    **{key: calculation[key] for key in ('Mapping', 'Parameters')
+                       if calculation.get(key)})
 
     def files(self, document):
-        """`{MarketDataFile, CalendDataFile}`: the sha256 of each file `document` names as it stands,
-        None where it names none, read and not parsed - what a run of it reports in `Stats['Files']`
+        """The sha256 of each file `document` names as it stands, by its key in `named`, None
+        where it names none, read and not parsed - what a run of it reports in `Stats['Files']`
         while the files hold still."""
         return {key: name and self.digest(name)[1] for key, name in self.named(document).items()}
 
@@ -404,6 +408,9 @@ class Context:
 
         cfg.deals.update({'Deals': deals})
         cfg.deals.update({'Calculation': data['Calc']['Calculation']})
+        # the JSON a calculation's mapping and parameters files hold, by the name the job writes
+        cfg.documents = {name: self.cached(name, lambda path, data: json.loads(data), parses)
+                         for key, name in named.items() if key in ('Mapping', 'Parameters')}
         cfg.files = {key: name and self.digests[name] for key, name in named.items()}
 
         self.current_cfg = cfg
@@ -567,8 +574,10 @@ class Context:
                        if k not in ('Random_Seed', 'Quasi_Seed')}
         calendars = {location: [calendar['weekends'], sorted(calendar['holidays'])]
                      for location, calendar in cfg.holidays.items()}
-        return content_hash({'params': params, 'deals': dict(cfg.deals, Calculation=calculation),
-                             'calendars': calendars})
+        plan = {'params': params, 'deals': dict(cfg.deals, Calculation=calculation),
+                'calendars': calendars}
+        # the files a calculation names hashed only where named, so every other plan keeps its hash
+        return content_hash(dict(plan, documents=cfg.documents) if cfg.documents else plan)
 
     def values_hash(self):
         """The content hash of `market_patch()` less its clocks - the market VALUES, and nothing

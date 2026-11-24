@@ -824,15 +824,18 @@ class SIMM(JOB):
 
     def __init__(self, cx, rundate, input_path, outputdir, netting_set, stats, log):
         super(SIMM, self).__init__(cx, rundate, input_path, outputdir, netting_set, stats, log)
-        config = self.cx.current_cfg
-        stated = config.deals['Calculation']
-        # the document's own quasi seed, so trades' Monte Carlo errors stay independent across a
-        # book
-        config.deals['Calculation'] = dict(
+        with open(os.path.join(input_path, rundate, netting_set), 'rt', encoding='utf-8') as f:
+            job = json.load(f)
+        stated = job['Calc']['Calculation']
+        # the block is stated in the document the context loads, so it reads the files it names;
+        # the document's own quasi seed, so trades' Monte Carlo errors stay independent across a book
+        job['Calc']['Calculation'] = dict(
             {key: stated[key] for key in ('Quasi_Seed',) if key in stated}, Object='SIMM',
             Base_Date=stated['Base_Date'], Currency=os.environ.get('DERIVUS_SIMM_CURRENCY', 'USD'),
             Mapping=os.environ['DERIVUS_SIMM_MAPPING'], Parameters=os.environ['DERIVUS_SIMM_PARAMETERS'])
-        quote_curves(config, stated['Base_Date'])
+        config = self.cx.load_json((json.dumps(job), os.path.splitext(netting_set)[0]),
+                                   self.compress).current_cfg
+        quote_curves(config, config.deals['Calculation']['Base_Date'])
         if os.environ.get('DERIVUS_SIMM_CRIF'):
             self.regulations(pd.read_csv(
                 os.environ['DERIVUS_SIMM_CRIF'], sep='\t', dtype=str, keep_default_na=False,

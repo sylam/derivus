@@ -333,7 +333,8 @@ does a credit Monte Carlo; a `SIMM` or an `SACCR` run returns `Stats` and `Resul
 
 - `'Netting'` — the internal `DealStructure` tree. Useful for developers walking the hierarchy.
 - `'Stats'` — a dict of timing and counter statistics from the run, under `Files` the sha256 of
-  the market data file and the calendar the job named, and the `Quasi_Seed` it drew on beside the
+  the market data file and the calendar the job named, and of the `Mapping` and `Parameters` a
+  SIMM or SA-CCR calculation names, and the `Quasi_Seed` it drew on beside the
   `Random_Seed` a Monte Carlo reports.
 - `'Results'` — the user-facing dataframes / arrays. Keys vary by calculation type; see the
   [Output](output.md) page.

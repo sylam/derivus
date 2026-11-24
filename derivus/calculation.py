@@ -16,7 +16,6 @@ import contextlib
 import copy
 import math
 import time
-import json
 import pickle
 import logging
 import itertools
@@ -4257,12 +4256,11 @@ class NettingSetCalculation(Calculation):
     def setup(self, params):
         """The block `parameters` judged, completed, its `Mapping` read, the base valuation it
         prices by stated and the book listed - what the run and each of its workers share - and
-        the `Parameters` file as it reads, returned."""
+        the `Parameters` file as it reads, returned. Both files are the parses the context read of
+        those the document names, so an override naming another fails on that name."""
         params = self.params = declared_defaults(type(self), params)
-        with open(params['Mapping'], 'rt', encoding='utf-8') as f:
-            self.mapping = json.load(f)
-        with open(params['Parameters'], 'rt', encoding='utf-8') as f:
-            parameters = json.load(f)
+        self.mapping, parameters = (self.config.documents[params[key]]
+                                    for key in ('Mapping', 'Parameters'))
         self.calc_stats['Parameters'] = parameters.get('version', '')
         self.calc_stats['Quasi_Seed'] = params['Quasi_Seed']
         self.valuation = {

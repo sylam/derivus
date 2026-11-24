@@ -26,6 +26,7 @@ digit it prints. Their RC, the hedging sets' effective notionals and add-ons, th
 the EAD are printed in formulas (CRE99.24-99.40, 99.55-99.58, 99.71-99.76, 99.78-99.79,
 99.82-99.97).
 """
+import hashlib
 import json
 import math
 import os
@@ -2289,6 +2290,41 @@ def test_a_parameters_file_stating_an_entry_amiss_is_refused_by_name(tmp_path, b
             said.replace('(', r'\(').replace(')', r'\)'))):
         run(document({'SET': ({}, [node(swap('SWAP', years(5), 'Fixed'))])}, saccr(
             mapping_file(tmp_path / 'mapping.json'), str(path))))
+
+
+def test_the_mapping_and_parameters_are_files_the_job_names_read_through_the_context(tmp_path):
+    """A job naming its parameters file in a folder this box maps elsewhere reads the mapped file,
+    its run's `Stats['Files']` carrying the sha256 of the mapping's and the parameters' bytes; the
+    same name holding another content is another plan.
+
+    Killing mutations: the parameters opened on the path the job writes - `FileNotFoundError`; the
+    two names left out of `Context.named` - `Stats['Files']` without them; the files' content left
+    out of `plan_hash` - the two contents one plan.
+    """
+    mapped = tmp_path / 'mapped'
+    mapped.mkdir()
+    with open(PARAMETERS, 'rb') as f:
+        held = f.read()
+    (mapped / 'parameters.json').write_bytes(held)
+    mapping = mapping_file(tmp_path / 'mapping.json')
+    job = document({'SET': ({}, [node(swap('SWAP', years(5), 'Fixed'))])}, saccr(
+        mapping, os.path.join('elsewhere', 'parameters.json')))
+
+    def loaded():
+        context = derivus.Context({'elsewhere': str(mapped)}, {})
+        return context.load_json((json.dumps(job), 'saccr'), compress=False)
+
+    output = loaded().run_job()[1]
+    with open(mapping, 'rb') as f:
+        assert output['Stats']['Files'] == {
+            'MarketDataFile': None, 'CalendDataFile': None,
+            'Mapping': hashlib.sha256(f.read()).hexdigest(),
+            'Parameters': hashlib.sha256(held).hexdigest()}
+    before = loaded().plan_hash()
+    parameters = json.loads(held)
+    parameters['version'] += ' edited'
+    (mapped / 'parameters.json').write_text(json.dumps(parameters), encoding='utf-8')
+    assert loaded().plan_hash() != before
 
 
 def test_a_run_dated_after_its_market_file_leaves_the_files_date_standing(tmp_path):
