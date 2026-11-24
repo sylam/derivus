@@ -659,6 +659,23 @@ def test_a_premium_keeps_its_fill_s_currency_when_the_book_s_is_restated(recorde
     assert 'at 10,000.00 ZAR' in told['summary'], told
 
 
+def test_a_price_in_a_currency_whose_rate_states_no_spot_yet_is_refused_by_name(recorded, tmp_path):
+    """A rate installed and not yet valued states a spot of nothing, so a price in its currency
+    cannot be crossed into the book's: the booking is refused by name, nothing filed and the file
+    untouched.
+
+    Killing mutation: `engine_spot` refusing only a rate the market carries no block for - the
+    cross then answers a bare KeyError, a 500.
+    """
+    path = serving(tmp_path, [netting_set(CLIENT_SET, 'CPTY_A')],
+                   dict(FACTORS, **{'FxRate.USD': dict(FACTORS['FxRate.USD'], Spot=0.0)}))
+    head, before = at(recorded), path.read_bytes()
+    refused = premium_booked('UNVALUED', price=25_000.0, price_currency='USD')
+    assert refused.status_code == 422 and 'FxRate.USD states no spot yet' in refused.text, \
+        refused.text
+    assert at(recorded) == head and path.read_bytes() == before, 'a refused booking moved something'
+
+
 def test_the_close_check_and_reconcile_are_a_404_on_a_box_that_records_nothing(unrecorded,
                                                                                tmp_path):
     """A box with no home has no record to check against, and says so rather than answering an

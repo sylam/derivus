@@ -1061,13 +1061,14 @@ def quoted_crosses(factors, into):
 def engine_spot(market, underlying_currency, settlement_currency):
     """Today's rate on the DEAL's axis: units of `Currency` per unit of `Underlying_Currency`, the
     quoted cross (`quoted_crosses`). It is the seed and the bracket centre for a strike solve; no
-    price is taken from it."""
+    price is taken from it. A rate the market carries no block for, or whose block states no spot
+    yet, is refused by name."""
     factors = market_data(market)
     for currency in (underlying_currency, settlement_currency):
         name = 'FxRate.{}'.format(currency)
-        if name not in factors:
-            raise ValueError('{} is missing - a {} quote cannot be struck on this book'.format(
-                name, currency))
+        if not factors.get(name, {}).get('Spot'):
+            raise ValueError('{} {} - a {} quote cannot be struck on this book'.format(
+                name, 'states no spot yet' if name in factors else 'is missing', currency))
     return quoted_crosses(factors, settlement_currency)[underlying_currency]
 
 
