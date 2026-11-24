@@ -3,6 +3,7 @@
 process reads it - piecewise linear between knots, flat outside, its square integrated exactly."""
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -35,16 +36,21 @@ def skew(expiries, atm):
                 Moneyness_Rule='Sticky_Moneyness', ATM_Vol=curve(atm))
 
 
-def built(expiries, atm, vol=surface):
+#: The share the equity surface is quoted on.
+SHARE = {'Spot': 100.0, 'Currency': 'USD'}
+
+
+def built(expiries, atm, vol=surface, share=SHARE):
     """The `Vol` knots a bootstrap writes off the equity surface `vol` makes of the ATM column
-    `atm`."""
+    `atm`, on the share `share` (none where None)."""
     base = {'.Timestamp': '2026-01-15'}
     document = {'Calc': {
         'Calculation': {'Object': 'BaseValuation', 'Base_Date': base, 'Currency': 'USD'},
         'Deals': {'Reference': 'gbm', 'Deals': {'Children': []}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
             'System Parameters': {'Base_Currency': 'USD', 'Base_Date': base},
-            'Price Factors': {'EquityPriceVol.EQ': vol(expiries, atm)},
+            'Price Factors': dict({'EquityPriceVol.EQ': vol(expiries, atm)}, **(
+                {} if share is None else {'EquityPrice.EQ': share})),
             'Market Prices': {'GBMAssetPriceTSModelPrices.EQ': {
                 'instrument': {'Asset_Price_Volatility': 'EQ', 'Quote_Sensitivity': 'Yes'}}},
             'Bootstrapper Configuration': {
@@ -178,6 +184,19 @@ def test_the_quanto_correlation_is_read_as_a_quanto_deal_reads_it():
     rand.bootstrap()
     assert rand.current_cfg.params['Price Factors'][
         'GBMAssetPriceTSModelParameters.EQ']['Quanto_FX_Correlation'] == -0.5
+
+
+@pytest.mark.parametrize('share,missing', [(None, 'EquityPrice.EQ'), ({'Spot': 100.0}, 'Currency')],
+                         ids=['no share', 'no currency'])
+def test_the_share_s_currency_is_read_as_its_factor_states_it(share, missing):
+    """The quanto correlation reads the share's currency through its `EquityPrice`, as every reader
+    of a share does, so a market carrying no `EquityPrice.EQ`, or one stating no `Currency`, fails
+    the bootstrap naming what it lacks.
+
+    Killing mutation: the currency read off the raw block with the base currency where it states
+    none, which fits both and writes a zero correlation."""
+    with pytest.raises(KeyError, match=re.escape(repr(missing))):
+        built([0.25, 1.0, 2.0, 5.0], [0.10, 0.20, 0.25, 0.30], share=share)
 
 
 def test_a_zero_quanto_correlation_is_the_vanishing_one():

@@ -720,7 +720,10 @@ those rows as its ATM column wherever this family wrote the surface, evidenced b
 type ([the two sources](quote_sensitivities.md#the-atm-column)). **Held by**
 `tests/test_gbm_term_structure.py::test_a_surface_is_read_at_the_atm_coordinate_of_its_type`.
 `Quote_Sensitivity` leaves the surface connected to its quotes, bit-identical either way
-([the delta solve](quote_sensitivities.md#the-delta-solve)).
+([the delta solve](quote_sensitivities.md#the-delta-solve)). A share's quanto correlation pairs the
+currency its `EquityPrice` states (`get_currency`) with the base, so a market carrying no share, or
+one stating no `Currency`, fails the fit naming what it lacks. **Held by**
+`tests/test_gbm_term_structure.py::test_the_share_s_currency_is_read_as_its_factor_states_it`.
 
 !!! warning "One ATM quote, two families, two partial derivatives"
     This block's ATM row is also `GBMAssetPriceTSModelPrices`' ATM column, so with **both** blocks

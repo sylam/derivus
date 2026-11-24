@@ -3582,9 +3582,9 @@ class GBMAssetPriceTSModelParameters(Construction):
          '- `Quote_Sensitivity` Yes keeps the curve connected to the ATM vols. The repair is a KINK:',
          '  $df_i/dq_i$ is 0 once floored ([Quote Sensitivities](../developer/quote_sensitivities.md#the-repair-kink)).',
          '- `Quanto_FX_Correlation` is 0 for an FX rate. For an equity it is the',
-         '  `Correlation.EquityPrice.<surface>/FxRate.<pair>` price factor between the equity and its',
-         '  currency against the base, named and signed as a quanto deal reads it, 0 when absent;',
-         '  `Quanto_FX_Volatility` is written blank.'
+         '  `Correlation.EquityPrice.<surface>/FxRate.<pair>` price factor between the equity and the',
+         '  currency its `EquityPrice` states, against the base, named and signed as a quanto deal reads',
+         '  it, 0 when absent; `Quanto_FX_Volatility` is written blank.'
          ]
     )
 
@@ -3735,8 +3735,8 @@ class GBMAssetPriceTSModelParameters(Construction):
             else:
                 # the name and sign a quanto deal reads it with (`equity_fx_correlation`): the
                 # surface against the equity's own currency priced in the base
-                currency = price_factors.get(utils.check_tuple_name(utils.Factor(
-                    'EquityPrice', rate[1:])), {}).get('Currency', sys_params['Base_Currency'])
+                currency = riskfactors.construct_factor(utils.Factor(
+                    'EquityPrice', rate[1:]), price_factors, factor_interp).get_currency()[0]
                 sign, pair = utils.check_fx_name([currency, sys_params['Base_Currency']])
                 held = price_factors.get('Correlation.EquityPrice.{}/FxRate.{}'.format(
                     '.'.join(implied_param), '.'.join(pair)))
