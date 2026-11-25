@@ -1044,8 +1044,9 @@ class CreditMonteCarlo(Calculation):
         '- $V(t)$ is the deflated funding profile at time $t$',
         '- $f_{fc,C}(t)$ and $f_{fb,C}(t)$ are the forward rates of **Funding Cost Interest Curve** and',
         '  **Funding Benefit Interest Curve**',
-        '- $f_{rf,C}(t)$ is the forward rate of the base currency\'s own curve, the deflation curve, which',
-        '  a blank funding curve reads too',
+        '- $f_{rf,C}(t)$ is the forward rate of **Risk Free Curve**, the curve the funding is a spread',
+        '  over in the currency the book is funded in, the base currency\'s own where blank; it has no',
+        '  part in the deflation, and a blank funding curve reads it',
         '- $SP_C(t)=S(0,t)$ is the survival probability of the counterparty each netting set names under',
         '  **Credit Support Amounts**.',
         '',
@@ -1085,8 +1086,9 @@ class CreditMonteCarlo(Calculation):
         '   date being a scenario date',
         ' - **Generate Cashflows** - returns the simulated cashflows during the simulation period (default',
         '   `Yes`)',
-        ' - **Credit Valuation Adjustment**, **Funding Valuation Adjustment** - one block per adjustment;',
-        '   their fields and defaults are tabulated on the',
+        ' - **Credit Valuation Adjustment**, **Funding Valuation Adjustment** - one block per adjustment,',
+        '   the FVA\'s naming its funding curves and the **Risk Free Curve** they are spreads over, which',
+        '   it requires beside a funding curve; their fields and defaults are tabulated on the',
         '   [xVA](../theory/valuation_adjustments.md#inputs-and-defaults) page'
     ])
 
@@ -1154,6 +1156,9 @@ class CreditMonteCarlo(Calculation):
               F('Calculate', 'Text', default='No', values=['Yes', 'No']),
               F('Counterparty', 'Text', default=''),
               F('Bank', 'Text', default=''),
+              F('Risk_Free_Curve', 'Text', default='',
+                description='The curve the funding cost and benefit are spreads over, blank the '
+                            'base currency\'s own; it has no part in the deflation'),
               F('Funding_Cost_Interest_Curve', 'Text', default=''),
               F('Funding_Benefit_Interest_Curve', 'Text', default=''),
               F('Deflate_Stochastically', 'Text', default='No', values=['Yes', 'No']),
@@ -1263,6 +1268,19 @@ class CreditMonteCarlo(Calculation):
                            'Reference': context.deals['Attributes']['Reference'], 'Job': job_id})
 
         return calc, out
+
+    @classmethod
+    def refusals(cls, params):
+        """`Calculation.refusals`, and an FVA block under `Calculate: Yes` stating a funding curve
+        and no `Risk_Free_Curve`, a spread over nothing."""
+        funding = params.get('Funding_Valuation_Adjustment') or {}
+        stated = [key for key in ('Funding_Cost_Interest_Curve', 'Funding_Benefit_Interest_Curve')
+                  if funding.get(key)]
+        refused = super().refusals(params)
+        if funding.get('Calculate') == 'Yes' and stated and not funding.get('Risk_Free_Curve'):
+            refused.append('Funding_Valuation_Adjustment states {}, so Risk_Free_Curve is '
+                           'required'.format(' and '.join(stated)))
+        return refused
 
     def update_factors(self, params, base_date, job_id, num_jobs):
         dependent_factors, stochastic_factors, implied_factors, reset_dates, settlement_currencies = \
@@ -1703,6 +1721,12 @@ class CreditMonteCarlo(Calculation):
             utils.check_rate_name(self.config.params['System Parameters']['Base_Currency']),
             self.static_factors, self.stoch_factors, self.all_tenors, self.all_factors)
 
+    def funding_curves(self, block):
+        """The codes of FVA block `block`'s cost, benefit and risk-free curves (`curve`), a blank
+        cost or benefit curve the risk-free one, so it funds at no spread."""
+        return [self.curve(block[key] or block['Risk_Free_Curve']) for key in (
+            'Funding_Cost_Interest_Curve', 'Funding_Benefit_Interest_Curve', 'Risk_Free_Curve')]
+
     def execute(self, params, job_id=0, num_jobs=1, deterministic_batches=False):
         """Run the batched exposure simulation plus whichever sub-calculations `params` enables
         (collateral, initial margin, CVA, FVA, scenarios, cashflows) and return the netting sets,
@@ -1934,9 +1958,8 @@ class CreditMonteCarlo(Calculation):
             if params['Funding_Valuation_Adjustment']['Calculate'] == 'Yes':
                 mtm_grid = self.time_grid.mtm_time_grid[time_index]
 
-                funding_cost = self.curve(params['Funding_Valuation_Adjustment']['Funding_Cost_Interest_Curve'])
-                funding_benefit = self.curve(params['Funding_Valuation_Adjustment']['Funding_Benefit_Interest_Curve'])
-                riskfree = discount = self.curve()
+                funding_cost, funding_benefit, riskfree = self.funding_curves(params['Funding_Valuation_Adjustment'])
+                discount = self.curve()
 
                 # note that for FVA, we already scale the exposure matrix by the survival probability
                 if params['Funding_Valuation_Adjustment']['Deflate_Stochastically'] == 'Yes':

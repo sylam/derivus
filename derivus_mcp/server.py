@@ -2002,8 +2002,9 @@ def declare_official_calculation(calculations: dict, actor: str | None = None) -
     """Declare what the desk's official runs run at as the `admin` seat, which files a
     `policy_declared`: `calculations` is `{"CreditMonteCarlo": {...}}`, a block of that type's own
     fields (`describe_calculation_type`) - `Batch_Size` and `Simulation_Batches` for the paths,
-    `Random_Seed`, and `Funding_Valuation_Adjustment` with its `Funding_Cost_Interest_Curve` and
-    `Funding_Benefit_Interest_Curve` - and no `Object`, the type being the key. A container such as
+    `Random_Seed`, and `Funding_Valuation_Adjustment` with its `Funding_Cost_Interest_Curve`,
+    `Funding_Benefit_Interest_Curve` and the `Risk_Free_Curve` they are spreads over, which a
+    funding curve requires - and no `Object`, the type being the key. A container such as
     `Funding_Valuation_Adjustment` is stated whole.
 
     Never choose these numbers or curves yourself: they are the desk's policy, so declare what you

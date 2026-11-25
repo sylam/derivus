@@ -6617,8 +6617,10 @@ def netting_set(reference, counterparty, deals, funding_rate='USD'):
 #: from an unimplemented one.
 FUNDING_RATE = 0.05
 
-#: What a book's calculation states to fund both legs of its FVA at that curve.
-FUNDED = {'Funding_Cost_Interest_Curve': 'FUND', 'Funding_Benefit_Interest_Curve': 'FUND'}
+#: What a book's calculation states to fund both legs of its FVA at that curve, over the dollar
+#: curve, the base currency's own.
+FUNDED = {'Risk_Free_Curve': 'USD', 'Funding_Cost_Interest_Curve': 'FUND',
+          'Funding_Benefit_Interest_Curve': 'FUND'}
 
 
 def xva_book(tmp_path, sets, counterparties=('CPTY_A', 'CPTY_B'), funding=FUNDED):
@@ -6739,9 +6741,7 @@ def test_a_named_calculation_is_the_desks_own_and_prices_what_it_is_pointed_at(d
              'Credit_Valuation_Adjustment': dict(
                  service.XVA_CVA_BLOCK, Calculate='Yes', Counterparty='CPTY_A'),
              'Funding_Valuation_Adjustment': dict(
-                 service.XVA_FVA_BLOCK, Calculate='Yes', Counterparty='CPTY_A',
-                 Funding_Cost_Interest_Curve='FUND',
-                 Funding_Benefit_Interest_Curve='FUND')}
+                 service.XVA_FVA_BLOCK, Calculate='Yes', Counterparty='CPTY_A', **FUNDED)}
     greeks = {'Object': 'BaseValuation', 'Greeks': 'First'}
 
     def save(name, calculation):
@@ -7620,8 +7620,8 @@ def test_an_fva_funds_at_the_curves_its_calculation_states_whatever_a_set_states
     which funds NS_A at no spread and pays NS_B a benefit.
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path))
-    stated = {'Funding_Cost_Interest_Curve': 'FUND', 'Funding_Benefit_Interest_Curve': 'USD'}
-    either = [dict(VANILLA, Reference='OPT_B'),
+    stated = dict(FUNDED, Funding_Benefit_Interest_Curve='USD')
+    either =[dict(VANILLA, Reference='OPT_B'),
               dict(VANILLA, Reference='PUT_B', Option_Type='Put', Buy_Sell='Sell')]
     priced, runs = [], []
     try:
@@ -7681,7 +7681,7 @@ def test_a_desk_that_keeps_no_record_funds_at_what_its_document_states_and_decla
     sets = [netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')])]
     funding = []
     try:
-        for stated in (None, {'Funding_Cost_Interest_Curve': 'FUND'}, FUNDED):
+        for stated in (None, {'Risk_Free_Curve': 'USD', 'Funding_Cost_Interest_Curve': 'FUND'}, FUNDED):
             xva_book(tmp_path, sets, funding=stated)
             funding.append(CLIENT.get('/book/xva').json()['funding'])
         recalc()
@@ -7854,8 +7854,8 @@ def test_a_book_filing_its_curves_under_other_names_lands_both_columns(tmp_path,
         for _, node in service.netting_sets(document):
             run = service.xva_document(document, node, '')['Calc']['Calculation']
             funding = run['Funding_Valuation_Adjustment']
-            assert 'Deflation_Interest_Rate' not in run and 'Risk_Free_Curve' not in funding
-            assert not [field for field in FUNDED if funding.get(field)]
+            assert 'Deflation_Interest_Rate' not in run
+            assert not [field for field in FUNDED if funding.get(field)], funding
     finally:
         service.BOOK = None
 
@@ -8074,8 +8074,7 @@ def test_the_increment_on_a_second_seed_moves_by_rounding_and_the_two_runs_by_mo
              'Credit_Valuation_Adjustment': dict(
                  service.XVA_CVA_BLOCK, Calculate='Yes', Counterparty='CPTY_A'),
              'Funding_Valuation_Adjustment': dict(
-                 service.XVA_FVA_BLOCK, Calculate='Yes', Counterparty='CPTY_A',
-                 Funding_Cost_Interest_Curve='FUND', Funding_Benefit_Interest_Curve='FUND')}
+                 service.XVA_FVA_BLOCK, Calculate='Yes', Counterparty='CPTY_A', **FUNDED)}
 
     def cva_of(response):
         assert response.status_code == 200, response.json()

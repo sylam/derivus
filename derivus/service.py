@@ -4382,8 +4382,8 @@ XVA_CVA_BLOCK = {'Calculate': 'Yes', 'Counterparty': '', 'Bank': '',
                  'Gradient': 'No'}
 
 #: The FVA block a recalc switches on, beside the CVA one and off the SAME run - the projection's
-#: second column. `Calculate` and `Counterparty` are decided per set, the two funding curves are
-#: the book calculation's own to state, and the rest is the CVA block's desk-projection posture.
+#: second column. `Calculate` and `Counterparty` are decided per set, the funding and risk-free
+#: curves are the book calculation's own to state, and the rest is the CVA block's posture.
 XVA_FVA_BLOCK = {'Calculate': 'Yes', 'Counterparty': '', 'Bank': '',
                  'Deflate_Stochastically': 'No', 'Stochastic_Funding': 'No', 'Gradient': 'No'}
 
@@ -4459,14 +4459,16 @@ def xva_document(document, node, counterparty):
 
     The synthesized fields are a FLOOR: an authored adjustment block keeps every field but
     `Calculate` and the counterparty. No path count or batching is written, the engine's declared
-    defaults being what a calculation stating neither runs at, and no deflation or risk-free
-    curve: the engine reads both as the base currency's own, so nothing here reads the market.
+    defaults being what a calculation stating neither runs at, and no curve: the engine deflates on
+    the base currency's own and reads a blank risk-free curve as it, so nothing here reads the
+    market.
 
     THE FVA FUNDS AT THE CURVES THE CALCULATION IT IS HANDED STATES, `Funding_Cost_Interest_Curve`
-    and `Funding_Benefit_Interest_Curve`, for every set alike: the book file's own block, under the
-    `calculation` policy's where the desk records (`priced`). A calculation stating neither leaves
-    both blank, which the engine reads as the curve it deflates on, and the FVA is exactly 0.0. A
-    set's own `Funding_Rate` is its collateral adjustment's term and no FVA funds at it.
+    and `Funding_Benefit_Interest_Curve` over its `Risk_Free_Curve`, for every set alike: the book
+    file's own block, under the `calculation` policy's where the desk records (`priced`). A
+    calculation stating no funding curve leaves both blank, which the engine reads as the risk-free
+    curve, and the FVA is exactly 0.0. A set's own `Funding_Rate` is its collateral adjustment's
+    term and no FVA funds at it.
     """
     # only the root of the tree and the calculation are written, so the market is shared, not copied
     deals = document['Calc']['Deals']

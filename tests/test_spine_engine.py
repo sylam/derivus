@@ -6418,9 +6418,10 @@ def test_a_tick_the_hub_may_not_mark_is_refused_and_the_cadence_lives(recorded, 
 # The official calculation: declared under admin, judged by the engine, read by the credit run.
 
 #: What a hub's credit run is declared to run at in these gates: two batches, its FVA's cost funded
-#: at `FUND` and its benefit at the dollar curve the exposure deflates on.
+#: at `FUND` and its benefit at the dollar curve, the risk-free one, the base currency's own.
 OFFICIAL = {'Simulation_Batches': 2, 'Funding_Valuation_Adjustment': {
-    'Funding_Cost_Interest_Curve': 'FUND', 'Funding_Benefit_Interest_Curve': 'USD'}}
+    'Risk_Free_Curve': 'USD', 'Funding_Cost_Interest_Curve': 'FUND',
+    'Funding_Benefit_Interest_Curve': 'USD'}}
 
 
 def policy_posted(section, stated, **body):
@@ -6836,7 +6837,7 @@ def test_the_xva_view_names_the_curves_a_credit_run_would_fund_at_and_keeps_the_
     assert policy_posted('calculations', {'CreditMonteCarlo': OFFICIAL}).status_code == 200
     assert kept() is None, 'the declaration left the poll key where it was'
     assert funding() == {'cost': 'FUND', 'benefit': 'USD'} == kept()
-    cost = {'Funding_Valuation_Adjustment': {'Funding_Cost_Interest_Curve': 'USD'}}
+    cost = {'Funding_Valuation_Adjustment': {'Risk_Free_Curve': 'USD', 'Funding_Cost_Interest_Curve': 'USD'}}
     assert policy_posted('calculations', {'CreditMonteCarlo': cost}).status_code == 200
     assert funding() == {'cost': 'USD', 'benefit': None}
     assert policy_posted(

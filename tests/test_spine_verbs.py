@@ -1274,7 +1274,8 @@ def test_a_calculation_policy_is_a_block_per_official_run_and_the_record_checks_
     """
     home, log = minted(tmp_path)
     credit = {'Simulation_Batches': 20, 'Batch_Size': 1024, 'Funding_Valuation_Adjustment': {
-        'Funding_Cost_Interest_Curve': 'USD-FUNDING', 'Funding_Benefit_Interest_Curve': 'USD-OIS'}}
+        'Risk_Free_Curve': 'USD-OIS', 'Funding_Cost_Interest_Curve': 'USD-FUNDING',
+        'Funding_Benefit_Interest_Curve': 'USD-OIS'}}
     broken = (('note', {'calculations': {}, 'note': 'why'}),
               ("'BaseValuation', which no official run reads",
                {'calculations': {'BaseValuation': {'Greeks': 'First'}}}),

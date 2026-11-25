@@ -1188,16 +1188,19 @@ def test_a_blank_curve_is_its_currency_s_own_whatever_the_book_calls_it():
 def test_a_credit_monte_carlo_deflates_on_the_base_currency_s_own_curve_whatever_it_states():
     """A credit Monte Carlo on the renamed world over a euro cashflow alone, so no deal reads the
     dollar curve, deflated stochastically on the base currency's own, `USD-OIS`, which the base
-    `FxRate` brings into the run. Stating `USD-PROJ` as its deflation and risk-free curves reports
-    the CVA, the FVA and the exposure of the job stating neither, to the bit; a blank funding curve
-    reads the risk-free one, so two blank fund at no spread, an FVA of exactly nil. With no model
-    on `USD-OIS` the stochastic deflation is refused naming it, whatever the job states. `validate`
-    says nothing of a document stating either key, which no calculation declares, nor of a funding
-    block naming neither funding curve.
+    `FxRate` brings into the run. Stating `USD-PROJ` as its deflation curve reports the CVA, the
+    FVA and the exposure of the job stating none, to the bit, both funding at `USD-PROJ` over the
+    risk-free curve `USD-OIS`. The risk-free curve is read: stated as `USD-PROJ` the funding is a
+    spread over itself, an FVA of exactly nil, as is a block stating no curve at all, its blank
+    funding curves reading the risk-free one, the base currency's own. With no model on `USD-OIS`
+    the stochastic deflation is refused naming it, whatever the job states. `validate` says nothing
+    of a document stating a deflation curve, which no calculation declares, nor of a funding block
+    naming neither funding curve.
 
     Killing mutations: the stated deflation curve read again, which deflates the CVA on `USD-PROJ`;
-    the stated risk-free curve read again, which measures the funding spread over `USD-PROJ`; the
-    factor walk indexing a funding curve its block omits, under which `validate` dies on the key.
+    the stated risk-free curve not read, the base currency's own in its place, which measures the
+    funding spread of `USD-PROJ` over `USD-OIS`; the factor walk indexing a funding curve its block
+    omits, under which `validate` dies on the key.
     """
     import trial_credit
 
@@ -1210,18 +1213,20 @@ def test_a_credit_monte_carlo_deflates_on_the_base_currency_s_own_curve_whatever
                'Funding_Benefit_Interest_Curve': 'USD-PROJ'}
 
     def run(stated='', models=('USD-OIS', 'USD-PROJ'), **curves):
-        """`Results` of the job stating `stated` as its deflation and risk-free curves and `curves`
-        over its funding block."""
+        """`Results` of the job stating `stated` as its deflation curve and `curves` over its
+        funding block, which funds at `USD-PROJ` over `USD-OIS`."""
         _, out = simulated([cashflow], models, trial_credit.FACTORS, names=RENAMED,
                            Deflation_Interest_Rate=stated, Credit_Valuation_Adjustment=credit,
-                           Funding_Valuation_Adjustment=dict(funding, Risk_Free_Curve=stated, **curves))
+                           Funding_Valuation_Adjustment={**funding, 'Risk_Free_Curve': 'USD-OIS', **curves})
         return out['Results']
 
     neither, both = run(), run('USD-PROJ')
     assert [float(neither[key]) for key in ('cva', 'fva')] == [
         float(both[key]) for key in ('cva', 'fva')]
     assert neither['mtm'].equals(both['mtm']) and float(neither['cva']) > 0.0 != float(neither['fva'])
-    assert float(run(Funding_Cost_Interest_Curve='', Funding_Benefit_Interest_Curve='')['fva']) == 0.0
+    assert float(run(Risk_Free_Curve='USD-PROJ')['fva']) == 0.0
+    assert float(run(Risk_Free_Curve='', Funding_Cost_Interest_Curve='',
+                     Funding_Benefit_Interest_Curve='')['fva']) == 0.0
     with pytest.raises(ValueError, match='Deflate_Stochastically is Yes but USD-OIS has no model'):
         run('USD-PROJ', models=('EUR-ESTR', 'USD-PROJ'))
 

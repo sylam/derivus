@@ -424,28 +424,36 @@ def test_a_stochastic_reading_of_a_curve_no_model_moves_is_refused_by_name(block
 
 
 #: A rand cashflow on a USD-based book: every curve flat, the rand held at its spot by a GBM of no
-#: volatility stating no spot lag, the counterparty's hazard flat at 2%.
+#: volatility stating no spot lag, the counterparty's hazard flat at 2%; beside the dollar curve a
+#: dollar funding curve, and beside the rand's own a rand swap curve and a rand funding curve.
 X0, R_USD, R_ZAR, R_FUND, HAZARD = 0.055, 0.03, 0.07, 0.05, 0.02
+R_SWAP, R_ZAR_FUND = 0.08, 0.10
 
 
-def deflated(report, sigma=0.0, **calculation):
-    """`Results` of a float64 credit Monte Carlo, `calculation` over its block, of R1m paid in a
-    year, in one uncollateralised set against CPTY, reported in `report`, its CVA and its FVA
-    funding at FUND both on, the rand a GBM of volatility `sigma`."""
+def deflated(report, sigma=0.0, amount=1e6, dollar=None, judged=False, **calculation):
+    """`Results` of a float64 credit Monte Carlo, `calculation` over its block, of R`amount` paid in
+    a year, in one uncollateralised set against CPTY, reported in `report`, its CVA and its FVA
+    funding at FUND over the dollar curve both on, the rand a GBM of volatility `sigma` and the
+    dollar curve a Hull-White of volatility `dollar` where one is given; or, `judged`, what
+    `validate` says of its calculation."""
     def flat(currency, rate):
         return {'Currency': currency, 'Day_Count': 'ACT_365', 'Sub_Type': None,
                 'Curve': utils.Curve([], [[0.0, rate], [5.0, rate]])}
 
+    hull_white = {} if dollar is None else {'HullWhite1FactorInterestRateModel.USD': {
+        'Alpha': 0.05, 'Lambda': 0.0, 'Quanto_FX_Correlation': 0.0,
+        'Quanto_FX_Volatility': utils.Curve([], [[0.0, 0.0], [10.0, 0.0]]),
+        'Sigma': utils.Curve([], [[0.0, dollar], [10.0, dollar]])}}
     adjustment = {'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Deflate_Stochastically': 'No'}
     cashflow = {'Object': 'FixedCashflowDeal', 'Reference': 'CF', 'Currency': 'ZAR',
-                'Discount_Rate': 'ZAR', 'Amount': 1e6, 'Payment_Date': B + pd.DateOffset(years=1)}
+                'Discount_Rate': 'ZAR', 'Amount': amount, 'Payment_Date': B + pd.DateOffset(years=1)}
     job = {'Calc': {
         'Calculation': dict({
             'Object': 'CreditMonteCarlo', 'Base_Date': B, 'Currency': report,
             'Time_Grid': '0d 3m(3m)', 'Batch_Size': 64, 'Random_Seed': 1,
             'Credit_Valuation_Adjustment': dict(adjustment, Stochastic_Hazard_Rates='No'),
             'Funding_Valuation_Adjustment': dict(
-                adjustment, Funding_Cost_Interest_Curve='FUND',
+                adjustment, Risk_Free_Curve='USD', Funding_Cost_Interest_Curve='FUND',
                 Funding_Benefit_Interest_Curve='FUND')}, **calculation),
         'Deals': {'Reference': 'deflated', 'Deals': {'Children': [{'Instrument': {'.Deal': {
             'Object': 'NettingCollateralSet', 'Reference': 'NS', 'Netted': 'True',
@@ -459,29 +467,30 @@ def deflated(report, sigma=0.0, **calculation):
                                'Settlement_Days': 0},
                 'InterestRate.USD': flat('USD', R_USD), 'InterestRate.ZAR': flat('ZAR', R_ZAR),
                 'InterestRate.FUND': flat('USD', R_FUND),
+                'InterestRate.ZAR-SWAP': flat('ZAR', R_SWAP),
+                'InterestRate.ZAR-FUND': flat('ZAR', R_ZAR_FUND),
                 'SurvivalProb.CPTY': {'Recovery_Rate': 0.4, 'Curve': utils.Curve(
                     [], [[0.0, 0.0], [10.0, 10 * HAZARD]])}},
-            'Price Models': {'GBMAssetPriceModel.ZAR': {'Vol': sigma, 'Drift': 0.0}},
+            'Price Models': dict({'GBMAssetPriceModel.ZAR': {'Vol': sigma, 'Drift': 0.0}}, **hull_white),
             'Model Configuration': {'.ModelParams': {
-                'modeldefaults': {'FxRate': 'GBMAssetPriceModel'}, 'modelfilters': {}}}}}}}
+                'modeldefaults': {'FxRate': 'GBMAssetPriceModel'}, 'modelfilters': {'InterestRate': [
+                    [['ID', 'USD'], 'HullWhite1FactorInterestRateModel']]} if hull_white else {}}}}}}}
     context = derivus.Context()
     context.load_json((json.dumps(job, cls=CustomJsonEncoder), 'deflated'))
+    if judged:
+        return context.validate()['calculation']
     return derivus.run_cmc(context.current_cfg, prec=torch.float64)[1]['Results']
 
 
-def test_a_book_reported_in_rand_deflates_its_exposure_on_the_dollar_curve():
-    """The rand cashflow reported in ZAR on its USD book, by hand. On the report rows t_i, days 0,
-    92, 184, 273, 365 and 366 over 365, its value is V_i = 1e6 exp(-7% (1 - t_i)), nil on the last
-    row; the rand is X0 on every row, so converted to dollars, deflated on the dollar curve and
-    converted back at today's rate the exposure is P_i = V_i exp(-3% t_i); S_i = exp(-2% t_i).
+def received(cost=R_FUND, reference=R_USD):
+    """`(CVA, FVA)` of `deflated`'s cashflow received, by hand, its FVA funding at the flat rate
+    `cost` over `reference`. On the report rows t_i, days 0, 92, 184, 273, 365 and 366 over 365,
+    its value is V_i = 1e6 exp(-7% (1 - t_i)), nil on the last row; the rand is X0 on every row, so
+    converted to dollars, deflated on the dollar curve and converted back at today's rate the
+    exposure is P_i = V_i exp(-3% t_i); S_i = exp(-2% t_i), and d_i = t_i - t_(i-1).
 
-        CVA = 0.6 sum_i (P_(i-1) + P_i) / 2 (S_(i-1) - S_i)                                11,317.14
-        FVA = sum_i (exp(5% d_i) - exp(3% d_i)) (P_(i-1) S_(i-1) + P_i S_i) / 2,  d_i = t_i - t_(i-1)
-                                                                                           19,051.06
-
-    the FVA's cube carrying each row's survival and its spread taken over the dollar curve. Both to
-    1e-10. Killing mutation: the deflation read off the report currency's own curve, the rand at
-    7%, under which the CVA reads 11,092.60.
+        CVA = 0.6 sum_i (P_(i-1) + P_i) / 2 (S_(i-1) - S_i)
+        FVA = sum_i (exp(cost d_i) - exp(reference d_i)) (P_(i-1) S_(i-1) + P_i S_i) / 2
     """
     rows = [(B + pd.DateOffset(months=3 * k) - B).days / 365.0 for k in range(5)] + [366 / 365.0]
     value = [1e6 * math.exp(-R_ZAR * (1.0 - t)) if t <= 1.0 else 0.0 for t in rows]
@@ -489,12 +498,72 @@ def test_a_book_reported_in_rand_deflates_its_exposure_on_the_dollar_curve():
     survival = [math.exp(-HAZARD * t) for t in rows]
     cva = 0.6 * sum((exposure[i - 1] + exposure[i]) / 2 * (survival[i - 1] - survival[i])
                     for i in range(1, 6))
-    fva = sum((math.exp(R_FUND * (t - s)) - math.exp(R_USD * (t - s)))
+    fva = sum((math.exp(cost * (t - s)) - math.exp(reference * (t - s)))
               * (exposure[i - 1] * survival[i - 1] + exposure[i] * survival[i]) / 2
               for i, (s, t) in enumerate(zip(rows, rows[1:]), 1))
+    return cva, fva
+
+
+def test_a_book_reported_in_rand_deflates_its_exposure_on_the_dollar_curve():
+    """The rand cashflow reported in ZAR on its USD book, by hand (`received`): a CVA of 11,317.14
+    and an FVA of 19,051.06 funding at 5% over the dollar curve, the FVA's cube carrying each row's
+    survival. Both to 1e-10. Killing mutation: the deflation read off the report currency's own
+    curve, the rand at 7%, under which the CVA reads 11,092.60.
+    """
+    cva, fva = received()
     results = deflated('ZAR')
     assert float(results['cva']) == pytest.approx(cva, rel=1e-10)
     assert float(results['fva']) == pytest.approx(fva, rel=1e-10)
+
+
+def test_a_book_funded_in_rand_takes_its_spreads_over_the_risk_free_curve_it_states():
+    """The rand cashflow received on its USD book reported in ZAR, funding at ZAR-FUND, 10%, over
+    the risk-free curve it states, ZAR-SWAP at 8%, a rand curve no deal reads: by hand (`received`)
+    an FVA of 19,290.42 to 1e-10, the spread over the stated curve and the exposure deflated on
+    the dollar curve.
+
+    Killing mutations: the spread's reference read off the base currency's own curve again, under
+    which the FVA reads 67,097.07, 10% over the dollar curve's 3%; the factor walk not adding the
+    risk-free curve, under which the run finds no ZAR-SWAP.
+    """
+    results = deflated('ZAR', Funding_Valuation_Adjustment={
+        'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Risk_Free_Curve': 'ZAR-SWAP',
+        'Funding_Cost_Interest_Curve': 'ZAR-FUND', 'Funding_Benefit_Interest_Curve': 'ZAR-FUND'})
+    assert float(results['fva']) == pytest.approx(received(R_ZAR_FUND, R_SWAP)[1], rel=1e-10)
+
+
+@pytest.mark.parametrize('benefit', ['ZAR-SWAP', ''])
+@pytest.mark.parametrize('stochastically', ['No', 'Yes'])
+def test_a_benefit_funded_at_the_risk_free_curve_earns_nothing(stochastically, benefit):
+    """The rand cashflow paid, its benefit funded at the risk-free curve it states, ZAR-SWAP, named
+    or left blank, the dollar curve a Hull-White: every interval's benefit spread is nothing, so
+    the FVA is exactly 0.0, deflated on today's dollar curve or along the simulated one.
+
+    Killing mutations: the spread's reference read off the base currency's own curve again, under
+    which each reads the benefit over the dollar curve; a blank benefit curve read as the base
+    currency's own, which the blank arms read.
+    """
+    results = deflated('ZAR', amount=-1e6, dollar=0.01, Funding_Valuation_Adjustment={
+        'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Deflate_Stochastically': stochastically,
+        'Risk_Free_Curve': 'ZAR-SWAP', 'Funding_Cost_Interest_Curve': 'ZAR-FUND',
+        'Funding_Benefit_Interest_Curve': benefit})
+    assert float(results['fva']) == 0.0
+
+
+def test_a_funding_curve_stated_beside_no_risk_free_curve_is_refused_by_name():
+    """An FVA block funding at ZAR-FUND and stating no risk-free curve takes a spread over nothing:
+    `validate` names it and the run refuses with the same sentence. A block stating no funding
+    curve, or not calculating, says nothing. Killing mutation: the judgement dropped from
+    `CreditMonteCarlo.refusals`, under which `validate` says nothing and the run prices.
+    """
+    said = 'Funding_Valuation_Adjustment states Funding_Cost_Interest_Curve, so Risk_Free_Curve is required'
+    funding = {'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Funding_Cost_Interest_Curve': 'ZAR-FUND'}
+    assert deflated('ZAR', judged=True, Funding_Valuation_Adjustment=funding) == [said]
+    with pytest.raises(ValueError) as refused:
+        deflated('ZAR', Funding_Valuation_Adjustment=funding)
+    assert str(refused.value) == 'CreditMonteCarlo: ' + said
+    for silent in (dict(funding, Funding_Cost_Interest_Curve=''), dict(funding, Calculate='No')):
+        assert deflated('ZAR', judged=True, Funding_Valuation_Adjustment=silent) == []
 
 
 def test_an_adjustment_reported_in_rand_is_the_dollar_one_at_today_s_rate():

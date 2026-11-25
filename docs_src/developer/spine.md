@@ -773,13 +773,15 @@ enforces. The engine judges the fields. `spine.declare_calculations`, behind
 type's declarations (`spine.judge_calculation`, the type token `Object` being the key and no field)
 before anything appends, and reads no market: a curve the book does not carry fails the run that
 reads it. `GET /book/calculations` answers the document in force with its blob and its position.
-A document for an official run of 20 batches of 1,024 paths, both funding curves named, as
-`DV_Spine declare calculation` takes it and as the route takes its one section beside `actor`:
+A document for an official run of 20 batches of 1,024 paths, both funding curves named over the
+risk-free curve they are spreads over, as `DV_Spine declare calculation` takes it and as the route
+takes its one section beside `actor`:
 
 ```json
 {"calculations": {"CreditMonteCarlo": {
   "Batch_Size": 1024, "Simulation_Batches": 20,
   "Funding_Valuation_Adjustment": {
+    "Risk_Free_Curve": "USD-OIS",
     "Funding_Cost_Interest_Curve": "USD-FUNDING",
     "Funding_Benefit_Interest_Curve": "USD-OIS"}}}}
 ```

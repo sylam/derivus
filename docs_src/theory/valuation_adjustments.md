@@ -89,12 +89,22 @@ $$\widehat{\mathrm{FVA}}=\frac1N\sum_{k}\sum_{i=1}^{m}\Big[s^{c}_k(i)\,\frac{U^{
 reported as `fva`, positive for a net funding cost. The interval spreads accrue the funding curve
 over the risk-free one, read at the interval's **start**:
 
-| `Deflate_Stochastically` | $s^{c}_k(i)$ (`Funding_Cost_Interest_Curve` $c$ over the deflation curve $f$) |
+| `Deflate_Stochastically` | $s^{c}_k(i)$ (`Funding_Cost_Interest_Curve` $c$ over `Risk_Free_Curve` $f$) |
 | --- | --- |
 | `No` | $\dfrac{P_c(0,t_{i-1})}{P_c(0,t_i)}-\dfrac{P_f(0,t_{i-1})}{P_f(0,t_i)}$ |
 | `Yes` | $e^{y^c_k(t_{i-1};\Delta_i)\Delta_i}-e^{y^f_k(t_{i-1};\Delta_i)\Delta_i}$ |
 
-$s^{b}$ is the same with `Funding_Benefit_Interest_Curve`. FVA weights the exposure by the
+$s^{b}$ is the same with `Funding_Benefit_Interest_Curve`. The risk-free curve $f$ is a funding
+term, the curve the cost and the benefit are spreads over in the currency the book is funded in,
+and has no part in the deflation: a desk funding in rand over its rand swap curve names that curve,
+which need not be the rand's own. Blank, it is the base currency's own curve; a blank cost or
+benefit curve is $f$, so it funds at no spread. Under `Calculate: Yes` a block naming a funding
+curve and no `Risk_Free_Curve` takes a spread over nothing, and `validate` and the run refuse it by
+name. **Held by** `tests/test_credit_json.py::test_a_book_funded_in_rand_takes_its_spreads_over_the_risk_free_curve_it_states`
+(a rand risk-free curve no deal reads, to a hand value),
+`::test_a_benefit_funded_at_the_risk_free_curve_earns_nothing` (named and blank, on today's curve
+and simulated) and `::test_a_funding_curve_stated_beside_no_risk_free_curve_is_refused_by_name`.
+FVA weights the exposure by the
 counterparty's survival: while the block is on, every netting set multiplies its reported value by
 $S(0,t)$ of its own `Credit_Support_Amounts.Counterparty` (a set naming none is left at 1 with a
 WARNING). Summed at the root, $U$ is then $\sum_s S_s(0,t)V_s(t)$, the bank-wide form of the
@@ -118,7 +128,8 @@ reads the default of every field it omits, so a CVA or FVA block omitting
 | | `Gradient`, `Hessian` | `No`, `No` | Sensitivities below |
 | | `CDS_Tenors` | `[]` | years; par CDS rates and the CS01 map |
 | | `Bank` | blank | not read |
-| `Funding_Valuation_Adjustment` | `Funding_Cost_Interest_Curve`, `Funding_Benefit_Interest_Curve` | blank | $c$, $b$, each the deflation curve $f$ where blank, so a blank one funds at no spread |
+| `Funding_Valuation_Adjustment` | `Risk_Free_Curve` | blank | $f$, the base currency's own curve where blank; required beside a stated funding curve |
+| | `Funding_Cost_Interest_Curve`, `Funding_Benefit_Interest_Curve` | blank | $c$, $b$, each $f$ where blank, so a blank one funds at no spread |
 | | `Deflate_Stochastically`, `Gradient` | `No`, `No` | as above |
 | | `Counterparty`, `Bank`, `Stochastic_Funding` | blank, blank, `No` | see FVA |
 | top level | `Batch_Size`, `Simulation_Batches`, `Random_Seed`, `Antithetic` | 1024, 1, 5120, `No` | paths and seed |
@@ -190,6 +201,5 @@ A correlation is not a leaf; its delta is a bump ([decision 12](../limitations.m
 | the collateralised autocall's CVA delta reads short of its ladder below 16,384 paths | 8.0% short at 1,024 paths to within 1.4% at 16,384, four seeds ([Model Limitations](../limitations.md#the-autocall-tarf-and-barrier-pricers)) |
 | the boundary correction holds still over its bandwidth only at the declared path count | no dependence resolved over bandwidths 0.00125 to 0.08 at 16,384 paths; a 24% fall at 2,048 ([Model Limitations](../limitations.md#the-autocall-tarf-and-barrier-pricers)) |
 | a margin call's transfer decision carries no boundary term unless `Boundary_AAD_Margin_Calls` asks | the value is unmoved; under a minimum transfer large against the exposure, the CVA's spot delta reads 78% and the funding benefit's 47% short of their bumps on one synthetic document ([Model Limitations](../limitations.md#the-xva-outer-and-the-correlation)) |
-| no test holds the CVA or FVA value to an independent closed form | the gates hold derivatives to bump ladders and switches to bit-identity |
 
 The trapezoid's error in the report-grid spacing is unmeasured on the library's grids.

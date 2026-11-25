@@ -1283,7 +1283,8 @@ def test_the_official_calculation_reaches_a_model_as_the_record_declares_it(book
     record refuses as a document stating no such section.
     """
     credit = {'Simulation_Batches': 20, 'Funding_Valuation_Adjustment': {
-        'Funding_Cost_Interest_Curve': 'USD', 'Funding_Benefit_Interest_Curve': 'ZAR'}}
+        'Risk_Free_Curve': 'USD', 'Funding_Cost_Interest_Curve': 'USD',
+        'Funding_Benefit_Interest_Curve': 'ZAR'}}
     assert mcp_server.describe_official_calculation() == {
         'calculations': None, 'blob': None, 'lsn': None}
     with pytest.raises(ToolError, match='CreditMonteCarlo declares no Simulation_Batchs'):

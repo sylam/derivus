@@ -1226,8 +1226,8 @@ class Config(object):
             return children, resets, settlement_currencies
 
         def add_interest_rate(curve_name):
-            # a blank funding curve is the base currency's own, the deflation curve, which the base
-            # `FxRate` brings with these dates
+            # a blank risk-free curve is the base currency's own, which the base `FxRate` brings
+            # with these dates, and a blank funding curve the risk-free one
             if not curve_name:
                 return
             interest_rate_factor = utils.Factor(
@@ -1284,6 +1284,7 @@ class Config(object):
             if options.get('Funding_Valuation_Adjustment', {}).get('Calculate', 'No') == 'Yes':
                 add_interest_rate(options['Funding_Valuation_Adjustment'].get('Funding_Cost_Interest_Curve'))
                 add_interest_rate(options['Funding_Valuation_Adjustment'].get('Funding_Benefit_Interest_Curve'))
+                add_interest_rate(options['Funding_Valuation_Adjustment'].get('Risk_Free_Curve'))
 
                 # need to weight the FVA by the survival prob of the counterparty (if defined)
                 if options['Funding_Valuation_Adjustment'].get('Counterparty'):
