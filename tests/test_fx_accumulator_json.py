@@ -296,24 +296,31 @@ def test_a_settled_fixing_beyond_the_barrier_kills_the_deal(tmp_path):
     assert _mtm(_run(job, tmp_path, 'breached')) == 0.0
 
 
-def test_a_blank_barrier_is_refused_rather_than_priced_at_zero(tmp_path):
-    """`Barrier_Price` is `default=REQUIRED`: a document leaving it blank is refused by name before
-    anything compiles, and one stating it at or below zero anyway is refused by the deal, which
-    would otherwise survive NO fixing and price to a silent scalar zero, a whole trade vanishing
-    from a book with no error. BOTH directions, because below zero a `Down_And_Out` is merely
+def test_a_blank_barrier_is_refused_rather_than_priced_at_zero(tmp_path, caplog):
+    """`Barrier_Price` is `default=REQUIRED`: a deal leaving it blank is skipped by its compile,
+    logged in the sentence naming the deal and the field, and one stating it at or below zero anyway
+    is refused by the deal, which would otherwise survive NO fixing and price to a silent scalar
+    zero, a whole trade vanishing from a book with no error; either is counted once, the template's
+    own accumulator beside it priced. BOTH directions, because below zero a `Down_And_Out` is merely
     unbarriered and prices its full strip, so a one-direction fixture scores the hole harmless.
 
-    Killing mutations: the run judging its block alone (`Config.unstated` left out of
-    `Calculation.parameters`), the blank refused by the deal instead; the positive-barrier refusal
-    dropped, the negative priced.
+    Killing mutations: the run judging every deal's unstated fields (`Config.unstated()` whole in
+    `Calculation.parameters`), which refuses the book; the compile's own judgement dropped, the
+    blank skipped on the `TypeError` of `float(None)`; the positive-barrier refusal dropped, the
+    negative priced.
     """
     for btype in ('Up_And_Out', 'Down_And_Out'):
-        with pytest.raises(ValueError, match='^BaseValuation: ACC1: Barrier_Price is required$'):
-            _run(_job(Barrier_Type=btype, Barrier_Price=None), tmp_path, f'blank{btype}')
-        for barrier in (0.0, -1.0):
-            rows = _run(_job(Barrier_Type=btype, Barrier_Price=barrier), tmp_path,
-                        f'below{btype}{barrier}')['Results']['mtm']
-            assert rows[rows['Reference'] == 'ACC1'].empty, (btype, barrier, rows)
+        for barrier in (None, 0.0, -1.0):
+            job = _template()
+            job['Calc']['Deals']['Deals']['Children'].append({'Instrument': {'.Deal': dict(
+                _deal_of(job), Reference='ACC2', Barrier_Type=btype, Barrier_Price=barrier)}})
+            caplog.clear()
+            out = _run(job, tmp_path, f'below{btype}{barrier}')
+            rows = out['Results']['mtm']
+            assert (out['Stats'].get('Deals Skipped'), rows[rows['Reference'] == 'ACC2'].empty) == (
+                1, True) and _mtm(out) != 0.0, (btype, barrier, out['Stats'], rows)
+            assert barrier is not None or 'FXAccumulatorOptionDeal ACC2 ACC2: Barrier_Price is required - ' \
+                                          'Skipped' in caplog.messages, caplog.messages
 
 
 def test_a_fixing_dated_today_follows_the_price_factor(tmp_path):

@@ -204,10 +204,16 @@ cx.validate()
   refused block is not walked, so `'factors'` is empty beside it.
 
 All three empty means nothing here can tell you the job will fail. A field a deal's declarations
-require left out, stated null or blank (a zero is a number stated) stops every run of the job,
-refused by name before anything compiles; any
-other message never stops a deal pricing: the engine still fails exactly where it always failed,
-and this says so first.
+require left out, stated null or blank (a zero is a number stated) stops that deal pricing: the
+run's compile drops it, or keeps it at zero under `Exclude_Deals_With_Missing_Market_Data: No`,
+and counts it under `Deals Skipped`, its reason the sentence naming the deal and the field
+(`FXO: Strike_Price is required`), the rest of the book priced. A netting set or a structure
+holding children that leaves one out stops every run of the job, refused by name before anything
+compiles, since nothing can price around it. Any other message never stops a deal pricing: the
+engine still fails exactly where it always failed, and this says so first. **Held by**
+`tests/test_declared_defaults.py::test_a_deal_leaving_a_term_out_prices_nothing`,
+`tests/test_fork_pricing_failures.py::test_a_document_saying_no_keeps_every_deal_its_compile_could_not_read_at_zero`,
+`tests/test_service.py::test_a_book_leaving_a_required_field_unstated_is_refused_by_name_by_each_of_its_runs`.
 
 `cx.describe()` answers the other question — not what is wrong with the job, but what the engine
 made of it. Also read-only, on the same discovery walk:
@@ -596,7 +602,9 @@ under that name, so `/execute` takes either the whole document or the plan:
 verb reads - `/describe`, `/prepare`, `/execute` - is refused `422` where a deal leaves a field its
 declarations require unstated, naming the deal and the field (`NS_1: Collateralized is required`),
 since no read of it survives; `/validate` names it among the rest, and a run of the live book - a
-what-if, its risk, an XVA set - refuses it in the same words, its calculation's name first. **Held by**
+what-if, its risk, an XVA set - refuses a netting set or a structure leaving one out in the same
+words, its calculation's name first, and a deal leaving one out as the skip it is
+([`Exclude_Deals_With_Missing_Market_Data`](json/system_parameters.md)). **Held by**
 `tests/test_service.py::test_a_job_leaving_a_required_field_unstated_is_refused_by_name_by_each_verb_reading_it`,
 `::test_a_book_leaving_a_required_field_unstated_is_refused_by_name_by_each_of_its_runs`.
 Content addressing does not care how the job arrived: a plan-id execute with no patch reports the

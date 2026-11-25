@@ -307,10 +307,17 @@ The calculation's `Currency` is required: no default names the currency a book r
 run passes `Calculation.parameters` before anything compiles, and it judges there: the block -
 overrides merged, completed as `declared_defaults` completes it - by its own declarations
 (`Calculation.judged`, through `schema.validate_block`; `HedgeMonteCarlo.refusals` adds its
-`Hedging_Problem` at every depth), together with every field the book's deals leave unstated that
-their declarations require (`Config.unstated`) - left out, null or blank, a number stated as zero
-being stated (`schema.stated`) - and a `ValueError` names every one at once. The
-diary, which reads a book rather than running it, judges its block alone where it completes it.
+`Hedging_Problem` at every depth), together with every field a node holding children - a netting
+set, a structure - leaves unstated that its declarations require (`Config.unstated`, asked of
+those nodes alone) - left out, null or blank, a number stated as zero being stated
+(`schema.stated`) - and a `ValueError` names every one at once, since nothing can drop such a
+node and price around it. A leaf leaving one out is a deal the compile cannot read: discovery
+passes over one whose dates read it (`Config.discover_factors`), and
+`DealStructure.add_deal_to_structure` raises the sentences `Deal.unstated` names
+(`FXO: Strike_Price is required`) before it reads anything else, so the deal is dropped, or kept
+at zero, and counted under `Deals Skipped` as `Exclude_Deals_With_Missing_Market_Data` says, the
+rest of the book priced. The diary, which reads a book rather than running it, judges its block
+alone where it completes it.
 `Config.validate` reports the same messages under `calculation` and `deals`, and a refused block is
 not walked for factors. A service override is judged on what it states before it queues
 (`schema.stated_messages`), an undeclared key refused
@@ -318,6 +325,7 @@ not walked for factors. A service override is judged on what it states before it
 `tests/test_loud_refusals.py::test_a_calculation_stating_no_currency_is_refused_by_name`,
 `tests/test_declared_defaults.py::test_a_deal_leaving_a_term_out_prices_nothing`,
 `::test_a_required_number_stated_zero_is_stated`,
+`tests/test_fork_pricing_failures.py::test_a_document_saying_no_keeps_every_deal_its_compile_could_not_read_at_zero`,
 `tests/test_service.py::test_a_book_leaving_a_required_field_unstated_is_refused_by_name_by_each_of_its_runs`.
 
 ## Compile phase 1 — `calculate_dependencies` {#compile-phase-1-calculate_dependencies}

@@ -1113,39 +1113,43 @@ def test_validate_names_a_blank_term_on_every_type_declaring_it(key):
                 for name in types} == {name: ['{} is required'.format(key)] for name in types}
 
 
-@pytest.mark.parametrize('key', sorted(UNSTATED))
-def test_a_deal_leaving_a_term_out_prices_nothing(key):
-    """A base valuation prices nothing of a book holding a deal that leaves `key` out - an FX option
-    its discount curve, a cap its forecast curve, a swap its interest curve, a FRA its reset date:
-    the term is required, so the run refuses the book naming the deal and the term before anything
-    compiles, the deposit beside it unpriced with it.
+@pytest.mark.parametrize('key', sorted(UNSTATED) + ['Currency'])
+def test_a_deal_leaving_a_term_out_prices_nothing(key, caplog):
+    """A base valuation prices no deal leaving `key` out - an FX option its discount curve, a cap its
+    forecast curve, a swap its interest curve, a FRA its reset date, a swap its currency, which its
+    dates read: the term is required, so its compile skips the deal before reading anything, counted
+    once and logged in the sentence naming the deal and the term, the deposit beside it priced.
 
-    Killing mutation: the run judging its block alone (`Config.unstated` left out of
-    `Calculation.parameters`), which compiles the book, skips the deal on the `KeyError` its compile
-    raises reading the term and prices the deposit.
+    Killing mutations: the run judging every deal's unstated fields (`Config.unstated()` whole in
+    `Calculation.parameters`), which refuses the book; the compile's own judgement dropped, the deal
+    skipped on the bare `KeyError` its compile raises reading the term; discovery raising the
+    `KeyError` a leaf's dates meet on a term it leaves out, the run dying on the swap's currency.
     """
-    deal = next(deal for deal in BOOK if deal['Reference'] == UNSTATED[key])
-    with pytest.raises(ValueError) as refused:
-        marks([{name: value for name, value in deal.items() if name != key}, BOOK[1]])
-    assert str(refused.value) == 'BaseValuation: {}: {} is required'.format(deal['Reference'], key)
+    deal = next(deal for deal in BOOK if deal['Reference'] == UNSTATED.get(key, 'SWAP'))
+    caplog.set_level(logging.ERROR)
+    marked, stats = marks([{name: value for name, value in deal.items() if name != key}, BOOK[1]])
+    assert stats.get('Deals Skipped') == 1 and deal['Reference'] not in marked, (marked, stats)
+    assert float.fromhex(marked[BOOK[1]['Reference']]) != 0.0, marked
+    assert '{0} {1} {1}: {2} is required - Skipped'.format(deal['Object'], deal['Reference'], key) in [
+        record.getMessage() for record in caplog.records]
 
 
 def test_a_required_number_stated_zero_is_stated():
     """A required number stated as zero is stated: a EUR call struck at zero runs as a base
     valuation and is worth the euros it delivers, their spot discounted on the euro curve, while
-    the same call leaving its strike out or stating it null is refused by name before anything
-    compiles.
+    the same call leaving its strike out or stating it null is skipped by its compile and counted,
+    valued nothing.
 
     Killing mutation: `schema.unstated` reading every falsy value as unstated (`not value`), under
-    which the zero strike refuses the book as the null one does."""
+    which the zero strike is skipped as the null one is."""
     deal = fx_leg('FXOptionDeal', 'FXO', Expiry_Date=WORLD_EXPIRY, Strike_Price=0.0)
     delivered = deal['Underlying_Amount'] * X0 * math.exp(
         -R_EUR * (WORLD_EXPIRY - WORLD_BASE).days / 365.0)
     assert float.fromhex(marks([deal])[0]['FXO']) == pytest.approx(delivered, rel=1e-12)
     for blank in ({'Strike_Price': None}, {}):
-        with pytest.raises(ValueError, match='^BaseValuation: FXO: Strike_Price is required$'):
-            marks([dict({key: value for key, value in deal.items() if key != 'Strike_Price'},
-                        **blank)])
+        marked, stats = marks([dict({key: value for key, value in deal.items() if key != 'Strike_Price'},
+                                    **blank)])
+        assert 'FXO' not in marked and stats.get('Deals Skipped') == 1, (marked, stats)
 
 
 #: How a book may file each currency's own curve (`world`): under the currency's name with its

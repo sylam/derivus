@@ -6,7 +6,7 @@ Global parameters of the market data, beside `Price Factors`, `Price Models` and
 |---|---|---|
 | `Base_Currency` | `USD` | the currency the engine values in internally; an `FxRate` of it is never simulated |
 | `Base_Date` | blank | the date the market data stands at: the bootstrappers price their quotes as of it. A market stating none has none, nothing reading the clock, so a run of it reads its calculation's own `Base_Date` (see [Calculations](calculations.md#defaults)) as ever and a bootstrap of it is refused by name (**Held by** `tests/test_interest_rate_prices.py::test_a_market_stating_no_date_has_none`) |
-| `Exclude_Deals_With_Missing_Market_Data` | `Yes` | `Yes` drops a deal that references price factors the market data lacks and counts it under `Deals Skipped`. `No` keeps it, valued at zero on every date, and counts it the same way; the engine's run never refuses for it, and the service answers it `error` under either value ([over HTTP](../api_overview.md#the-same-verbs-over-http)) |
+| `Exclude_Deals_With_Missing_Market_Data` | `Yes` | `Yes` drops a deal the compile cannot read - one that references price factors the market data lacks, or leaves a field its declarations require unstated (`FXO: Strike_Price is required`) - and counts it under `Deals Skipped`; a netting set or structure holding children that leaves one out refuses the run by name instead. `No` keeps it, valued at zero on every date, and counts it the same way; the engine's run never refuses for it, and the service answers it `error` under either value ([over HTTP](../api_overview.md#the-same-verbs-over-http)) |
 | `Correlations_Healing_Method` | `Eigenvalue_Raising` | how a correlation matrix that is not positive definite is repaired (below) |
 
 ```json

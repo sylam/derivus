@@ -881,14 +881,15 @@ class Config(object):
                         (factor_correlation_names[index1], factor_correlation_names[index2])] = \
                         factor_correlations[index1, index2]
 
-    def walk_deals(self):
-        """Every instrument in the book, depth first. `walk_groups` semantics: an `Ignore` node is
-        skipped whole, and recursion is on `Children` being PRESENT, never on the type."""
+    def walk_deals(self, holding=False):
+        """Every instrument in the book, depth first, or only those holding children where `holding`.
+        `walk_groups` semantics: an `Ignore` node is skipped whole, and recursion is on `Children`
+        being PRESENT, never on the type."""
         def live(node):
             return node.get('Ignore') != 'True'
 
         return (node['Instrument'] for _, node in schema.walk(self.deals['Deals']['Children'], live)
-                if live(node))
+                if live(node) and (node.get('Children') or not holding))
 
     def factor_universe(self, children=None):
         """Every price factor the deal walk reaches, split by whether the market data has a block
@@ -978,14 +979,12 @@ class Config(object):
         return {'deals': deals, 'factors': self.factor_universe()['missing'],
                 'calculation': self.calculation_refusals()}
 
-    def unstated(self):
-        """`<Reference>: <field> is required` for each field a deal's declarations require that its
-        block leaves unstated (`schema.unstated`): what no read of the job survives, which `validate`
-        reports among the rest."""
-        return ['{}: {} is required'.format(instrument.field.get('Reference'), key)
-                for instrument in self.walk_deals() if isinstance(instrument, Deal)
-                for key, field in schema.declared_fields(type(instrument)).items()
-                if schema.unstated(field, instrument.field.get(key))]
+    def unstated(self, holding=False):
+        """Every deal's `Deal.unstated` in book order, or only those holding children where
+        `holding`: what no read of the job survives, which `validate` reports among the rest, and,
+        of a node holding children, what no run prices around."""
+        return [said for instrument in self.walk_deals(holding) if isinstance(instrument, Deal)
+                for said in instrument.unstated()]
 
     def describe(self):
         """What the engine made of this job without running it: the book counted by the `Object` a
@@ -1213,7 +1212,8 @@ class Config(object):
                     instrument.reset(self.holidays)
                 except KeyError:
                     # its dates read a field it omits, which its declarations name to `validate`
-                    if readable:
+                    # and, on a leaf, its compile skips by name (`Deal.unstated`)
+                    if readable or not node.get('Children') and instrument.unstated():
                         continue
                     raise
 

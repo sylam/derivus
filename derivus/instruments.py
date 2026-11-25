@@ -18,7 +18,7 @@ from functools import partial, reduce
 from . import utils, pricing
 from .schema import (
     Cash, DAY_COUNTS, F, Observes, REQUIRED, Row, own, DealFields, declared_factors, declared_fields,
-    declared_settlements, engine_default, Exposure, KNOWN_CASH, settlement_days,
+    declared_settlements, engine_default, Exposure, KNOWN_CASH, settlement_days, unstated,
     ADMIN, BARRIER_MONITORING, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, COMMODITY_TOUCH, EQUITYOPTIONBASE, EQUITY_OPTION, EQUITY_TOUCH,
     EXPIRY_PRINT, FX_OPTION, FX_TOUCH, FXOPTIONBASE, FX_OPTION_STYLE, PRICING, FLOATING_INDEX, COUPON_SCHEDULE,
     CAP_FLOOR, OPTION_STYLE, TOUCH, QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP, TIMING, FX_STRIP_ADMIN)
@@ -708,6 +708,12 @@ class Deal(object):
         self.path_dependent = False
         # evaluate child dependencies through the accumulator
         self.accum_dependencies = False
+
+    def unstated(self):
+        """`<Reference>: <field> is required` for each field this type's declarations require that
+        its block leaves unstated (`schema.unstated`): what no read of the deal survives."""
+        return ['{}: {} is required'.format(self.field.get('Reference'), key)
+                for key, field in declared_fields(type(self)).items() if unstated(field, self.field.get(key))]
 
     def reset(self, calendars=None):
         self.reval_dates = set()

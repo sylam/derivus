@@ -99,15 +99,18 @@ class DealStructure(object):
                               all_factors, all_tenors, time_grid, calendars, shared, unit,
                               valuation_options=None, exclude=True):
         """Compile `deal` into this structure, the history fold first; `shared` is the
-        calculation, which counts it. A deal the compile cannot read is skipped and counted, and is
-        among what the run could not value (`utils.unpriced`), or kept and marked at zero on every
-        date where `exclude` is False, the exception stamped on it either way (`unpriced_because`,
-        which the diary reads); a framework fault or a schedule refused by name
-        (`utils.is_fatal_pricing_error`) is counted and stamped too, and raised, never swallowed. A
-        deal its own history ended (`utils.InstrumentExpired`) has expired: stamped, left out under
-        either switch and never counted, as one whose last date is behind the base date is left
-        out."""
+        calculation, which counts it. A deal the compile cannot read - one leaving a field its
+        declarations require unstated among them, on the sentences `Deal.unstated` names - is
+        skipped and counted, and is among what the run could not value (`utils.unpriced`), or kept
+        and marked at zero on every date where `exclude` is False, the exception stamped on it
+        either way (`unpriced_because`, which the diary reads); a framework fault or a schedule
+        refused by name (`utils.is_fatal_pricing_error`) is counted and stamped too, and raised,
+        never swallowed. A deal its own history ended (`utils.InstrumentExpired`) has expired:
+        stamped, left out under either switch and never counted, as one whose last date is behind
+        the base date is left out."""
         try:
+            if unstated := deal.unstated():
+                raise ValueError('; '.join(unstated))
             deal = deal.resolve_history(base_date, calendars, valuation_options or {})
             deal_time_dep = self.calc_time_dependency(base_date, deal, time_grid)
             if deal_time_dep is None:
@@ -402,14 +405,14 @@ class Calculation(object):
     @classmethod
     def parameters(cls, context, overrides=None):
         """The block a run of `context` reads, each step over the last: its `runner_keys`, the
-        job's `Calculation` block and `overrides` merged deeply - judged with every field the book's
-        deals leave unstated that their declarations require (`judged`, `Config.unstated`), which
-        every run passes before anything compiles."""
+        job's `Calculation` block and `overrides` merged deeply - judged with every field a node
+        holding children leaves unstated that its declarations require (`judged`, `Config.unstated`),
+        which every run passes before anything compiles; a leaf's, its compile skips and counts."""
         block = context.deals['Calculation']
         params = dict(cls.runner_keys(block), **block)
         if overrides is not None:
             utils.update_dict(params, overrides)
-        return cls.judged(params, context.unstated())
+        return cls.judged(params, context.unstated(holding=True))
 
     @classmethod
     def run(cls, context, overrides=None):

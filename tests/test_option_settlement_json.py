@@ -383,25 +383,29 @@ def test_validate_names_a_blank_delivery_date_on_each_fx_option_paid_on_it(name)
         assert [m for m in said if 'Delivery_Date' in m] == ['Delivery_Date is required'] * (name in DELIVERING), said
 
 
-def test_a_blank_delivery_date_prices_nothing_and_a_strip_never_reads_it():
-    """A run prices nothing of a book holding an FX option leaving `Delivery_Date` blank: the day its
-    payoff is paid is required, so a base valuation and a credit Monte Carlo of the equity vanilla
-    beside them alike refuse the book naming each option and the field before anything compiles.
-    Each strip, whose blank is its convention, marks to the bit with it blank as stated on any day.
+def test_a_blank_delivery_date_prices_nothing_and_a_strip_never_reads_it(caplog):
+    """A run prices no FX option leaving `Delivery_Date` blank: the day its payoff is paid is
+    required, so its compile skips each, counted once and logged in the sentence naming the option
+    and the field, the book priced without them - under a base valuation and a credit Monte Carlo of
+    the equity vanilla beside them alike. Each strip, whose blank is its convention, marks to the
+    bit with it blank as stated on any day.
 
-    Killing mutation: the run judging its block alone (`Config.unstated` left out of
-    `Calculation.parameters`), which compiles the book and skips each option on the `ValueError` of
-    `max` over nothing, the rest priced.
+    Killing mutations: the run judging every deal's unstated fields (`Config.unstated()` whole in
+    `Calculation.parameters`), which refuses the book; the compile's own judgement dropped, each
+    option skipped on the `ValueError` of `max` over nothing.
     """
-    said = '; '.join('{}: Delivery_Date is required'.format(name) for name in DELIVERING)
+    skipped = ['{0} {1} {1}: Delivery_Date is required - Skipped'.format(deal['Object'], name)
+               for name, deal in DELIVERING.items()]
     strips = [*STRIPS.values(), *(dict(deal, Reference=name + '_D', Delivery_Date=SETTLE) for name, deal in STRIPS.items())]
     for calc, deals in (({'MCMC_Simulations': 256}, strips), (CMC, [VANILLA])):
-        with pytest.raises(ValueError) as refused:
-            world([blank(deal) for deal in DELIVERING.values()] + deals, calc=calc).run_job()
-        assert str(refused.value) == '{}: {}'.format(calc.get('Object', 'BaseValuation'), said)
-    out = world(strips, calc={'MCMC_Simulations': 256}).run_job()[1]
-    marked = dict(zip(out['Results']['mtm']['Reference'], out['Results']['mtm']['Value'].astype(float)))
-    assert all(marked[name] != 0.0 and marked[name].hex() == marked[name + '_D'].hex() for name in STRIPS), marked
+        caplog.clear()
+        out = world([blank(deal) for deal in DELIVERING.values()] + deals, calc=calc).run_job()[1]
+        logged = [record.getMessage() for record in caplog.records]
+        assert out['Stats']['Deals Skipped'] == len(DELIVERING) and all(line in logged for line in skipped), logged
+        if deals is strips:
+            marked = dict(zip(out['Results']['mtm']['Reference'], out['Results']['mtm']['Value'].astype(float)))
+            assert not set(DELIVERING).intersection(marked), marked
+            assert all(marked[name] != 0.0 and marked[name].hex() == marked[name + '_D'].hex() for name in STRIPS), marked
 
 
 def held(reference, deals):
