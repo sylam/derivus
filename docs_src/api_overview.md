@@ -407,9 +407,10 @@ anything is filed, and `GET /book/calculations` answers the one in force with it
 `calculation_overrides` of a what-if - go over the official calculation and are not official.
 `GET /book/xva` answers beside its rows `funding`, `{cost, benefit}`: the two curves a recalc asked
 now would fund its FVA at, a null for one its calculation does not state, which the engine reads as
-the risk-free curve, so it funds at no spread. A row says what its own run cost; `funding` says what the next one funds
-at. Where the policy in force states a block the engine refuses, the recalc refuses by name and the
-view still answers its rows, `funding` carrying two nulls and the sentence under `refused`.
+the risk-free curve, so it funds at no spread. A row says what its own run cost; `funding` says
+what the next one funds at. Where the policy in force states a block the engine refuses, the
+recalc refuses by name and the view still answers its rows, `funding` carrying two nulls and the
+sentence under `refused`.
 
 A COUNTERPARTY CREDIT LIMIT is declared on a desk that records: `POST /book/limits`
 `{limits, actor}` declares the `limits` policy under `admin`, `{entity: {amount, currency}}` with

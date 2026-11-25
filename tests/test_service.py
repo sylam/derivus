@@ -7621,7 +7621,7 @@ def test_an_fva_funds_at_the_curves_its_calculation_states_whatever_a_set_states
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path))
     stated = dict(FUNDED, Funding_Benefit_Interest_Curve='USD')
-    either =[dict(VANILLA, Reference='OPT_B'),
+    either = [dict(VANILLA, Reference='OPT_B'),
               dict(VANILLA, Reference='PUT_B', Option_Type='Put', Buy_Sell='Sell')]
     priced, runs = [], []
     try:
