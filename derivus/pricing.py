@@ -2008,8 +2008,9 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     - ``Cash_Rebate`` is absolute cash and enters PER-UNIT, divided by the UNSIGNED size:
       ``nominal`` already carries ``Buy_Sell``, so dividing by it would book a sold knock-out's
       rebate as a receipt.
-    - The per-row hit mask carries STRICTLY EARLIER observations only - the block's own date is
-      priced by ``sim_spot_oss`` as its zero-length first step.
+    - An observation is decided ONCE, in the outer loop, on the spot the walk watches - the
+      composite under a compo. Its own row reads it there and later rows off the per-row hit
+      mask; the walk prices a path alive at its row.
     - The rebate settles on the date it falls due, excluding the TERMINAL row, which the single
       settle after the loop already pays in full.
     - ONE model and ONE forward price every leg, both reading ``total_log_forward``. The variance
@@ -2017,7 +2018,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
     BOUNDARY AAD (``shared.boundary_aad``): the gap is each crossing's margin, graph retained,
     signed so ``gap > 0`` means CROSSED. The whole latch is built OUTSIDE the recompute node, the
-    decision being an outer scenario spot. Blocks where every scenario has resolved skip the OSS and
+    decision being an outer scenario spot, and an observation's own row forks with it (``own_row``).
+    Blocks where every scenario has resolved skip the OSS and
     carry no counterfactual - running one would draw random numbers and move the reported value. The
     registration DECLARES its ledger: ``settles`` for the expiry, which pays the deal's whole value,
     and ``cash_events`` for the rebate leg, one entry per crossing on the date it falls due.
@@ -2056,11 +2058,6 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         derivative almost everywhere, so sampling it loses most of a digital's delta and vega.
         """
         eps = torch.finfo(shared.one.dtype).eps
-
-        def survives(spot):
-            """Survival at a ZERO-LENGTH step, on `crossed`'s own convention: an UP barrier is
-            crossed strictly above the level, so a spot sitting ON it survives."""
-            return ((spot <= barrier) if eta == BARRIER_UP else (spot >= barrier)).to(spot.dtype)
 
         # the outer function's kit on THIS call's tensors
         kit = oss_model_kit(factor_dep, scalars)
@@ -2143,6 +2140,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                     r_j, sig_j = r[..., j, :].unsqueeze(-1), sigma[..., j, :].unsqueeze(-1)
                 else:
                     r_j, sig_j = law[0][..., j], law[1][..., j]   # the interval's own block law
+                # the row's own date is the outer loop's to decide: the walk is of a path alive there
+                watched = isBarrierDate_block[j] > 0 and not zero_step[blk][j]
 
                 if isdigital and j == N_fix - 1:
                     # integrate the terminal step: a sampled indicator puts no density term on the
@@ -2152,13 +2151,10 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                         # a spread's legs pay their intrinsics, which the parity vanilla reads there
                         joint = (torch.relu(phi * (Sj - struck)) if spread else
                                  (phi * (Sj - strike) > 0.0).to(Sj.dtype))
-                        if isBarrierDate_block[j] > 0:
-                            p = survives(Sj)
-                            joint = joint * p
                     else:
                         z_pay = (torch.log(struck / Sj) - r_j) / sig_j
                         lo, hi = (z_pay, None) if phi == OPTION_CALL else (None, z_pay)
-                        if isBarrierDate_block[j] > 0:
+                        if watched:
                             z_max = (torch.log(barrier / Sj) - r_j) / sig_j
                             if eta == BARRIER_UP:
                                 p = utils.norm_cdf(z_max)
@@ -2173,35 +2169,26 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                         else:
                             joint = ((utils.norm_cdf(hi) if hi is not None else 1.0) -
                                      (utils.norm_cdf(lo) if lo is not None else 0.0)).clamp(min=0.0)
-                    if isBarrierDate_block[j] > 0 and direction == BARRIER_OUT:
+                    if watched and direction == BARRIER_OUT:
                         P = P + (1.0 - p) * L * rebate_per_unit * D[j].reshape(-1, 1)
                     # survival is inside `joint`, so it weights the L carried IN, while L itself
                     # still advances for the parity rebate leg
                     surv_payoff = L * joint
-                    if isBarrierDate_block[j] > 0:
+                    if watched:
                         L = p * L
                     return (Sj, P, L, surv_payoff), None
 
-                if isBarrierDate_block[j] > 0:
-                    if zero_step[blk][j]:
-                        # the row IS the observation date, so survival is its own spot against the
-                        # level - an EXACT indicator. `u[j]` is still drawn and discarded, so no
-                        # later step moves
-                        p = survives(Sj)
-                        Z = utils.norm_icdf(torch.clamp(u[j], eps, 1.0 - eps))
-                    else:
-                        # z_max: the standard-normal threshold at which spot = H, under
-                        # log(S_j/S_{j-1}) = r_j + sig_j * Z (r_j already carries -0.5*var)
-                        z_max = (torch.log(barrier / Sj) - r_j) / sig_j  # [batch, 2*num_sims]
-                        p, Z = oss_truncated_draw(u[j], z_max, eta == BARRIER_UP)
-
+                if watched:
+                    # z_max: the standard-normal threshold at which spot = H, under
+                    # log(S_j/S_{j-1}) = r_j + sig_j * Z (r_j already carries -0.5*var)
+                    z_max = (torch.log(barrier / Sj) - r_j) / sig_j  # [batch, 2*num_sims]
+                    p, Z = oss_truncated_draw(u[j], z_max, eta == BARRIER_UP)
                     if direction == BARRIER_OUT:
                         # paths hitting the barrier pay the cash rebate at this fixing
                         P = P + (1.0 - p) * L * rebate_per_unit * D[j].reshape(-1, 1)
-
                     L = p * L
                 else:
-                    # non-barrier observation date: unrestricted GBM step
+                    # nothing watched: an unrestricted GBM step, of no length on the row's own date
                     Z = utils.norm_icdf(torch.clamp(u[j], eps, 1.0 - eps))
 
                 return (Sj * torch.exp(r_j + sig_j * Z), P, L, surv_payoff), None
@@ -2297,7 +2284,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     smooth = shared.branch_and_weight
     second_order = smooth and shared.gamma
     boundary_aad = getattr(shared, 'boundary_aad', False) and not smooth
-    b_gaps, b_crossed, b_obs_before, b_alive, b_dead, b_cash = [], [], [], [], [], []
+    b_gaps, b_crossed, b_obs_before, b_alive, b_dead, b_cash, b_own = [], [], [], [], [], [], []
 
     for index, (discount_block, spot_block, moneyness_block, rem_exp,
                 *leg_moneyness_block) in enumerate(utils.split_counts(
@@ -2307,41 +2294,12 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         sample_index_t = start_index[index]
 
         # per-row hit mask [N_mtm, batch]: STRICTLY EARLIER observations only - this block's own
-        # date is priced by sim_spot_oss as its zero-length first step
+        # is decided below, on the spot the walk watched
         row_barrier_hit = barrier_hit.unsqueeze(0).expand(len(t_block), -1)
         row_ofs += len(t_block)
         if boundary_aad:
             # how many observations have already resolved for every row of this block
             b_obs_before.extend([len(b_gaps)] * len(t_block))
-        if BarrierDates[sample_index_t] > 0:
-            crossed = ((spot_block[-1] > barrier) if eta == BARRIER_UP else
-                       (spot_block[-1] < barrier))
-            if boundary_aad:
-                # margin of the decision, graph retained; signed so gap > 0 means CROSSED
-                b_gaps.append(torch.log(spot_block[-1] / barrier) * (
-                    -1.0 if eta == BARRIER_DOWN else 1.0))
-                b_crossed.append(crossed.detach())
-            if cash_rebate and direction == BARRIER_OUT:
-                # settle the rebate on the date it falls due; the TERMINAL row is excluded, the
-                # settle after the loop already paying it in full
-                due = row_ofs < len(deal_data.Time_dep.deal_time_grid)
-                newly_hit = (crossed & ~barrier_hit).to(spot_block.dtype)
-                if due:
-                    cash_settle(shared, factor_dep['SettleCurrency'],
-                                deal_data.Time_dep.deal_time_grid[row_ofs - 1],
-                                nominal * rebate_per_unit * newly_hit)
-                if boundary_aad:
-                    # ONE entry per decision, in reporting currency: what THIS crossing pays if it
-                    # fires while alive, nothing if not, beside the ledger as booked; the terminal
-                    # crossing's rebate is inside the settle after the loop, so it declares zero
-                    fxr = report_fx(fx_rep, row_ofs - 1) if due else 0.0
-                    b_cash.append((int(deal_data.Time_dep.deal_time_grid[row_ofs - 1]),
-                                   len(b_gaps) - 1,
-                                   (fxr * nominal * rebate_per_unit *
-                                    torch.ones_like(newly_hit)).detach(),
-                                   torch.zeros_like(newly_hit),
-                                   (fxr * nominal * rebate_per_unit * newly_hit).detach()))
-            barrier_hit = barrier_hit | crossed   # carry forward into the next block
 
         tenor_block = factor_dep['Expiry'] - t_block[:, utils.TIME_GRID_MTM]
         fixings = (dual_samples.np[np.newaxis, sample_index_t:, utils.RESET_INDEX_End_Day] -
@@ -2426,7 +2384,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
         # vanilla European for already-hit scenarios (KI) or zeros (KO); also built when a
         # counterfactual will want it - nothing here may perturb the OSS stream
-        if some_hit or boundary_aad:
+        if some_hit or boundary_aad or BarrierDates[sample_index_t] > 0:
             if direction != BARRIER_IN:
                 hit_value = shared.one.new_zeros(len(t_block), shared.simulation_batch)
             elif kit is not None:
@@ -2452,6 +2410,46 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                     discount_block, tenor_block.reshape(-1, 1), shared), dim=1)     # [N_block, batch]
                 hit_value = nominal * vanilla * terminal_df
 
+        if BarrierDates[sample_index_t] > 0:
+            crossed = ((spot_block[-1] > barrier) if eta == BARRIER_UP else
+                       (spot_block[-1] < barrier))
+            if boundary_aad:
+                # margin of the decision, graph retained; signed so gap > 0 means CROSSED
+                b_gaps.append(torch.log(spot_block[-1] / barrier) * (
+                    -1.0 if eta == BARRIER_DOWN else 1.0))
+                b_crossed.append(crossed.detach())
+            # a row dated ON the observation, which a base valuation's is not, reads it here: the
+            # already-hit value and a knock-out's rebate where it fired, the walk where not - and
+            # forks with it unless an earlier one fired
+            forks = (hit_value[-1] + (nominal * rebate_per_unit if direction == BARRIER_OUT else 0.0),
+                     oss_result[-1] if run_oss else hit_value[-1]) if steps[-1, 0] <= 0 else ()
+            if boundary_aad:
+                b_own.append(forks and [(row_ofs - 1,) + tuple(
+                    torch.where(row_barrier_hit[-1], hit_value[-1], x).detach() for x in forks)])
+            if forks and run_oss:
+                oss_result = torch.cat([oss_result[:-1], torch.where(crossed, *forks).unsqueeze(0)])
+            if cash_rebate and direction == BARRIER_OUT:
+                # settle the rebate on the date it falls due; the TERMINAL row is excluded, the
+                # settle after the loop already paying it in full
+                due = row_ofs < len(deal_data.Time_dep.deal_time_grid)
+                newly_hit = (crossed & ~barrier_hit).to(spot_block.dtype)
+                if due:
+                    cash_settle(shared, factor_dep['SettleCurrency'],
+                                deal_data.Time_dep.deal_time_grid[row_ofs - 1],
+                                nominal * rebate_per_unit * newly_hit)
+                if boundary_aad:
+                    # ONE entry per decision, in reporting currency: what THIS crossing pays if it
+                    # fires while alive, nothing if not, beside the ledger as booked; the terminal
+                    # crossing's rebate is inside the settle after the loop, so it declares zero
+                    fxr = report_fx(fx_rep, row_ofs - 1) if due else 0.0
+                    b_cash.append((int(deal_data.Time_dep.deal_time_grid[row_ofs - 1]),
+                                   len(b_gaps) - 1,
+                                   (fxr * nominal * rebate_per_unit *
+                                    torch.ones_like(newly_hit)).detach(),
+                                   torch.zeros_like(newly_hit),
+                                   (fxr * nominal * rebate_per_unit * newly_hit).detach()))
+            barrier_hit = barrier_hit | crossed   # carry forward into the next block
+
         if all_hit:
             # every row of every scenario has already resolved
             theo_cashflow = hit_value
@@ -2474,7 +2472,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         shared.boundary_sets.append(utils.LatchedBoundarySet(
             gaps=b_gaps, fired=b_crossed, obs_before=np.array(b_obs_before),
             untriggered=torch.cat(b_alive, dim=0), triggered=torch.cat(b_dead, dim=0),
-            cash_events=b_cash or None,
+            own_row=b_own, cash_events=b_cash or None,
             settles=[(int(deal_data.Time_dep.deal_time_grid[-1]),
                       (report_fx(fx_rep, -1) * mtm_list[-1][-1]).detach())],
             to_mtm=deal_to_mtm_grid(time_grid, deal_data, fx_rep),

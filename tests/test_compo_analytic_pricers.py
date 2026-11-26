@@ -679,23 +679,33 @@ def test_a_seasoned_asian_whose_fixings_pass_the_strike_is_exercised_for_certain
 CMC = {'Object': 'CreditMonteCarlo', 'Time_grid': '0d 12m(1m)', 'Batch_Size': 2048,
        'Random_Seed': 1, 'Simulation_Batches': 1, 'Deflation_Interest_Rate': 'EUR'}
 MC_BARRIER = 65.0                   # below the composite spot of 80, far below the local 100
+#: the crossing on a bridge between grid dates, and on the monthly dates themselves
+MONITORED = {
+    'one-touch': _one_touch('OT', 'Down', MC_BARRIER),
+    'watched monthly': dict(
+        _barrier('KI', 'Down_And_In', MC_BARRIER, strike=1e-6), Object='EquityBarrierBinaryOption',
+        Cash_Payoff=CASH, Units=1.0,
+        Barrier_Dates=[BASE + pd.DateOffset(months=m) for m in range(1, 12)])}
 
 
-def test_the_monitored_path_crosses_on_the_composite_not_the_local_spot():
+@pytest.mark.parametrize('deal', list(MONITORED))
+def test_the_monitored_path_crosses_on_the_composite_not_the_local_spot(deal):
     """A credit Monte Carlo whose equity walks at 1% and whose fx walks at 40%: the LOCAL spot of
     100 cannot reach a barrier of 65 on any path, and the composite spot of 80 reaches it on most.
-    A one-touch paying at expiry reports `nominal * touched` on its last row, so the mean of that
-    row IS the mean touch probability the monitored path decided.
+    A one-touch paying at expiry reports `nominal * touched` on its last row and a knock-in binary
+    watched monthly its cash where it knocked in, so the mean of that row IS the mean crossing
+    probability the monitored path decided.
 
-    Measured 0.5435 on this tree against 0.0000 when the crossing reads the local spot, at 2048
-    paths and seed 1.
+    Measured 0.5378 on the bridge and 0.4351 watched monthly, each against 0.0000 when the crossing
+    reads the local spot, at 2048 paths and seed 1 on the CPU.
 
-    Killing mutation: the composite process left on the local spot.
+    Killing mutations: the composite process left on the local spot; the discrete barrier's
+    crossing read off the local spot (`smile_spot`), which the watched one reads as zero.
     """
     factors = _factors(skew=0.0, eq_vol=0.01, fx_vol=0.40)
     models = {'GBMAssetPriceModel.EQ': {'Vol': 0.01, 'Drift': 0.0},
               'GBMAssetPriceModel.EUR': {'Vol': 0.40, 'Drift': 0.0}}
-    out = _run(_job([_one_touch('OT', 'Down', MC_BARRIER)], factors, calc=CMC, models=models))
+    out = _run(_job([MONITORED[deal]], factors, calc=CMC, models=models))
     profile = out['Results']['mtm']
     touched = float(np.asarray(profile.iloc[-1].values, dtype=float).mean()) / CASH
     assert touched > 0.2, touched

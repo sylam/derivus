@@ -267,6 +267,16 @@ def test_an_observed_close_that_does_not_cross_changes_nothing(barrier_type):
     assert with_history == without, (barrier_type, with_history, without)
 
 
+def test_a_spot_beyond_the_level_today_has_not_crossed_before_its_first_observation():
+    """The base date is no observation: a knock-out whose level sits above today's spot is alive
+    until its first watched date, 30 days on, and marks what surviving it is worth.
+
+    Killing mutation: the block's observation read on a row not dated on it - exactly 0.
+    """
+    ahead = [[day(d), ''] for d in FUTURE_DAYS]
+    assert mtm(dict(barrier('Down_And_Out', ahead, rebate=0.0), Barrier_Price=SPOT + 1.0)) > 0.0
+
+
 @pytest.mark.parametrize('barrier_type,level', [('Down_And_In', BARRIER_DOWN),
                                                 ('Up_And_In', BARRIER_UP)])
 def test_a_close_exactly_ON_the_level_has_crossed(barrier_type, level):

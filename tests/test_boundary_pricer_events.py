@@ -17,12 +17,13 @@ pricer declares every settlement in its reach; and that the correction is per ba
 averaging it once. The collateralised ladder below runs with `Exclude_Paid_Today` off, where the
 zero-delta identity holds trivially.
 
-THE GAP'S SIGN IS GATED ELSEWHERE: on an up-and-in call the correction is 1.6% of the gradient, so
-the sign mutant reads 2.86% against a 1% gate at 16384 paths; `test_boundary_scoping_dominance.py`
+THE GAP'S SIGN IS GATED ELSEWHERE: on an up-and-in call the correction is 3.1% of the gradient, so
+the sign mutant reads 6.49% against a 1% gate at 16384 paths; `test_boundary_scoping_dominance.py`
 holds both directions where the correction is the sensitivity. NOR IS A TWO-SET PORTFOLIO WITH A
 LIVE EXPOSURE: the term is 2.4% of its gradient, so it meets its ladder within 5% with the
 correction suppressed or scored on the set alike.
 """
+import math
 import os
 import sys
 
@@ -167,17 +168,73 @@ def test_discrete_barrier_latch_gradient_matches_bump_and_reprice():
     """The already-hit latch in `pv_discrete_barrier_option`: a discretely monitored knock-out is
     worth nothing once it crosses, so the flux of paths across the barrier has to reach the tape.
 
-    1.28% apart at 4096 paths on a ladder flat to 5.64%; the correction is 24% of the reported
+    1.19% apart at 4096 paths on a ladder flat to 5.78%; the correction is 28% of the reported
     gradient. Four batches rather than one because a single batch puts BOTH estimators below their
     own noise: a 1.9% wander between 1024 and 16384 paths, the same size as the residual gated.
 
-    Killing mutation: the barrier's latch never registered - 36.22%, a 7x margin.
+    Killing mutation: the barrier's latch never registered - 40.86%, an 8x margin.
     """
     kw = dict(batch=1024, mcmc=256, batches=4)
     aad = _run(DISCRETE_BARRIER, gradient=True, **kw)[2]
     r = ladder(price=lambda s: _run(DISCRETE_BARRIER, spot=s, **kw)[1], aad=aad, base=bb.SPOT,
                rungs=LIVE_RUNGS)
     assert r.agrees(tol=0.05), f'{r}'
+
+
+def _digital(reference, barrier, barrier_type, dates=MONTHLY):
+    """A discretely monitored knock binary struck at ~zero, paying 10 at one year: worth that times
+    the probability its barrier decides, so its spot delta is the barrier flux and little else."""
+    return {'Object': 'EquityBarrierBinaryOption', 'Reference': reference, 'Currency': 'USD',
+            'Payoff_Currency': 'USD', 'Equity': 'EQ', 'Dividends': 'EQ', 'Discount_Rate': 'USD',
+            'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
+            'Strike_Price': 1e-6, 'Expiry_Date': bb.BASE + pd.Timedelta(days=365), 'Units': 1.0,
+            'Barrier_Type': barrier_type, 'Barrier_Price': barrier, 'Cash_Payoff': 10.0,
+            'Barrier_Dates': list(dates), 'Settlement_Date': ''}
+
+
+def _log_slopes(days, barrier=95.0):
+    """`(d ln P(under the barrier) / d spot, d ln P(over it) / d spot)` after `days` in the
+    fixtures' world, zero rates and a driftless GBM, in closed form."""
+    sd = bb.VOL * math.sqrt(days / 365.0)
+    d2 = (math.log(bb.SPOT / barrier) - 0.5 * sd * sd) / sd
+    density = math.exp(-0.5 * d2 * d2) / math.sqrt(2.0 * math.pi) / (bb.SPOT * sd)
+    under = 0.5 * math.erfc(d2 / math.sqrt(2.0))
+    return -density / under, density / (1.0 - under)
+
+
+@pytest.mark.parametrize('case', ['knock-out', 'knock-in', 'at expiry', 'rebate'])
+def test_an_observation_forks_its_own_row(case):
+    """A barrier watched on ONE date, on a row the grid reports: that row is priced with its own
+    observation applied, so the decision's counterfactual has to fork it too. At zero rates the
+    value is a martingale, so the CVA is the value times the rows' weights and its delta over
+    itself is the closed-form log slope of the probability paid on - of surviving for a knock-out,
+    of crossing for a knock-in. A rebate is paid at the crossing and marked on every row to it, the
+    crossing's own included, so what a rebate of 5 adds to the delta, over what it adds to the CVA,
+    is the crossing's slope.
+
+    At 16,384 paths and a bandwidth of 0.04, six seeds on the card and three on the CPU: within
+    2.9% watched mid-life, 1.5% at expiry and 1.6% on the rebate.
+
+    Killing mutations: the registration declaring no `own_row` - 24% short watched mid-life, 12%
+    at expiry and 40% on the rebate, each the row's share of the weights; the fork's other side
+    the row as reported, which halves the jump - 12%, 6% and 20% short; the rebate left off the
+    crossing's own row, whose mark then adds nothing.
+    """
+    kw = dict(gradient=True, batch=16384, mcmc=64, bandwidth=0.04)
+    days = 365 if case == 'at expiry' else 183      # the expiry, or a date the quarterly grid reports
+    crossing, surviving = _log_slopes(days)
+    dates = [bb.BASE + pd.Timedelta(days=days)]
+    if case == 'rebate':
+        deal = dict(bb.BARRIER_DEAL, Barrier_Price=95.0, Barrier_Dates=dates)
+        (bare_mtm, bare, bare_delta), (mtm, cva, delta) = (
+            _run(dict(deal, Cash_Rebate=rebate), **kw) for rebate in (0.0, 5.0))
+        assert (mtm - bare_mtm)[2].max() == pytest.approx(5.0), 'the crossing row is marked without it'
+        observed, expected = (delta - bare_delta) / (cva - bare), crossing
+    else:
+        _, cva, delta = _run(_digital(
+            'DIG1', 95.0, 'Down_And_In' if case == 'knock-in' else 'Down_And_Out', dates), **kw)
+        observed, expected = delta / cva, crossing if case == 'knock-in' else surviving
+    assert observed == pytest.approx(expected, rel=0.06), (observed, expected, observed / expected - 1.0)
 
 
 COLLATERALISED_RUNGS = (2e-3, 5e-3, 1e-2)
@@ -192,13 +249,13 @@ def test_collateralised_barrier_latch_gradient_matches_bump_and_reprice():
     on the mtm grid - 86 mtm rows against the barrier's own 51, 81 interpolated - so this is where
     the branch profile was worst mis-mapped.
 
-    At 4096 paths on five rungs: 3.23% apart, flat to 3.50%; seeds 2 and 3 read 5.57% and 2.56%,
-    16384 paths 1.08% / 0.61% / 1.06% - 6.71% before the settled ledger was declared - against a
-    bandwidth envelope of +1.09 / +5.45 / +1.34 / +1.24% at 0.01 / 0.005 / 0.02 / 0.05. On the three
-    rungs run here: 3.54% flat to 3.67%, 4.83% at seed 2; at 2048 paths seed 2 read 12.81%, which is
+    At 4096 paths on five rungs: 1.89% apart, flat to 3.69%; seeds 2 and 3 read 4.10% and 0.86%,
+    16384 paths 0.38% / 0.97% / 0.65% - 6.67% with the settled ledger undeclared - against a
+    bandwidth envelope of -0.38 / +3.83 / -0.17 / -0.20% at 0.01 / 0.005 / 0.02 / 0.05. On the three
+    rungs run here: 1.89% flat to 3.67%, 3.27% at seed 2; at 2048 paths seed 2 read 11.24%, which is
     what keeps the 4096.
 
-    Killing mutation: the barrier's latch never registered - 52.24% at 4096 paths.
+    Killing mutation: the barrier's latch never registered - 51.38% at 4096 paths.
     """
     kw = dict(batch=512, mcmc=128, collateralised=True, batches=8)
     aad = _run(DISCRETE_BARRIER, gradient=True, **kw)[2]
@@ -243,12 +300,12 @@ def test_fva_gradient_carries_the_boundary_term_too():
     that matters in production, the shipped batch job DELETING the CVA section, so a correction
     assembled only over there could never fire for it.
 
-    0.89% apart at 16384 paths on five rungs flat to 2.18%, two further seeds 3.61% and 3.19%; at
-    the 4096 paths and three rungs run here, 1.37% flat to 5.81%. Four batches, because one puts
+    0.89% apart at 16384 paths on five rungs flat to 2.18%, two further seeds 1.45% and 2.79%; at
+    the 4096 paths and three rungs run here, 1.46% flat to 5.81%. Four batches, because one puts
     both estimators below their own noise.
 
-    Killing mutation: the barrier's latch never registered - 30.1%, a 6x margin, the correction
-    being 24% of the reported gradient.
+    Killing mutation: the barrier's latch never registered - 37.38%, a 7x margin, the correction
+    being 28% of the reported gradient.
     """
     fva, aad = _fva(bb.SPOT, gradient=True)
     assert fva > 0.0, 'no funding spread - the adjustment is identically zero'

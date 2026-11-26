@@ -89,9 +89,11 @@ Grouped by where a validator meets them.
   are negative and the pooled oracle sits 0.5% from the registered delta. The ladder still moves
   13% to 35% over h ≥ 5e-4, so the magnitude is known to about a third.
 - **The boundary correction is stable over its bandwidth only at the declared path count.** At
-  16,384 and 32,768 paths six seeds resolve no dependence on `Boundary_AAD_Bandwidth` from 0.00125
-  to 0.08 (within ±2% of the correction and ±0.5% of the CVA delta); at 2,048 paths the correction
-  falls 24% across that range. That is a decision solved over its whole gap: a registered margin
+  32,768 paths six seeds resolve no dependence on `Boundary_AAD_Bandwidth` from 0.00125 to 0.08
+  (within 3% of the correction and 0.8% of the CVA delta, each inside its standard error); at 16,384
+  the same from 0.005 up (1.5% and 0.4%), the two narrowest rungs reading 4% and 6% low at a
+  standard error of 3.5%; at 2,048 paths one seed's correction moves 19% to 77% across the range and
+  the six-seed mean resolves nothing. That is a decision solved over its whole gap: a registered margin
   call, met from one side, reads lower as its bandwidth widens, the row above. The correction's
   scoping has no public seam a mutation gate could reach.
 - **The American equity option's approximation is to be retired, not patched** (2026-09-16).

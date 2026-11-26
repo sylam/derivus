@@ -7,12 +7,11 @@ the term moves the total by little. This portfolio is authored so the term domin
 THE DEAL IS A DIGITAL. A discretely monitored knock-out BINARY struck at ~zero is worth
 `Cash_Payoff` times the probability it never crossed, so its spot sensitivity is almost entirely the
 flux of paths across the barrier; a knock-out CALL carries a vanilla's intrinsic delta the
-correction has to compete with (correction over smooth term 0.56 / 0.83 / 2.07 against 3.04 for
-the H=95 monthly digital, at 1024 paths).
+correction has to compete with.
 
 BOTH BARRIER DIRECTIONS, mirrored about the spot. The digital's survival is monotone in the spot, so
 the CVA delta's SIGN is known before anything is run: positive below a down barrier, negative under
-an up one. The correction carries it at about three times the smooth term, so a gap signed the
+an up one. The correction carries it at three to four times the smooth term, so a gap signed the
 wrong way for its direction reports the wrong one.
 
 TWO COLLATERALISED SETS, at different barriers, so the two corrections add rather than cancel and
@@ -23,10 +22,10 @@ LIFTED OFF THE RELU. A DELTA-FREE cash cushion in its own uncollateralised set l
 portfolio clear of the CVA's kink. Off the relu every counterfactual is scored at full weight and
 what a collateralised set is worth turns on the cash it has already paid - so a counterfactual
 whose SETTLEMENT does not follow its branch prices the wrong exposure. With the settlement
-undeclared the lifted portfolio reads +1.14e-4 down where its own CRN oracle wants +5.29e-4.
+undeclared the lifted portfolio reads +1.96e-4 down where its own CRN oracle wants +5.29e-4.
 Parked ON the relu instead (the un-lifted portfolio spans -16.6 to +14.4), the same two sets read
-the correction at 3.71x the smooth term and the AAD 1.47% from its CRN ladder at 8192 paths (1.14%
-at seed 2), where suppressing the correction reads 363.78% - and the undeclared settlement is
+the correction at 3.65x the smooth term and the AAD 0.04% from its CRN ladder at 8192 paths (0.04%
+at seed 2), where suppressing the correction reads 365.20% - and the undeclared settlement is
 invisible there, the exposure crushed to near zero exactly where the ledger error lives.
 
 THE SEAM IS THE DECLARED FIELD, and nothing here patches a library object. At
@@ -49,17 +48,15 @@ import pytest
 
 import test_barrier_bridge as bb
 from derivus.instruments import construct_instrument
-from test_boundary_pricer_events import NETTING, _run
+from test_boundary_pricer_events import NETTING, _digital, _run
 
 #: The kernel selects nothing at this bandwidth, so the correction is an exact zero.
 SUPPRESSED_BANDWIDTH = 1e-12
 
-#: 512 paths, one batch. Over seeds 1-3 the correction reads 1.7 to 5.0 times the smooth term on
-#: the CPU and 2.3 to 3.9 on the card: the smooth term is steady near 1.2e-4 and the correction is
-#: the part that moves. At 4096 paths it reads 2.5 to 3.3 on either.
+#: 512 paths, one batch. Over seeds 1-3 the correction reads 2.4 to 5.8 times the smooth term on
+#: the CPU and 2.7 to 4.5 on the card: the smooth term is steady near 1.2e-4 and the correction is
+#: the part that moves. At 4096 paths it reads 3.2 to 4.1 on either.
 PATHS = dict(batch=512, mcmc=64, batches=1)
-
-MONTHLY = [bb.BASE + pd.Timedelta(days=d) for d in range(30, 366, 30)]
 
 #: Each direction's two barriers, mirrored about the spot, and the sign its CVA delta must carry.
 DIRECTIONS = {'Down_And_Out': ((95.0, 90.0), 1.0), 'Up_And_Out': ((105.0, 110.0), -1.0)}
@@ -68,17 +65,6 @@ DIRECTIONS = {'Down_And_Out': ((95.0, 90.0), 1.0), 'Up_And_Out': ((105.0, 110.0)
 #: its own uncollateralised set. Worth CUSHION*DF every scenario with zero equity delta, and
 #: outliving the collateralised sets, which report their closeout ten days past the digitals.
 CUSHION = 300.0
-
-
-def _digital(reference, barrier, barrier_type):
-    """A discretely monitored knock-out binary struck at ~zero: worth `Cash_Payoff` times the
-    probability it never crossed, so its spot delta is the barrier flux and almost nothing else."""
-    return {'Object': 'EquityBarrierBinaryOption', 'Reference': reference, 'Currency': 'USD',
-            'Payoff_Currency': 'USD', 'Equity': 'EQ', 'Dividends': 'EQ', 'Discount_Rate': 'USD',
-            'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
-            'Strike_Price': 1e-6, 'Expiry_Date': bb.BASE + pd.Timedelta(days=365), 'Units': 1.0,
-            'Barrier_Type': barrier_type, 'Barrier_Price': barrier, 'Cash_Payoff': 10.0,
-            'Barrier_Dates': list(MONTHLY), 'Settlement_Date': ''}
 
 
 def _forward(reference, side, price):
@@ -107,16 +93,16 @@ def test_the_correction_signs_and_dominates_the_cva_delta_of_a_lifted_portfolio(
     """THE CUSHION MUST LIFT the portfolio clear of zero, the reported delta MUST CARRY the sign the
     digitals' monotone survival gives it, and THE CORRECTION MUST DOMINATE the smooth sensitivity
     read off the same document with the correction suppressed through `Boundary_AAD_Bandwidth`:
-    it is the larger of the two, floored at 1.0.
+    it is at least twice it.
 
-    At the 512 paths run here, seed 1: down +5.43e-4 against a smooth +1.22e-4, up -6.81e-4 against
-    -1.14e-4. Measured at 8192 paths, cushion 300: down 2.94x, the AAD +0.000471979 against a CRN
-    best of +0.000528546, 11.99% short on a ladder flat to 2.41%; up 3.22x, 14.93% short on a
+    At the 512 paths run here, seed 1: down +6.25e-4 against a smooth +1.22e-4, up -7.79e-4 against
+    -1.14e-4. Measured at 8192 paths, cushion 300: down 3.47x, the AAD +0.000535653 against a CRN
+    best of +0.000528546, 1.33% apart on a ladder flat to 2.41%; up 4.07x, 4.43% apart on a
     ladder flat to 6.04%.
 
     Killing mutations: the discrete barrier's gap signed against its direction - down reads
-    -2.98e-4, up +4.53e-4; an undeclared `settles` collapses the correction to 0.07x (down) and
-    0.18x (up) the smooth term.
+    -3.80e-4, up +5.50e-4; an undeclared `settles` collapses the correction to 0.60x the smooth
+    term down and 1.03x up.
     """
     (h_first, h_second), sign = DIRECTIONS[barrier_type]
     first = _digital('DIG_A', h_first, barrier_type)
@@ -133,6 +119,6 @@ def test_the_correction_signs_and_dominates_the_cva_delta_of_a_lifted_portfolio(
     smooth = _run(first, gradient=True, children=children, bandwidth=SUPPRESSED_BANDWIDTH,
                   **PATHS)[2]
     dominance = abs(live - smooth) / abs(smooth)
-    assert dominance >= 1.0, (
+    assert dominance >= 2.0, (
         f'the boundary correction is {dominance:.4f}x the smooth sensitivity (reported '
         f'{live:+.8g}, suppressed {smooth:+.8g})')

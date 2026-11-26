@@ -144,9 +144,9 @@ conditional Black [@black1976] on the terminal law $(\sum_jM_j,\sqrt{\sum_j\Sigm
 inner noise. The inner mean of each row is floored at zero (an individual parity sample can be
 negative).
 
-On the outer grid, a scenario whose spot crossed at a strictly earlier observation is resolved:
-a knock-out is worth 0 (its rebate settled on the crossing date), a knock-in is worth
-$V_{\text{van}}$. A block where every scenario has resolved runs no inner simulation (except a
+On the outer grid an observation is decided once, on the spot the walk watches ($S X$ under a
+compo), and a scenario that crossed is resolved from that row on: a knock-out is worth 0 (its
+rebate marked and settled on the crossing date), a knock-in is worth $V_{\text{van}}$. A block where every scenario has resolved runs no inner simulation (except a
 LogVar2FJ knock-in, whose vanilla is the walk's). Closes
 observed before the base date are folded at compile: a crossed knock-in compiles as its vanilla,
 a crossed knock-out as its rebate cash flow.
