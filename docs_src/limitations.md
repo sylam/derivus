@@ -67,12 +67,6 @@ Grouped by where a validator meets them.
 
 ### The autocall, TARF and barrier pricers {#the-autocall-tarf-and-barrier-pricers}
 
-- **The collateralised autocall's CVA delta under-reads below 16,384 outer paths** (2026-10-10). On
-  a two-year lognormal index autocall under a zero-threshold CSA, the boundary correction is 0.26 to
-  0.61 of the pathwise term and carries the scatter. Over four seeds the delta reads short of its
-  common-random-number ladder by 8.0% at 1,024 paths (2% over to 25% short), 5.0% at 2,048, 3.7% at
-  4,096, 1.7% at 8,192 and within 1.4% at 16,384, short on 12 of the 16 readings below that: a bias
-  fading with paths, not noise. UNMEASURED under LogVar2FJ.
 - **The TARF's target pin is a kink the crisp estimator cannot see.** The pin fires on 41% to 60% of
   paths. Under the base valuation's default `Branch_And_Weight` the value's CRN ladder is flat to
   0.05% and meets the reported delta; under `'No'` it does not converge (0.24% to 1.41%), though the
@@ -88,14 +82,6 @@ Grouped by where a validator meets them.
   five seeds read −1.915 registered at 32,768 paths against +1.318 unregistered; all 70 CRN readings
   are negative and the pooled oracle sits 0.5% from the registered delta. The ladder still moves
   13% to 35% over h ≥ 5e-4, so the magnitude is known to about a third.
-- **The boundary correction is stable over its bandwidth only at the declared path count.** At
-  32,768 paths six seeds resolve no dependence on `Boundary_AAD_Bandwidth` from 0.00125 to 0.08
-  (within 3% of the correction and 0.8% of the CVA delta, each inside its standard error); at 16,384
-  the same from 0.005 up (1.5% and 0.4%), the two narrowest rungs reading 4% and 6% low at a
-  standard error of 3.5%; at 2,048 paths one seed's correction moves 19% to 77% across the range and
-  the six-seed mean resolves nothing. That is a decision solved over its whole gap: a registered margin
-  call, met from one side, reads lower as its bandwidth widens, the row above. The correction's
-  scoping has no public seam a mutation gate could reach.
 - **The American equity option's approximation is to be retired, not patched** (2026-09-16).
   `pv_american_option` (Bjerksund-Stensland) never calls `calc_vol_adjustment`, so a composite or
   quanto American prices as the local asset. UNMEASURED, as is its error against a lattice. The fix
