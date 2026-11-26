@@ -4023,10 +4023,11 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     later block's accrual being only ever larger) and the OTM leg KNOCKING IN (per inner path). The
     redemption latches once as the block OPENS and again at each OBSERVED fixing inside it, those
     being crossings the strip takes itself; a row that redeems mid-strip keeps the fixings it
-    reached, which is what the latch's ``pending`` carries. The opening gap is built from the
-    UNCLAMPED accrual ``raw``, because ``accumulation == min(raw, target)`` carries no graph on the
-    very paths that decided. A graphless historic decision is registered anyway - it contributes
-    zero, and skipping it corrupts the latch reconstruction.
+    reached, which is what the latch's ``pending`` carries. A fixing's gap is its signed margin, the
+    UNCLAMPED accrual ``raw`` before it plus its SIGNED intrinsic less the target, and its flag is
+    that margin's sign, so a path that redeemed earlier still reads what each later fixing would
+    have decided. A graphless historic decision is registered anyway - it contributes zero, and
+    skipping it corrupts the latch reconstruction.
 
     BRANCH AND WEIGHT (``Branch_And_Weight``, THE DEFAULT, base valuation only) SWAPS the estimator
     for both registrations rather than joining them, or the flux is counted twice; ``'No'`` is bit
@@ -4054,13 +4055,14 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     still moving until the first decision lands.
     """
 
-    def accrued(s, k, C, inverted):
-        """One fixing's accrual toward the target, standard or inverted."""
+    def accrued(s, k, C, inverted, signed=False):
+        """One fixing's accrual toward the target, standard or inverted; `signed`, the intrinsic
+        it is clamped from."""
         if inverted:
             iv = (1.0 / s - 1.0 / k) * C * (-1.0)
         else:
             iv = (s - k) * C
-        return F.relu(iv).reshape(-1, 1)
+        return (iv if signed else F.relu(iv)).reshape(-1, 1)
 
     def calc_accum_value(targetValue, accumulated, s, k, C, inverted):
         """The running accrual after one more fixing, clamped at the target."""
@@ -4415,13 +4417,16 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     # `accumulation[k]` nets the first k fixings by SCHEDULE POSITION, declared then simulated; a
     # block opens on the pot its SETTLED fixings left, so an observed-but-unsettled one enters via
     # the strip's loop alone, and `opening` sits below the target, so both walks start together
-    accumulation, raw = [opening], [opening]
+    accumulation, raw, margin = [opening], [opening], [opening - targetValue]
     declared = [x * shared.one for x in fx_samples.declared_values()]
     for sample_val in declared + list(next_samples):
         accumulation.append(calc_accum_value(
             targetValue, accumulation[-1], sample_val, strike, callOrPut, invertedTarget))
         if boundary_aad:
-            # the same walk UNCLAMPED: the clamp kills the derivative AT the decision
+            # a redemption's gap is its signed margin on the walk UNCLAMPED: a clamp stacks every
+            # path it binds on one value, a point mass the kernel reads as density
+            margin.append(raw[-1] + accrued(
+                sample_val, strike, callOrPut, invertedTarget, signed=True) - targetValue)
             raw.append(raw[-1] + accrued(sample_val, strike, callOrPut, invertedTarget))
 
     for b_idx, (discount_block, spot_block) in enumerate(
@@ -4470,10 +4475,10 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 deepest = min(settle_index_local + max(obs_depth, default=0), len(raw) - 1)
                 while b_first + len(b_gaps) <= deepest:
                     n = b_first + len(b_gaps)
-                    b_gaps.append((raw[n] - targetValue).squeeze(dim=1).expand(
-                        shared.simulation_batch))
-                    b_fired.append((targetValue - accumulation[n] == 0.0).squeeze(
-                        dim=1).expand(shared.simulation_batch).detach())
+                    b_gaps.append(margin[n].squeeze(dim=1).expand(shared.simulation_batch))
+                    # the margin's own sign: the clamped accrual holds a redeemed path at the
+                    # target, which would flag every later fixing fired whatever it printed
+                    b_fired.append((b_gaps[-1] >= 0.0).detach())
                 b_obs_before.extend([min(settle_index_local + depth, deepest) - b_first + 1
                                      for depth in obs_depth])
                 b_pending.extend([(settle_index_local - b_first, buy_sell * block_pend[row].detach())

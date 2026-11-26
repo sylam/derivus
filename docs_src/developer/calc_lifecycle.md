@@ -878,7 +878,12 @@ with a smooth estimator that registers nothing (**Held by**
 switch is `boundary_aad = calc_greeks is not None`: no greeks, no cost.
 
 A pricer appends a `BoundarySet`, `gap` keeping its graph (`gap > 0` is fired) and all else
-detached, its branches mapped to the MTM grid by the deal's own `pricing.deal_to_mtm_grid`. A
+detached, its branches mapped to the MTM grid by the deal's own `pricing.deal_to_mtm_grid`. A gap
+is the decision's own signed margin, never a clamped quantity, and its fired flag is that margin's
+sign: a clamp stacks every scenario it binds on one value, a point mass the kernel reads as density,
+and a TARF's target clamp would flag every fixing after a redemption fired whatever it printed
+(**Held by**
+`tests/test_boundary_tarf_events.py::test_a_nearly_spent_redemption_gradient_matches_bump_and_reprice_under_exposure`). A
 collateralised set's `post_process` stamps its gross-to-net chain onto the registrations beneath it,
 on the set because `boundary_sets` spans every set. `pricing.boundary_correction` scores them at the
 objective (CVA, FVA, the base value).

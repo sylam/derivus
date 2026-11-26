@@ -23,11 +23,12 @@ probability one conditioning step back, spliced so the value is the indicator's 
 the integral's) wherever a fixing interval is one simulated step; the kernel registration is left
 for an interval that straddles a scenario node.
 
-THE TARGET PIN HAS NO DOCUMENT-LEVEL GATE HERE. Its registration - the fired flags, the branches
-reconstructing the reported profile, the pending head of a row that redeems inside its own strip -
-was read by spying on the pricer, and the TARF emits no reconstruction organ as the accumulator and
-the extendable forward do. Uncorrected the pin read 27% short with neither estimator nor oracle
-resolving better than ~10%, so no CRN ladder can stand in for it.
+THE TARGET PIN IS GATED ON FOUR FIXINGS, where its ladder resolves. On six, its registration -
+the fired flags, the branches reconstructing the reported profile, the pending head of a row that
+redeems inside its own strip - was read by spying on the pricer, and the TARF emits no
+reconstruction organ as the accumulator and the extendable forward do. Uncorrected the pin read 27%
+short with neither estimator nor oracle resolving better than ~10%, so no CRN ladder stands in for
+it there.
 
 WHY THE LADDERS START AT 3e-4. Differencing across a jump does not converge as h shrinks - it
 changes how many paths sit on the wrong side. Below ~1e-4 the CRN readings scatter over 1/h
@@ -161,6 +162,9 @@ KNOCK_IN = _tarf(UNREACHABLE_TARGET, MONTHLY, barrier=BARRIER)
 # Sell, or the exposure of this book is ~0 on every path and the CVA gradient is noise
 KNOCK_IN_CMC = _tarf(UNREACHABLE_TARGET, BIMONTHLY, barrier=BARRIER, buy_sell='Sell')
 PIN_CMC = _tarf(0.02, BIMONTHLY, buy_sell='Sell')
+# nearly spent, so at the declared bandwidth the target sits inside a kernel width of the strike;
+# four fixings, so a path redeemed at one still decides the next
+NEARLY_SPENT_CMC = _tarf(0.0005, BIMONTHLY[:4], buy_sell='Sell')
 
 
 # ---------------------------------------------------------------- safety: the value must not move
@@ -223,3 +227,27 @@ def test_the_knock_in_gradient_matches_bump_and_reprice_at_base_valuation():
     r = ladder(price=lambda s: _baseval(KNOCK_IN, spot=s)[0], aad=aad, base=SPOT,
                rungs=(3e-4, 1e-3, 3e-3, 1e-2))
     assert r.agrees(tol=0.02), f'the knock-in flux is not reaching the tape\n{r}'
+
+
+# ---------------------------------------------------------------- B2: the redemption's own margin
+
+def test_a_nearly_spent_redemption_gradient_matches_bump_and_reprice_under_exposure():
+    """The redemption's gap is its signed margin, the unclamped accrual before the fixing plus the
+    fixing's SIGNED intrinsic less the target, and its flag is that margin's sign. On the clamped
+    accrual, every scenario a fixing leaves out of the money holds one gap, a point mass that a
+    nearly spent target puts inside the kernel where it is read as density; and a scenario that
+    redeemed holds the target, so every later fixing reads as fired whatever it printed and an
+    earlier decision's counterfactual redeems there too.
+
+    At 65,536 paths the CVA delta is 0.21% from a ladder flat to 0.34% on the CPU and 1.58% from
+    one flat to 0.73% on the card. Four batches, because at one the flag's mutant sits 5.11% off on
+    the card against 2.06%.
+
+    Killing mutations: the gap built on the clamped accrual - 50.94% on the CPU, 54.15% on the
+    card; the flag read off the clamped accrual - 8.72% and 6.88%.
+    """
+    kw = dict(batches=4, batch=16384, mcmc=64)
+    _, _, aad = _cmc(NEARLY_SPENT_CMC, gradient=True, **kw)
+    r = ladder(price=lambda s: _cmc(NEARLY_SPENT_CMC, spot=s, **kw)[0], aad=aad, base=SPOT,
+               rungs=(3e-3, 7e-3, 1.5e-2))
+    assert r.agrees(tol=0.04), f'the redemption flux is misread beside a nearly spent target\n{r}'
