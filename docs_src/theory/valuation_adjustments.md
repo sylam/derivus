@@ -19,7 +19,7 @@ counterparty defaults; the bank's own default, and with it DVA, is not modelled.
 
 | symbol | meaning |
 | --- | --- |
-| $t_0<t_1<\dots<t_m$ | the report rows: $t_0$ the base date, then every MTM date up to the last revaluation date of the book ([Grids](../developer/calc_lifecycle.md#grids)); $\Delta_i=t_i-t_{i-1}$ |
+| $t_0<t_1<\dots<t_m$ | the report rows: $t_0$ the base date, then every MTM date up to the last revaluation date of the book that every collateralised set still running reports, one reporting a date where its settlement and liquidation dates are on the grid ([Grids](../developer/calc_lifecycle.md#grids)); $\Delta_i=t_i-t_{i-1}$ |
 | $N$ | paths, `Batch_Size` $\times$ `Simulation_Batches` (with or without `Antithetic`) |
 | $V_k(t)$ | the book's value on path $k$ in the reporting currency (`Currency`): the sum of every top-level structure's reported value, a collateralised set's after collateral |
 | $X_k(t)$ | the reporting-to-base FX rate on path $k$; $X(0)$ today's |

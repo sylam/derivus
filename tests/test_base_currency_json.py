@@ -134,9 +134,10 @@ def test_a_static_spot_beside_a_simulated_curve_prices_as_a_spot_that_never_move
         assert static[ref][0].mean() == pytest.approx(float.fromhex(marks[ref]), rel=1e-13), ref
 
 
-def rooted(deals, vol, netted=False):
+def rooted(deals, vol, netted=False, spread=None):
     """`deals` at the root of a quarterly credit Monte Carlo, or under one uncollateralised netting
-    set, every curve, the EURUSD and the equity simulated at volatility `vol`: its mtm frame."""
+    set, every curve, the EURUSD and the equity simulated at volatility `vol`, and with `spread` an
+    FVA funded at that spread over the USD curve: its results."""
     doc = json.loads(json.dumps(book.book(deals), cls=CustomJsonEncoder))
     calc = doc['Calc']
     calc['Calculation'] = dict(Object='CreditMonteCarlo', Base_Date=calc['Calculation']['Base_Date'],
@@ -155,9 +156,18 @@ def rooted(deals, vol, netted=False):
         HW1F, Alpha=0.05, Sigma=sigma, Quanto_FX_Volatility=sigma) for curve in ('USD', 'USD-PROJ')},
         **{'GBMAssetPriceModel.' + name: {'Vol': vol, 'Drift': 0.0} for name in ('EUR', 'EQ')})
     market['Price Models'] = json.loads(json.dumps(market['Price Models'], cls=CustomJsonEncoder))
+    if spread is not None:
+        calc['Calculation']['Funding_Valuation_Adjustment'] = {
+            'Calculate': 'Yes', 'Risk_Free_Curve': 'USD', 'Funding_Cost_Interest_Curve': 'USD-FUND',
+            'Funding_Benefit_Interest_Curve': 'USD-FUND'}
+        funding = utils.Curve([], [[t, r + spread] for t, r in zip(book.KNOTS, book.DISCOUNT)])
+        market['Price Factors']['InterestRate.USD-FUND'] = json.loads(json.dumps(dict(
+            market['Price Factors']['InterestRate.USD'], Curve=funding), cls=CustomJsonEncoder))
+        market['Price Models']['HullWhite1FactorInterestRateModel.USD-FUND'] = market['Price Models'][
+            'HullWhite1FactorInterestRateModel.USD']
     context = derivus.Context()
     context.load_json((json.dumps(doc), 'rooted'))
-    return context.run_job()[1]['Results']['mtm']
+    return context.run_job()[1]['Results']
 
 
 def test_a_structure_at_the_root_reports_on_every_date_its_deals_do():
@@ -175,7 +185,7 @@ def test_a_structure_at_the_root_reports_on_every_date_its_deals_do():
     Killing mutations: a deal answering its revaluation dates again; the root's own deals left out.
     """
     import test_position_scaling
-    core = rooted(test_position_scaling.CORE.DEALS, 0.01)
+    core = rooted(test_position_scaling.CORE.DEALS, 0.01)['mtm']
     assert core.shape[0] > 4 and np.isfinite(core.values).all()
     swaption = next(deal for deal in book.BOOK if deal['Reference'] == 'SWPT')
     expiry = book.WORLD_BASE + pd.DateOffset(months=3)
@@ -186,7 +196,7 @@ def test_a_structure_at_the_root_reports_on_every_date_its_deals_do():
     deals = [collar, swaption, book.fx_leg('FXOptionDeal', 'FXO', Expiry_Date=expiry),
              {'Object': 'FixedCashflowDeal', 'Reference': 'CF', 'Currency': 'USD', 'Discount_Rate': 'USD',
               'Amount': 250_000.0, 'Payment_Date': book.WORLD_EXPIRY + pd.DateOffset(years=5)}]
-    root, netted = rooted(deals, 0.0), rooted(deals, 0.0, netted=True)
+    root, netted = rooted(deals, 0.0)['mtm'], rooted(deals, 0.0, netted=True)['mtm']
     assert root.index.isin(netted.index).all() and len(netted) > len(root)
     assert root.index[-1] == book.WORLD_EXPIRY + pd.DateOffset(years=5)
     assert np.array_equal(root.values, netted.loc[root.index].values)
@@ -195,14 +205,16 @@ def test_a_structure_at_the_root_reports_on_every_date_its_deals_do():
 CSA = {'.CreditSupportList': [[0.0, 0.0]]}
 
 
-def netting_set(reference, children, liquidation=None):
-    """An uncollateralised netting set, or with `liquidation` a zero-threshold CSA closing out over
-    that many days and no settlement period."""
+def netting_set(reference, children, liquidation=None, threshold=0.0, opening=0.0):
+    """An uncollateralised netting set, or with `liquidation` a CSA closing out over that many days
+    and no settlement period, receiving above `threshold`, every other amount zero, and holding
+    `opening` today."""
     terms = {} if liquidation is None else {
         'Collateralized': 'True', 'Agreement_Currency': 'USD', 'Balance_Currency': 'USD',
-        'Liquidation_Period': liquidation, 'Settlement_Period': 0, 'Credit_Support_Amounts': dict.fromkeys(
-            ('Received_Threshold', 'Posted_Threshold', 'Independent_Amount', 'Minimum_Received',
-             'Minimum_Posted'), CSA)}
+        'Opening_Balance': opening, 'Liquidation_Period': liquidation, 'Settlement_Period': 0,
+        'Credit_Support_Amounts': dict(dict.fromkeys(
+            ('Posted_Threshold', 'Independent_Amount', 'Minimum_Received', 'Minimum_Posted'), CSA),
+            Received_Threshold={'.CreditSupportList': [[0.0, threshold]]})}
     return dict({'Object': 'NettingCollateralSet', 'Reference': reference, 'Netted': 'True',
                  'Collateralized': 'False', 'Children': children}, **terms)
 
@@ -235,8 +247,8 @@ def test_netting_sets_side_by_side_read_as_each_one_alone():
     paid = netting_set('P2', [cashflow('CF45', 45), cashflow('CF120', 120)])
     csa = netting_set('C1', [forward('FWD1', 1_000.0, 1)], liquidation=10)
     for pair in ((long, paid), (long, csa)):
-        alone = [rooted([deal], 0.0).mean(axis=1) for deal in pair]
-        joint = rooted(list(pair), 0.0).mean(axis=1)
+        alone = [rooted([deal], 0.0)['mtm'].mean(axis=1) for deal in pair]
+        joint = rooted(list(pair), 0.0)['mtm'].mean(axis=1)
         last = max(alone[1].index)
         compared = 0
         for day in joint.index:
@@ -251,6 +263,35 @@ def test_netting_sets_side_by_side_read_as_each_one_alone():
     with pytest.raises(utils.UnpriceableSchedule) as refusal:
         rooted([csa, netting_set('C2', [forward('FWD3', 1.0, 1)], liquidation=5)], 0.0)
     assert all(word in str(refusal.value) for word in ('C1', 'C2', 'Liquidation_Period')), refusal.value
+
+
+def test_a_job_reports_a_date_only_where_every_collateralised_set_still_running_does():
+    """A collateralised set reads zero on a date it does not report, its own liquidation dates
+    among them, so a job reports a date only where every collateralised set still running reports
+    it. At zero volatility a plain set holding a two-year forward sits beside a ten-day CSA over a
+    one-year forward, receiving above 2,000 and holding 5,000 today, neither set worth less than
+    nothing on any date, funded at one percent over the USD curve: every date the job reports up to
+    the CSA's last is one the CSA reports alone, and the job's FVA is the two sets' FVAs added, to
+    1e-4 - they are 2.4e-5 apart, the CSA's own dates splitting the plain set's trapezoids. The
+    same CSA held inside the plain set reads the same FVA.
+
+    Killing mutations: the job reporting every date any child reports, which reports the CSA's
+    liquidation dates and drops the job's FVA from 22.19 to 12.54; the rule reading the root's own
+    children alone, which leaves the CSA held inside the plain set at 12.54.
+    """
+    plain = netting_set('P1', [forward('FWD2', 10.0, 2)])
+    csa = netting_set('C1', [forward('FWD1', 1_000.0, 1)], liquidation=10, threshold=2_000.0,
+                      opening=5_000.0)
+    alone = [rooted([deal], 0.0, spread=0.01) for deal in (plain, csa)]
+    joint = rooted([plain, csa], 0.0, spread=0.01)
+    assert all((results['mtm'].values >= 0.0).all() for results in alone)
+    held = alone[1]['mtm'].index
+    reported = set(joint['mtm'].index[joint['mtm'].index <= held[-1]])
+    assert reported <= set(held), sorted(reported - set(held))
+    assert joint['fva'] == pytest.approx(alone[0]['fva'] + alone[1]['fva'], rel=1e-4), (
+        joint['fva'], alone[0]['fva'], alone[1]['fva'])
+    inside = rooted([netting_set('P1', [forward('FWD2', 10.0, 2), csa])], 0.0, spread=0.01)
+    assert inside['fva'] == pytest.approx(joint['fva'], rel=1e-6), (inside['fva'], joint['fva'])
 
 
 def test_a_deal_settled_before_the_base_date_is_skipped_by_name_under_a_scenario_grid(tmp_path, caplog):

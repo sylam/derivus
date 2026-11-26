@@ -163,8 +163,14 @@ class DealStructure(object):
         all_report_dates = [set(instrument.get_report_dates(time_grid, base_date)) for instrument in
                             [x.obj.Instrument for x in self.sub_structures] +
                             [x.Instrument for x in self.dependencies]]
-        self.obj.Instrument.set_report_dates(
-            reduce(set.union, all_report_dates) if all_report_dates else time_grid.mtm_dates)
+        report_dates = reduce(set.union, all_report_dates) if all_report_dates else time_grid.mtm_dates
+        # a collateralised set reads zero on a date it does not report, so a date reports only where
+        # every collateralised set still running reports it
+        for structure in self.structures():
+            if structure.obj.Instrument.closeout_window() is not None:
+                dates = set(structure.obj.Instrument.get_report_dates(time_grid, base_date))
+                report_dates = {x for x in report_dates if x in dates or x > max(dates)}
+        self.obj.Instrument.set_report_dates(report_dates)
         time_grid.set_report_dates(base_date, self.obj.Instrument.get_report_dates())
 
     def add_structure_to_structure(self, struct, base_date, static_offsets, stochastic_offsets,

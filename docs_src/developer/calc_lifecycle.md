@@ -560,7 +560,11 @@ it does not read to its end; a one-item grid keeps its step. **Held by**
 
 The report rows (`report_index`), on which the xVA reductions run, are each top-level structure's
 MTM dates to its last revaluation, a collateralised set's only where its settlement and liquidation
-dates are on the grid ([xVA](../theory/valuation_adjustments.md#notation-and-the-grid)).
+dates are on the grid ([xVA](../theory/valuation_adjustments.md#notation-and-the-grid)). A
+collateralised set reads zero on a date it does not report, so a date reports only where every
+collateralised set still running reports it, wherever it sits in the book
+(`DealStructure.finalize_struct`): no such set reads zero on a reported row before it ends. **Held by**
+`tests/test_base_currency_json.py::test_a_job_reports_a_date_only_where_every_collateralised_set_still_running_does`.
 
 ## Valuation modes {#valuation-modes}
 
