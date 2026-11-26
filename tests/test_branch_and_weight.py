@@ -614,26 +614,25 @@ BARRIER_FAMILY = [
 @pytest.mark.parametrize('barrier,over,digital', [row[1:] for row in BARRIER_FAMILY],
                          ids=[row[0] for row in BARRIER_FAMILY])
 def test_off_is_off_across_the_barrier_family(barrier, over, digital):
-    """OFF IS OFF, and ON IS OFF TOO. This pricer's OSS sampler was the smooth estimator already, so
-    the value and the whole first-order frame are BIT-IDENTICAL with the switch absent, 'No' and
-    'Yes' - three states, a field read through a default being a different code path from a field
-    read. The crisp latch registration the switch skips loses nothing: base valuation has one
-    scenario, so `boundary_weights` returns its empty-kernel branch and the correction is exactly
-    zero. Knock-out delta 0.6597964784, knock-in -0.1100582535, binary 2.259431076.
+    """THE SWITCH IS NOT READ. This pricer's OSS sampler is the smooth estimator, and a base
+    valuation's row is dated on no observation, so it takes no decision: the value and the whole
+    first-order frame are BIT-IDENTICAL with the switch absent, 'No' and 'Yes' - three states, a
+    field read through a default being a different code path from a field read - and the
+    second-order block to the last bits of its largest entry.
+    Knock-out delta 0.6597964784, knock-in -0.1100582535, binary 2.259431076.
 
-    Killing mutation: `boundary_weights` taking `std()` of a one-sample gap, whose NaN reaches the
-    crisp run's backward.
+    Killing mutations: the terminal kink term built under the switch alone; an observation decided
+    on a row not dated on it, which registers a correction and refuses `Greeks: 'All'`.
     """
-    absent, out_a = _barrier_run(barrier, greeks='First', on=None, sims=1 << 12, digital=digital,
-                                 **over)
-    off, out_o = _barrier_run(barrier, greeks='First', on=False, sims=1 << 12, digital=digital,
-                              **over)
-    smooth, out_s = _barrier_run(barrier, greeks='First', on=True, sims=1 << 12, digital=digital,
-                                 **over)
-    assert absent == smooth == off, (absent, off, smooth)
-    for out in (out_o, out_s):
-        assert np.array_equal(out_a['Results']['Greeks_First'].values,
-                              out['Results']['Greeks_First'].values), 'a first-order greek moved'
+    (absent, out_a), *others = [_barrier_run(
+        barrier, greeks='All', on=on, sims=1 << 12, digital=digital, **over) for on in (None, False, True)]
+    first, second = (out_a['Results'][block].values for block in ('Greeks_First', 'Greeks_Second'))
+    for value, out in others:
+        assert value == absent, (value, absent)
+        assert np.array_equal(first, out['Results']['Greeks_First'].values), 'a first-order greek moved'
+        # a card's second-order pass repeats itself only to 16 ulps (1.4e-16 of the largest entry)
+        assert np.allclose(second, out['Results']['Greeks_Second'].values, rtol=0.0,
+                           atol=1e-12 * np.abs(second).max()), 'the second-order block moved'
 
 
 @pytest.mark.parametrize('rebate', [0.0, 5.0, 12.5])
@@ -687,8 +686,8 @@ def test_parity_survives_to_second_order_on_the_smooth_path():
 
 
 def test_the_live_barriers_gamma_lands_on_its_own_ladder():
-    """GAMMA FLOWS on a LIVE barrier, and it is the derivative of the delta reported; the crisp
-    estimator registers the observed crossing and refuses. A live knock-out has no closed form, so
+    """GAMMA FLOWS on a LIVE barrier, and it is the derivative of the delta reported. A live
+    knock-out has no closed form, so
     the reading is a CRN ladder of the corrected delta - 32768 paths: gamma 0.00969411 against a
     ladder best of 0.00974971, 0.57% at 2.12% flatness. The never-knocking control (barrier 1.0) is
     a European: value 10.0082 against Black 9.9476, gamma 0.01560843 against 0.01583351.
@@ -696,9 +695,6 @@ def test_the_live_barriers_gamma_lands_on_its_own_ladder():
     Killing mutation: the terminal kink term never built - the live barrier reads 0.00861379, 13.19%
     off its unchanged ladder, every barrier decision being a `Phi` whose curvature AAD carries.
     """
-    with pytest.raises(utils.SecondOrderRefused):
-        _barrier_run(90.0, greeks='All', on=False)
-
     sims = 1 << 15
     _, live = _barrier_run(90.0, greeks='All', on=True, sims=sims)
     gamma = _eq_second(live)

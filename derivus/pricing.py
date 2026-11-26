@@ -2008,9 +2008,10 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     - ``Cash_Rebate`` is absolute cash and enters PER-UNIT, divided by the UNSIGNED size:
       ``nominal`` already carries ``Buy_Sell``, so dividing by it would book a sold knock-out's
       rebate as a receipt.
-    - An observation is decided ONCE, in the outer loop, on the spot the walk watches - the
-      composite under a compo. Its own row reads it there and later rows off the per-row hit
-      mask; the walk prices a path alive at its row.
+    - An observation is decided ONCE, in the outer loop, on the row dated on it and on the spot
+      the walk watches - the composite under a compo. That row reads it there and later rows off
+      the per-row hit mask; the walk prices a path alive at its row. A base valuation's row is
+      dated on no observation, so it decides nothing and registers nothing.
     - The rebate settles on the date it falls due, excluding the TERMINAL row, which the single
       settle after the loop already pays in full.
     - ONE model and ONE forward price every leg, both reading ``total_log_forward``. The variance
@@ -2024,13 +2025,11 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     registration DECLARES its ledger: ``settles`` for the expiry, which pays the deal's whole value,
     and ``cash_events`` for the rebate leg, one entry per crossing on the date it falls due.
 
-    BRANCH AND WEIGHT (``Branch_And_Weight``, THE DEFAULT, base valuation only) SWAPS the estimator
-    for that registration rather than joining it; ``'No'`` is bit for bit. This sampler is already
-    the smooth estimator - every monitored step is an analytic ``p`` with a survival-truncated
-    continuation - so the value is bit-identical. What changes: the outer registration is skipped,
-    so ``Greeks: 'All'`` flows where it used to refuse; and the terminal European's kink gets its
-    second-order term (``accrual_kink_term``), added to ``surv_payoff`` BEFORE the in-out parity
-    subtraction so parity holds at second order and not only at value.
+    SECOND ORDER (``shared.gamma``). This sampler is the smooth estimator whatever
+    ``Branch_And_Weight`` says, which it does not read - every monitored step is an analytic ``p``
+    with a survival-truncated continuation - so the one kink it samples is the terminal European's.
+    That gets its second-order term (``accrual_kink_term``), added to ``surv_payoff`` BEFORE the
+    in-out parity subtraction so parity holds at second order and not only at value.
 
     IN-OUT PARITY IS THIS PRICER'S CONSERVATION STATEMENT, exact on the smooth path:
     ``KO + KI == vanilla + rebate`` in a zero-rate world, at value, delta and gamma. Its rebate half
@@ -2279,11 +2278,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     # and KI scenarios the vanilla European
     barrier_hit = shared.one.new_zeros(shared.simulation_batch, dtype=torch.bool)
     row_ofs = 0
-    # read once before a draw is taken so a non-GBM refusal lands first; it SUPERSEDES the
-    # registration below rather than joining it
-    smooth = shared.branch_and_weight
-    second_order = smooth and shared.gamma
-    boundary_aad = getattr(shared, 'boundary_aad', False) and not smooth
+    second_order = shared.gamma
+    boundary_aad = getattr(shared, 'boundary_aad', False)
     b_gaps, b_crossed, b_obs_before, b_alive, b_dead, b_cash, b_own = [], [], [], [], [], [], []
 
     for index, (discount_block, spot_block, moneyness_block, rem_exp,
@@ -2330,6 +2326,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         steps = np.hstack([fixing_block[:, 0, np.newaxis], np.diff(fixing_block, axis=1)])
         sample_ts = shared.upload(steps, drifts.dtype)
         row_times = daycount_fn(t_block[:, utils.TIME_GRID_MTM])
+        # the block ends ON a watched date, which a base valuation's one row never does
+        observed = BarrierDates[sample_index_t] > 0 and steps[-1, 0] <= 0
         # the carry over each INTERVAL, which is not the zero carry to each fixing
         # (forward_carry_rate); `fixing_block` is the cumulative strip the difference needs
         fwd_drifts = forward_carry_rate(drifts, cum_t, sample_ts)
@@ -2384,7 +2382,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
         # vanilla European for already-hit scenarios (KI) or zeros (KO); also built when a
         # counterfactual will want it - nothing here may perturb the OSS stream
-        if some_hit or boundary_aad or BarrierDates[sample_index_t] > 0:
+        if some_hit or boundary_aad or observed:
             if direction != BARRIER_IN:
                 hit_value = shared.one.new_zeros(len(t_block), shared.simulation_batch)
             elif kit is not None:
@@ -2410,7 +2408,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                     discount_block, tenor_block.reshape(-1, 1), shared), dim=1)     # [N_block, batch]
                 hit_value = nominal * vanilla * terminal_df
 
-        if BarrierDates[sample_index_t] > 0:
+        if observed:
             crossed = ((spot_block[-1] > barrier) if eta == BARRIER_UP else
                        (spot_block[-1] < barrier))
             if boundary_aad:
@@ -2418,15 +2416,14 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                 b_gaps.append(torch.log(spot_block[-1] / barrier) * (
                     -1.0 if eta == BARRIER_DOWN else 1.0))
                 b_crossed.append(crossed.detach())
-            # a row dated ON the observation, which a base valuation's is not, reads it here: the
-            # already-hit value and a knock-out's rebate where it fired, the walk where not - and
-            # forks with it unless an earlier one fired
+            # its own row reads it here: the already-hit value and a knock-out's rebate where it
+            # fired, the walk where not - and forks with it unless an earlier one fired
             forks = (hit_value[-1] + (nominal * rebate_per_unit if direction == BARRIER_OUT else 0.0),
-                     oss_result[-1] if run_oss else hit_value[-1]) if steps[-1, 0] <= 0 else ()
+                     oss_result[-1] if run_oss else hit_value[-1])
             if boundary_aad:
-                b_own.append(forks and [(row_ofs - 1,) + tuple(
+                b_own.append([(row_ofs - 1,) + tuple(
                     torch.where(row_barrier_hit[-1], hit_value[-1], x).detach() for x in forks)])
-            if forks and run_oss:
+            if run_oss:
                 oss_result = torch.cat([oss_result[:-1], torch.where(crossed, *forks).unsqueeze(0)])
             if cash_rebate and direction == BARRIER_OUT:
                 # settle the rebate on the date it falls due; the TERMINAL row is excluded, the

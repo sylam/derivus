@@ -52,6 +52,7 @@ from derivus.config import Config, CustomJsonEncoder
 from derivus.instruments import construct_instrument
 import rates_world as rw
 import test_declared_defaults as book
+import test_boundary_tarf_events as te
 import test_recompute_equity_pricers as re_
 import trial_credit
 
@@ -509,24 +510,25 @@ def test_a_deal_that_registered_a_boundary_correction_is_refused_by_name():
     `(gap - gap.detach())` times a detached coefficient keeps the smooth part and silently loses
     the density-derivative term, so what comes back is a plausible gamma with a term missing. The
     message names the deals - a portfolio's author cannot otherwise tell which to take out - and
-    points at bumping the adjoint under common random numbers. The CRISP estimator is declared
-    because it is the one that registers: the default integrates the decision instead. The
-    refusal is the outer one whichever way `Recompute_Inner_MC` is set - the node is never asked.
+    points at bumping the adjoint under common random numbers. The deal is a TARF whose knock-in
+    is decided on its inner paths, and the CRISP estimator is declared because it is the one that
+    registers: the default integrates the decision instead. The refusal is the outer one whichever
+    way `Recompute_Inner_MC` is set - the node is never asked.
 
     Killing mutation: the base valuation's refusal over a registered boundary correction dropped.
     """
     for recompute in ('No', 'Yes'):
         with pytest.raises(Exception) as raised:
-            run_baseval(re_._cfg('barrier'), prec=DTYPE, overrides={
+            run_baseval(te._cfg(te.KNOCK_IN, te.SPOT), prec=DTYPE, overrides={
                 'Greeks': 'All', 'MCMC_Simulations': 1,
                 'Branch_And_Weight': 'No', 'Recompute_Inner_MC': recompute})
         message = str(raised.value)
-        assert "Greeks: 'All' is refused" in message and 'BARR1' in message, message
+        assert "Greeks: 'All' is refused" in message and 'TARF1' in message, message
         assert 'density-derivative' in message and 'common random numbers' in message, message
 
     # the same portfolio is fine at first order, so the refusal is about the SECOND derivative and
     # not about the deal being unpriceable
-    _, first, second = valued(re_._cfg('barrier'), greeks='First', estimator='No')
+    _, first, second = valued(te._cfg(te.KNOCK_IN, te.SPOT), greeks='First', estimator='No')
     assert second is None and np.abs(first_order(first)).max() > 0.0
 
 

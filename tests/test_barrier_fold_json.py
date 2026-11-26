@@ -292,25 +292,16 @@ def test_a_close_exactly_ON_the_level_has_crossed(barrier_type, level):
     assert mtm(barrier(barrier_type, rows({-60: inside}))) == mtm(barrier(barrier_type, rows()))
 
 
-def test_a_folded_state_registers_no_boundary_correction():
-    """A t0 crossing is DATA, so it registers nothing and the sensitivity architecture is untouched
-    by the fold - which is the whole reason a scalar fact must not become a pricer branch.
-
-    Read through the document rather than by inspecting `shared`: `Greeks: 'All'` refuses on a deal
-    that registered a boundary correction, so the unfolded barrier refuses BY NAME and the folded
-    one answers - with the vanilla's own second-order block, to the bit. The CRISP estimator is
-    declared because it is the one that registers: the default integrates the decision instead,
-    leaving nothing to refuse.
+def test_a_folded_barrier_reports_the_vanilla_s_own_second_order_block():
+    """A t0 crossing is DATA, so the sensitivity architecture is untouched by the fold - which is
+    the whole reason a scalar fact must not become a pricer branch: the deal compiles as the
+    vanilla it became and reports that vanilla's second-order block, to the bit.
 
     Killing mutation: a crossed knock-in left the barrier it was rather than the vanilla it became.
     """
-    crisp = {'Greeks': 'All', 'Branch_And_Weight': 'No'}
-    with pytest.raises(Exception) as refusal:
-        mtm(barrier('Down_And_In', rows()), calc=crisp)
-    assert 'boundary correction' in str(refusal.value), str(refusal.value)
-
-    folded = mtm(barrier('Down_And_In', rows({-60: 85.0})), calc=crisp)
-    assert folded == mtm(vanilla(), calc=crisp)
+    folded, plain = (run(deal, calc={'Greeks': 'All'})['Results']['Greeks_Second'].values
+                     for deal in (barrier('Down_And_In', rows({-60: 85.0})), vanilla()))
+    assert np.array_equal(folded, plain)
 
 
 def test_the_digital_barrier_folds_to_its_own_vanilla():

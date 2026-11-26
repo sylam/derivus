@@ -872,8 +872,8 @@ launches no counterfactual walk, and its sensitivities are the frozen-decision g
 `tests/test_boundary_pricer_events.py::test_a_margin_call_registers_only_where_the_document_asks`).
 A CVA Hessian registers them unasked, which is what refuses it a collateralised set (**Held by**
 `tests/test_cva_gamma_kink.py::test_a_decision_product_refuses_the_hessian_and_keeps_its_gradient`).
-`Branch_And_Weight` (`Yes`, base valuation) prices the four
-fixing-observed knockouts with a smooth estimator that registers nothing (**Held by**
+`Branch_And_Weight` (`Yes`, base valuation) prices the TARF, the accumulator and the autocall
+with a smooth estimator that registers nothing (**Held by**
 `tests/test_branch_and_weight.py::test_a_registration_the_switch_supersedes_is_not_lost`). The
 switch is `boundary_aad = calc_greeks is not None`: no greeks, no cost.
 

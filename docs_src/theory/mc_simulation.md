@@ -225,10 +225,10 @@ derivatives they carry.
 
 | Pricer | `Yes` (smooth) | `No` (crisp) |
 |---|---|---|
-| discrete barrier, accumulator | value bit-identical to `No`; the terminal (barrier) or per-fixing (accumulator) payoff kink gets its second-order term | with sensitivities on, the observed-crossing decision registers a boundary correction; `Greeks: All` is refused |
+| accumulator | value bit-identical to `No`; the per-fixing payoff kink gets its second-order term | with sensitivities on, an observed crossing registers a boundary correction, and `Greeks: All` is refused |
 | TARF | the knock-in leg integrated (`lognormal_fired_gain`); per-fixing kink term; the redemption and knock-in registrations are not made | knock-in a sampled indicator; its derivatives taken from the integral (`splice_conditional_p`: the crisp value, the integral's derivatives) |
 | autocall | the put leg integrated over its tail of the interval law | put a sampled indicator, derivatives spliced as for the TARF |
-| extendable forward | not read | not read |
+| discrete barrier, extendable forward | not read | not read |
 
 The second-order kink term is $\tfrac12K_h(g)\,(g-\bar g)^2$ with $\bar g$ detached: zero in value
 and at first order, it adds the Gaussian-kernel estimate of $f_g(0)\,E[\nabla g\,\nabla g^\top\mid g=0]$

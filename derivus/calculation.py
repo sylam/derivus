@@ -2251,7 +2251,7 @@ class BaseValuation(Calculation):
         '  with respect to the relevant Price Factors; `All` adds the second order block (the full factor',
         '  Hessian, reported as `Greeks_Second`). Default `No`.',
         '- **Branch And Weight** (default `Yes`) prices the fixing-observed knockouts (TARF, accumulator,',
-        '  discrete barrier, autocall) with the smooth estimator; `No` is the crisp estimator',
+        '  autocall) with the smooth estimator; `No` is the crisp estimator',
         '- **Boundary AAD Bandwidth** (default 0.01) the kernel width of the boundary correction a decision',
         '  on simulated state adds to the gradient',
         '  ([Calc Lifecycle](../developer/calc_lifecycle.md#boundary-corrections-the-sensitivity-subsystem))',
@@ -2266,8 +2266,8 @@ class BaseValuation(Calculation):
     #: The smooth estimator's switch, on the calculations that value as this one does.
     BRANCH_AND_WEIGHT = F(
         'Branch_And_Weight', 'Text', default='Yes', values=['Yes', 'No'],
-        description='Price fixing-observed knockouts (TARF, accumulator, discrete barrier, '
-                    'autocall) with the SMOOTH estimator, each fixing\'s fired branch integrated '
+        description='Price fixing-observed knockouts (TARF, accumulator, autocall) with the '
+                    'SMOOTH estimator, each fixing\'s fired branch integrated '
                     'analytically; `No` is the crisp estimator')
     #: The state a pricing runs on.
     state = Base_Reval_State
