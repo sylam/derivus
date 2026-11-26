@@ -916,9 +916,12 @@ gate's noise).
 A decision registers one counterfactual with its whole reach, ledger included, since at a kink two
 partial ones score differently from their sum; only booked cash may be declared (`cash_events`), the
 collateral chain replaying the ledger. The reach starts at the decision's own row: a row priced with
-its observation applied forks with it, `obs_before` counting it or an `own_row` entry carrying its
-two values (**Held by**
-`tests/test_boundary_pricer_events.py::test_an_observation_forks_its_own_row`).
+its observation applied forks with it, `obs_before` counting it where firing leaves the row on
+`triggered`. Where firing first gives the row a value of its own, a knock-out's rebate, `obs_before`
+counts only earlier decisions, `untriggered` holds the row as its observation left it for every other
+decision's counterfactual, and an `own_row` entry carries its two values (**Held by**
+`tests/test_boundary_pricer_events.py::test_an_observation_forks_its_own_row`,
+`tests/test_partial_barrier_json.py::test_a_latched_knock_out_s_rebate_follows_its_first_touch_into_every_counterfactual`).
 
 !!! note "Under a recompute node, a `gap` the simulation decided is an output"
     An untaped forward gives `gap` no graph, so the node returns it and the coefficient arrives as

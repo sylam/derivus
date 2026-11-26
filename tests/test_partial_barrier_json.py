@@ -46,6 +46,7 @@ import sys
 
 # reference-derivus shadow-import guard (MEMORY): pin the package under test to THIS repo.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
 import pandas as pd
@@ -54,6 +55,7 @@ import pytest
 import derivus
 from derivus import utils
 from derivus.config import CustomJsonEncoder
+from crn_ladder import ladder
 
 BASE = pd.Timestamp('2024-06-28')
 X0, R_USD, R_EUR, SIGMA = 1.25, 0.04, 0.02, 0.15
@@ -418,7 +420,7 @@ def test_a_window_booked_on_either_side_of_its_pair_reads_the_same_crossings():
 # live. Report off a THIRD currency and USD is simulated too, the rate is absent, every interval
 # variance is zero, and `barrier_touched` collapses to a 0/1 endpoint test - the latch form.
 def _cva_job(deal, spot=X0, gradient=False, bridge=True, hessian=False,
-             batch=8192, batches=4):
+             batch=8192, batches=4, grid='0d 12m(1m)'):
     factors = {k: dict(v) for k, v in FACTORS.items()}
     factors['FxRate.EUR'] = dict(factors['FxRate.EUR'], Spot=spot)
     factors['SurvivalProb.CPTY'] = {
@@ -437,7 +439,7 @@ def _cva_job(deal, spot=X0, gradient=False, bridge=True, hessian=False,
     return {'Calc': {
         'Calculation': {
             'Object': 'CreditMonteCarlo', 'Base_Date': BASE, 'Currency': base,
-            'Time_grid': '0d 12m(1m)', 'Batch_Size': batch, 'Simulation_Batches': batches,
+            'Time_grid': grid, 'Batch_Size': batch, 'Simulation_Batches': batches,
             'MCMC_Simulations': 1, 'Random_Seed': 1, 'Deflation_Interest_Rate': base,
             'Gradient_Variables': 'Factors', 'Boundary_AAD_Bandwidth': 0.01,
             'Credit_Valuation_Adjustment': {
@@ -516,3 +518,29 @@ def test_asking_for_the_partial_barrier_sensitivities_does_not_move_the_exposure
     on, grad = _cva(deal=REBATED_LATCH_DEAL, gradient=True, bridge=False, batch=1024, batches=1)
     assert off == on, 'the exposure moved when sensitivities were requested: %r -> %r' % (off, on)
     assert grad is not None and abs(grad) > 0.0, 'no EUR spot gradient was reported at all'
+
+
+#: a latched knock-out worth its rebate and nothing else, a put struck far under the spot
+REBATE_ONLY = _deal('Up_And_Out', 1.32, strike=0.6, at_start='Yes', limit_days=182,
+                    option_type='Put', rebate=REBATE)
+
+
+def test_a_latched_knock_out_s_rebate_follows_its_first_touch_into_every_counterfactual():
+    """A row in the window is dead after an earlier touch, pays the rebate on its own first one and
+    is alive otherwise. So in one decision's counterfactual a LATER row reads the rebate where it is
+    the first touch in that world: a path that touched at the decision and again later is alive
+    through the decision forced off, its rebate moved to the later touch. The decision's jump is the
+    rebate on its own row LESS the rebate on the next touch.
+
+    The knock-out worth its rebate alone, watched on rows at three months and at the window's limit,
+    two live decisions: its CVA delta reads 1.1% from a CRN ladder at 2.5e-3 and 1e-2 flat to 1.2%,
+    at most 6.4% over five seeds at 16,384 paths and 4.0% over three at 32,768.
+
+    Killing mutations: the row's own test counted in `obs_before`, the rebate then reaching a row
+    only through its own decision's fork - 26% off; the row held alive rather than as its own test
+    left it - 26%; no `own_row` - 62%; the fork firing without the rebate - 116%.
+    """
+    kw = dict(deal=REBATE_ONLY, bridge=False, batch=16384, batches=1, grid='0d 3m 12m')
+    r = ladder(price=lambda s: _cva(spot=s, **kw)[0], aad=_cva(gradient=True, **kw)[1], base=X0,
+               rungs=(2.5e-3, 1e-2))
+    assert r.agrees(tol=0.1), str(r)

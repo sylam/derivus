@@ -2739,10 +2739,13 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
     variance to work with, and only then can a ``LatchedBoundarySet`` register. With the bridge live
     ``barrier_touched`` is continuous in the spot and ordinary AAD already carries the flux, so
     registering would count one decision twice (measured: the CVA delta reads 0.44% from a CRN
-    ladder flat to 1.02% with nothing registered). The registration DECLARES its ledger: ``settles``
-    for the expiry, which pays out everything left, and ``cash_events`` for the knock-out's rebate,
-    one entry per decision on the date the hit pays - zero at row 0, which books nothing, and zero
-    at the terminal row, whose rebate is inside the expiry settle.
+    ladder flat to 1.02% with nothing registered). A row is dead after an earlier touch, pays a
+    knock-out's rebate on its own first one and is alive otherwise, so it counts the decisions
+    strictly before it, holds what its own test left and forks with that test (``own_row``), the
+    discrete barrier's form. The registration DECLARES its ledger: ``settles`` for the expiry, which
+    pays out everything left, and ``cash_events`` for the knock-out's rebate, one entry per decision
+    on the date the hit pays - zero at row 0, which books nothing, and zero at the terminal row,
+    whose rebate is inside the expiry settle.
 
     On the endpoint branch the registration decides the SIGN, and on a grid carrying
     six live decisions the MAGNITUDE too: over five seeds the registered delta reads -1.915 at
@@ -2823,6 +2826,8 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
         rows, prev_touched, prev_spot = [], 0.0, None
         last_bar = adj_barrier.shape[0] - 1 if torch.is_tensor(adj_barrier) else None
         for index in range(deal_time.shape[0]):
+            # the decisions strictly before the row: its own forks it through `own_row`
+            b_obs_before.append(len(b_gaps))
             if in_window[index]:
                 bar_t = adj_barrier[min(index, last_bar)] if last_bar is not None else adj_barrier
                 if latched:
@@ -2840,8 +2845,6 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
                 prev_touched = torch.zeros_like(spot[0])
             prev_spot = spot[index]
             rows.append(prev_touched)
-            # the row's OWN test has already resolved by the time it reports
-            b_obs_before.append(len(b_gaps))
         barrier_touched = torch.stack(rows)
         first_touch = barrier_touched[1:] - barrier_touched[:-1]
         # the expiry's row and every row past it pay on the level the expiry fixed
@@ -2849,7 +2852,6 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
             spot_at, factor_dep['Expiry'] - interval_days[expiry.size:], factor_dep['Expiry_Fixing'])
         payoff_at = buy_or_sell * torch.relu(phi * (spot_at - strike)) * c_at
 
-        own_row = None
         if direction == BARRIER_IN:
             forward = spot_prior * torch.exp(b * expiry_years)
             payoff_prior = utils.black_european_option(
@@ -2873,35 +2875,33 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
             if cash_rebate:
                 for cash_index, cash in zip(deal_data.Time_dep.deal_time_grid[1:], rebate_part):
                     cash_settle(shared, payoff_currency, cash_index, cash)
-            if latched and b_gaps and cash_rebate:
-                # the decision's OWN row also forks: firing FIRST pays the rebate there, while a row
-                # an earlier decision killed pays nothing either way. One decision is ONE
-                # counterfactual, so the fork rides this registration rather than a second one
-                own_row, earlier = [], torch.zeros_like(b_fired[0])
-                last_row = alive.shape[0] - 1
-                for k, row in enumerate(b_rows):
-                    # row 0 is the deal in force today: `first_touch` starts at row 1
-                    fires = torch.zeros_like(alive[row]) if row == 0 else (
-                        buy_or_sell * cash_rebate * ~earlier)
-                    own_row.append([(row, fires.detach(),
-                                     torch.where(earlier, dead[row], alive[row]).detach())])
-                    # the fork's ledger, one entry per decision in reporting currency: the rebate
-                    # settles on its trigger date or nothing settles; row 0 pays nothing and the
-                    # TERMINAL row's rebate is inside the expiry settle, so both declare zero
-                    unit = (report_fx(fx_rep, row) * buy_or_sell * cash_rebate
-                            if 0 < row < last_row else 0.0)
+        if latched and b_gaps:
+            # a row is dead after an earlier touch, else as its own test left it: firing FIRST
+            # gives the dead value and, after row 0, a knock-out's rebate. So the decision forks
+            # that row, and as ONE counterfactual carries its ledger too
+            alive, dead = alive.detach(), dead.detach()
+            own_row, earlier, untriggered = [], torch.zeros_like(b_fired[0]), alive.clone()
+            pays = buy_or_sell * cash_rebate if direction == BARRIER_OUT else 0.0
+            for k, row in enumerate(b_rows):
+                forks = (dead[row] + (pays if row else 0.0), alive[row])
+                untriggered[row] = torch.where(b_fired[k], *forks)
+                own_row.append([(row,) + tuple(torch.where(earlier, dead[row], x) for x in forks)])
+                if pays:
+                    # the rebate settles on its trigger date or nothing settles, in reporting
+                    # currency; row 0 pays nothing and the TERMINAL row's rebate is inside the
+                    # expiry settle, so both declare zero
+                    unit = report_fx(fx_rep, row) * pays if 0 < row < alive.shape[0] - 1 else 0.0
                     b_cash.append((int(deal_data.Time_dep.deal_time_grid[row]), k,
                                    (unit * torch.ones_like(alive[row])).detach(),
                                    torch.zeros_like(alive[row]),
                                    (unit * (b_fired[k] & ~earlier).to(alive.dtype)).detach()))
-                    earlier = earlier | b_fired[k]
-        if latched and b_gaps:
+                earlier = earlier | b_fired[k]
             # the deal's whole remaining value is settled at expiry - a knock-out's terminal
             # rebate row lands there too - so a branch settles what THAT branch is worth there,
             # while every EARLIER rebate row is a decision's own payment through `cash_events`
             shared.boundary_sets.append(utils.LatchedBoundarySet(
                 gaps=b_gaps, fired=b_fired, obs_before=np.array(b_obs_before),
-                untriggered=alive.detach(), triggered=dead.detach(), own_row=own_row,
+                untriggered=untriggered, triggered=dead, own_row=own_row,
                 cash_events=b_cash or None,
                 settles=[(int(deal_data.Time_dep.deal_time_grid[-1]),
                           (report_fx(fx_rep, -1) * combined[-1]).detach())],
