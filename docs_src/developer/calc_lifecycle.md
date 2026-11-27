@@ -896,10 +896,12 @@ objective (CVA, FVA, the base value).
     `tests/test_boundary_pricer_events.py::test_a_netting_set_is_scored_on_the_portfolio_not_on_itself`.
 
 The classes differ in reach, so no mode flag: `LatchedBoundarySet` reaches every later row (the
-latching pricers, the swaption); `InnerBoundarySet` lives inside an inner Monte Carlo (the TARF's
-knock-in) and carries the objective's derivative, an inner path moving a row by `1/n`;
-`MTABoundarySet` is a collateral transfer and every later balance, registered where the document
-asks.
+latching pricers, the swaption); `MTABoundarySet` is a collateral transfer and every later balance,
+registered where the document asks. A scenario's decision on a print that latches nothing, the
+autocall's observed put and the TARF's observed knock-in, is `LatchedBoundarySet.observed`: one
+counterfactual a print, forking every row observing it and declaring the row it settles on whole
+(**Held by** `tests/test_boundary_tarf_events.py::test_an_observed_knock_in_is_one_counterfactual_scored_across_its_jump`,
+`tests/test_autocall_json.py::test_a_collateralised_cva_delta_carries_every_row_a_decision_settles`).
 A set yields one decision at a time, solved over its whole gap; `MTABoundarySet` yields its margin
 calls a stack at a time, a call's side a row: one walk restarts as many calls as `RESTART_ELEMENTS`
 holds of balance, and one replay and one objective score them. A scenario past the band has
@@ -953,6 +955,7 @@ differencing across a jump, and its flattest interior rung is within tolerance (
 | continuous barrier, one-touch, no-touch; CVA | `test_barrier_bridge.py::test_aad_delta_matches_bump_and_reprice` | 4,096 × 1 | 2% |
 | TARF knock-in; CVA | `test_boundary_tarf_events.py::test_the_knock_in_gradient_matches_bump_and_reprice_under_exposure` | 512 × 4 | 2% |
 | TARF knock-in; base value | `test_boundary_tarf_events.py::test_the_knock_in_gradient_matches_bump_and_reprice_at_base_valuation` | 2 × 65,536 inner | 2% |
+| TARF observed knock-in; CVA | `test_boundary_tarf_events.py::test_an_observed_knock_in_is_one_counterfactual_scored_across_its_jump` | 16,384 × 4 | 1.2% |
 | discrete barrier latch; CVA | `test_boundary_pricer_events.py::test_discrete_barrier_latch_gradient_matches_bump_and_reprice` | 1,024 × 4 | 5% |
 | the same under a CSA; CVA | `test_boundary_pricer_events.py::test_collateralised_barrier_latch_gradient_matches_bump_and_reprice` | 512 × 8 | 8% |
 | discrete barrier latch; FVA | `test_boundary_pricer_events.py::test_fva_gradient_carries_the_boundary_term_too` | 1,024 × 4 | 5% |

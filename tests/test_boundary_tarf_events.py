@@ -134,10 +134,10 @@ def _baseval(deal, spot=SPOT, greeks=False, sims=1 << 16):
     return price, grad
 
 
-def _cmc(deal, spot=SPOT, gradient=False, batches=4, batch=512, mcmc=128):
+def _cmc(deal, spot=SPOT, gradient=False, batches=4, batch=512, mcmc=128, grid='0d 2m(2m)'):
     """(cva, mtm profile, d(cva)/d(FxRate.AUD spot))."""
     overrides = {
-        'Run_Date': BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 2m(2m)', 'Batch_Size': batch,
+        'Run_Date': BASE.strftime('%Y-%m-%d'), 'Time_grid': grid, 'Batch_Size': batch,
         'Simulation_Batches': batches, 'Random_Seed': 1, 'Currency': 'USD', 'Tenor_Offset': 0.0,
         'MCMC_Simulations': mcmc, 'Deflation_Interest_Rate': 'USD', 'Generate_Cashflows': 'Yes',
         'Gradient_Variables': 'Factors',
@@ -165,6 +165,8 @@ PIN_CMC = _tarf(0.02, BIMONTHLY, buy_sell='Sell')
 # nearly spent, so at the declared bandwidth the target sits inside a kernel width of the strike;
 # four fixings, so a path redeemed at one still decides the next
 NEARLY_SPENT_CMC = _tarf(0.0005, BIMONTHLY[:4], buy_sell='Sell')
+# two fixings, each observed on the quarterly row it settles on, a target most scenarios keep short of
+OBSERVED_KNOCK_IN_CMC = _tarf(0.02, [183, 273], barrier=BARRIER, buy_sell='Sell')
 
 
 # ---------------------------------------------------------------- safety: the value must not move
@@ -227,6 +229,25 @@ def test_the_knock_in_gradient_matches_bump_and_reprice_at_base_valuation():
     r = ladder(price=lambda s: _baseval(KNOCK_IN, spot=s)[0], aad=aad, base=SPOT,
                rungs=(3e-4, 1e-3, 3e-3, 1e-2))
     assert r.agrees(tol=0.02), f'the knock-in flux is not reaching the tape\n{r}'
+
+
+def test_an_observed_knock_in_is_one_counterfactual_scored_across_its_jump():
+    """A fixing an exposure row has observed knocks in on the scenario's own print, every inner
+    path alike, so the decision moves the rows observing it by its whole jump: it registers as one
+    counterfactual a fixing, those rows forked and the row it settles on declared, and the CVA is
+    differenced across the jump, whose kink a derivative times the jump does not see.
+
+    MEASURED at 16,384 paths x 4 batches, rungs 3e-3/7e-3/1.5e-2: AAD -31,245.0 against a ladder
+    reading -31,396.9 at 1.15% flatness, 0.49%; seeds 2 and 3 read 0.64% and 0.90%.
+
+    Killing mutations: the decision scored by the CVA's derivative times its jump, 1.86% (seeds 2
+    and 3, 1.90% and 2.36%); its forks dropped, so it moves no row, 11.33%.
+    """
+    kw = dict(batches=4, batch=16384, mcmc=64, grid='0d 3m(3m)')
+    _, _, aad = _cmc(OBSERVED_KNOCK_IN_CMC, gradient=True, **kw)
+    r = ladder(price=lambda s: _cmc(OBSERVED_KNOCK_IN_CMC, spot=s, **kw)[0], aad=aad, base=SPOT,
+               rungs=(3e-3, 7e-3, 1.5e-2))
+    assert r.agrees(tol=0.012), f'an observed knock-in is misread across its jump\n{r}'
 
 
 # ---------------------------------------------------------------- B2: the redemption's own margin

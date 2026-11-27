@@ -4020,7 +4020,8 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     AXIS (``Invert_Spot``) is the declared kit's own; nothing here knows of it.
 
     BOUNDARY AAD registers two decisions taken on simulated state: the target FILLING (LATCHED, a
-    later block's accrual being only ever larger) and the OTM leg KNOCKING IN (per inner path). The
+    later block's accrual being only ever larger) and the OTM leg KNOCKING IN on an OBSERVED fixing,
+    the scenario's own print, which latches nothing (a live one is the conditional-p mixture's). The
     redemption latches once as the block OPENS and again at each OBSERVED fixing inside it, those
     being crossings the strip takes itself; a row that redeems mid-strip keeps the fixings it
     reached, which is what the latch's ``pending`` carries. A fixing's gap is its signed margin, the
@@ -4074,10 +4075,11 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         """Inner one-step-survival Monte Carlo over one block of MTM rows; the mean PV per row.
 
         PURE bound/theta split for ``InnerMCRecompute``; by-products are RETURNED. Returns
-        ``(mtm, untriggered, settled, settle_rows, knock_rows) + gaps + jumps``: the block's rows,
-        the redemption latch's counterfactual rows, the cashflows settling today, the block-local
-        rows they and the knock-in decisions land on, then one gap and one jump per (row, fixing) -
-        the gaps being the outputs whose cotangent carries the correction.
+        ``(mtm, untriggered, settled, settle_rows, knock_rows, depths, pending) + gaps + jumps``:
+        the block's rows, the redemption latch's counterfactual rows, the cashflows settling today,
+        the block-local rows they land on, each knock-in as its row, its fixing and whether the row
+        settles it, each row's observed depth and pending payments, then one gap and one row jump
+        per knock-in - the gaps being the outputs whose cotangent carries the correction.
 
         Two decisions fork here under ``boundary_aad``:
 
@@ -4087,11 +4089,9 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
           INSIDE ITS OWN STRIP where an observed fixing crosses, and is then worth the fixings it
           reached rather than zero, so each observed fixing's payment on a weight of ONE is
           returned beside the depth the row observed - what the latch's ``pending`` counts.
-        - KNOCK-IN: decided on ``S_fix``, one decision per inner path, jump
-          ``-Dj * L * p * relu(-intr) * N_otm``, gap in log space so a bandwidth means what it means
-          at a barrier. At an already-observed fixing the decision is per SCENARIO and the gap is
-          expanded along the inner axis - exact, the pooled kernel's ``1/n`` weights cancelling the
-          ``n`` copies of each jump.
+        - KNOCK-IN: decided on an OBSERVED fixing's print, the scenario's and so every inner
+          path's, gap in log space so a bandwidth means what it means at a barrier, jump the row's
+          mean of ``-Dj * L * p * relu(-intr) * N_otm``, dead wherever ``L`` is.
         """
 
         K = strike
@@ -4268,11 +4268,12 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                     with torch.no_grad():
                         P_alive = P_alive + Dj * L_alive * p * (cf_itm - cf_otm)
                     if barrier > 0.0 and otm_analytic is None:
-                        # one decision per inner path; gap > 0 means KNOCKED IN, in log space, and
-                        # `expand_as` covers the already-observed fixing too. Skipped wherever the
-                        # conditional-p mixture took this decision - ONE estimator per decision
-                        jump = (-buy_sell * Dj * L * p * F.relu(-intr) * N_otm).detach()
-                        knock = ((callOrPut * torch.log(barrier / S_fix)).expand_as(jump), jump)
+                        # the scenario's own print, gap > 0 KNOCKED IN in log space, and what the
+                        # row gains where it flips - here only, the conditional-p mixture taking
+                        # a live fixing: ONE estimator per decision
+                        knock = ((callOrPut * torch.log(barrier / S_fix)).squeeze(1), (
+                            -buy_sell * Dj * L * p * F.relu(-intr) * N_otm).mean(axis=1).detach(),
+                            (settle_offset + j, tau[j] == 0))
                 # the remaining target, decremented by this fixing's accrual on survivors
                 accr = cf_itm  # correct for both standard and inverted targets
                 if smooth:
@@ -4310,7 +4311,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 if knock is not None:
                     gaps.append(knock[0])
                     jumps.append(knock[1])
-                    knock_rows.append(i)
+                    knock_rows.append((i,) + knock[2])
                 if settle is not None:
                     settled.append(settle)
                     settle_rows.append(i)
@@ -4408,8 +4409,8 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     # `smooth` removes both decisions, so under it neither the redemption latch nor the
     # knock-in registers
     boundary_aad = getattr(shared, 'boundary_aad', False) and not smooth
-    b_gaps, b_fired, b_obs_before, b_inner, alive, row_ofs = [], [], [], [], [], 0
-    b_pending, b_cash = [], []
+    b_gaps, b_fired, b_obs_before, alive, row_ofs = [], [], [], [], 0
+    b_pending, b_cash, b_knocks, b_knock_rows = [], [], [], {}
 
     # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM
     scalars = oss_model_scalars(factor_dep, shared)
@@ -4462,11 +4463,20 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
 
             if boundary_aad:
                 alive.append(block_alive)
-                # one knock-in decision per (row, fixing), each with the row it was taken on; `fixed`
-                # names the tuple's fixed prefix - adding an output means moving it
-                fixed, n_inner = 7, len(knock_rows)
-                b_inner.extend([[row_ofs + row, outputs[fixed + k], outputs[fixed + n_inner + k]]
-                                for k, row in enumerate(knock_rows)])
+                # every row observing a fixing forks its knock-in, and the decision registers once,
+                # on the row the fixing settles, with that row's whole cash; `fixed` names the
+                # tuple's fixed prefix - adding an output means moving it
+                fixed, n_knock = 7, len(knock_rows)
+                for m, (row, fixing_at, own) in enumerate(knock_rows):
+                    gap, jump = outputs[fixed + m], outputs[fixed + n_knock + m]
+                    b_knock_rows.setdefault(fixing_at, []).append((row_ofs + row, jump))
+                    if own:
+                        fxr = report_fx(fx_rep, row_ofs + row)
+                        booked = fxr * buy_sell * sum(
+                            v for r, v in zip(settle_rows, block_settled) if r == row).detach()
+                        t = int(np.searchsorted(
+                            time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM]))
+                        b_knocks.append((gap, b_knock_rows.pop(fixing_at), (t, booked, fxr * jump)))
                 # THE REDEMPTION CHAIN IS DENSE IN THE ACCRUAL INDEX: a block's rows walk different
                 # lengths of the OBSERVED prefix, each reporting the decision at its own last fixing;
                 # `expand` because block 0's accrual is the HISTORIC one, a number, not a tensor
@@ -4506,7 +4516,6 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     # counterfactual to land on
     if boundary_aad and time_grid.report_index is not None:
         to_mtm = deal_to_mtm_grid(time_grid, deal_data, fx_rep)
-        mark = len(shared.boundary_sets)
         # redemption, decided at least on the first block's opening pot: `triggered` is worth zero
         # once the deal is dead and the strip is behind it, `pending` is what a row that redeemed
         # INSIDE its own strip still banked, and `untriggered` the loop on a weight never zeroed
@@ -4530,18 +4539,10 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                     float((latch.select(prefix) - mtm.detach()).abs().max()),
                     declared_ledger_residual(latch.cash_events, prefix),
                     float(mtm.detach().abs().max()))
-        if b_inner:
-            rows, gaps, jumps = zip(*b_inner)
-            shared.boundary_sets.append(utils.InnerBoundarySet(
-                gaps=list(gaps), rows=list(rows), jumps=list(jumps), reported=mtm.detach(),
-                to_mtm=to_mtm, report_index=time_grid.report_index))
-        # ONE DECISION, ONE ESTIMATOR - logged because no reported frame says whether the mixture
-        # superseded the knock-in's kernel flux or joined it. The tail this deal added does: crisp
-        # with a live barrier it is the latch AND an `InnerBoundarySet`; under the mixture, the latch
-        if logging.getLogger().isEnabledFor(logging.DEBUG):
-            logging.debug('TARF %s boundary sets: %s',
-                          deal_data.Instrument.field.get('Reference'),
-                          [type(b).__name__ for b in shared.boundary_sets[mark:]])
+        for gap, jumps, cash in b_knocks:
+            # a knock-in latches nothing - its reach is the rows observing it and its payment
+            shared.boundary_sets.append(utils.LatchedBoundarySet.observed(
+                gap, jumps, cash, mtm.detach(), to_mtm, time_grid.report_index))
 
     return mtm
 
@@ -4632,12 +4633,12 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         barrier, where the leg reads the same law as the path and is bit-identical.
 
         Returns ``(mtm, settled, settle_rows, event_rows, terminationDate, alive, bar_rows,
-        due_fired, due_survived) + gaps + fired + survived + bar_gaps + bar_on + bar_off +
-        bar_jumps`` - the marks, the by-products the caller performs once - each observed coupon
-        or put decision as its row, its date and whether the row is that date's own, each settled
-        row's whole cash in the two states of the decision gating it - then per coupon decision a
-        gap (carrying the correction's cotangent) and two detached branch values, and per put
-        decision the same and the put the row pays if it is breached.
+        due_fired, due_survived) + gaps + fired + survived + bar_gaps + bar_jumps`` - the marks,
+        the by-products the caller performs once - each observed coupon or put decision as its row,
+        its date and whether the row is that date's own, each settled row's whole cash in the two
+        states of the decision gating it - then per coupon decision a gap (carrying the
+        correction's cotangent) and two detached branch values, and per put decision a gap and the
+        put the row pays if it is breached.
 
         ``windows`` is each remaining coupon's window as ``(length, observed, first index)`` into
         the equity strip, which is what makes a window of one the no-averaging arithmetic exactly.
@@ -4660,7 +4661,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         # the by-products the caller performs once
         settled, settle_rows, event_rows, gaps, fired, survived = [], [], [], [], [], []
         alive, due_fired, due_survived = [], [], []
-        bar_rows, bar_gaps, bar_on, bar_off, bar_jumps = [], [], [], [], []
+        bar_rows, bar_gaps, bar_jumps = [], [], []
 
         isBarrierDate = BarrierDates[offset:]
         isFloatingDate = Floating[offset:]
@@ -4946,7 +4947,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                             # the scenario's own breach, gap > 0 BREACHED, and what the row
                             # gains where it flips - here only, the splice taking it where
                             # `interval` is set; no barrier decides nothing (log(0))
-                            bar = (torch.log(putBarrier / at).squeeze(1), breach.squeeze(1),
+                            bar = (torch.log(putBarrier / at).squeeze(1),
                                    torch.where(dead, 0.0, put_leg.mean(axis=1)).detach(),
                                    (offset + j, row_at[j] == 0.0))
                 if settle is not None and boundary_aad:
@@ -4966,7 +4967,6 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
              coupon_count), steps = oss_stream(
                 fixing, (Sj, P, L, P_cf, L_cf, put_S, put_L, terminationDate, coupon_index,
                          coupon_count), len(coupon), shared, ledger is None)
-            row_bars = []
             for event, settle, bar, declared in steps:
                 if event is not None:
                     event_rows.append((i,) + event[2])
@@ -4979,7 +4979,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                     due_fired.append(declared[0])
                     due_survived.append(declared[1])
                 if bar is not None:
-                    row_bars.append(bar)
+                    bar_rows.append((i,) + bar[2])
+                    bar_gaps.append(bar[0])
+                    bar_jumps.append(bar[1])
 
             if ledger is not None:
                 ledger.check('AUTOCALL row {}'.format(i))
@@ -4988,20 +4990,12 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             mcmc.append(torch.where(dead, torch.zeros_like(row_value), row_value))
             if P_cf is not None:
                 survived.append(torch.where(dead, 0.0, P_cf.mean(axis=1)).detach())
-            for gap, breach, jump, key in row_bars:
-                # the row's value with the put breached and not, everything else as it stands
-                held = torch.where(dead, 0.0, row_value - breach * jump).detach()
-                bar_rows.append((i,) + key)
-                bar_gaps.append(gap)
-                bar_on.append(held + jump)
-                bar_off.append(held)
-                bar_jumps.append(jump)
 
         stack = lambda rows: torch.stack(rows) if rows else spot_prices.new_empty(0)
         return (torch.stack(mcmc), stack(settled), settle_rows, event_rows, terminationDate,
                 stack(alive), bar_rows, stack(due_fired), stack(due_survived),
                 ) + tuple(gaps) + tuple(fired) + tuple(survived) + tuple(bar_gaps) + tuple(
-                    bar_on) + tuple(bar_off) + tuple(bar_jumps)
+                    bar_jumps)
 
     mtm_list = []
     factor_dep = deal_data.Factor_dep
@@ -5079,7 +5073,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     # wrong; what ordinary AAD drops is the flux of scenarios across the threshold
     boundary_aad = getattr(shared, 'boundary_aad', False) and not smooth
     row_ofs = 0
-    b_latch, b_obs, b_alive, b_cash, b_puts, b_forks, b_put_forks = [], [], [], [], [], {}, {}
+    b_latch, b_obs, b_alive, b_cash, b_puts, b_forks, b_put_rows = [], [], [], [], [], {}, {}
 
     for index, (forward_block, discount_block, spot_block, moneyness_block) in enumerate(
             utils.split_counts([forward, discount, spot, moneyness], counts, shared)):
@@ -5245,8 +5239,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                     # date the same way: forked on every row observing it, registered on its payment row
                     b0, n_bars, put_owner = fixed + 3 * n_events, len(bar_rows), {}
                     for m, (r, barrier_at, own) in enumerate(bar_rows):
-                        b_put_forks.setdefault(barrier_at, []).append(
-                            (row_ofs + r, outputs[b0 + n_bars + m], outputs[b0 + 2 * n_bars + m]))
+                        b_put_rows.setdefault(barrier_at, []).append(
+                            (row_ofs + r, nominal * outputs[b0 + n_bars + m]))
                         if own:
                             put_owner[r] = (m, barrier_at)
                     for t, row, *cash in zip(settle_at, settle_rows, block_settled, due_fired,
@@ -5262,12 +5256,9 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         if row in put_owner:
                             # the row's cash with the put breached and not, the rest as booked
                             m, barrier_at = put_owner[row]
-                            gap = outputs[b0 + m]
-                            jump = (nominal * fxr * outputs[b0 + 3 * n_bars + m]).detach()
-                            flag = (gap >= 0).detach()
-                            held = booked - flag * jump
-                            b_puts.append((gap, flag, b_put_forks.pop(barrier_at),
-                                           (int(t), 0, held + jump, held, booked)))
+                            jump = (nominal * fxr * outputs[b0 + n_bars + m]).detach()
+                            b_puts.append((outputs[b0 + m], b_put_rows.pop(barrier_at),
+                                           (int(t), booked, jump)))
                 row_ofs += len(t_block)
                 mtm_list.append(nominal * theo_cashflow)
         else:
@@ -5306,13 +5297,10 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                     deal_data.Instrument.field.get('Reference'), len(b_latch), len(b_cash),
                     float((latch.select(prefix) - mtm.detach()).abs().max()),
                     declared_ledger_residual(b_cash, prefix), float(mtm.detach().abs().max()))
-        for gap, flag, forks, cash in b_puts:
+        for gap, jumps, cash in b_puts:
             # a breach latches nothing - its reach is the rows observing it and its payment
-            shared.boundary_sets.append(utils.LatchedBoundarySet(
-                gaps=[gap], fired=[flag], obs_before=np.zeros(len(mtm), dtype=int),
-                untriggered=mtm.detach(), triggered=mtm.detach(),
-                own_row=[[(r, nominal * a, nominal * b) for r, a, b in forks]],
-                cash_events=[cash], to_mtm=to_mtm, report_index=time_grid.report_index))
+            shared.boundary_sets.append(utils.LatchedBoundarySet.observed(
+                gap, jumps, cash, mtm.detach(), to_mtm, time_grid.report_index))
 
     return mtm
 

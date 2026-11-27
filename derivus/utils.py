@@ -272,15 +272,13 @@ class BoundarySet:
     estimate is not what is wrong. What ordinary AAD drops is the FLUX: as a factor moves, scenarios
     cross the trigger, and the indicator recording it has zero derivative almost everywhere.
 
-    Subclasses differ in ONE thing: how far a decision reaches - every row from the decision onward,
-    or inside a pricer's own inner Monte Carlo. A decision must register as ONE counterfactual
-    carrying its whole reach, because an objective with a kink (a collateralised net sits at the relu
-    by construction) scores the sum of two partial counterfactuals differently from the
-    counterfactual of the sum.
+    A decision must register as ONE counterfactual carrying its whole reach, because an objective
+    with a kink (a collateralised net sits at the relu by construction) scores the sum of two
+    partial counterfactuals differently from the counterfactual of the sum.
 
-    They share the estimator's contract: `objective_jumps(score)` yields, per decision, the gap
-    (graph retained, signed so gap > 0 means the trigger FIRED) and the objective's response. This
-    base is the plumbing every form consumes: the gross-to-net chain and `portfolio_delta`.
+    The estimator's contract: `objective_jumps(score)` yields, per decision, the gap (graph
+    retained, signed so gap > 0 means the trigger FIRED) and the objective's response. This base is
+    the plumbing that consumes it: the gross-to-net chain and `portfolio_delta`.
 
     Branch values are registered on the PRICER's own grid and currency, and `to_mtm` is the deal's
     own map onto the MTM grid - `fx_rep` then INTERPOLATION, never a tail pad, since another deal's
@@ -538,50 +536,24 @@ class LatchedBoundarySet(BoundarySet):
                 yield (t, torch.zeros_like(booked),
                        torch.where(self.fired[d], if_fired, if_not) * ~before[d], booked)
 
+    @classmethod
+    def observed(cls, gap, jumps, cash, mark, to_mtm, report_index):
+        """A scenario's decision on a print several rows observe, which latches nothing and fires
+        on the gap's sign: `jumps` holds `(pricer_row, jump)` per row observing the print and `cash`
+        is its payment `(mtm_row, booked, jump)`, each jump what firing adds to the row of `mark`,
+        the profile as reported on the pricer's grid, or to the payment as booked."""
+        fired = (gap >= 0).detach()
 
-@dataclass
-class InnerBoundarySet(BoundarySet):
-    """Triggers taken INSIDE a pricer's own Monte Carlo - one decision per inner path.
+        def forced(value, jump):
+            held = value - fired * jump
+            return held + jump, held
 
-    A TARF's knock-in is read off `Sj`, so the decision is per (scenario, inner path) and the
-    reported row is the MEAN over those paths. That makes this a third shape rather than a variant:
-    the other two move ONE SCENARIO's reported value by a finite amount, where an inner path moves
-    the reported row by 1/n of itself. The objective's response to a perturbation that small is its
-    DERIVATIVE, and a difference taken over a jump the reported value never takes measures its
-    curvature instead - which CVA's `relu` has plenty of.
-
-    So this shape carries the per-inner-path jump and `objective_jumps` differentiates `score` ONCE
-    at the reported value and multiplies. The jump is the UNDIVIDED change to the row's own
-    accumulator, the kernel's density already dividing by the pooled sample size B*n - which is also
-    why the gaps go in as one (B, n) tensor rather than n separate decisions.
-
-    Requires the objective to be SEPARABLE per scenario, which every exposure measure here is: the
-    sensitivity is read off one backward pass over `score(...).sum()`, and that is the per-scenario
-    derivative only because scenario b's objective depends on column b alone.
-    """
-    rows: list  # per event, int: the PRICER-grid row the jump lands on
-    jumps: list  # per event, (B, n_inner) detached: the change in that row's
-    # own accumulator if THAT inner path's trigger flips,
-    # J(fired) - J(did not), undivided by n
-    reported: object  # (T, B) detached, PRICER grid: the value as reported
-
-    def objective_jumps(self, score):
-        """Per decision, the gap and the objective's response to that inner path's jump.
-
-        The multiplier is d(objective)/d(this pricer row) by the chain rule through the deal's own
-        map. That map is LINEAR, so the image of a unit row IS its column of the Jacobian, and one
-        backward pass through `score` supplies the other half - nothing re-priced, nothing drawn.
-        """
-        for gap, row, jump in zip(self.gaps, self.rows, self.jumps):
-            with torch.enable_grad():
-                unit = torch.zeros_like(self.reported)
-                unit[row] = 1.0
-                weight = self.to_mtm(unit)
-                probe = torch.zeros_like(weight).requires_grad_(True)
-                sensitivity, = torch.autograd.grad(score(self.portfolio_delta(probe)).sum(), probe)
-            # outside the block: `enable_grad` is thread-local too, and a generator suspended
-            # inside one hands the caller a context it never asked for
-            yield gap, (sensitivity * weight).sum(dim=0).unsqueeze(1) * jump
+        t, booked, paid = cash
+        return cls(gaps=[gap], fired=[fired], obs_before=np.zeros(len(mark), dtype=int),
+                   untriggered=mark, triggered=mark,
+                   own_row=[[(row,) + forced(mark[row], jump) for row, jump in jumps]],
+                   cash_events=[(t, 0) + forced(booked, paid) + (booked,)],
+                   to_mtm=to_mtm, report_index=report_index)
 
 
 @dataclass
