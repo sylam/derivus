@@ -2417,12 +2417,12 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                     -1.0 if eta == BARRIER_DOWN else 1.0))
                 b_crossed.append(crossed.detach())
             # its own row reads it here: the already-hit value and a knock-out's rebate where it
-            # fired, the walk where not - and forks with it unless an earlier one fired
+            # fired, the walk where not - and forks with it, the latch keeping a row already hit
             forks = (hit_value[-1] + (nominal * rebate_per_unit if direction == BARRIER_OUT else 0.0),
                      oss_result[-1] if run_oss else hit_value[-1])
             if boundary_aad:
-                b_own.append([(row_ofs - 1,) + tuple(
-                    torch.where(row_barrier_hit[-1], hit_value[-1], x).detach() for x in forks)])
+                # a copy each, since a row's view would keep its whole block alive
+                b_own.append([(row_ofs - 1,) + tuple(x.detach().clone() for x in forks)])
             if run_oss:
                 oss_result = torch.cat([oss_result[:-1], torch.where(crossed, *forks).unsqueeze(0)])
             if cash_rebate and direction == BARRIER_OUT:
@@ -2883,9 +2883,10 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
             own_row, earlier, untriggered = [], torch.zeros_like(b_fired[0]), alive.clone()
             pays = buy_or_sell * cash_rebate if direction == BARRIER_OUT else 0.0
             for k, row in enumerate(b_rows):
-                forks = (dead[row] + (pays if row else 0.0), alive[row])
+                # a copy, since a row's view would keep the whole profile alive
+                forks = (dead[row] + (pays if row else 0.0), alive[row].clone())
                 untriggered[row] = torch.where(b_fired[k], *forks)
-                own_row.append([(row,) + tuple(torch.where(earlier, dead[row], x) for x in forks)])
+                own_row.append([(row,) + forks])
                 if pays:
                     # the rebate settles on its trigger date or nothing settles, in reporting
                     # currency; row 0 pays nothing and the TERMINAL row's rebate is inside the

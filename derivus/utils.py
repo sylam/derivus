@@ -374,8 +374,8 @@ class LatchedBoundarySet(BoundarySet):
     untriggered: object  # (T, B) detached, PRICER grid: value while it has not fired
     triggered: object  # (T, B) detached, PRICER grid: value once it has
     # The rows a decision forks that `obs_before` does not reach: None, or per decision a LIST of
-    # `(pricer_row, value_if_fired, value_if_not)`, detached. A LAGGED settlement forks every row
-    # of its block, not only the observation's. One decision is still ONE counterfactual.
+    # `(pricer_row, value_if_fired, value_if_not)`, detached, read only where no earlier decision
+    # fired. A LAGGED settlement forks every row of its block; one decision is ONE counterfactual.
     own_row: list = None
     # Settled-cash-in-transit a DEAD row still carries: None, or one entry per PRICER row - None or
     # `(first_decision, (m, B) tensor)` whose slice t is the row-present value of decision
@@ -437,7 +437,9 @@ class LatchedBoundarySet(BoundarySet):
                 for state, side in ((on, 1), (off, 2)):
                     profile = self.select(state)
                     for fork in own:
-                        profile[fork[0]] = fork[side]
+                        # a row an earlier decision killed keeps the latch's dead value
+                        profile[fork[0]] = torch.where(
+                            state[self.obs_before[fork[0]]], profile[fork[0]], fork[side])
                     deltas.append(self.to_mtm(profile) - reported)
             yield (gap,) + tuple(deltas)
 
