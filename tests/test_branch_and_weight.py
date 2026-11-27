@@ -476,33 +476,34 @@ def test_the_ledger_conserves_on_a_real_document(name, tmp_path):
 # THE ACCUMULATOR
 # ======================================================================================
 
-def test_the_accumulator_value_is_untouched_and_its_curvature_is_not(tmp_path):
-    """This pricer's loop was already the smooth estimator - analytic survival, truncated
-    continuation, a fired branch worth exactly zero - so the switch cannot move its VALUE and does
-    not: bit-identical off and on, first order with it. What it changes is the curvature, because
-    both legs are `relu`s of one argument whose pathwise gamma is an exact zero. One document,
-    65536 paths, the same `Greeks: 'All'` run either way:
+def test_the_accumulator_reports_one_curvature_under_either_estimator(tmp_path):
+    """This pricer's loop is the smooth estimator whatever the switch says - analytic survival,
+    truncated continuation, a fired branch worth exactly zero - and a second derivative builds the
+    per-fixing kink term under either, both legs being `relu`s of one argument whose pathwise gamma
+    is an exact zero. So off and on are one estimator: value and delta bit for bit, the
+    second-order block to the last bits of its largest entry, each on the quadrature. One
+    document, 65536 paths, `Greeks: 'All'`:
 
-                    crisp          smooth        quadrature
-        gamma     -24156.07      -27154.08      -27172.47      11.1% short -> 0.07%
-        vanna      -1791.03       -220.69        -211.25       8.5x        -> 4.5%
+                    engine        quadrature
+        gamma     -27154.08      -27172.47      0.07%
+        vanna      -220.69        -211.25       4.5%
 
-    Killing mutation: the accumulator's `accrual_kink_term` never built.
+    Killing mutations: the accumulator's `accrual_kink_term` never built; built under the switch
+    alone, which leaves the crisp gamma 11.1% short and its vanna 8.5x.
     """
     ref = _table(_acc_reference)
     crisp, out_c, _ = _run_doc(_crisp(_acc_doc(greeks='All')), tmp_path, 'acc_off')
     smooth, out_s, _ = _run_doc(_smooth(_acc_doc(greeks='All')), tmp_path, 'acc_on')
     assert crisp == smooth, (crisp, smooth)
     assert _first(out_c) == _first(out_s), 'first order moved, and it has nothing to move through'
-    g_crisp, v_crisp = _second(out_c)
-    g_smooth, v_smooth = _second(out_s)
-    assert _rel(g_smooth, ref['gamma']) < 0.01, (g_smooth, ref['gamma'])
-    assert _rel(v_smooth, ref['vanna']) < 0.10, (v_smooth, ref['vanna'])
-    assert _rel(g_crisp, ref['gamma']) > 10.0 * _rel(g_smooth, ref['gamma']), (
-        'the pathwise gamma is no longer visibly wrong, so the kink term is not what is being '
-        'measured: {} against {} with a reference of {}'.format(g_crisp, g_smooth, ref['gamma']))
-    assert _rel(v_crisp, ref['vanna']) > 5.0 * _rel(v_smooth, ref['vanna']), (
-        v_crisp, v_smooth, ref['vanna'])
+    for label, out in (('crisp', out_c), ('smooth', out_s)):
+        gamma, vanna = _second(out)
+        assert _rel(gamma, ref['gamma']) < 0.01, (label, gamma, ref['gamma'])
+        assert _rel(vanna, ref['vanna']) < 0.10, (label, vanna, ref['vanna'])
+    # a card's second-order pass repeats itself only to 16 ulps of the largest entry
+    second = out_s['Results']['Greeks_Second'].values
+    assert np.allclose(out_c['Results']['Greeks_Second'].values, second, rtol=0.0,
+                       atol=1e-12 * np.abs(second).max()), 'the second-order block moved'
 
 
 @pytest.mark.parametrize('name', ['accumulator', 'autocall'])

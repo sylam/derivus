@@ -225,7 +225,7 @@ derivatives they carry.
 
 | Pricer | `Yes` (smooth) | `No` (crisp) |
 |---|---|---|
-| accumulator | value bit-identical to `No`; the per-fixing payoff kink gets its second-order term | with sensitivities on, an observed crossing registers a boundary correction, and `Greeks: All` is refused |
+| accumulator | value and derivatives as under `No`, the per-fixing payoff kink getting its second-order term under either | with sensitivities on, an observed fixing registers a boundary correction, and `Greeks: All` is refused |
 | TARF | the knock-in leg integrated (`lognormal_fired_gain`); per-fixing kink term; the redemption and knock-in registrations are not made | knock-in a sampled indicator; its derivatives taken from the integral (`splice_conditional_p`: the crisp value, the integral's derivatives) |
 | autocall | the put leg integrated over its tail of the interval law | put a sampled indicator, derivatives spliced as for the TARF |
 | discrete barrier, extendable forward | not read | not read |
@@ -251,7 +251,7 @@ engine/reference $-1$; an unsigned one is the absolute relative difference.
 | TARF, twelve fixings | BaseValuation, smooth, 8,192 | gamma seed spread 1.70% monthly, 21.15% daily; value spread 1.13% and 0.35% | |
 | Two-coupon autocall, $S=K=100$, coupon 0.08, put barrier 70%, $r$ 4%, $q$ 1%, $\sigma$ 25% | BaseValuation, smooth, 262,144 | value 0.36%, delta 0.16%, vega 0.15%, gamma 0.15% | region-integral quadrature |
 | Autocall with two-fixing coupon windows, 70% put | BaseValuation, 1,048,576 | smooth $-0.14\%$ (spot reading) / $-0.17\%$ (average reading); crisp $-0.36\%$ / $-0.47\%$ | direct simulation of the terms, $2^{24}$ paths |
-| Two-fixing accumulator | BaseValuation, 65,536 | smooth gamma 0.07% (the crisp pathwise gamma 11.1% short) | quadrature |
+| Two-fixing accumulator | BaseValuation, either estimator, 65,536 | gamma 0.07% | quadrature |
 | Extendable forward, strip and one-decision rolling, flat market and sloped curves under a vol term structure | BaseValuation, 32,768 | within the gate's 0.5%; the written (counterparty-exercised) side 0.1% | Black on the linear continuation |
 | LogVar2FJ kit at its GBM limit (levers zero, Gaussian residual, flat $\xi$), autocall | BaseValuation | $1.3\times10^{-16}$ relative | the GBM arm |
 

@@ -1261,9 +1261,7 @@ def accrual_kink_term(gain, fixing, n_paths_axis=1):
             'across a ladder of {:.0f}, which is the 1/bandwidth signature of a point mass rather '
             "than the plateau of a density. What works today: ask for first order alone (Greeks: "
             "'First'), which this term does not touch and which the branch-and-weight path reports "
-            'unchanged; or run the deal with Branch_And_Weight off, whose crisp estimator answers '
-            'zero there rather than refusing - a smaller number, not a smaller error; or move the '
-            'fixing off the strike it is pinned against.'.format(
+            'unchanged; or move the fixing off the strike it is pinned against.'.format(
                 fixing, rows, worst, reading, ladder, climb, span))
     u = gain - Gbar
     return 0.5 * kernel * u * u
@@ -3226,12 +3224,13 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     pending head's own spelling at weight one, undiscounted where it lands.
 
     BRANCH AND WEIGHT (``Branch_And_Weight``, THE DEFAULT, base valuation only) SWAPS the estimator
-    for that registration rather than joining it; ``'No'`` is bit for bit. This loop is already the
-    smooth estimator - survival is an analytic ``p``, the continuation its truncated draw, the
-    fired branch exactly zero - so the VALUE is bit-identical. What changes: the registration is
-    skipped, so ``Greeks: 'All'`` flows where it used to refuse; and the per-fixing accrual kink is
-    built at second order (``accrual_kink_term``), both legs being relus of one argument whose
-    pathwise gamma is an exact zero.
+    for that registration rather than joining it. This loop is the smooth estimator whatever the
+    switch says - survival an analytic ``p``, the continuation its truncated draw, the fired branch
+    exactly zero - and a second derivative (``shared.gamma``) builds the per-fixing accrual kink
+    (``accrual_kink_term``) under either, both legs being relus of one argument whose pathwise gamma
+    is an exact zero. So either setting reports the same value and both orders of derivative, save
+    that under ``'No'`` a deal whose row has observed a fixing registers the latch and is refused
+    ``Greeks: 'All'`` by name.
 
     THE PENDING HEAD IS ARITHMETIC HERE, not a branch to build: each fixing is already discounted to
     its OWN settlement date and paid with weight ``L_{j-1} * p_j``, so a path knocking at fixing
@@ -3394,7 +3393,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     smooth = shared.branch_and_weight
     # curvature is the switch: the per-fixing kink term is never BUILT unless a second derivative
     # was asked for, so it costs nothing on a first-order run
-    second_order = smooth and shared.gamma
+    second_order = shared.gamma
 
     # a declared-dead deal has no flux to record, and folding that in here keeps the simulation
     # from building an alive branch nobody reads
