@@ -125,3 +125,51 @@ The **Sub_Type** does not enter any key: the curve above is `InterestRate.ZAR-SW
 under `Price Factors` and `<Model>.ZAR-SWAP.ZAR-USD-BASIS` under `Price Models`. It selects the
 `InterestRateBasisSpread` rules of [Model Configuration](model_configuration.md), so a basis curve
 can be modelled apart from the curve it is a spread on.
+
+## A spot model's parameters: `LogVar2FJModelParameters` {#logvar2fjmodelparameters}
+
+The [LogVar2FJ model](../theory/stochastic_volatility.md) reads one price factor,
+`LogVar2FJModelParameters.<name>`: `<name>` is the equity, an FX pair's non-base token, or
+`<later>.<earlier>` for a cross ([Equity and FX](../theory/stochastic_volatility.md#equity-and-fx)).
+A fit writes it from a `LogVar2FJModelPrices` block. Every key, with the values of the synthetic
+factor the tests fit (`WORLD_FACTOR` in `tests/test_logvar2fj_json.py`) and the declared defaults
+where it states none:
+
+```json
+{
+  "Price Factors": {
+    "LogVar2FJModelParameters.INDEX_A": {
+      "Kappa_L": 0.5,
+      "Sigma_L": 1.0,
+      "Rho_L": -0.4,
+      "Kappa_S": 6.0,
+      "Cap_A": 3.8329158963830388,
+      "Steps_Per_Year": 252.0,
+      "C_Min": 0.12,
+      "Residual_Law": "NIG",
+      "Skew_Gradient": "",
+      "On_Guard": "",
+      "Stickiness_Band": 0.0,
+      "Xi_Curve": {".Curve": {"meta": [], "data": [
+        [0.0, 0.04318756980713686], [0.07671232876712329, 0.04702934519853678],
+        [0.2493150684931507, 0.050895424812433816], [0.4986301369863014, 0.05447323287603885],
+        [0.7479452054794521, 0.05807287748434197]]}},
+      "Rho_S": {".Curve": {"meta": [], "data": [[0.0, -0.7939878539386854]]}},
+      "Beta": {".Curve": {"meta": [], "data": [[0.0, -2.0308954107502926]]}},
+      "Sigma_S": {".Curve": {"meta": [], "data": [[0.0, 2.0536372201266198]]}},
+      "Alpha": {".Curve": {"meta": [], "data": [[0.0, 20.916694355454386]]}}
+    }
+  }
+}
+```
+
+The first four are scalars. The five curves are rows of `[knot, value]`, the knot in years from the
+base date starting the segment or bucket the value holds on, the last value holding beyond its
+knot: `Xi_Curve` is the expected forward variance, one segment per ATM expiry of the fit, and
+`Rho_S`, `Beta`, `Sigma_S` and `Alpha` share one set of bucket knots, a single knot at 0 being the
+constant-parameter model. A curve is authored as a curve, never a bare number. `Cap_A` null is no
+corner; this one is the corner the fit wrote. `Skew_Gradient` is two comma-separated numbers where
+the fit read a reserve line, and `On_Guard` a sentence where the fit sits on a guard. A fit also
+writes `Property_Aliases` null, which the model does not read. What each key means, its units, the
+check the factor makes at load and whether it is fitted, declared, derived or written are on
+[the model's page](../theory/stochastic_volatility.md#parameters).

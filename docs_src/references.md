@@ -147,6 +147,8 @@
   bonds. *The Review of Financial Studies*, 12(4), 687-720.
   [doi:10.1093/rfs/12.4.687](https://doi.org/10.1093/rfs/12.4.687)
 
+[@dupire1994]: Dupire, B. (1994). Pricing with a smile. *Risk*, 7(1), January 1994, 18-20.
+
 [@nist-sp800-38d]: Dworkin, M. (2007). *Recommendation for Block Cipher Modes of Operation:
   Galois/Counter Mode (GCM) and GMAC*. NIST SP 800-38D.
   [doi:10.6028/NIST.SP.800-38D](https://doi.org/10.6028/NIST.SP.800-38D)
@@ -247,6 +249,10 @@
 [@henrard2014]: Henrard, M. (2014). Adjoint algorithmic differentiation: calibration and implicit
   function theorem. *The Journal of Computational Finance*, 17(4), 37-47.
   [doi:10.21314/jcf.2014.284](https://doi.org/10.21314/jcf.2014.284)
+
+[@heston1993]: Heston, S. L. (1993). A closed-form solution for options with stochastic volatility
+  with applications to bond and currency options. *The Review of Financial Studies*, 6(2), 327-343.
+  [doi:10.1093/rfs/6.2.327](https://doi.org/10.1093/rfs/6.2.327)
 
 [@higham2002]: Higham, N. J. (2002). Computing the nearest correlation matrix--a problem from
   finance. *IMA Journal of Numerical Analysis*, 22(3), 329-343.

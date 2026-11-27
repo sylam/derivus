@@ -579,6 +579,56 @@ the joint polish alone, the staged search existing to find a basin a written fac
 `Residual_Law` refuses by name. **Held by** `test_logvar2fj_json.py::test_a_previous_factor_makes_the_fit_the_polish_alone`,
 `test_logvar2fj_json.py::test_a_warm_start_off_the_other_residual_law_refuses_by_name`.
 
+### What is fitted, and from what {#logvar2fj-sources}
+
+The quotes fit; a history is a soft prior row and never a pin; the structure is declared. Under
+`Fit_Mode: Global` each fitted pair has its own stage and moves again in the joint polish, a pinned
+slow pair excepted:
+
+| Written field | Set by | What a history contributes |
+| --- | --- | --- |
+| `Xi_Curve` | the ATM quote at each expiry, exactly, by the inner solve at every outer iterate | nothing |
+| `Alpha`, `Beta` | the quotes to `Stage_Horizons`' first entry (0.25y), beside two soft rows on `log α` and `β/α` | the rows' target where its standard error is at or under the class spread and its clock share is clean, else the class default (`LVPriors.residual_hierarchy`) |
+| `Rho_S`, `Sigma_S` | the quotes to its second entry (1y) and the forward rows, beside two soft rows on `ρ_s` and `ρ_s σ_s` | the rows' target where the block declares none (`LVPriors.leverage_prior`) |
+| `Rho_L`, `Sigma_L` | the quotes past a year where a wing reaches `Slow_Horizon`; otherwise pinned at `Slow_Factor_Prior`, else the class default signed by the fitted `ρ_s` | a soft row where the ladder fits the pair; never the pin (`LVPriors.slow_prior`) |
+| `Kappa_L`, `Kappa_S`, `C_Min`, `Steps_Per_Year`, `Residual_Law`, `Stickiness_Band` | the block's declarations, copied | nothing |
+| `Cap_A`, `On_Guard`, `Skew_Gradient` | derived or read off the fit at θ\* | nothing |
+
+A history is the `LogVar2FJImpliedSpotModel.<name>` block `LogVar2FJCalibration` writes in
+`Price Models`, every estimate beside its `_SE` (`utils.LogVar2FJ.SLOW_HISTORY`); it is the
+historical measure's, so it enters as a prior and the quotes still move every coordinate it
+touches, which stays in θ\*, the Jacobian and the quote contraction. A block missing an estimate or
+its standard error refuses by name. **Held by**
+`test_cross_spot_model.py::test_the_history_a_cross_reads_is_its_own_axis`. **Not gated:** the
+hierarchy's choice between a history and the class default.
+
+### The solver and a failed fit {#logvar2fj-solver}
+
+**Each stage is one `least_squares` call**, `method='trf'` (a trust-region reflective method for
+bounds [@branch1999]) with `x_scale='jac'` and the exact vmapped Jacobian (`LVFit.jacobian`), boxed
+by `LVFit.bounds_of`: the block's `*_Bounds`, `Alpha` and `Beta` in the unconstrained coordinates
+`utils.LogVar2FJ.ab` maps inside the residual's admissible set, and `Rho_S` within
+±√(1 − ρ_ℓ² − `C_Min`), one-sided under `Model_Priors: Off`. A stage stops at `Tolerance` (scipy's
+`ftol`, 1e-8), `Step_Tolerance` (`xtol`, 1e-12) or `Max_Iterations` evaluations (`max_nfev`, 150).
+A stage that spends its budget is logged `CAPPED at Max_Iterations` and the fit goes on; under
+`Quote_Sensitivity: Yes` it refuses, θ\* being no stationary point. The search starts once, from
+the priors' seed or a previous factor; nothing restarts it from elsewhere.
+
+**What counts as identified.** `LVFit.prior_ratios` reads, per fitted coordinate, the norm of its
+prior rows' column over one quote row's (the data column's norm over the root of its row count):
+past `LVFit.PRIOR_RATIO` quote rows the coordinate is the prior's, and where the data column is
+under `Jacobian_Rcond` of the prior's the quotes are silent on it. Both land in `On_Guard`.
+
+**A fit that fails writes nothing.** `LVFit.verify` refuses, by name and with its remedy, before
+the factor is written: an ATM pillar the ξ solve leaves more than `Atm_Miss_Max` (1e-4) relative
+off; a bucket on the `C_Min` box under `Idiosyncratic_Share: Refuse`; a stationary log-vol sd
+outside `Log_Vol_Sd_Band` under `Stationary_Spread: Refuse`; more than `Cap_Headroom_Max` (1e-5) of
+the fit's path-days at or above the corner it writes. `Floor`, on either declared guard, takes the
+fit and says so in the report. The refusal raises out of the bootstrap. **Held by**
+`test_logvar2fj_json.py::test_the_stationary_guard_refuses_the_same_surface_by_name`,
+`test_logvar2fj_json.py::test_a_flat_surface_is_reproduced_floored_and_written_off_guard`.
+**Not gated:** the ATM, `C_Min` and headroom refusals.
+
 ### Priors and guards {#logvar2fj-priors}
 
 Whatever the ladder cannot identify

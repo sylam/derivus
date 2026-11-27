@@ -77,8 +77,9 @@ FX forward to each fixing.
 ### The interval law under LogVar2FJ (`SpotModel: LogVar2FJ`)
 
 The kit (`LogVar2FJKit`) walks the [LogVar2FJ](stochastic_volatility.md) state once per reporting
-row, one trading day per internal step on the parameter factor's `Steps_Per_Year` clock, every
-fixing on a grid point. Conditional on the walk's shocks and one inverse-Gaussian mixer per
+row, one trading day per internal step on the parameter factor's `Steps_Per_Year` clock, each
+fixing interval cut into equal steps so every fixing is a grid point
+([the clock](stochastic_volatility.md#the-clock)). Conditional on the walk's shocks and one inverse-Gaussian mixer per
 fixing interval (one more per parameter-curve knot inside it), the interval's log return is
 Gaussian, $X_j\mid\mathcal W\sim\mathcal N(M_j,\Sigma_j^2)$, carry $\beta_j\Delta\tau_j$ included.
 Every OSS formula below is then the GBM one with $(\mu_j,\sqrt{v_j})\to(M_j,\Sigma_j)$; the implied
@@ -254,6 +255,10 @@ engine/reference $-1$; an unsigned one is the absolute relative difference.
 | Two-fixing accumulator | BaseValuation, either estimator, 65,536 | gamma 0.07% | quadrature |
 | Extendable forward, strip and one-decision rolling, flat market and sloped curves under a vol term structure | BaseValuation, 32,768 | within the gate's 0.5%; the written (counterparty-exercised) side 0.1% | Black on the linear continuation |
 | LogVar2FJ kit at its GBM limit (levers zero, Gaussian residual, flat $\xi$), autocall | BaseValuation | $1.3\times10^{-16}$ relative | the GBM arm |
+| Same limit, discrete barriers: a bought up-and-in call and a sold down-and-out put with a rebate | BaseValuation | $8.5\times10^{-16}$ relative and 0 ULP | the GBM arm |
+| Same limit, a knock-in every scenario has crossed, ten rows | CMC, zero-vol GBM outer | worst $2.4\times10^{-15}$ relative | the GBM arm's Black rows |
+| Same limit, quanto autocall | BaseValuation | $7.6\times10^{-16}$ relative | the GBM arm's quanto carry |
+| Same limit under a GBM term-structure outer | CMC, CVA | within one float32 ulp of the CVA | the GBM pricer on the same scenarios |
 
 Unmeasured: the strip's allocation of forward variance between fixings on a skewed, term-structured
 surface against a smile-consistent model; the autocall's per-strike GBM legs (each leg prices in its
