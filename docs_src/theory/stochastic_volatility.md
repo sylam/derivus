@@ -119,7 +119,12 @@ fraction of one holds 252 steps whatever the calendar. Each step reads the varia
 $V_k=\delta_kh_{t_k}$, so the step is part of the model and not a discretisation to refine: the OU
 transitions are exact at any step length and the residual is linear in its clock, but the clock
 $\sum_kc_k\delta_kh_{t_k}$ and the leverage sum are sums over the steps taken. Another clock is
-another model, and the fitted parameters mean the clock they were fitted on.
+another model, and the fitted parameters mean the clock they were fitted on. On the synthetic
+factor (`WORLD_FACTOR`), halving or doubling the clock, with the parameters held or re-fitted, moves
+a 1y call, a 6m barrier and a 2y autocall by no more than their Monte Carlo error at 65,536 paths
+over four seeds, about 0.1%, 0.1-0.2% and 0.2-0.8%
+([Measured accuracy](mc_simulation.md#measured-accuracy)); a smaller sensitivity is not resolved,
+the clocks sharing no draws. **Not gated.**
 
 Three readers lay the steps over an interval of year fraction $\Delta$, each landing exactly on the
 interval's two ends. With $N=\Delta\cdot$**Steps_Per_Year** the interval's length in whole steps
@@ -226,8 +231,10 @@ reads, so the martingale holds with it; what the corner gives up is $E_0[h_t]=\x
 `tests/test_spot_model_martingale.py::test_a_quoted_forward_strip_solves_one_strike_from_either_side`,
 on the pricer's kit under a live NIG factor carrying a declared corner: a zero-cost strip
 of monthly forwards over a year solves one strike from either notional side, the direct axis and
-the reciprocal, within 1e-3. **Not gated:** $E[S_T]/F(T)$ read directly at several horizons, for
-the kit and for the outer process under a live NIG factor.
+the reciprocal, within 1e-3. **Not gated:** $E[S_T]/F(T)$ read directly under a live NIG factor,
+measured at 1m to 5y at most 2.01 standard errors from the forward for the kit on both axes, and 1.74
+for the outer process on a share, the direct axis being the only one it carries
+([Measured accuracy](mc_simulation.md#measured-accuracy)).
 
 The fit prices each vanilla off its own estimator's forward, a control variate
 (`LVFit.conditional_black`), and the quadrature builds its leverage part so that
@@ -269,8 +276,8 @@ $E_0[h_t]\le\xi(t)$. **Not gated.**
 
 | Limit | What it is | Held by |
 | --- | --- | --- |
-| vol-of-vols and leverages zero, `Residual_Law: Gaussian` | $\mathrm{Var}(\ell_t+s_t)=0$, $h_t=\xi(t)$, $c=1$, and the log-return over $[t,T]$ is Gaussian with variance $\sum_k\delta_k\xi(t_k)$: Black-Scholes [@black1973] with a deterministic, piecewise-constant variance, and Black-Scholes itself on a flat $\xi=\sigma^2$ | on a flat $\xi$, against the GBM arm on the same document within 1e-12 relative: `tests/test_logvar2fj_json.py::test_the_gbm_limit_reproduces_the_gbm_arm` (an autocall, both sides), `::test_a_discrete_barrier_at_the_gbm_limit_is_the_gbm_barrier`, `::test_a_knock_in_every_scenario_has_crossed_is_the_european_on_its_own_walk`, `::test_the_quanto_gbm_limit_reproduces_the_gbm_quanto_deal`; through the CVA to one float32 ulp, `::test_the_gbm_limit_holds_through_the_cva`; the outer process deflating a foreign cashflow to its value today on every row, `tests/test_option_settlement_json.py::test_under_simulation_a_foreign_cashflow_deflates_to_its_value_today_on_every_row`. A $\xi$ with a term structure: **Not gated** |
-| $\alpha\to\infty$ at fixed $\beta$ | the residual's skewness and excess kurtosis vanish ([below](#forward-smile)) and its mean tends to $-A/2$: the `Gaussian` residual in law | **Not gated**; no code path takes the limit |
+| vol-of-vols and leverages zero, `Residual_Law: Gaussian` | $\mathrm{Var}(\ell_t+s_t)=0$, $h_t=\xi(t)$, $c=1$, and the log-return over $[t,T]$ is Gaussian with variance $\sum_k\delta_k\xi(t_k)$: Black-Scholes [@black1973] with a deterministic, piecewise-constant variance, and Black-Scholes itself on a flat $\xi=\sigma^2$ | on a flat $\xi$, against the GBM arm on the same document within 1e-12 relative: `tests/test_logvar2fj_json.py::test_the_gbm_limit_reproduces_the_gbm_arm` (an autocall, both sides), `::test_a_discrete_barrier_at_the_gbm_limit_is_the_gbm_barrier`, `::test_a_knock_in_every_scenario_has_crossed_is_the_european_on_its_own_walk`, `::test_the_quanto_gbm_limit_reproduces_the_gbm_quanto_deal`; through the CVA to one float32 ulp, `::test_the_gbm_limit_holds_through_the_cva`; the outer process deflating a foreign cashflow to its value today on every row, `tests/test_option_settlement_json.py::test_under_simulation_a_foreign_cashflow_deflates_to_its_value_today_on_every_row`. A $\xi$ with a term structure: **Not gated**; measured on `WORLD_FACTOR`'s, the gap to the limit falls as the square of the vol-of-vols' scale, and at the limit the kit's ATM vol is the root of $\sum_k\delta_k\xi(t_k)$ on its grid to six digits (0.208256 at 1m, where the exact integral of $\xi$ gives 0.208431: a step straddling a knot reads the segment before it) ([Measured accuracy](mc_simulation.md#measured-accuracy)) |
+| $\alpha\to\infty$ at fixed $\beta$ | the residual's skewness and excess kurtosis vanish ([below](#forward-smile)) and its mean tends to $-A/2$: the `Gaussian` residual in law | **Not gated**; no code path takes the limit. Measured at fixed $\beta/\alpha$ ($-0.0971$, `WORLD_FACTOR`'s, and $-0.5$) against the `Gaussian` residual, all else kept: a 1y call's and a 6m barrier's gaps fall through zero between $\alpha$ 80 and 160, and from 160 to 5120 every gap, a 2y autocall's too, is within its standard error ([Measured accuracy](mc_simulation.md#measured-accuracy)) |
 | no corner, `Gaussian` residual, one bucket | Bergomi's two-factor forward-variance model with uncorrelated factors, sampled on the trading day ([below](#bergomi)) | **Not gated** |
 
 ## Lineage
@@ -396,6 +403,17 @@ $\Delta$, $\tfrac12\sum\rho\sigma\,g(\kappa\Delta)$, whatever $T_1$, and the spr
 at $T_1$, a mixture over variance levels, adds to the forward smile's curvature. The calendar buckets
 make the forward skew move with $T_1$ where a forward-start source asks for it: a window past the
 last quoted maturity reads the last bucket's $\rho_s$ and $\beta$ alone.
+
+**Measured on `WORLD_FACTOR`** (32,768 paths, seeds 1-3). A skew is
+$(\sigma_{k_1}-\sigma_{k_2})/\ln(k_2/k_1)$ at strikes $k$ of the window's forward, positive when the
+smile falls to the right, and the convexity is the 90/110 average less the ATM. The kit's ATM skew
+at 95/105 falls monotonically with maturity, 0.447 at 1m, 0.197 at 1y and 0.075 at 5y, a local
+power of $T$ near $-0.33$ to a year and $-0.60$ from one to five years; the NIG residual adds 6% of
+the 1m skew and 2% at 1y, and the 1m convexity is ten times the `Gaussian` residual's (+0.0081
+against +0.0008). On the fit's walk the 90/110 skew of a forward 3m window starting at 6m and at 1y
+is 0.90 and 0.89 of the spot 3m window's, and of a 1y window 1.01 and 1.01. The forward 3m smiles'
+convexity, +0.012 and +0.016 against the spot's +0.001, is unchanged with the residual's skew and
+kurtosis removed, so it is the vol-of-vols'. At the deterministic-variance limit every smile is flat.
 
 A volatility that depends on time alone makes every forward-start return lognormal, and its
 forward smile is flat. A local volatility $\sigma(t,S)$ fitted to today's smile [@dupire1994]

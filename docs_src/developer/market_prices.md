@@ -738,7 +738,13 @@ Limits of the market data available, not of the engine:
   shock being a functional of one name's noisy closes.
 - **A ladder shorter than `Slow_Horizon` cannot reach the flat limit**, the pinned slow pair
   injecting skew a flat surface does not want.
-- **`Kappa_L` and `Kappa_S` are declared, never fitted**; their influence on a mark is unmeasured.
+- **`Kappa_L` and `Kappa_S` are declared, never fitted**, and they move a mark. On the fifteen-quote
+  ladder of `tests/fixtures/data/logvar2fj_world.json`, cold fits at `Kappa_S` 3, 6 and 12 by
+  `Kappa_L` 0.25, 0.5 and 1.0 leave a vanilla RMSE rising with both speeds from 0.550 to 0.959 vol
+  points (0.7291 at the declared 6 and 0.5). Against the declared pair, (3, 0.25) moves a 7-month
+  85% put, a 12-month at-the-money put knocking in at 75% and a two-year autocall by +7.4%, +5.5%
+  and +10.5%, and (12, 1.0) by -9.2%, -6.6% and -10.1%, at 65,536 paths over three seeds agreeing
+  within 0.4 points.
 - **The default vanilla pricer is a surrogate**, and the forward-start rows carry the walk's
   small-sample bias at `Paths` ([limitations](../limitations.md#the-calibration)).
 
