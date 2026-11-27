@@ -3661,14 +3661,15 @@ class LogVar2FJ:
         return torch.exp(cum).to(narrow) * (y0.unsqueeze(-1) + shocks @ prefix)
 
     @staticmethod
-    def state_variance(params, deltas):
-        """``Var(l + s)`` at the grid's n+1 times from a DETERMINISTIC start - the Jensen term the curve
-        derives ``L*`` with, ``L*(t) = log xi(t) - Var(t)/2``.
+    def state_variance(params, deltas, start=(0.0, 0.0)):
+        """``(Var l, Var s)`` at the grid's n+1 times, ``[2, n+1]`` - the spread each factor has built
+        since the state's randomness began, from the ``(Var l, Var s)`` the state already holds at the
+        grid's start, zero at rest. Their sum is the Jensen term the curve derives ``L*`` with,
+        ``L*(t) = log xi(t) - Var(t)/2``, so a walk from a drawn state reads ``xi`` as one from rest.
 
         ``v_{k+1} = phi_k^2 v_k + w_k^2`` per factor, which is `ou_path` at twice the reversion with
         each weight as its own shock; it carries a bucket of ``Sigma_S`` and a holiday gap with no
-        second spelling. Measured from WHEREVER the walk starts, so a re-seeded row reads ``xi``
-        exactly rather than under-shooting it.
+        second spelling.
 
         WHOLLY IN DOUBLE, cast once. It rides the grid's own cumulated decay ``exp(2 kappa T)``, which
         at the fast factor's 6 leaves float32's range on a grid past seven years, and it is a function
@@ -3677,11 +3678,11 @@ class LogVar2FJ:
         # the curve carries no path axis, so a scalar leaf arriving as [1, 1] to broadcast against the
         # walk's state is flattened here rather than spreading a spurious axis along the whole grid
         wide = LogVar2FJ.wide(deltas)
-        w_s = LogVar2FJ.ou_step_weights(params['Kappa_S'], params['Sigma_S'], wide)[1].reshape(-1)
-        w_l = LogVar2FJ.ou_step_weights(params['Kappa_L'], params['Sigma_L'], wide)[1].reshape(-1)
-        zero = wide.new_zeros(())
-        return (LogVar2FJ.ou_path(2.0 * LogVar2FJ.wide(params['Kappa_S']), w_s, w_s, zero, wide)
-                + LogVar2FJ.ou_path(2.0 * LogVar2FJ.wide(params['Kappa_L']), w_l, w_l, zero, wide)).to(deltas.dtype)
+        rows = []
+        for (kappa, sigma), v in zip((('Kappa_L', 'Sigma_L'), ('Kappa_S', 'Sigma_S')), start):
+            w = LogVar2FJ.ou_step_weights(params[kappa], params[sigma], wide)[1].reshape(-1)
+            rows.append(LogVar2FJ.ou_path(2.0 * LogVar2FJ.wide(params[kappa]), w, w, wide.new_zeros(()) + v, wide))
+        return torch.stack(rows).to(deltas.dtype)
 
     @staticmethod
     def walk(params, curve_at_grid, deltas, eta_l, eta_s, state0, invert, quanto=None):

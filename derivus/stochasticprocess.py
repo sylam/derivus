@@ -6617,10 +6617,13 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
         self.deltas = wide.to(shared.one.dtype)
         self.levers = {x: self.curves[x].at(t[:-1])
                        for x in pricing.LogVar2FJKit.step_names}
+        spread = utils.LogVar2FJ.state_variance(dict(self.params, Sigma_S=self.levers['Sigma_S']), wide)
         self.curve = (torch.log(utils.LogVar2FJ.wide(self.curves['Xi_Curve'].at(t)))
-            - 0.5 * utils.LogVar2FJ.state_variance(
-                dict(self.params, Sigma_S=self.levers['Sigma_S']), wide)).to(shared.one.dtype)
+            - 0.5 * spread.sum(0)).to(shared.one.dtype)
         edge = np.cumsum([0] + [len(x) for x in sub]).tolist()
+        # each factor's spread at every scenario node, which a pricer starting from the state there
+        # builds its level from (`pricing.LogVar2FJKit.carried`)
+        self.spread = spread[:, edge[1:]].T
         self.spans = list(zip(edge[:-1], edge[1:]))
         bucket, self.pieces = self.curves['Alpha'].index_at(at[:-1]), []
         for first, last in self.spans:
@@ -6777,6 +6780,7 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
         for name, value in zip(('lv_ell', 'lv_s'), self.last_state):
             shared_mem.t_Scenario_Buffer[(self.factor_key, name)] = value.unsqueeze(1)
         shared_mem.t_Scenario_Buffer[(self.factor_key, 'lv_days')] = self.days
+        shared_mem.t_Scenario_Buffer[(self.factor_key, 'lv_spread')] = self.spread
         return path
 
     @classmethod
@@ -6980,9 +6984,10 @@ class LogVar2FJSpotModel(LogVar2FJImpliedSpotModel):
             buf[(key, 'ell0_' + mode)] = (f[1] + l21 * z[0].double()
                                           + utils.sqrt_or_zero(f[4] - l21 * l21) * z[1].double()).to(z.dtype)
         path = super().generate(shared_mem)
-        # the day grid an equity's or an FX rate's OSS pricer reads its carried state on: no
-        # commodity pricer reads one, and a fork publishes only batch-last series
-        buf.pop((key, 'lv_days'))
+        # the day grid and the spread an equity's or an FX rate's OSS pricer reads its carried state
+        # on: no commodity pricer reads either, and a fork publishes only batch-last series
+        for name in ('lv_days', 'lv_spread'):
+            buf.pop((key, name))
         ell, fast = (x.double() for x in self.last_state)
         seed = buf.get((key, 'lv_filter0_' + ('inner' if path.dim() > 2 else 'outer')))
         prior = list(self.prior0()) if seed is None else seed.double().reshape([5, -1] + [1] * (path.dim() - 2))

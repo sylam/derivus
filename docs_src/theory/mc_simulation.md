@@ -36,7 +36,7 @@ each scenario date in a `CreditMonteCarlo` or `HedgeMonteCarlo`) and reads only 
 | implied vols | the deal's surface; surfaces are static, so the base-date surface is read at the tenor $\tau_j$ measured from $t$ |
 | observed fixings | stated history, and the outer path's spot on fixing dates the grid has reached |
 | deal state | barrier hit mask (strictly earlier observations), autocall termination latch, TARF accrued target, accumulator alive state, extendable exercise history |
-| LogVar2FJ state $(\ell,s)$ | the outer LogVar2FJ path's carried state where one is published, else re-seeded at $(L^*(t),0)$ |
+| LogVar2FJ state $(\ell,s)$ | the outer LogVar2FJ path's carried state, its level built from the spread that state holds, where one is published, else re-seeded at $(L^*(t),0)$ |
 
 $\tau_j$ is the time from $t$ to fixing $j$ in the discount curve's day count,
 $\Delta\tau_j=\tau_j-\tau_{j-1}$, $\tau_0=0$.

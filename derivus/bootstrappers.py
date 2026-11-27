@@ -1566,7 +1566,7 @@ class LVFit(utils.Residual):
         """The OU mean level at the walk's grid times, `log xi(t) - Var(l+s)(t)/2`, off the segment
         strip in log xi."""
         params = dict(scalars, Sigma_S=levers['Sigma_S'][self.step_bucket[:-1]])
-        return self.l_at(levels) - 0.5 * utils.LogVar2FJ.state_variance(params, self.deltas)
+        return self.l_at(levels) - 0.5 * utils.LogVar2FJ.state_variance(params, self.deltas).sum(0)
 
     def walk(self, scalars, levers, curve, n):
         """`(M, Sigma^2)` cumulated to every grid point off one internal-step walk, so a maturity is

@@ -848,6 +848,50 @@ def test_a_logvar2fj_equity_realises_the_rows_its_four_sub_factors_declare():
     assert four - one > 3.0 * np.hypot(se, one_se), (four, one, se, one_se)
 
 
+#: the row a carried state is read at, a month in, and the European's expiry three months after it
+TOWER_ROW, TOWER_EXPIRY = '2024-07-28', '2024-10-28'
+
+
+def _towered(strike, seed):
+    """`(V_0, V_t)` over 16,384 outer paths of a European on INDEX_A struck at `strike` and expiring
+    three months after `TOWER_ROW`, priced on the kit's walk in EUR under the LogVar2FJ outer on
+    `WORLD_FACTOR`: an Up-and-In every path crosses at its expiry is the kit's own vanilla."""
+    calc = dict(_credit(16384), Currency='EUR', Deflation_Interest_Rate='EUR', Time_grid='0d 1m',
+                Random_Seed=seed, Quasi_Seed=seed, MCMC_Simulations=2,
+                Credit_Valuation_Adjustment={'Calculate': 'No'})
+    deal = _barrier(Reference='EU', Strike_Price=strike, Units=1.0,
+                    Expiry_Date={'.Timestamp': TOWER_EXPIRY}, Barrier_Price=1e-6,
+                    Barrier_Dates=[{'.Timestamp': TOWER_EXPIRY}])
+    frame = _run(_job(calc, _netted(deal), **_outer(OUTER_LV, factor=WORLD_FACTOR,
+                                                     deal='EquityBarrierOption')), 'tower')['Results']['mtm']
+    return frame.iloc[0].values, frame.loc[[d for d in frame.index if str(d)[:10] == TOWER_ROW][0]].values
+
+
+def test_a_row_started_from_the_carried_state_prices_the_outer_s_own_law():
+    """The tower identity on a row the kit starts from the outer path's carried `(ell, s)`: the
+    row's conditional law is the outer's own, so `E_0[D(0, t) V_t] = V_0` for a 3m European a month
+    in. Read per seed as the ATM call's `E[V_t] / V_0` over a strike-1e-4 call's on the same paths,
+    in which the discount and the outer's own martingale error cancel, its error by the delta method
+    over the outer paths, two inner paths each; four seeds of 16,384 paths pooled. HOLDS within 3
+    standard errors: +0.24%, se 0.21%, z +1.1, in 3 s on the CPU.
+
+    The row's level starts its Jensen term from the spread that state already holds, each factor's
+    own at the node (`lv_spread`). Measured from zero at the row instead, the level forgets what
+    remains of it, `E[h] = xi exp(D)` with `D < 0` at the fit's speeds: -2.13%, z -10.0.
+
+    Killing mutation: the spread started from zero under a carried state.
+    """
+    towers, errors = [], []
+    for seed in (1, 2, 3, 4):
+        (atm0, atm), (fwd0, fwd) = _towered(100.0, seed), _towered(1e-4, seed)
+        towers.append((atm.mean() / atm0.mean()) / (fwd.mean() / fwd0.mean()) - 1.0)
+        g = atm / atm.mean() - fwd / fwd.mean()
+        errors.append(g.std(ddof=1) / np.sqrt(len(g)) * (1.0 + towers[-1]))
+        assert len(g) == 16384 and atm.mean() > 1.0, (seed, len(g), atm.mean())
+    tower, se = np.mean(towers), np.sqrt(np.sum(np.square(errors))) / len(errors)
+    assert abs(tower) <= 3.0 * se, (tower, se, tower / se, towers)
+
+
 # ------------------------------------------------------------------------------------------
 # 10  THE HEX SET
 #

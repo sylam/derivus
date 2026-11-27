@@ -114,23 +114,25 @@ class LogVar2FJKit(object):
         self.daycount = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
 
     def carried(self, row_t, shared):
-        """This row's carried ``(ell, s)`` per outer path as ``[batch, 1]``, or None where no outer
-        process published one - and then the row re-seeds at ``(L*(t_row), 0)`` as it always has.
+        """This row's carried ``(ell, s)`` per outer path as ``[batch, 1]`` and the ``(Var ell, Var s)``
+        that state already holds, or None where no outer process published one - and then the row
+        re-seeds at ``(L*(t_row), 0)``, at rest.
 
         The inner fork's own seed first, then the outer path's revealed series read at the
         scenario node this row lands on: the state is PREDICTABLE, so a row between nodes reads the
-        one it walked from.
+        one it walked from, and the spread the outer built to that node.
         """
         buffer = getattr(shared, 't_Scenario_Buffer', None) or {}
         for key in self.state_keys:
             seed = [buffer.get((key, x)) for x in ('ell0_inner', 's0_inner')]
             if seed[0] is not None:
-                return [x.reshape(-1, 1) for x in seed]
-            series = [buffer.get((key, x)) for x in ('lv_ell', 'lv_s')]
+                # the fork walks its own level from rest at the seed, and the row reads that walk's law
+                return [x.reshape(-1, 1) for x in seed] + [(0.0, 0.0)]
+            series = [buffer.get((key, x)) for x in ('lv_ell', 'lv_s', 'lv_spread')]
             if series[0] is not None:
                 at = self.daycount(buffer[(key, 'lv_days')].detach().cpu().numpy())
-                row = int(np.searchsorted(at - utils.BUCKET_TOL, float(row_t), 'right') - 1)
-                return [x[max(row, 0)].reshape(-1, 1) for x in series]
+                row = max(int(np.searchsorted(at - utils.BUCKET_TOL, float(row_t), 'right') - 1), 0)
+                return [x[row].reshape(-1, 1) for x in series[:2]] + [series[2][row]]
         return None
 
     def draws(self, key, shape, deltas, antithetic):
@@ -219,10 +221,11 @@ class LogVar2FJKit(object):
 
         THE CURVE IS THE MARKET'S OBJECT. ``Xi_Curve`` is the expected forward variance and the OU
         mean level is DERIVED, ``L*(t) = log xi(t) - Var(l+s)(t)/2``, with the variance measured
-        from THIS ROW - a row with no state to inherit re-seeds at ``(L*(t_row), 0)`` and reads
-        ``xi`` exactly where a base-date Jensen term would under-shoot it by
-        ``exp(-(Var_0 - Var_row)/2)``. Where an OUTER LogVar2FJ process walked the scenario, the
-        row starts from the state that path actually carries (`carried`) instead.
+        from where the state's randomness began - a row with no state to inherit re-seeds at
+        ``(L*(t_row), 0)`` and measures it from THIS ROW, so it reads ``xi`` exactly where a
+        base-date Jensen term would under-shoot it by ``exp(-(Var_0 - Var_row)/2)``. Where an OUTER
+        LogVar2FJ process walked the scenario, the row starts from the state that path actually
+        carries and from the spread that state already holds (`carried`), so it reads ``xi`` too.
 
         EVERY SEGMENT OF `CHECKPOINT_STEPS` STEPS IS A CHECKPOINT: the tape keeps its two
         boundary states and the backward recomputes its intermediates - draws included - one
@@ -245,17 +248,17 @@ class LogVar2FJKit(object):
         """
         steps, delta, t = self.grid(row_t, deltas)
         levers = {x: self.curves[x].at(t[:-1]) for x in self.step_names}
+        state = self.carried(row_t, shared)
         # the level the walk reverts to is the GRID's and the parameters' - double, cast once
         curve = (torch.log(utils.LogVar2FJ.wide(self.curves['Xi_Curve'].at(t)))
                  - 0.5 * utils.LogVar2FJ.state_variance(
-                     dict(self.params, Sigma_S=levers['Sigma_S']),
-                     utils.LogVar2FJ.wide(delta))).to(delta.dtype)
+                     dict(self.params, Sigma_S=levers['Sigma_S']), utils.LogVar2FJ.wide(delta),
+                     (0.0, 0.0) if state is None else state[2]).sum(0)).to(delta.dtype)
         shape = [shared.simulation_batch, num_sims]
         # the quasi seed shifted clear of the segment index, which counts up from it, so a walk is
         # a function of the seed and the segment whatever is booked or drawn beside it
         base = shared.quasi_seed << 20
         zero = delta.new_zeros([shape[0], num_sims * (2 if antithetic else 1)])
-        state = self.carried(row_t, shared)
         l, s = (zero + curve[0], zero) if state is None else (zero + state[0], zero + state[1])
         M, var, j, drawn = [], [], 0, 0
         for rows in self.pieces(row_t, deltas):

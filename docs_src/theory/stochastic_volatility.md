@@ -48,7 +48,9 @@ derived from it with the Jensen term,
 
 $$L^*(t)=\log\xi(t)-\tfrac12\,\mathrm{Var}\big(\ell_t+s_t\big),$$
 
-the variance measured from wherever the walk starts. $\ell+s$ is Gaussian, so without the corner
+the variance $\ell+s$ has built since the state's randomness began: from zero where a walk starts at
+rest, and from the spread a carried state already holds where it starts from one
+([below](#one-walk-three-readers)). $\ell+s$ is Gaussian, so without the corner
 $E_0[h_t]=\xi(t)$ exactly, whatever the vol-of-vols: a change of $\sigma_s$ or $\sigma_\ell$ moves the
 smile and leaves the forward variance where it is. $\xi$ is strictly positive and piecewise
 constant on the segments between the ATM expiries it was fitted to.
@@ -456,7 +458,11 @@ barrier and barrier-binary options, the autocall swaps, and the FX TARF and accu
 walks one internal-step path per reporting row, and each remaining fixing interval reads its block
 law $(M,G)$ off it. A row with no state to inherit re-seeds at $(L^*(t_\text{row}),0)$ with the
 variance measured from that row, so it reads $\xi$ exactly; under a credit Monte Carlo whose outer
-is LogVar2FJ, the row starts instead from the $(\ell,s)$ the outer path carries.
+is LogVar2FJ, the row starts instead from the $(\ell,s)$ the outer path carries, and its level from
+the spread that state already holds, each factor's own at the scenario node, which the outer
+publishes beside it (`utils.LogVar2FJ.state_variance` from that start). The row then reads $\xi$ as
+the outer does, and its conditional law is the outer's own: $E_0[D(0,t)V_t]=V_0$. **Held by**
+`tests/test_logvar2fj_json.py::test_a_row_started_from_the_carried_state_prices_the_outer_s_own_law`.
 
 **The scenario generator.** `LogVar2FJImpliedSpotModel` walks the same days between scenario
 nodes, off the same calibrated **LogVar2FJModelParameters** factor, so a CVA sensitivity reaches the
@@ -499,7 +505,7 @@ holds in every calculation that prices the deal.
 | Calculation | What the model does there | Held by |
 | --- | --- | --- |
 | `BaseValuation` | the kit walks from $(L^*(t),0)$ at the base date | the deal rows above |
-| `CreditMonteCarlo`, inner pricer | the kit walks per scenario row, from $(L^*(t_\text{row}),0)$, or from the $(\ell,s)$ an outer LogVar2FJ process on the same name carries | `tests/test_logvar2fj_json.py::test_the_gbm_limit_holds_through_the_cva` (a GBM term-structure outer); `tests/test_cross_spot_model.py::test_a_cross_under_an_outer_reads_its_own_law_and_re_seeds` |
+| `CreditMonteCarlo`, inner pricer | the kit walks per scenario row, from $(L^*(t_\text{row}),0)$, or from the $(\ell,s)$ an outer LogVar2FJ process on the same name carries and the spread it holds | `tests/test_logvar2fj_json.py::test_the_gbm_limit_holds_through_the_cva` (a GBM term-structure outer), `::test_a_row_started_from_the_carried_state_prices_the_outer_s_own_law` (the LogVar2FJ outer); `tests/test_cross_spot_model.py::test_a_cross_under_an_outer_reads_its_own_law_and_re_seeds` |
 | `CreditMonteCarlo`, outer process | `LogVar2FJImpliedSpotModel` simulates an `EquityPrice` or an `FxRate` on four correlated rows a name | `tests/test_logvar2fj_json.py::test_a_logvar2fj_equity_realises_the_rows_its_four_sub_factors_declare`, `tests/test_option_settlement_json.py::test_under_simulation_a_foreign_cashflow_deflates_to_its_value_today_on_every_row` |
 | `ScenarioValuation` | the parameters are static: no scenario axis is carried for them, and a scenario stating the factor is priced in a pass of its own | `tests/test_simm.py::test_a_scenario_stating_a_models_parameters_is_priced_alone_on_them` |
 | `SIMM` | the mapping states the parameter factor: null writes no row, so a trade priced under the model writes no vega row ([roadmap](../developer/roadmap.md)), and a vega risk type refuses by name | the refusal on a rate factor, `tests/test_simm.py::test_a_point_of_vega_on_what_is_no_vol_surface_is_refused_by_name`; on this factor **Not gated** |
