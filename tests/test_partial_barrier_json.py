@@ -507,8 +507,8 @@ def test_asking_for_the_partial_barrier_sensitivities_does_not_move_the_exposure
 
     THE TERM'S MAGNITUDE ON THIS GRID is not established: the deal prices on THREE rows, so the
     window carries two decisions and one is live, and over five seeds dCVA/dspot reads a registered
-    median -0.666 at 32768 paths against an unregistered +3.292 while the CRN oracle spreads 327% of
-    its own median. A ROW A MONTH is where it resolves: -1.915 registered against +1.318 at 32768
+    median -0.664 at 32768 paths against an unregistered +3.292 while the CRN oracle spreads 327% of
+    its own median. A ROW A MONTH is where it resolves: -1.935 registered against +1.318 at 32768
     paths, every CRN reading negative and the pooled oracle 0.5% from the registered delta.
 
     Killing mutation: the branch the registration settles at expiry scaled into the reported mark in
@@ -533,11 +533,11 @@ def test_a_latched_knock_out_s_rebate_follows_its_first_touch_into_every_counter
     rebate on its own row LESS the rebate on the next touch.
 
     The knock-out worth its rebate alone, watched on rows at three months and at the window's limit,
-    two live decisions: its CVA delta reads 1.1% from a CRN ladder at 2.5e-3 and 1e-2 flat to 1.2%,
-    at most 6.4% over five seeds at 16,384 paths and 4.0% over three at 32,768.
+    two live decisions: its CVA delta reads 1.0% from a CRN ladder at 2.5e-3 and 1e-2 flat to 1.2%,
+    at most 6.3% over five seeds at 16,384 paths and 0.6% over three at 32,768 in two batches.
 
     Killing mutations: the row's own test counted in `obs_before`, the rebate then reaching a row
-    only through its own decision's fork - 26% off; the row held alive rather than as its own test
+    only through its own decision's fork - 116% off; the row held alive rather than as its own test
     left it - 26%; no `own_row` - 62%; the fork firing without the rebate - 116%.
     """
     kw = dict(deal=REBATE_ONLY, bridge=False, batch=16384, batches=1, grid='0d 3m 12m')

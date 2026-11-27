@@ -73,12 +73,12 @@ Grouped by where a validator meets them.
   delta is the same either way. The credit Monte Carlo has no such switch and prices its exposure
   grid crisp: UNMEASURED there.
 - **A bought TARF within a kernel width of its target reads its CVA delta short.** With 0.0005 of
-  target left on a two-fixing bought TARF, three seeds of 16,384 paths read the CVA spot delta 38%
-  to 47% short of its CRN ladder at the default `Boundary_AAD_Bandwidth` of 0.01; one seed of
-  65,536 reads 44% short there and 16% at 0.00125. The FVA delta reads within 0.6%. A path that
-  does not redeem still meets the next fixing, whose payment is capped at the remaining target,
-  and that cap shrinks to nothing at the boundary: a bend the correction's straight-line fit
-  cannot read. A sold TARF there reads within 0.6%.
+  target left on a two-fixing bought TARF, three seeds of 16,384 paths read the CVA spot delta 37%
+  to 46% short of its CRN ladder at the default `Boundary_AAD_Bandwidth` of 0.01; one seed of
+  65,536 in four batches reads 36% short there and 0.3% at 0.00125. The FVA delta reads within
+  0.6%. A path that does not redeem still meets the next fixing, whose payment is capped at the
+  remaining target, and that cap shrinks to nothing at the boundary: a bend the correction's kernel
+  average cannot read. A sold TARF there reads within 0.6%.
 - **The extendable forward's backward pass smooths its payoff kink.** The 32-node Gauss-Hermite rule
   (`Boundary_Quadrature`) carries a one-signed second-order bias: 128 nodes raise the mark by 2e-7
   to 7e-6 of its value on three two-decision documents, the CVA by up to 0.02% and its delta by
@@ -86,7 +86,7 @@ Grouped by where a validator meets them.
 - **The window-touch registration fixes the delta's sign, not its size.**
   The credit Monte Carlo registers a partial-time barrier's window touch for the boundary
   correction. On a monthly grid with six live decisions,
-  five seeds read −1.915 registered at 32,768 paths against +1.318 unregistered; all 70 CRN readings
+  five seeds read −1.935 registered at 32,768 paths against +1.318 unregistered; all 70 CRN readings
   are negative and the pooled oracle sits 0.5% from the registered delta. The ladder still moves
   13% to 35% over h ≥ 5e-4, so the magnitude is known to about a third.
 - **The American equity option's approximation is to be retired, not patched** (2026-09-16).

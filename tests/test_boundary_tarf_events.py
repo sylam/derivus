@@ -199,11 +199,12 @@ def test_asking_for_sensitivities_does_not_move_the_tarf_price_or_exposure():
 def test_the_knock_in_gradient_matches_bump_and_reprice_under_exposure():
     """The acceptance gate for the knock-in, and the one whose oracle resolves cleanly.
 
-    Measured on this fixture, identical CRN readings before and after: AAD -59,971.64 against an
-    oracle of -83,856.45 at 0.90% flatness, i.e. 39.83% SHORT; corrected, -83,663.21, i.e. 0.23%.
-    Registering only the fixings this row has yet to observe (`dt > 0`) left 5.50% behind: under
-    CMC a deal's own dates are folded into the mtm grid, so EVERY fixing date is also a reporting
-    row, and on that row the first fixing is a past reset whose knock-in was going unregistered.
+    Measured on this fixture on the CPU, identical CRN readings before and after: AAD -62,005.27
+    against an oracle of -87,148.90 at 2.11% flatness, i.e. 40.55% SHORT; corrected, -86,785.47,
+    i.e. 0.42%. Registering only the fixings this row has yet to observe (`dt > 0`) left 6.15%
+    behind: under CMC a deal's own dates are folded into the mtm grid, so EVERY fixing date is also
+    a reporting row, and on that row the first fixing is a past reset whose knock-in was going
+    unregistered.
 
     Killing mutation: the conditional-p splice contributing nothing, so the knock-in's flux is
     missing.
@@ -237,11 +238,11 @@ def test_an_observed_knock_in_is_one_counterfactual_scored_across_its_jump():
     counterfactual a fixing, those rows forked and the row it settles on declared, and the CVA is
     differenced across the jump, whose kink a derivative times the jump does not see.
 
-    MEASURED at 16,384 paths x 4 batches, rungs 3e-3/7e-3/1.5e-2: AAD -31,245.0 against a ladder
-    reading -31,396.9 at 1.15% flatness, 0.49%; seeds 2 and 3 read 0.64% and 0.90%.
+    MEASURED at 16,384 paths x 4 batches, rungs 3e-3/7e-3/1.5e-2: AAD -31,244.4 against a ladder
+    reading -31,396.9 at 1.15% flatness, 0.49%; seeds 2 and 3 read 0.65% and 0.89%.
 
-    Killing mutations: the decision scored by the CVA's derivative times its jump, 1.86% (seeds 2
-    and 3, 1.90% and 2.36%); its forks dropped, so it moves no row, 11.33%.
+    Killing mutations: the decision scored by the CVA's derivative times its jump, 1.82% (seeds 2
+    and 3, 1.90% and 2.37%); its forks dropped, so it moves no row, 11.33%.
     """
     kw = dict(batches=4, batch=16384, mcmc=64, grid='0d 3m(3m)')
     _, _, aad = _cmc(OBSERVED_KNOCK_IN_CMC, gradient=True, **kw)
@@ -255,17 +256,19 @@ def test_an_observed_knock_in_is_one_counterfactual_scored_across_its_jump():
 def test_a_nearly_spent_redemption_gradient_matches_bump_and_reprice_under_exposure():
     """The redemption's gap is its signed margin, the unclamped accrual before the fixing plus the
     fixing's SIGNED intrinsic less the target, and its flag is that margin's sign. On the clamped
-    accrual, every scenario a fixing leaves out of the money holds one gap, a point mass that a
-    nearly spent target puts inside the kernel where it is read as density; and a scenario that
-    redeemed holds the target, so every later fixing reads as fired whatever it printed and an
-    earlier decision's counterfactual redeems there too.
+    accrual, the scenarios a fixing leaves out of the money hold one gap and those that redeemed
+    another, two point masses with no slope: the redeemed side's flux is lost and the kernel's
+    width collapses onto them. And a scenario that redeemed holds the target, so every later
+    fixing reads as fired whatever it printed and an earlier decision's counterfactual redeems
+    there too.
 
-    At 65,536 paths the CVA delta is 0.21% from a ladder flat to 0.34% on the CPU and 1.58% from
-    one flat to 0.73% on the card. Four batches, because at one the flag's mutant sits 5.11% off on
-    the card against 2.06%.
+    At 65,536 paths the CVA delta is 0.28% from a ladder flat to 0.34% on the CPU and 1.63% from
+    one flat to 0.73% on the card. Four batches, because at one the flag's mutant sits 4.57% off on
+    the card against 2.16%.
 
-    Killing mutations: the gap built on the clamped accrual - 50.94% on the CPU, 54.15% on the
-    card; the flag read off the clamped accrual - 8.72% and 6.88%.
+    Killing mutation: the flag read off the clamped accrual - 9.12% on the CPU, 6.60% on the
+    card. The gap built on the clamped accrual is a noisy miss, not a clean kill: 13.50% on the
+    CPU and 0.57% on the card at this seed, and between those over three seeds on each.
     """
     kw = dict(batches=4, batch=16384, mcmc=64)
     _, _, aad = _cmc(NEARLY_SPENT_CMC, gradient=True, **kw)

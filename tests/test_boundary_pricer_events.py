@@ -17,10 +17,10 @@ pricer declares every settlement in its reach; and that the correction is per ba
 averaging it once. The collateralised ladder below runs with `Exclude_Paid_Today` off, where the
 zero-delta identity holds trivially.
 
-THE GAP'S SIGN IS GATED ELSEWHERE: on an up-and-in call the correction is 3.1% of the gradient, so
-the sign mutant reads 6.49% against a 1% gate at 16384 paths; `test_boundary_scoping_dominance.py`
+THE GAP'S SIGN IS GATED ELSEWHERE: on an up-and-in call the correction is 3.0% of the gradient, so
+the sign mutant reads 6.35% against a 1% gate at 16384 paths; `test_boundary_scoping_dominance.py`
 holds both directions where the correction is the sensitivity. NOR IS A TWO-SET PORTFOLIO WITH A
-LIVE EXPOSURE: the term is 2.4% of its gradient, so it meets its ladder within 5% with the
+LIVE EXPOSURE: the term is 0.04% of its gradient, so it meets its ladder within 5% with the
 correction suppressed or scored on the set alike.
 """
 import math
@@ -168,7 +168,7 @@ def test_discrete_barrier_latch_gradient_matches_bump_and_reprice():
     """The already-hit latch in `pv_discrete_barrier_option`: a discretely monitored knock-out is
     worth nothing once it crosses, so the flux of paths across the barrier has to reach the tape.
 
-    1.19% apart at 4096 paths on a ladder flat to 5.78%; the correction is 28% of the reported
+    2.16% apart at 4096 paths on a ladder flat to 5.78%; the correction is 27% of the reported
     gradient. Four batches rather than one because a single batch puts BOTH estimators below their
     own noise: a 1.9% wander between 1024 and 16384 paths, the same size as the residual gated.
 
@@ -249,10 +249,10 @@ def test_collateralised_barrier_latch_gradient_matches_bump_and_reprice():
     on the mtm grid - 86 mtm rows against the barrier's own 51, 81 interpolated - so this is where
     the branch profile was worst mis-mapped.
 
-    At 4096 paths on five rungs: 1.89% apart, flat to 3.69%; seeds 2 and 3 read 4.10% and 0.86%,
-    16384 paths 0.38% / 0.97% / 0.65% - 6.67% with the settled ledger undeclared - against a
-    bandwidth envelope of -0.38 / +3.83 / -0.17 / -0.20% at 0.01 / 0.005 / 0.02 / 0.05. On the three
-    rungs run here: 1.89% flat to 3.67%, 3.27% at seed 2; at 2048 paths seed 2 read 11.24%, which is
+    At 4096 paths on five rungs: 1.81% apart, flat to 3.69%; seeds 2 and 3 read 5.50% and 0.04%,
+    16384 paths 0.04% / 0.55% / 0.14% - 6.44% with the settled ledger undeclared - against a
+    bandwidth envelope of -0.04 / +2.17 / +0.20 / +0.07% at 0.01 / 0.005 / 0.02 / 0.05. On the three
+    rungs run here: 1.81% flat to 3.67%, 4.68% at seed 2; at 2048 paths seed 2 read 10.63%, which is
     what keeps the 4096.
 
     Killing mutation: the barrier's latch never registered - 51.38% at 4096 paths.
@@ -300,8 +300,8 @@ def test_fva_gradient_carries_the_boundary_term_too():
     that matters in production, the shipped batch job DELETING the CVA section, so a correction
     assembled only over there could never fire for it.
 
-    0.89% apart at 16384 paths on five rungs flat to 2.18%, two further seeds 1.45% and 2.79%; at
-    the 4096 paths and three rungs run here, 1.46% flat to 5.81%. Four batches, because one puts
+    0.12% apart at 16384 paths on five rungs flat to 2.18%, two further seeds 1.18% and 2.26%; at
+    the 4096 paths and three rungs run here, 0.51% flat to 5.81%. Four batches, because one puts
     both estimators below their own noise.
 
     Killing mutation: the barrier's latch never registered - 37.38%, a 7x margin, the correction
@@ -363,7 +363,7 @@ def test_a_netting_set_is_scored_on_the_portfolio_not_on_itself():
 
     The portfolio is out of the money in every scenario, so its CVA and every sensitivity of it are
     EXACTLY zero; scored on the collateralised set alone both decisions land on a positive exposure
-    and report a delta to a CVA that does not exist (+3.83e-04 by the MTA route, +2.42e-04 by the
+    and report a delta to a CVA that does not exist (+3.83e-04 by the MTA route, +3.28e-04 by the
     pricer route). The same set ALONE, same registrations and draws, has a CVA and a gradient - so
     the zero is the scoping and not a dead fixture. Both documents ask for the margin calls'
     registration, which is off unasked.

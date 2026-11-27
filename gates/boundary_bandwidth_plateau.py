@@ -1,8 +1,8 @@
 """Does the boundary estimate hold still over a range of bandwidths, at the operating point?
 
-`pricing.boundary_weights` says local-linear weights cancel the local-constant estimator's
-O(bandwidth) bias "so the estimate holds still over a range of bandwidths", and that is the only
-acceptance criterion the docstring offers. `Boundary_AAD_Bandwidth`'s own field note puts the
+`pricing.boundary_weights` is a symmetric kernel average whose bias is of order the bandwidth
+squared, so the estimate should hold still over a range of bandwidths, and that is the acceptance
+criterion read here. `Boundary_AAD_Bandwidth`'s own field note puts the
 default 0.01 at "roughly 32768 paths to populate the near-boundary band", and this script reads it
 there and at the declared 16384.
 
@@ -10,8 +10,8 @@ THE READING IS THE REPORTED NUMBER. `Boundary_AAD_Bandwidth` is the only JSON kn
 estimator, so the ladder is run end to end and read off `grad_cva`'s equity-spot entry - what a desk
 sees, not an internal coefficient. The correction is isolated at the public seam
 `test_swaption_exercise_boundary.py::test_the_registration_moves_the_cva_gradient_and_not_the_cva`
-already uses: at 1e-12 the kernel underflows on every scenario, `boundary_weights` lands on its
-empty-kernel branch, and the correction contributes an exact zero. Nothing is patched, and the
+already uses: at 1e-12 the kernel underflows on every scenario and the correction contributes an
+exact zero. Nothing is patched, and the
 registration still happens and is still scored.
 
 ONE SUBJECT, the Model Limitations row's own re-baselined gate, ridden as a fixture rather than rerun as a
@@ -41,31 +41,32 @@ these pricers (`tests/test_recompute_inner_mc.py`, `tests/test_recompute_equity_
 THE READING, six seeds, seed MEAN of the isolated correction:
 
                    0.005..0.04 (x8)   0.005..0.08 (x16)   0.0025..0.08 (x32)   seed floor
-    16384 paths          1.98%              1.97%                5.33%           14.36%
-    32768 paths          3.36%              3.35%                3.45%           10.64%
+    16384 paths          2.11%              2.46%                5.24%           12.72%
+    32768 paths          2.86%              2.85%                2.83%           10.52%
 
 and of the REPORTED CVA delta, which is the number a desk sees:
 
-    16384 paths          0.50%              0.50%                1.35%            3.90%
-    32768 paths          0.85%              0.85%                0.88%            2.17%
+    16384 paths          0.57%              0.66%                1.41%            3.67%
+    32768 paths          0.76%              0.76%                0.76%            2.29%
 
 SO IT HOLDS STILL AT BOTH COUNTS: the widest seed-mean window under the averaged floor is
-0.0025..0.08 at 16384 and 0.00125..0.08 at 32768 (0.0025..0.08 on the delta), with the declared 0.01
-inside it, and the seed floor is what says that means something - the same quantity moves 10% to
-14% when nothing but the seed changes. At 16384 the two lowest rungs read 5% and 7% below the rest,
-inside two standard errors; at 32768 they do not - the narrow kernel is populated by the path
-count, and `BOUNDARY_MAX_AMPLIFICATION` is where a starved two-point local-linear solve lands.
+0.0025..0.04 at 16384 and 0.00125..0.08 at 32768 (0.0025..0.08 and 0.00125..0.08 on the delta),
+with the declared 0.01 inside it, and the seed floor is what says that means something - the same
+quantity moves 11% to 13% when nothing but the seed changes. At 16384 the two lowest rungs read 7%
+and 4% below the rest, inside two standard errors; at 32768 they do not - the narrow kernel is
+populated by the path count.
 
-THREE SEEDS CANNOT SEE THIS, AND ONE SEES NOTHING. Seeds 1 to 3 alone read 2.4% over 0.005..0.04 at
-16384 and 6.1% at 32768, a single seed 3% to 14% over 0.005..0.08, and the seeds do not agree on
-the SIGN of the drift, which is what says the per-seed drift is sampling and not the O(bandwidth)
-bias local-linear weights cancel. The plateau is a statement about the estimator, readable only on
+THREE SEEDS CANNOT SEE THIS, AND ONE SEES NOTHING. Seeds 1 to 3 alone read 2.7% over 0.005..0.04 at
+16384 and 5.3% at 32768, a single seed 4% to 13% over 0.005..0.08, and the seeds do not agree on
+the SIGN of the drift, which is what says the per-seed drift is sampling and not a bias in the
+bandwidth. The plateau is a statement about the estimator, readable only on
 the average of six - no spread here is a plateau WIDTH.
 
 THE PATH COUNT IS WHAT BUYS THE PLATEAU, which the same script says by being run under it: at 2048
-paths on the barrier, two seeds, the seed-mean correction falls MONOTONICALLY by 23.76% across
-0.0025..0.02 and no window of any width holds still to the seed floor - the control that keeps the
-reading above from being a property of the statistic rather than of the estimator.
+paths on the barrier, two seeds, the seed-mean correction falls MONOTONICALLY by 25.87% across
+0.0025..0.02, though two seeds put its own seed floor at 29%, which the whole ladder sits under -
+the control that keeps the reading above from being a property of the statistic rather than of
+the estimator.
 
 RUN IT IN CHUNKS, and that is not a style choice. A run peaks at 4.3 GB at 16384 paths and 7.8 GB
 at 32768, and each further run inside one interpreter holds a run's worth more - 1 GB and 2 GB -
@@ -106,7 +107,7 @@ DECLARED = 0.01
 LADDER = (0.00125, 0.0025, 0.005, 0.01, 0.02, 0.04, 0.08)
 #: the factor-8 window the declared bandwidth sits in the middle of
 DECLARED_WINDOW = (0.0025, 0.02)
-#: the empty-kernel branch, reached through the declared field rather than through a patch
+#: the empty kernel, reached through the declared field rather than through a patch
 SUPPRESSED = 1e-12
 SEEDS = (1, 2, 3, 4, 5, 6)
 #: inner OSS sims per scenario - 32 for the discrete barrier, the most the subject fits at these
@@ -211,7 +212,7 @@ def trend(rungs, values, lo, hi):
 
     This is what tells the two failure modes apart, and it is the same distinction
     `tests/crn_ladder.py` draws between agreement and flatness: a MONOTONE march across the window
-    is the O(bandwidth) bias local-linear weights are supposed to have cancelled, while scatter of
+    is a bias in the bandwidth, while scatter of
     the same size is Monte Carlo noise and says nothing about the estimator."""
     inside = [v for r, v in zip(rungs, values) if lo <= r <= hi]
     if len(inside) < 2:
@@ -259,7 +260,7 @@ def main():
     names = [s.strip() for s in args.subjects.split(',')]
     print('mcmc %d   recompute %s   batches %d   seeds %s   declared bandwidth %g' % (
         args.mcmc, args.recompute, args.batches, seeds, DECLARED))
-    print('ladder %s   suppressed at %g (empty-kernel branch)\n' % (ladder, SUPPRESSED))
+    print('ladder %s   suppressed at %g (empty kernel)\n' % (ladder, SUPPRESSED))
 
     readings = {}
     for paths in paths_list:

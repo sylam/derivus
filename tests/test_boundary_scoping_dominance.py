@@ -1,7 +1,7 @@
 """The portfolio where the boundary correction IS the sensitivity.
 
 `test_boundary_pricer_events.py` gates the correction end to end, but on its fixtures the boundary
-term is a small fraction of the reported gradient - 2.4% on the live-exposure one - so a defect in
+term is a small fraction of the reported gradient - 0.04% on the live-exposure one - so a defect in
 the term moves the total by little. This portfolio is authored so the term dominates.
 
 THE DEAL IS A DIGITAL. A discretely monitored knock-out BINARY struck at ~zero is worth
@@ -24,14 +24,13 @@ what a collateralised set is worth turns on the cash it has already paid - so a 
 whose SETTLEMENT does not follow its branch prices the wrong exposure. With the settlement
 undeclared the lifted portfolio reads +1.96e-4 down where its own CRN oracle wants +5.29e-4.
 Parked ON the relu instead (the un-lifted portfolio spans -16.6 to +14.4), the same two sets read
-the correction at 3.65x the smooth term and the AAD 0.04% from its CRN ladder at 8192 paths (0.04%
+the correction at 3.55x the smooth term and the AAD 2.30% from its CRN ladder at 8192 paths (1.46%
 at seed 2), where suppressing the correction reads 365.20% - and the undeclared settlement is
 invisible there, the exposure crushed to near zero exactly where the ledger error lives.
 
 THE SEAM IS THE DECLARED FIELD, and nothing here patches a library object. At
-`SUPPRESSED_BANDWIDTH` the kernel underflows on every gap, `boundary_weights`' local-linear fit is
-unsolvable and the correction is an exact zero - verified bit-identical to the same run with
-`pricing.boundary_correction` deleted.
+`SUPPRESSED_BANDWIDTH` the kernel underflows on every gap and the correction is an exact zero -
+verified bit-identical to the same run with `pricing.boundary_correction` deleted.
 
 NOT GATED: a mis-SCOPED correction (scored through the wrong set's chain). Every registration names
 its `BoundarySet` class directly, so such a mutant needs a module rebind; the fixture is built so it
@@ -53,9 +52,9 @@ from test_boundary_pricer_events import NETTING, _digital, _run
 #: The kernel selects nothing at this bandwidth, so the correction is an exact zero.
 SUPPRESSED_BANDWIDTH = 1e-12
 
-#: 512 paths, one batch. Over seeds 1-3 the correction reads 2.4 to 5.8 times the smooth term on
+#: 512 paths, one batch. Over seeds 1-3 the correction reads 2.4 to 5.6 times the smooth term on
 #: the CPU and 2.7 to 4.5 on the card: the smooth term is steady near 1.2e-4 and the correction is
-#: the part that moves. At 4096 paths it reads 3.2 to 4.1 on either.
+#: the part that moves. At 4096 paths it reads 3.2 to 4.6 on either.
 PATHS = dict(batch=512, mcmc=64, batches=1)
 
 #: Each direction's two barriers, mirrored about the spot, and the sign its CVA delta must carry.
@@ -95,14 +94,14 @@ def test_the_correction_signs_and_dominates_the_cva_delta_of_a_lifted_portfolio(
     read off the same document with the correction suppressed through `Boundary_AAD_Bandwidth`:
     it is at least twice it.
 
-    At the 512 paths run here, seed 1: down +6.25e-4 against a smooth +1.22e-4, up -7.79e-4 against
-    -1.14e-4. Measured at 8192 paths, cushion 300: down 3.47x, the AAD +0.000535653 against a CRN
-    best of +0.000528546, 1.33% apart on a ladder flat to 2.41%; up 4.07x, 4.43% apart on a
+    At the 512 paths run here, seed 1: down +6.10e-4 against a smooth +1.22e-4, up -7.54e-4 against
+    -1.14e-4. Measured at 8192 paths, cushion 300: down 3.34x, the AAD +0.000519286 against a CRN
+    best of +0.000528546, 1.78% apart on a ladder flat to 2.41%; up 4.12x, 5.23% apart on a
     ladder flat to 6.04%.
 
     Killing mutations: the discrete barrier's gap signed against its direction - down reads
-    -3.80e-4, up +5.50e-4; an undeclared `settles` collapses the correction to 0.60x the smooth
-    term down and 1.03x up.
+    -3.66e-4, up +5.26e-4; an undeclared `settles` collapses the correction to 0.60x the smooth
+    term down and 1.00x up.
     """
     (h_first, h_second), sign = DIRECTIONS[barrier_type]
     first = _digital('DIG_A', h_first, barrier_type)

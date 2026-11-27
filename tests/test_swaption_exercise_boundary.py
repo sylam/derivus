@@ -402,13 +402,13 @@ def test_the_registration_moves_the_cva_gradient_and_not_the_cva():
     """The correction is worth EXACTLY ZERO forward and a great deal backward.
 
     `Boundary_AAD_Bandwidth` is the one JSON knob that reaches it: at 1e-12 the kernel underflows on
-    every scenario and `boundary_weights` lands on its empty-kernel branch, contributing an exact
-    zero derivative. Nothing is patched; the registration still happens and is still scored.
+    every scenario, contributing an exact zero derivative. Nothing is patched; the registration
+    still happens and is still scored.
 
     MEASURED at 4096 paths, seed 1: the CVA is bit-identical at both bandwidths
-    (152340.3657561677) and the gradient is not - the difference has an L2 norm 2.69x the
-    suppressed gradient's, the largest bucket moving by 2294109.46 and the projection curve's 1Y
-    point by a factor of 14.6.
+    (152340.3657561677) and the gradient is not - the difference has an L2 norm 3.03x the
+    suppressed gradient's, the largest bucket moving by 2576722.27 and the projection curve's 1Y
+    point by a factor of 16.3.
 
     A full CRN ladder against a bumped adjoint is NOT taken here: this gate says the registration is
     live and correctly sourced. Whether the corrected number is right is `tests/crn_ladder.py`'s

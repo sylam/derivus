@@ -42,16 +42,6 @@ KNOCK_IN = {
     (False, False): (0, 1, -1, 1)
     }
 
-BOUNDARY_MAX_AMPLIFICATION = 25.0
-"""Largest ``||weights||_1`` a local-linear boundary solve may return before it is refused.
-
-The weights sum to one by construction, so their L1 norm is EXACTLY the factor by which the fit can
-amplify the jumps it is averaging - scale-free in the gap, in the jump and in the sample size, which
-a threshold on the solve's determinant is not. Measured over 2685 solves in 82 runs: of the 2424
-carrying any density, every one reads 1.00 to 8.06 except the single decision that broke a
-barrier gradient, at 99.9. 25 sits 3.1x above the largest legitimate reading and 4.0x
-below that one."""
-
 KINK_ATOM_BANDWIDTH_FLOOR = 0.01
 """How far below a reporting row's OWN scale its Silverman bandwidth may fall before the kernel is
 WRITTEN to zero rather than evaluated (``exposure_kink_term``). It decides nothing about atoms.
@@ -1058,24 +1048,21 @@ class SurvivalLedger(object):
 
 
 def boundary_weights(gap, bandwidth, one_sided=False):
-    """Density at the boundary and local-linear regression weights, estimated SEPARATELY.
+    """The kernel estimate of ``f_G(0) * E[jump * dG/dtheta | G = 0]``, which is
+    ``E[jump * dG/dtheta * delta(G)]``, as a scale and a kernel over the gaps.
 
-    The term to recover is ``f_G(0) * E[jump * dG/dtheta | G = 0]``. Folding both halves into one
-    kernel is a local-constant estimator whose O(bandwidth) bias never settles; local-linear weights
-    cancel the first-order term, so the estimate holds still over a range of bandwidths.
+    Returns ``(scale, kernel)``, ``scale * kernel * jump`` being the coefficient each gap carries.
+    Nothing is solved, so an empty kernel is an exact zero and batches of any size add.
 
-    Returns ``(density_at_zero, weights)``, the weights summing to one so the caller multiplies
-    rather than averages - which also makes ``||weights||_1`` the solve's amplification. Past
-    ``BOUNDARY_MAX_AMPLIFICATION`` the solve is refused on what it produced and lands on the
-    empty-kernel branch (weights zero, correction exactly zero).
-
-    One sample has no spread for a kernel width - ``std()`` would be NaN and reach ``backward()``
-    silently - so zero width is returned and the correction is exactly zero. Base valuation reaches
-    this path.
+    Two-sided, the kernel is a Gaussian of width ``h = bandwidth * sd(gap)`` and the scale
+    ``1 / (n sqrt(2 pi) h)``: the plain average ``(1/n) sum K_h(g) * jump``, its bias of order
+    ``h**2`` wherever the gap's density runs on past zero. One sample has no spread for a kernel
+    width - ``std()`` would be NaN and reach ``backward()`` silently - so its scale is zero, as is
+    that of gaps all equal. Base valuation reaches this path.
 
     `one_sided` reads the leading dimension as one decision a row, each met from the side that
     held with no sample past it: the kernel there times the line that zeroes its first moment,
-    its scale a column beside it. Nothing is solved, so batches of any size add.
+    its scale a column beside it.
     """
     g = gap.detach()
     if one_sided:
@@ -1086,17 +1073,8 @@ def boundary_weights(gap, bandwidth, one_sided=False):
         return 1 / ((np.pi - 2) * width * g.shape[1]), kernel
     spread = g.std() if g.numel() > 1 else torch.zeros_like(g.reshape(-1)[:1].squeeze())
     width = bandwidth * spread.clamp_min(torch.finfo(g.dtype).eps)
-    k = torch.exp(-0.5 * (g / width) ** 2)
-    s0, s1, s2 = k.sum(), (k * g).sum(), (k * g * g).sum()
-    # nothing at all near the boundary makes this exactly 0
-    denominator = s2 * s0 - s1 * s1
-    solvable = denominator != 0
-    weights = torch.where(solvable, k * (s2 - g * s1) / torch.where(
-        solvable, denominator, torch.ones_like(denominator)), torch.zeros_like(k))
-    weights = torch.where(weights.abs().sum() <= BOUNDARY_MAX_AMPLIFICATION,
-                          weights, torch.zeros_like(weights))
-    density = s0 / (g.numel() * math.sqrt(2.0 * math.pi) * width)
-    return density, weights
+    scale = (spread > 0) / (g.numel() * math.sqrt(2.0 * math.pi) * width)
+    return scale, torch.exp(-0.5 * (g / width) ** 2)
 
 
 def stochastic_boundary_correction(gap, objective_jump, bandwidth, one_sided=False):
@@ -1109,11 +1087,11 @@ def stochastic_boundary_correction(gap, objective_jump, bandwidth, one_sided=Fal
     number and still propagates the missing term through ``gap`` to every factor at once.
 
     ``objective_jump`` is a coefficient and stays detached: its pathwise derivatives are already in
-    the ordinary AAD value. Summed, not averaged - the local-linear weights carry the 1/N through
-    the density. `one_sided` is a stack of decisions, one a row of the gap and of the jump.
+    the ordinary AAD value. Summed, not averaged - the scale carries the 1/N. `one_sided` is a
+    stack of decisions, one a row of the gap and of the jump.
     """
-    density, weights = boundary_weights(gap, bandwidth, one_sided)
-    return ((gap - gap.detach()) * (density * weights * objective_jump).detach()).sum()
+    scale, kernel = boundary_weights(gap, bandwidth, one_sided)
+    return ((gap - gap.detach()) * (scale * kernel * objective_jump).detach()).sum()
 
 
 def boundary_correction(shared, objective, reported_mtm, bandwidth, by_deal=None):
@@ -1142,10 +1120,10 @@ def boundary_correction(shared, objective, reported_mtm, bandwidth, by_deal=None
             if logging.getLogger().isEnabledFor(logging.DEBUG):
                 # the forward value is zero by construction; the COEFFICIENT it multiplies into
                 # the gap's graph is the reading
-                density, weights = boundary_weights(gap, bandwidth, bset.one_sided)
+                scale, kernel = boundary_weights(gap, bandwidth, bset.one_sided)
                 logging.debug('BOUNDARY %s decision=%d coeff=%.6g',
                               type(bset).__name__, k,
-                              float((density * weights * jump).sum()))
+                              float((scale * kernel * jump).sum()))
     return torch.stack(corrections).sum() if corrections else None
 
 
@@ -2746,7 +2724,7 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
     whose rebate is inside the expiry settle.
 
     On the endpoint branch the registration decides the SIGN, and on a grid carrying
-    six live decisions the MAGNITUDE too: over five seeds the registered delta reads -1.915 at
+    six live decisions the MAGNITUDE too: over five seeds the registered delta reads -1.935 at
     32,768 paths against an unregistered +1.318, the CRN oracle is negative on all 70 readings and
     its pooled median sits 0.5% away. Its ladder is not FLAT, 13% to 35% over h = 5e-4..1e-2, so
     the magnitude is known to about a third where the unregistered sign is known to be wrong."""

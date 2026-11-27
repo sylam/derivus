@@ -853,18 +853,18 @@ sweep. **Held by**
 **The estimator.** For a decision $\mathbb 1\{G>0\}$ whose firing changes the objective by $J$, AAD
 drops
 
-$$f_G(0)\;\mathbb E\Big[J\,\frac{\partial G}{\partial\theta}\;\Big|\;G=0\Big]$$
+$$f_G(0)\;\mathbb E\Big[J\,\frac{\partial G}{\partial\theta}\;\Big|\;G=0\Big]
+=\mathbb E\Big[J\,\frac{\partial G}{\partial\theta}\,\delta(G)\Big]$$
 
-([@lyuu2011]; [@glasserman2003], ch. 7). `pricing.boundary_weights` estimates the two factors apart
-from $n$ gaps $g_k$: with $h=$ `Boundary_AAD_Bandwidth` $\times\ \mathrm{sd}(g)$,
-$K_k=e^{-g_k^2/2h^2}$ and $s_r=\sum_k K_k g_k^r$,
+([@lyuu2011]; [@glasserman2003], ch. 7). `pricing.boundary_weights` estimates it with a Gaussian
+kernel over $n$ gaps $g_k$: with $h=$ `Boundary_AAD_Bandwidth` $\times\ \mathrm{sd}(g)$ the term is
 
-$$\hat f_G(0)=\frac{s_0}{n\sqrt{2\pi}\,h},\qquad w_k=\frac{K_k\,(s_2-g_k s_1)}{s_2s_0-s_1^2},$$
+$$\frac{1}{n\sqrt{2\pi}\,h}\sum_k e^{-g_k^2/2h^2}\,(g_k-\bar g_k)\,J_k,$$
 
-a kernel density and local-linear weights [@fan2018] summing to one, which hold still over a range
-of $h$ where a local-constant fit carries an $O(h)$ bias. The term is
-$\sum_k (g_k-\bar g_k)\,\hat f_G(0)\,w_kJ_k$, $\bar g$ and the coefficient detached; one gap (a base
-valuation's scenario) gives zero width and no correction.
+$\bar g$ and the coefficient detached. A symmetric kernel's bias is $O(h^2)$ where the gap's density
+runs on past zero [@fan2018]. Nothing is solved, so an empty kernel is an exact zero and the term
+adds over batches of any size; one gap (a base valuation's scenario) has no spread and no
+correction.
 
 `Boundary_AAD_Bandwidth` is 0.01. `Boundary_AAD_Margin_Calls` (`No`, credit Monte Carlo)
 registers a collateralised set's margin calls: unasked, a transfer decision carries no term, the set
@@ -939,12 +939,6 @@ the autocall's simulation masks every fork by the latch it carries (**Held by**
     knock-in and the autocall's coupon trigger are node outputs, the TARF's redemption, the
     barrier's crossing and the accumulator's latches are not. **Held by**
     `tests/test_recompute_equity_pricers.py::test_the_exposure_its_cashflows_and_the_cva_gradient_are_bit_identical_with_the_node_on`.
-
-!!! warning "A decision whose solve amplifies is refused, not smoothed"
-    Local-linear weights are signed, so a kernel admitting two neighbouring points far out cancels
-    the first-order term by subtracting two large numbers; $\lVert w\rVert_1$ is that
-    amplification, and past `pricing.BOUNDARY_MAX_AMPLIFICATION` (25) the weights go to zero.
-    **Not gated:** no document makes the refusal fire.
 
 Acceptance is AAD against a common-random-numbers bump ladder (`tests/crn_ladder.py`): a gate
 passes when the ladder's spread is at most 10% of its median, since one that scatters with `h` is

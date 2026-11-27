@@ -417,7 +417,7 @@ def test_the_cva_delta_carries_the_extension_flux():
     without a latch registration the CVA gradient drops their flux. The branches are derived from
     the SAME row arithmetic the pricer reports, so the `EXTENDABLE_LATCH` organ's reconstruction
     against the engine's own rows is the statement: 5.5e-8 relative, float32 roundoff. Against a
-    CRN ladder the delta reads -0.07% with the registration and -3.17% without, the flux being 3.2%
+    CRN ladder the delta reads -0.14% with the registration and -3.19% without, the flux being 3.4%
     of this document's delta - inside the ladder's own spread, which is why the ladder is the
     mirror's gate below and not this one's.
 
@@ -440,10 +440,10 @@ def test_a_mirror_cva_delta_carries_its_own_extension_flux():
     """The registration on the mirror, where the GAP is the only thing that could still point the
     wrong way: the reconstruction is built from `fired` and never reads it, so a gap oriented off
     `forward_sign` instead of `decide_sign` reconstructs perfectly while putting the kernel mass on
-    the far side of every decision - visible only against a CRN ladder, where it reads -37.9%.
+    the far side of every decision - visible only against a CRN ladder, where it reads -38.1%.
 
     The flux is LARGER here than on the reported book, the mirror's exposure sitting on the
-    terminated paths: +0.27% against the best rung, -18.4% suppressed, against 3.2% reported.
+    terminated paths: +0.45% against the best rung, -18.4% suppressed, against 3.4% reported.
 
     Killing mutation: the gap oriented off `forward_sign` instead of `decide_sign`.
     """

@@ -1760,7 +1760,7 @@ class CreditMonteCarlo(Calculation):
         BOUNDARY AAD (CVA gradient): a hard transfer decision contributes a derivative the
         frozen-decision graph does not carry. The correction is worth exactly zero forward, so `cva`
         is untouched and only the differentiated scalar gains a term. `Boundary_AAD_Bandwidth`
-        defaults to 0.01, which the declared 16,384 paths populate at the bottom of its measured plateau.
+        defaults to 0.01, which the declared 16,384 paths populate inside its measured plateau.
 
         THE CVA HESSIAN (`Hessian: 'Yes'`) rides the reported trapezoid through
         `pricing.exposure_kink_term`, so cva, the profile and grad_cva are untouched by

@@ -511,8 +511,8 @@ def test_a_registration_the_switch_supersedes_is_not_lost(name, tmp_path):
     """A decision dated ON the base date is resolved off the simulated spot, so its latch has a
     graph-carrying gap and `Greeks: 'All'` refuses under the crisp estimator - an accumulator fixing
     or an autocall coupon. Under the switch the registration is skipped and the Hessian flows, and
-    first order comes back BIT FOR BIT: base valuation has one scenario, a one-sample gap supports no
-    local-linear fit, and the correction is exactly zero by construction.
+    first order comes back BIT FOR BIT: base valuation has one scenario, a one-sample gap has no
+    spread, and the correction is exactly zero by construction.
 
     Killing mutation: the TARF/accumulator/autocall `boundary_aad` taken whatever the switch says,
     so the smooth run registers and refuses.

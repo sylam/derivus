@@ -662,16 +662,16 @@ def test_the_cva_spot_delta_matches_the_same_document_bumped(tmp_path):
 
     MEASURED at 1024 x 4 batches, 256 inner, rungs 0.3/0.5/1.0 on spot 100:
 
-        cva 0.005450535   AAD +1.3809097e-04   CRN 1.3581/1.4697/1.4362e-04
+        cva 0.005450611   AAD +1.3811495e-04   CRN 1.3584/1.4700/1.4365e-04
         disagreement 1.68% at the best rung, ladder flatness 8.22%
 
     so the 5% tolerance carries a 3x margin inside a ladder whose own spread is wider. The decision
     registers ONCE, and each half of its reach suppressed alone kills this gate:
 
-        latch neutralised (triggered := untriggered): AAD +2.5547825e-04, +73.83%
-        own-row override suppressed: AAD +3.7148406e-05, -72.65%
+        latch neutralised (triggered := untriggered): AAD +2.5606400e-04, +74.19%
+        own-row override suppressed: AAD +3.6618630e-05, -73.04%
 
-    Opposite signs, each ~43x the corrected residual - which is why the WHOLE registration
+    Opposite signs, each ~44x the corrected residual - which is why the WHOLE registration
     suppressed is a weak mutant here (+5.15%): the two halves nearly cancel on this fixture.
 
     Killing mutation: the own-row fired/survived override suppressed.
@@ -713,13 +713,13 @@ def test_a_collateralised_cva_delta_carries_every_row_a_decision_settles(tmp_pat
 
     MEASURED at 4096 x 4 batches, rungs 0.3/0.5/1.0 on spot 100:
 
-        cva 0.001358907   AAD -6.3203508e-05   CRN -6.19671/-6.04400/-6.02352e-05
-        disagreement +2.00% at the best rung, ladder flatness 2.79%
+        cva 0.001359565   AAD -6.3345782e-05   CRN -6.20126/-6.04866/-6.02736e-05
+        disagreement +2.15% at the best rung, ladder flatness 2.80%
 
-    Killing mutations, at the best rung: the leg left out of a decision row's cash +11.15%, the put
-    +21.23%, a float row between decisions undeclared +6.67%, a lagged decision's forks in an
-    earlier block dropped +44.50%, every row undeclared +26.24%; the put's decision dropped +17.03%,
-    its cash left where it was booked +7.15%, its forks on its own row alone +11.16%.
+    Killing mutations, at the best rung: the leg left out of a decision row's cash +11.28%, the put
+    +21.30%, a float row between decisions undeclared +6.78%, a lagged decision's forks in an
+    earlier block dropped +44.50%, every row undeclared +26.13%; the put's decision dropped +17.17%,
+    its cash left where it was booked +7.34%, its forks on its own row alone +11.36%.
     """
     aad, crn, cva = _cva_ladder(tmp_path, threshold=1.02, wrap=_lagged_swap)
     best = min(crn, key=lambda c: abs(aad - c))
