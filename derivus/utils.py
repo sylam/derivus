@@ -1750,10 +1750,11 @@ class DealTimeDependencies(object):
         index and the weight of every day, with their cached tensors cleared."""
         self.deal_time_grid = deal_time_grid
         self.interp = self.mtm_time_grid[self.mtm_time_grid <= self.mtm_time_grid[expiry]]
-        self.index = np.searchsorted(deal_time_grid, np.arange(self.interp.size), side='right') - 1
+        # a day before the first event reads the first, as one past the last reads nothing
+        self.index = (np.searchsorted(deal_time_grid, np.arange(self.interp.size), side='right') - 1).clip(0)
         self.index_next = (self.index + 1).clip(0, deal_time_grid.size - 1)
         self.alpha = ((self.interp - self.interp[deal_time_grid[self.index]])
-                      / self.delta[self.index]).reshape(-1, 1)
+                      / self.delta[self.index]).clip(0).reshape(-1, 1)
         self.t_read = {}
 
     def assign(self, other):

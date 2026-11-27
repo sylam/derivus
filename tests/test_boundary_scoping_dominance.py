@@ -94,9 +94,9 @@ def test_the_correction_signs_and_dominates_the_cva_delta_of_a_lifted_portfolio(
     read off the same document with the correction suppressed through `Boundary_AAD_Bandwidth`:
     it is at least twice it.
 
-    At the 512 paths run here, seed 1: down +6.10e-4 against a smooth +1.22e-4, up -7.54e-4 against
-    -1.14e-4. Measured at 8192 paths, cushion 300: down 3.34x, the AAD +0.000519286 against a CRN
-    best of +0.000528546, 1.78% apart on a ladder flat to 2.41%; up 4.12x, 5.23% apart on a
+    At the 512 paths run here, seed 1: down +6.11e-4 against a smooth +1.22e-4, up -7.55e-4 against
+    -1.14e-4. Measured at 8192 paths, cushion 300: down 3.33x, the AAD +0.000519469 against a CRN
+    best of +0.000528725, 1.78% apart on a ladder flat to 2.41%; up 4.11x, 5.23% apart on a
     ladder flat to 6.04%.
 
     Killing mutations: the discrete barrier's gap signed against its direction - down reads

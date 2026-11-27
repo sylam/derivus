@@ -19,7 +19,7 @@ counterparty defaults; the bank's own default, and with it DVA, is not modelled.
 
 | symbol | meaning |
 | --- | --- |
-| $t_0<t_1<\dots<t_m$ | the report rows: $t_0$ the base date, then every MTM date up to the last revaluation date of the book that every collateralised set still running reports, one reporting a date where its settlement and liquidation dates are on the grid ([Grids](../developer/calc_lifecycle.md#grids)); $\Delta_i=t_i-t_{i-1}$ |
+| $t_0<t_1<\dots<t_m$ | the report rows: $t_0$ the base date, then every date a top-level structure reports, an uncollateralised one every MTM date to its last revaluation and a collateralised set those of its own dates whose settlement and liquidation dates are its own, read elsewhere on the straight line between them and as nothing after its last ([Grids](../developer/calc_lifecycle.md#grids)); $\Delta_i=t_i-t_{i-1}$ |
 | $N$ | paths, `Batch_Size` $\times$ `Simulation_Batches` (with or without `Antithetic`) |
 | $V_k(t)$ | the book's value on path $k$ in the reporting currency (`Currency`): the sum of every top-level structure's reported value, a collateralised set's after collateral |
 | $X_k(t)$ | the reporting-to-base FX rate on path $k$; $X(0)$ today's |
@@ -145,8 +145,8 @@ The closeout conventions of a collateralised set are the set's own fields (`Liqu
 `Settlement_Period`, integers in calendar days, default 0, so the default margin period of risk is
 zero) and three options in the market data's `Valuation Configuration` under
 `NettingCollateralSet`: `Cash_Settlement_Risk` (0 received only, the default; 1 paid only; 2 all),
-`Forward_Looking_Closeout` and `Exclude_Paid_Today` (both off). Every collateralised set in one job
-must share one $(\delta_l,\delta_s)$; a job whose sets differ is refused by name. On the margin
+`Forward_Looking_Closeout` and `Exclude_Paid_Today` (both off). Each collateralised set closes out
+over its own $(\delta_l,\delta_s)$ on its own dates, whatever else the job holds. On the margin
 period of risk itself see Andersen, Pykhtin and Sokol [@andersen2017].
 
 ### Sensitivities

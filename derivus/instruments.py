@@ -883,11 +883,6 @@ class Deal(object):
                                  self.field.get('Reference'), type(self).__name__))
         return field_index
 
-    def closeout_window(self):
-        """The liquidation and settlement periods this deal closes out over, None where it holds no
-        collateral."""
-        return None
-
     @property
     def payoff_ccy(self):
         """The currency the payoff is paid in: `Payoff_Currency`, else the deal's own `Currency`."""
@@ -1262,10 +1257,10 @@ class NettingCollateralSet(Deal):
         'Note that Standard closeout causes exposure to be reported one closeout period after portfolio',
         'maturity (as the mechanics of default are still present).',
         '',
-        'Every collateralised set in one job closes out over the same $\\delta_l$ and $\\delta_s$; a job',
-        'whose sets differ is refused by name. The job reports a date only where every collateralised',
-        'set still running reports it, so a set\'s own $t_l$ and $t_s$ dates, which an uncollateralised',
-        'set beside it reports, are left out until it ends.',
+        'A set computes on its own dates, those the job\'s grid would hold were it the job\'s only set,',
+        'and is carried onto the job\'s grid as a deal is: on a date it does not report, its own $t_l$',
+        'and $t_s$ dates among them, the straight line between the dates it does, and nothing after its',
+        'last, so it reads in any job what it reads alone.',
         '',
         '### Cashflow Accounting',
         '',
@@ -1404,7 +1399,8 @@ class NettingCollateralSet(Deal):
     def reset(self, calendars):
         super(NettingCollateralSet, self).reset()
         self.accum_dependencies = True
-        if self.closeout_window():
+        self.own_dates = set()
+        if self.collateralised(self.field):
             self.calendar = utils.business_day(calendars, self.field.get('Calendars'))
 
     def calc_liquidation_settlement_dates(self, date, base_date):
@@ -1423,17 +1419,18 @@ class NettingCollateralSet(Deal):
         read as stated."""
         return terms['Collateralized'] == 'True'
 
-    def closeout_window(self):
-        """The liquidation and settlement periods a collateralised set closes out over."""
-        if self.collateralised(self.field):
-            return self.field['Liquidation_Period'], self.field['Settlement_Period']
+    def own_rows(self, time_grid, base_date):
+        """The rows of `time_grid` a collateralised set prices on: the grid's and its own dates to
+        its last, which are the job's rows were it the job's only set."""
+        return time_grid.calc_deal_grid(self.own_dates | {base_date}).deal_time_grid
 
     def get_report_dates(self, time_grid, base_date):
         reval_dates = super(NettingCollateralSet, self).get_report_dates(time_grid, base_date)
         if self.collateralised(self.field):
-            # a collateralised date reports where its settlement and liquidation dates are on the grid
-            reval_dates = [date for date in reval_dates if all(
-                x in time_grid.mtm_dates for x in self.calc_liquidation_settlement_dates(date, base_date))]
+            # a collateralised date reports where its settlement and liquidation dates are its own
+            own = set(np.array(sorted(time_grid.mtm_dates))[self.own_rows(time_grid, base_date)])
+            reval_dates = [date for date in reval_dates if own.issuperset(
+                (date,) + self.calc_liquidation_settlement_dates(date, base_date))]
         return reval_dates
 
     def finalize_dates(self, parser, base_date, grid, node_children, node_resets, node_settlements):
@@ -1490,6 +1487,7 @@ class NettingCollateralSet(Deal):
                 else:
                     child_expiry = max(child.get_reval_dates())
                     child.add_reval_dates(set(final_grid[:final_grid.searchsorted(child_expiry)]))
+            self.own_dates = node_resets
         else:
             for child in node_children:
                 child.add_reval_date_offset(1)
@@ -1658,6 +1656,8 @@ class NettingCollateralSet(Deal):
 
             field_index['Equity_Collateral'] = []
             field_index['Bond_Collateral'] = []
+            # every look-back, look-forward and call is read on the set's own rows
+            field_index['Rows'] = own = self.own_rows(time_grid, base_date)
 
             collateral_assets = self.collateral(self.field.get('Collateral_Assets'))
 
@@ -1706,7 +1706,7 @@ class NettingCollateralSet(Deal):
                                                  Instrument=None,
                                                  Factor_dep={'Cashflows': fixed_cash, 'Discount': discount},
                                                  Time_dep=utils.DealTimeDependencies(
-                                                     time_grid.mtm_time_grid, np.arange(time_index)),
+                                                     time_grid.mtm_time_grid, own[own < time_index]),
                                                  Calc_res=None))
                         )
 
@@ -1716,31 +1716,30 @@ class NettingCollateralSet(Deal):
                                             stochastic_offsets, all_tenors) if getattr(cash, key) else None
                    for key in ('Funding_Rate', 'Collateral_Rate')}) for cash in self.cash(self.field)]
 
-            t = time_grid.time_grid[:, utils.TIME_GRID_MTM]
+            t = time_grid.time_grid[own, utils.TIME_GRID_MTM]
             # collateral call dates (interpolated - assuming daily)
             base_call_date = self.field['Base_Collateral_Call_Date'] if self.field.get(
                 'Base_Collateral_Call_Date') else base_date
             call_freq = self.field['Collateral_Call_Frequency'] if self.field.get(
                 'Collateral_Call_Frequency') else pd.DateOffset(days=1)
 
-            # normally this would just be the reval dates, but if we have more than 1 netting set,
-            # then we need to include the global (time_grid.mtm_dates) set of dates
             reval_dates = self.get_report_dates(time_grid, base_date)
 
             call_dates = np.array([(x - base_date).days for x in reval_dates])
-            # where each reported row sits on the global grid the root sums every set on
+            # where each reported row sits among the set's own
             field_index['Report_Rows'] = np.searchsorted(t, call_dates)
-            call_mask = np.ones(time_grid.mtm_time_grid.size, dtype=np.int32)
+            call_mask = np.ones(own.size, dtype=np.int32)
 
             if call_freq.kwds != {'days': 1}:
                 # a one-date grid finalises no dates: there the set revalues on the base date alone
                 all_call_days = utils.generate_dates_forward(
                     max(self.get_reval_dates() | {base_date}), base_call_date, call_freq,
                     bus_day=self.calendar, method='Modified_Following')
-                approx_calls = pd.DatetimeIndex(sorted(time_grid.mtm_dates)).intersection(all_call_days)
+                approx_calls = pd.DatetimeIndex(np.array(sorted(time_grid.mtm_dates))[own]).intersection(
+                    all_call_days)
                 mod_call_dates = np.array([(x - base_date).days for x in approx_calls])
 
-                call_mask[np.searchsorted(time_grid.mtm_time_grid, mod_call_dates)] = 2
+                call_mask[np.searchsorted(t, mod_call_dates)] = 2
                 call_mask -= 1
 
             field_index['call_mask'] = call_mask
@@ -1748,25 +1747,25 @@ class NettingCollateralSet(Deal):
             if self.options['Forward_Looking_Closeout']:
                 field_index['Ts'] = (
                         np.searchsorted(t, call_dates, side='right').astype(np.int32) - 1
-                ).clip(0, time_grid.mtm_time_grid.size - 1)
+                ).clip(0, own.size - 1)
                 field_index['Tl'] = (
                         np.searchsorted(t, call_dates + self.field['Settlement_Period'], side='right').astype(
-                            np.int32) - 1).clip(0, time_grid.mtm_time_grid.size - 1)
+                            np.int32) - 1).clip(0, own.size - 1)
                 field_index['Te'] = (
                         np.searchsorted(
                             t, call_dates + self.field['Settlement_Period'] + self.field['Liquidation_Period'],
-                            side='right').astype(np.int32) - 1).clip(0, time_grid.mtm_time_grid.size - 1)
+                            side='right').astype(np.int32) - 1).clip(0, own.size - 1)
             else:
                 field_index['Ts'] = (
                         np.searchsorted(t,
                                         call_dates - self.field['Settlement_Period'] - self.field['Liquidation_Period'],
-                                        side='right').astype(np.int32) - 1).clip(0, time_grid.mtm_time_grid.size - 1)
+                                        side='right').astype(np.int32) - 1).clip(0, own.size - 1)
                 field_index['Tl'] = (
                         np.searchsorted(t, call_dates - self.field['Liquidation_Period'], side='right').astype(
-                            np.int32) - 1).clip(0, time_grid.mtm_time_grid.size - 1)
+                            np.int32) - 1).clip(0, own.size - 1)
                 field_index['Te'] = (
                         np.searchsorted(t, call_dates, side='right').astype(np.int32) - 1
-                ).clip(0, time_grid.mtm_time_grid.size - 1)
+                ).clip(0, own.size - 1)
 
         return field_index
 
@@ -1791,7 +1790,6 @@ class NettingCollateralSet(Deal):
           chain (At, required balance, bands, scan). The delta arrives on the MTM grid."""
         # calc v^t = v(te) + C(ts,te) - min(B(u); ts<=u<=tl}S(te)
         factor_dep = deal_data.Factor_dep
-        deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
         logging.info('Netting set {}'.format(self.field.get('Reference')))
 
         surv = None
@@ -1821,6 +1819,9 @@ class NettingCollateralSet(Deal):
                 C_base += Fn.pad(utils.calc_time_grid_spot_rate(
                     fx_factor, padded_time_grid, shared) * base_Ci, [0, 0, 0, pad])
 
+            # the set computes on its own rows, where its deals' cash lands, as it does alone
+            own = factor_dep['Rows']
+            C_base = C_base[own]
             if not self.options['Exclude_Paid_Today']:
                 C_block = C_base[:-1]
                 Cf_Rec = Fn.pad(torch.cumsum(torch.relu(C_block), dim=0), [0, 0, 1, 0])
@@ -1829,10 +1830,7 @@ class NettingCollateralSet(Deal):
                 Cf_Rec = torch.cumsum(torch.relu(C_base), dim=0)
                 Cf_Pay = torch.cumsum(torch.relu(-C_base), dim=0)
 
-            # The time_grid is global (across all potential netting sets) - the local grid is just this netting set
-            local_time_grid = time_grid.time_grid[
-                time_grid.time_grid[:, utils.TIME_GRID_MTM] <= deal_time[-1][utils.TIME_GRID_MTM]]
-            local_accum = accum[:len(local_time_grid)]
+            local_time_grid, local_accum = time_grid.time_grid[own], accum[own]
 
             assets = [(cash_col, cash_col.Amount * utils.calc_time_grid_spot_rate(
                 cash_col.Currency, local_time_grid, shared)) for cash_col in factor_dep['Cash_Collateral']]
@@ -1969,14 +1967,16 @@ class NettingCollateralSet(Deal):
                                                ), dim=0)
                 net_accum = net_accum * St_T
 
-            # each of the set's rows lands on its own date among the root's report rows
-            on_report = shared.upload(
-                np.searchsorted(time_grid.report_index, factor_dep['Report_Rows']), torch.int64)
+            # its report rows carried onto the job's grid as any deal's own dates are: the straight
+            # line between them, and nothing after its last
+            carry = deal_data._replace(Time_dep=utils.DealTimeDependencies(
+                time_grid.mtm_time_grid, own[factor_dep['Report_Rows']]))
 
             def reported(rows):
-                out = rows.new_zeros(*rows.shape[:-2], time_grid.report_index.size, rows.shape[-1])
-                out[..., on_report, :] = rows
-                return out
+                """`rows` on the set's report rows, leading dimensions too, on the root's."""
+                flat = rows.movedim(-2, 0)
+                carried = pricing.interp_to_mtm_grid(flat.reshape(len(flat), -1), time_grid, carry)
+                return carried[time_grid.report_index].reshape(-1, *flat.shape[1:]).movedim(0, -2)
 
             if boundary_aad:
                 # Balance-independent, detached captures for the MTA replay (see docstring).
@@ -2042,8 +2042,9 @@ class NettingCollateralSet(Deal):
                     amounts while `Cf_Rec`/`Cf_Pay` cumulate base ones, so the row's own cross
                     carries it across; the two coincide on a base-reporting book and nowhere else.
                     """
-                    # a row past this set's own prefix is masked out of `rec`/`pay` below, so the
-                    # clamp only keeps the gather in range
+                    # the payment's row among the set's own: one past its last is masked out of
+                    # `rec`/`pay` below, so the clamp only keeps the gather in range
+                    t = own.searchsorted(t)
                     fx_t = g_fx_local[min(t, g_fx_local.shape[0] - 1)]
                     rec_d = fx_t * (torch.relu(branch) - torch.relu(booked))
                     pay_d = fx_t * (torch.relu(-branch) - torch.relu(-booked))
@@ -2060,13 +2061,13 @@ class NettingCollateralSet(Deal):
 
                 def net_from_gross(delta, cash=None, base_i=base_i, delta_T=delta_T):
                     """Push a GROSS-mtm delta all the way to the net, collateral response included.
-                    The delta arrives on the MTM grid; this set runs on its own local prefix.
+                    The delta arrives on the MTM grid; this set runs on its own rows.
 
                     Vte is built from the REPORTED b_Vte, never by re-indexing g_Vt: under
                     Exclude_Paid_Today the two carry DIFFERENT cashflow adjustments, so re-deriving
                     it rebases the counterfactual by ~100x the signal it carries, invisibly to a
                     value gate. From b_Vte, gross_to_net(0) == the reported net BY CONSTRUCTION."""
-                    delta = delta[:g_Vt.shape[0]]
+                    delta = delta[own]
                     Vt_cf = g_Vt + delta * g_fx_local
                     balance, _ = scan_collateral_balance(g_B0, *collateral_bands(
                         self.required(Vt_cf, g_fxa), g_St, g_cut, g_fxa, min_received, min_posted), g_mask)
@@ -2086,16 +2087,14 @@ class NettingCollateralSet(Deal):
                 # beneath THIS netting set and drops it again
                 shared.gross_to_net = net_from_gross
 
-            gross_padding = time_grid.mtm_time_grid.size - local_accum.shape[0]
             shared.save_results(
                 deal_data.Calc_res, {
                     'Collateral': reported(expected_collateral),
-                    'GrossMTM': Fn.pad(local_accum, [0, 0, 0, gross_padding]) if gross_padding else local_accum,
+                    'GrossMTM': accum,
                     'Value': reported(net_accum)
                 })
             # the root sums every set row by row on the global grid and reports its own dates off it
-            return net_accum.new_zeros(time_grid.mtm_time_grid.size, net_accum.shape[1]).index_put_(
-                (shared.upload(factor_dep['Report_Rows'], torch.int64),), net_accum)
+            return pricing.interp_to_mtm_grid(net_accum, time_grid, carry)
         else:
             St_T = torch.squeeze(torch.exp(-surv.gather_weighted_curve(
                 shared, time_grid.time_grid[:, utils.TIME_GRID_MTM].reshape(1, -1), multiply_by_time=False)), dim=0

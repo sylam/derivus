@@ -1001,7 +1001,7 @@ class Config(object):
                 'collateralized_sets': [
                     instrument.field['Reference'] for instrument in self.walk_deals()
                     if isinstance(instrument, NettingCollateralSet)
-                    and instrument.closeout_window() is not None],
+                    and instrument.collateralised(instrument.field)],
                 'factors': self.factor_universe(),
                 'calculation': self.deals['Calculation']}
 

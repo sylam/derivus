@@ -363,7 +363,7 @@ def test_a_netting_set_is_scored_on_the_portfolio_not_on_itself():
 
     The portfolio is out of the money in every scenario, so its CVA and every sensitivity of it are
     EXACTLY zero; scored on the collateralised set alone both decisions land on a positive exposure
-    and report a delta to a CVA that does not exist (+3.83e-04 by the MTA route, +3.28e-04 by the
+    and report a delta to a CVA that does not exist (+3.83e-04 by the MTA route, +3.54e-04 by the
     pricer route). The same set ALONE, same registrations and draws, has a CVA and a gradient - so
     the zero is the scoping and not a dead fixture. Both documents ask for the margin calls'
     registration, which is off unasked.

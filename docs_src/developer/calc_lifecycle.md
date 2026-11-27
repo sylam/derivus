@@ -551,20 +551,22 @@ reopens a leg and binds it again. `Diary` reads schedules by the binding's own w
 | `Time_Grid` | items `offset` or `offset(step)` in units `D`, `W`, `M`, `Y`, stepping to the next item; default `0d 2d 1w(1w) 3m(1m) 2y(3m)`. A trailing `)` repeats the last step to the book's last date, else later deal dates are clipped. Unadjusted for business days |
 | MTM | the parsed grid plus every later date a deal revalues on (a collateralised set adds call, settlement and liquidation dates) |
 | scenario | the MTM grid under `Dynamic_Scenario_Dates: Yes` (default; forced by `At_Percentile`), else the parsed grid plus one date past the book; between scenario dates a factor is interpolated linearly |
-| deal | each deal's revaluation dates, interpolated onto the MTM grid |
+| deal | each deal's revaluation dates, interpolated onto the MTM grid, a date before its first reading its first and one after its last nothing (`utils.DealTimeDependencies`) |
 
 The grammar has two readers, `utils.grid_items` and `utils.parse_period`, and each refuses a string
 it does not read to its end; a one-item grid keeps its step. **Held by**
 `tests/test_loud_refusals.py::test_a_grid_or_a_period_not_read_to_its_end_is_refused` and
 `tests/test_loud_refusals.py::test_a_one_item_grid_keeps_its_step`.
 
-The report rows (`report_index`), on which the xVA reductions run, are each top-level structure's
-MTM dates to its last revaluation, a collateralised set's only where its settlement and liquidation
-dates are on the grid ([xVA](../theory/valuation_adjustments.md#notation-and-the-grid)). A
-collateralised set reads zero on a date it does not report, so a date reports only where every
-collateralised set still running reports it, wherever it sits in the book
-(`DealStructure.finalize_struct`): no such set reads zero on a reported row before it ends. **Held by**
-`tests/test_base_currency_json.py::test_a_job_reports_a_date_only_where_every_collateralised_set_still_running_does`.
+The report rows (`report_index`), on which the xVA reductions run, are every date a top-level
+structure reports (`DealStructure.finalize_struct`): a plain one's MTM dates to its last
+revaluation, a collateralised set's own dates whose settlement and liquidation dates are its own too
+([xVA](../theory/valuation_adjustments.md#notation-and-the-grid)). A collateralised set prices on
+its own rows, those the job's grid would hold were it the job's only set
+(`NettingCollateralSet.own_rows`), and its report rows are carried onto the job's grid as a deal's
+dates are (`pricing.interp_to_mtm_grid`), so wherever it sits in the book it reads what it reads
+alone, the straight line between its own dates on another set's. **Held by**
+`tests/test_base_currency_json.py::test_a_collateralised_set_reads_in_a_job_what_it_reads_alone`.
 
 ## Valuation modes {#valuation-modes}
 
