@@ -3,9 +3,9 @@
 `pv_MC_Tarf` runs an INNER Monte Carlo of `2 * MCMC_Simulations` paths per reporting row, and two
 things inside it are decided on simulated state and carry a real value jump:
 
-  KNOCK-IN   `barrier_hit = (barrier - Sj) * callOrPut >= 0` switches the OTM leg on for one INNER
-             path. Not smoothable - the client either owes the leveraged leg or does not - and the
-             jump is `N_otm * |K - barrier|`, which on this fixture is 60,000 on a deal worth 8,262.
+  KNOCK-IN   the OTM leg pays only where the fixing crosses `barrier`. Not smoothable - the client
+             either owes the leveraged leg or does not - and the jump is `N_otm * |K - barrier|`,
+             which on this fixture is 60,000 on a deal worth 8,271.
   TARGET PIN `q = remaining_target == 0` zeroes the survival weight, so the deal is worth nothing
              from there on. `calc_accum_value` ends in `.clamp(max=targetValue)`, so this exact
              float equality fires on a POSITIVE-MEASURE set - measured below at 27.7%-61.3% of
@@ -18,10 +18,9 @@ A REACHABILITY TRAP: `LeverageNotional` (N_otm) defaults to 0, and BOTH sites ar
   61.3% firing rate with `LeverageNotional=0`: the uncorrected AAD agrees with bump-and-reprice to
   0.00%-1.14%.
 
-Under GBM the crisp estimator takes the knock-in by the conditional-p mixture (the decision's
-probability one conditioning step back, spliced so the value is the indicator's and the derivative
-the integral's) wherever a fixing interval is one simulated step; the kernel registration is left
-for an interval that straddles a scenario node.
+A knock-in on a fixing the inner walk simulates is integrated against the interval's law, value and
+derivative (`lognormal_fired_gain`), under either estimator; one on an OBSERVED fixing, the
+scenario's own print and so every inner path's, registers a boundary correction.
 
 THE TARGET PIN IS GATED ON FOUR FIXINGS, where its ladder resolves. On six, its registration -
 the fired flags, the branches reconstructing the reported profile, the pending head of a row that
@@ -197,17 +196,15 @@ def test_asking_for_sensitivities_does_not_move_the_tarf_price_or_exposure():
 # ---------------------------------------------------------------- B1: the OTM-leg knock-in
 
 def test_the_knock_in_gradient_matches_bump_and_reprice_under_exposure():
-    """The acceptance gate for the knock-in, and the one whose oracle resolves cleanly.
+    """The acceptance gate for the knock-in, and the one whose oracle resolves cleanly. Under CMC a
+    deal's own dates are folded into the mtm grid, so EVERY fixing date is also a reporting row: on
+    it the first fixing is an observed one, whose knock-in registers, and the rest are integrated.
 
-    Measured on this fixture on the CPU, identical CRN readings before and after: AAD -62,005.27
-    against an oracle of -87,148.90 at 2.11% flatness, i.e. 40.55% SHORT; corrected, -86,785.47,
-    i.e. 0.42%. Registering only the fixings this row has yet to observe (`dt > 0`) left 6.15%
-    behind: under CMC a deal's own dates are folded into the mtm grid, so EVERY fixing date is also
-    a reporting row, and on that row the first fixing is a past reset whose knock-in was going
-    unregistered.
+    Measured on this fixture on the CPU: AAD -86,709.21 against an oracle of -86,462.43 at 0.38%
+    flatness, 0.28%.
 
-    Killing mutation: the conditional-p splice contributing nothing, so the knock-in's flux is
-    missing.
+    Killing mutation: the integrated knock-in leg off the tape, its value kept - the AAD reads
+    -27,835.7, 68% short.
     """
     _, _, aad = _cmc(KNOCK_IN_CMC, gradient=True)
     r = ladder(price=lambda s: _cmc(KNOCK_IN_CMC, spot=s)[0], aad=aad, base=SPOT,
@@ -217,14 +214,12 @@ def test_the_knock_in_gradient_matches_bump_and_reprice_under_exposure():
 
 def test_the_knock_in_gradient_matches_bump_and_reprice_at_base_valuation():
     """Base valuation, where the pricer's inner MC is the ONLY simulation there is - one date, one
-    scenario, 2x65536 inner paths - and the route that had no boundary term at all: a deal priced
-    by Monte Carlo reported a gradient with the flux missing. Measured: AAD 2,421,013 against a CRN
-    plateau of ~3.766e6, 35.7% short; corrected, 3,768,262, i.e. 0.07%. The same TARF with no
-    `Barrier` agrees to 0.00% at 0.01% flatness either way, so the 35.7% is the barrier. Across a
-    40x range of kernel bandwidths, 0.005 to 0.2, the corrected delta spreads 0.62%.
+    scenario, 2x65536 inner paths - and every fixing is live, so the knock-in is the integral, value
+    and derivative. Measured on the CPU: AAD 3,794,734 against a CRN ladder reading 3,794,968 at
+    0.44% flatness, 0.01%.
 
-    Killing mutation: the conditional-p splice contributing nothing, so the knock-in's flux is
-    missing.
+    Killing mutation: the integrated knock-in leg off the tape, its value kept - the AAD reads
+    1,528,370, 60% short.
     """
     _, aad = _baseval(KNOCK_IN, greeks=True)
     r = ladder(price=lambda s: _baseval(KNOCK_IN, spot=s)[0], aad=aad, base=SPOT,

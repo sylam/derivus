@@ -4,10 +4,10 @@ discrete barrier and autocall.
 The construction: at each fixing the trigger standardises to `zB`; the FIRED branch closes
 analytically with weight `1 - Phi(zB)` and payoff `E[J(S_k) | fired]`, the CONTINUING branch draws
 `S_k` from the truncated law by `Phi^-1(U * Phi(zB))` carrying weight `Phi(zB)`. Unbiased, not a
-smoothing: ten seeds at 16384 inner paths read crisp -37.5296 (sd 0.3208) and smooth -37.4098 (sd
-0.0910) against the quadrature's -37.359382, a variance ratio of 12.42. Second-order variance in the
-conditioning step scales like `s_k**-3`: over twelve fixings at 8192 paths the gamma's seed spread
-is 1.70% monthly and 21.15% daily, where the value's falls from 1.13% to 0.35%.
+smoothing: ten quasi seeds at 16384 inner paths read -37.3601 (sd 0.0009) against the
+quadrature's -37.359382, the same under either estimator. Second-order variance in the conditioning
+step scales like `s_k**-3`: over twelve fixings at 8192 paths the gamma's seed spread is 1.70%
+monthly and 21.15% daily, where the value's falls from 1.13% to 0.35%.
 
 Each product is held against a differentiable trapezoid reference written here out of
 `math`/`torch` alone, so an error in the closed form cannot hide behind the same error in its
@@ -37,6 +37,9 @@ from derivus.instruments import construct_instrument
 
 # the barrier's world and deal, borrowed from the file that already gates them
 import test_barrier_bridge as bb
+# the LogVar2FJ autocall's world and deal, and the FX pair's LogVar2FJ factor, likewise
+import test_logvar2fj_json as lv
+from test_fx_tarf_json import LV_FACTOR
 from crn_ladder import ladder
 
 TARF_TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -352,14 +355,17 @@ def _rel(got, want):
 @pytest.mark.parametrize('name', ['tarf', 'autocall'])
 def test_the_default_is_the_switch_on_a_real_document(name, tmp_path):
     """The key ABSENT and the key written 'Yes' are the same run - value, the whole reported mtm
-    frame and every first-order greek, by `np.array_equal` - on a knock-in TARF and an autocall with
-    a jumping put barrier, the two documents on which 'No' legitimately moves the number.
+    frame and every first-order greek, by `np.array_equal` - at `Greeks: 'All'` on a knock-in TARF
+    and on an autocall deciding a coupon on the base date, documents on which 'No' registers a
+    decision and so refuses the second order.
 
-    Killing mutation: `Branch_And_Weight` declared with default 'No'.
+    Killing mutation: `Branch_And_Weight` declared with default 'No' - the absent run refuses.
     """
     def build():
-        return (_tarf_doc(greeks='First') if name == 'tarf' else
-                _autocall_doc(0.7, greeks='First'))
+        job = (_tarf_doc(greeks='All') if name == 'tarf' else
+               _autocall_doc(0.7, same_day=True, greeks='All'))
+        job['Calc']['Calculation']['Deterministic_Kernels'] = 'Yes'
+        return job
 
     absent, out_a, _ = _run_doc(build(), tmp_path, name + '_absent')
     written, out_w, _ = _run_doc(_smooth(build()), tmp_path, name + '_yes')
@@ -371,18 +377,50 @@ def test_the_default_is_the_switch_on_a_real_document(name, tmp_path):
     assert np.array_equal(frame_a.values, frame_w.values), 'a first-order greek moved'
 
 
-def test_a_tarf_with_no_knock_in_is_bit_identical_under_the_switch(tmp_path):
-    """ATTRIBUTION. The one-step-survival loop was ALREADY the smooth estimator for the target -
-    the KO-in-step term is the fired branch integrated against the interval's law, the continuation
-    the truncated draw - so with the knock-in off the two estimators agree TO THE BIT. With it on
-    they part by ~1.3% at 65536 paths, that leg being the one indicator the crisp TARF sampled.
+#: twelve monthly fixings off the base date, a weekend one rolled to the Monday
+MONTHLY_DAYS = [(d - BASE_DAY).days + {5: 2, 6: 1}.get(d.weekday(), 0) for d in (
+    (pd.Timestamp(BASE_DAY) + pd.DateOffset(months=k)).date() for k in range(1, 13))]
 
-    Killing mutation: the integrated-leg guard losing its `otm_analytic is not None`, so the smooth
-    arm zeroes an unbarriered OTM leg.
+
+def _live_leg_doc(name):
+    """A base valuation of 16,384 paths with first-order greeks and deterministic kernels: the
+    LogVar2FJ module's autocall on the kit, a 70% put watched at every fixing; the two-coupon
+    autocall below on GBM, its 70% put on its own strike's strip; or a twelve-fixing TARF on the
+    kit struck at 1.08, with a target of 0.10 and its leveraged leg knocking in at 1.05."""
+    if name == 'kit autocall':
+        calc = lv._base(greeks='First', paths=1 << 14, Deterministic_Kernels='Yes')
+        return lv._job(calc, [{'Instrument': {'.Deal': lv._autocall()}}],
+                       **lv._priced(factor=lv.WORLD_FACTOR))
+    if name == 'gbm autocall':
+        job = _autocall_doc(0.7, greeks='First')
+        job['Calc']['Calculation']['Deterministic_Kernels'] = 'Yes'
+        return job
+    job = _tarf_doc(target=0.10, fixings=MONTHLY_DAYS, greeks='First', sims=1 << 14,
+                    Deterministic_Kernels='Yes')
+    job['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal']['Strike_Price'] = 1.08
+    market = job['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Price Factors']['LogVar2FJModelParameters.EUR'] = LV_FACTOR
+    market['Valuation Configuration'] = {'FXTARFOptionDeal': {'SpotModel': 'LogVar2FJ'}}
+    return job
+
+
+@pytest.mark.parametrize('name', ['kit autocall', 'gbm autocall', 'kit tarf'])
+def test_a_live_put_or_knock_in_is_one_value_under_either_estimator(name, tmp_path):
+    """The autocall's put and the TARF's knock-in on a fixing the walk simulates are integrated
+    against the interval's law, value and derivative, under either estimator: sampled, a row is a
+    staircase in every parameter of the law. The rest of each loop is already one expression, so
+    `Branch_And_Weight` absent and `'No'` read the same mark (==) and the same first-order greeks
+    (`array_equal`): -1.108796 for the kit autocall, +0.220830 for the GBM one and -193.451311 for
+    the TARF. So the crisp delta is the smooth one the quadrature tables below hold.
+
+    Killing mutation: the sampled breach restored as the crisp value of either leg - the `'No'`
+    mark reads -1.102221 and +0.220725 for the autocalls, -193.116716 for the TARF.
     """
-    crisp, _, _ = _run_doc(_crisp(_tarf_doc(barrier=0.0)), tmp_path, 'nokick_off')
-    smooth, _, _ = _run_doc(_smooth(_tarf_doc(barrier=0.0)), tmp_path, 'nokick_on')
-    assert crisp == smooth, (crisp, smooth)
+    absent, out_a, _ = _run_doc(_live_leg_doc(name), tmp_path, name + '_absent')
+    crisp, out_c, _ = _run_doc(_crisp(_live_leg_doc(name)), tmp_path, name + '_no')
+    assert absent == crisp, (absent, crisp)
+    assert np.array_equal(out_a['Results']['Greeks_First'].values,
+                          out_c['Results']['Greeks_First'].values), 'a first-order greek moved'
 
 
 # ======================================================================================
@@ -404,8 +442,8 @@ def test_the_two_fixing_tarf_lands_on_the_quadrature_table(barrier, tmp_path):
 
     The vega row is what says the vol identification is right: the reference differentiates ONE
     scalar vol and the report spreads it over four live knots. The same document under the CRISP
-    estimator registers the knock-in and refuses `'All'` by name - the pathwise estimator it would
-    otherwise report reads delta 0.714x, gamma 0.301x and vanna -0.341x of this table.
+    estimator registers its redemption and refuses `'All'` by name - the second order it would
+    otherwise report reads gamma 1.088x and vanna 1.232x of this table.
 
     With no knock-in the leveraged leg is SAMPLED, not integrated, and carries its own kink term
     beside the accrual's: on the CPU's draws value 0.0035%, gamma 0.017% and vanna 0.71% off the
@@ -898,28 +936,6 @@ def _ac_run(job, tmp_path, name):
 # THE AUTOCALL - the put leg, its tables, and the arm the switch does not reach
 # ======================================================================================
 
-def test_the_crisp_put_leg_lands_on_its_ladder(tmp_path):
-    """The crisp estimator's put leg used to miss its own ladder wherever the payoff jumps - 16.2%
-    at a 70% barrier. The GBM arm splices the put leg's conditional `p` into the crisp value (one
-    estimator per decision), so the crisp delta lands on a CRN ladder of the crisp value: 2.66% at
-    65536 paths, the crisp ladder's own flip-counting noise. The smooth estimator is held against
-    the quadrature tables below.
-
-    Killing mutation: `splice_conditional_p` contributing nothing, so the crisp delta is the
-    indicator's.
-    """
-    def job(**kw):
-        return _crisp(_autocall_doc(0.7, sims=1 << 16, **kw))
-
-    aad = _first(_run_doc(job(greeks='First'), tmp_path, 'k_d')[1], factor='EquityPrice.EQ')
-    rung = ladder(price=lambda s: _run_doc(job(spot=s), tmp_path, 'k_v')[0],
-                  aad=aad, base=AUTOCALL_SPOT, rungs=(1e-3, 2e-3, 5e-3, 1e-2))
-    miss = abs(rung.best - rung.aad) / max(abs(rung.aad), 1e-30)
-    assert miss < 0.05, (
-        'the CRISP autocall put leg misses its own bump ladder ({:.2%}) - the conditional-p splice '
-        'no longer carries the jump\n{}'.format(miss, rung))
-
-
 @pytest.mark.parametrize('rebate', [0.0, 0.05], ids=['no rebate', 'rebate 0.05'])
 def test_the_two_coupon_autocall_lands_on_the_quadrature_table(rebate, tmp_path):
     """THE TABLE. A two-coupon autocall with a JUMPING put barrier under the switch at
@@ -1023,19 +1039,18 @@ def test_a_zero_coupon_row_refuses_by_name(barrier, tmp_path):
 
 
 @pytest.mark.parametrize('observation', ['Spot', 'Average'])
-@pytest.mark.parametrize('on', [True, False], ids=['switch on', 'switch off'])
-def test_an_averaging_autocall_lands_on_a_brute_force_simulation_of_its_terms(on, observation,
+def test_an_averaging_autocall_lands_on_a_brute_force_simulation_of_its_terms(observation,
                                                                               tmp_path):
     """Each coupon averages a window of two fixings ten days apart and the 70% put reads the last
     window's last fixing or its mean: the window's later block is sampled on GBM's own interval of
-    the strip while the survival truncates the prefix, under either estimator. Against the payoff
-    simulated outright at 2^24 paths (0.22402 and 0.22871), 2^20 inner paths read -0.14% / -0.36%
-    switched on and off, and -0.17% / -0.47% on the average.
+    the strip while the survival truncates the prefix, which either estimator prices to the bit
+    alike. Against the payoff simulated outright at 2^24 paths (0.22402 and 0.22871), 2^20 inner
+    paths read +0.049% on the spot reading and +0.038% on the average.
 
-    Killing mutations, red on all four: the window's block drawn with no Ito term, +1.84% and +1.63%
-    on the spot reading; its sd read as `vol * dt`, +7.53% and +7.31%.
+    Killing mutations, red on both: the window's block drawn with no Ito term, +2.03% on the spot
+    reading and +1.69% on the average; its sd read as `vol * dt`, +7.68% and +5.57%.
     """
     ref = _averaging_reference(observation)
-    got, _, _ = _run_doc(_smooth(_averaging(_autocall_doc(0.7, sims=1 << 20), observation), on),
-                         tmp_path, 'avg')
+    got, _, _ = _run_doc(_averaging(_autocall_doc(0.7, sims=1 << 20), observation), tmp_path,
+                         'avg')
     assert _rel(got, ref) < 0.01, (got, ref, _rel(got, ref))

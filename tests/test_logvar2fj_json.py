@@ -783,11 +783,12 @@ def test_the_gbm_limit_holds_through_the_cva():
     this configuration - the GBM outer with the LogVar2FJ pricer - so the gate is on the pair the
     book uses and not on a research one.
 
-    ITS RESOLUTION, measured: `cva` 0.0045964 and its float32 ulp 4.7e-10, which catches a
-    residual-clock error of 1e-4 relative and NOT one of 1e-6 - where the mark half above catches
+    ITS RESOLUTION, measured on the CPU: `cva` 0.0012647 and its float32 ulp 1.2e-10, which catches
+    a residual-clock error of 1e-4 relative and NOT one of 1e-6 - where the mark half above catches
     1e-6 at 1.6e-6 relative. A harder CVA gate wants the exposure profile row by row.
 
-    Killing mutation: the walk's idiosyncratic variance share off by a percent.
+    Killing mutation: the walk's idiosyncratic variance share a percent high - 0.0012573 against
+    0.0012647.
     """
     both = [float(_run(_job(_credit(), _netted(_autocall()), **_outer(OUTER_GBM, spot_model)),
                        'cva_' + spot_model)['Results']['cva'])

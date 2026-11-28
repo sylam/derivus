@@ -711,10 +711,10 @@ def test_a_collateralised_cva_delta_carries_every_row_a_decision_settles(tmp_pat
     and forks every row observing it, a lagged coupon's float row before its own block included.
     An observed put is a decision of its own the same way. The lagged swap version, `_lagged_swap`.
 
-    MEASURED at 4096 x 4 batches, rungs 0.3/0.5/1.0 on spot 100:
+    MEASURED on the CPU at 4096 x 4 batches, rungs 0.3/0.5/1.0 on spot 100:
 
-        cva 0.001359565   AAD -6.3345782e-05   CRN -6.20126/-6.04866/-6.02736e-05
-        disagreement +2.15% at the best rung, ladder flatness 2.80%
+        cva 0.001344736   AAD -5.6765628e-05   CRN -5.873531/-5.986376/-6.003083e-05
+        disagreement +3.35% at the best rung, ladder flatness 2.21%
 
     Killing mutations, at the best rung: the leg left out of a decision row's cash +11.28%, the put
     +21.30%, a float row between decisions undeclared +6.78%, a lagged decision's forks in an

@@ -888,7 +888,10 @@ A CVA Hessian registers them unasked, which is what refuses it a collateralised 
 `Branch_And_Weight` (`Yes`, base valuation) prices the TARF, the accumulator and the autocall
 with a smooth estimator that registers nothing (**Held by**
 `tests/test_branch_and_weight.py::test_a_registration_the_switch_supersedes_is_not_lost`). The
-switch is `boundary_aad = calc_greeks is not None`: no greeks, no cost.
+autocall's put and the TARF's knock-in on a fixing the walk simulates are integrated under either
+estimator, value and derivative, so neither registers and the two estimators report one value
+(**Held by** `tests/test_branch_and_weight.py::test_a_live_put_or_knock_in_is_one_value_under_either_estimator`).
+The switch is `boundary_aad = calc_greeks is not None`: no greeks, no cost.
 
 A pricer appends a `BoundarySet`, `gap` keeping its graph (`gap > 0` is fired) and all else
 detached, its branches mapped to the MTM grid by the deal's own `pricing.deal_to_mtm_grid`. A gap

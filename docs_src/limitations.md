@@ -67,11 +67,6 @@ Grouped by where a validator meets them.
 
 ### The autocall, TARF and barrier pricers {#the-autocall-tarf-and-barrier-pricers}
 
-- **The TARF's target pin is a kink the crisp estimator cannot see.** The pin fires on 41% to 60% of
-  paths. Under the base valuation's default `Branch_And_Weight` the value's CRN ladder is flat to
-  0.05% and meets the reported delta; under `'No'` it does not converge (0.24% to 1.41%), though the
-  delta is the same either way. The credit Monte Carlo has no such switch and prices its exposure
-  grid crisp: UNMEASURED there.
 - **A bought TARF within a kernel width of its target reads its CVA delta short.** With 0.0005 of
   target left on a two-fixing bought TARF, three seeds of 16,384 paths read the CVA spot delta 37%
   to 46% short of its CRN ladder at the default `Boundary_AAD_Bandwidth` of 0.01; one seed of

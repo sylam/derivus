@@ -107,8 +107,8 @@ $1-p_j$ off the same $p_j$ the draw was truncated with, so per path
 $\sum_j(1-p_j)L_{j-1}+L_N=L_0$ to roundoff (`SurvivalLedger` logs the residual at DEBUG under the
 smooth estimator). A fired payoff measurable at $t_{j-1}$ (a rebate, the TARF's remaining target,
 a coupon) is its own conditional expectation; a leg that depends on $S_j$ over one tail is
-integrated over that tail (a digital's terminal step always; the TARF's knock-in and the autocall's
-put under the smooth estimator, below) by the partial moments of the interval law,
+integrated over that tail (a digital's terminal step, the TARF's knock-in and the autocall's put,
+under either estimator) by the partial moments of the interval law,
 
 $$E\big[S_j^{a}\,\mathbf 1\{Z_j>z\}\big]=S_{j-1}^{a}\,e^{a\mu_j+a^2v_j/2}\,\Phi\big(a\sqrt{v_j}-z\big)$$
 
@@ -221,14 +221,13 @@ The mirrored half reuses the drawn uniforms; the variance reduction it gives is 
 ### Estimators: `Branch_And_Weight`
 
 `Branch_And_Weight` is a `BaseValuation` field, default `Yes`; every other calculation runs the
-crisp estimator. Both estimate the same expectation; they differ in variance and in the
-derivatives they carry.
+crisp estimator. Both estimate the same expectation; they differ in the derivatives they carry.
 
 | Pricer | `Yes` (smooth) | `No` (crisp) |
 |---|---|---|
 | accumulator | value and derivatives as under `No`, the per-fixing payoff kink getting its second-order term under either | with sensitivities on, an observed fixing registers a boundary correction, and `Greeks: All` is refused |
-| TARF | the knock-in leg integrated (`lognormal_fired_gain`); per-fixing kink term; the redemption and knock-in registrations are not made | knock-in a sampled indicator; its derivatives taken from the integral (`splice_conditional_p`: the crisp value, the integral's derivatives) |
-| autocall | the put leg integrated over its tail of the interval law | put a sampled indicator, derivatives spliced as for the TARF |
+| TARF | a knock-in on a simulated fixing integrated (`lognormal_fired_gain`), value and derivatives; per-fixing kink term; the redemption and knock-in registrations are not made | the knock-in integrated as under `Yes`; with sensitivities on, the redemption and a knock-in on an observed fixing register boundary corrections |
+| autocall | a put on a simulated fixing integrated over its tail of the interval law, value and derivatives | the put integrated as under `Yes`; with sensitivities on, a coupon or put decided on an observed fixing registers a boundary correction |
 | discrete barrier, extendable forward | not read | not read |
 
 The second-order kink term is $\tfrac12K_h(g)\,(g-\bar g)^2$ with $\bar g$ detached: zero in value
@@ -248,10 +247,9 @@ engine/reference $-1$; an unsigned one is the absolute relative difference.
 | Monthly down-and-out, barrier at 1% of spot (never knocks) | BaseValuation, smooth, 32,768 | value $+0.61\%$, gamma $-1.4\%$ | Black |
 | Monthly down-and-out, live | BaseValuation, smooth, 32,768 | gamma within 0.57% | CRN bump ladder of its own delta, flat to 2.1% |
 | Two-fixing knock-in TARF: spot = strike 1.1, target 0.05, knock-in 1.05, $N_1/N_2$ 1000/2000, $r$ 4%, $q$ 2%, $\sigma$ 10% | BaseValuation, smooth, 262,144 | value 0.11%, delta 0.006%, vega 0.015%, gamma 0.04%, vanna 0.11% | trapezoid quadrature |
-| Same TARF, ten seeds | BaseValuation, 16,384 | seed sd 0.3208 crisp, 0.0910 smooth on a value of $-37.36$: variance ratio 12.4 | |
 | TARF, twelve fixings | BaseValuation, smooth, 8,192 | gamma seed spread 1.70% monthly, 21.15% daily; value spread 1.13% and 0.35% | |
 | Two-coupon autocall, $S=K=100$, coupon 0.08, put barrier 70%, $r$ 4%, $q$ 1%, $\sigma$ 25% | BaseValuation, smooth, 262,144 | value 0.36%, delta 0.16%, vega 0.15%, gamma 0.15% | region-integral quadrature |
-| Autocall with two-fixing coupon windows, 70% put | BaseValuation, 1,048,576 | smooth $-0.14\%$ (spot reading) / $-0.17\%$ (average reading); crisp $-0.36\%$ / $-0.47\%$ | direct simulation of the terms, $2^{24}$ paths |
+| Autocall with two-fixing coupon windows, 70% put | BaseValuation, either estimator, 1,048,576 | $+0.049\%$ (spot reading) / $+0.038\%$ (average reading) | direct simulation of the terms, $2^{24}$ paths |
 | Two-fixing accumulator | BaseValuation, either estimator, 65,536 | gamma 0.07% | quadrature |
 | Extendable forward, strip and one-decision rolling, flat market and sloped curves under a vol term structure | BaseValuation, 32,768 | within the gate's 0.5%; the written (counterparty-exercised) side 0.1% | Black on the linear continuation |
 | LogVar2FJ kit at its GBM limit (levers zero, Gaussian residual, flat $\xi$), autocall | BaseValuation | $1.3\times10^{-16}$ relative | the GBM arm |
@@ -265,8 +263,7 @@ engine/reference $-1$; an unsigned one is the absolute relative difference.
 | Same three deals, $\alpha$ growing at fixed $\beta/\alpha$ ($-0.0971$, the factor's, and $-0.5$), leverages and vol-of-vols kept | as above | the call's and the barrier's gaps fall through zero between $\alpha$ 80 and 160, and from 160 to 5120 every gap is inside its SE at both ratios (at 5120 and $-0.0971$: call $+4.8\times10^{-4}\pm5.2\times10^{-4}$, barrier $+3.4\times10^{-3}\pm6.1\times10^{-3}$, autocall $-6.2\times10^{-5}\pm2.4\times10^{-4}$); at $-0.0971$, from 5 to 40, each doubling divides the call's gap by 2.8, 3.6 and 4.2 | the same factor under `Residual_Law: Gaussian` |
 | Same three deals, leverages scaled by $e$, NIG residual and vol-of-vols kept | as above | linear in $e$ near zero: barrier $-0.180$ at $e=0.05$ and $-0.0365$ at 0.01, autocall $-0.0164$ and $-0.00333$ | the same factor at $e=0$ |
 | Same three deals, `Steps_Per_Year` 126 and 504, the factor's parameters held, and re-fitted on each clock to the fixture's ladder quoted at the factor's own vols | BaseValuation, 65,536, seeds 1-4 | no deal moves beyond its own Monte Carlo error, about 0.1% (call), 0.1-0.2% (barrier) and 0.2-0.8% (autocall), held or re-fitted (the barrier re-fitted: $-5.39\times10^{-2}$, SE $4.2\times10^{-2}$, at 126 and $-5.34\times10^{-2}$, SE $6.8\times10^{-2}$, at 504, on 52.232541); the re-fits move $\beta$ by +5% and $-3\%$ at 126 and 504 | the same deal at 252; the clocks share no draws |
-| Same autocall, `Branch_And_Weight` `Yes` against `No` on the same seed | BaseValuation, $2^{10}$ to $2^{17}$, seeds 1-8; 16 seeds at $2^{14}$ and $2^{16}$ | paired difference at most 1.98 SE at every count ($-1.50\times10^{-4}$, SE $7.3\times10^{-4}$, at $2^{16}$ over 16 seeds); crisp variance 1.00 to 1.63 times the smooth one's (1.10 and 1.21 over 16 seeds), never below; per-seed correlation 0.96 to 0.99 | the crisp estimator |
-| Same three deals, the per-seed sd against paths | BaseValuation, $2^{10}$ to $2^{17}$, seeds 1-8, both estimators | slope of log sd on log paths: call $-0.391$, barrier $-0.433$, autocall $-0.461$ smooth and $-0.472$ crisp, below the $-1/2$ of an iid estimator; from $2^{14}$ to $2^{16}$ the call's sd falls by 1.48 over 16 seeds where $-1/2$ gives 2.0; sd at $2^{17}$ 0.14%, 0.14% and 0.88% of the price | observed; an 8-seed sd is uncertain by about 25% |
+| Same three deals, the per-seed sd against paths | BaseValuation, either estimator, $2^{10}$ to $2^{17}$, seeds 1-8 | slope of log sd on log paths: call $-0.391$, barrier $-0.433$, autocall $-0.461$, below the $-1/2$ of an iid estimator; from $2^{14}$ to $2^{16}$ the call's sd falls by 1.48 over 16 seeds where $-1/2$ gives 2.0; sd at $2^{17}$ 0.14%, 0.14% and 0.88% of the price | observed; an 8-seed sd is uncertain by about 25% |
 
 Unmeasured: the strip's allocation of forward variance between fixings on a skewed, term-structured
 surface against a smile-consistent model; the autocall's per-strike GBM legs (each leg prices in its

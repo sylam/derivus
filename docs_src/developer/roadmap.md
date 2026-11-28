@@ -204,11 +204,9 @@ Next, after it:
   ([Conventions](conventions.md#what-a-landing-runs)).
 - **The standing readings every landing runs**: sixteen banked documents of the autocall, TARF and
   accumulator campaigns under the lognormal and Hull-White laws, every float they report bit for
-  bit, and one lognormal target redemption
-  forward to the bit (`-0x1.2b36cda3bf2d4p+5` under the default estimator; the crisp path, one
-  `'No'` away, reads `-0x1.2c48f36318e38p+5`). The documents, banks and scripts live outside the
-  repository, so a clone cannot rerun them; moving them under `gates/` waits on a check that none
-  carries desk data.
+  bit, and one lognormal target redemption forward to the bit (`-0x1.2ae193a02fd44p+5`, the same
+  under either estimator). The documents, banks and scripts live outside the repository, so a
+  clone cannot rerun them; moving them under `gates/` waits on a check that none carries desk data.
 - **The LogVar2FJ module, `tests/test_logvar2fj_json.py`**, on a synthetic world
   (`tests/fixtures/data/logvar2fj_world.json`: one EUR index on a USD book, a five-expiry skewed
   ladder, a GBM sibling), mostly one shared fit, holds the GBM limit (the European, the discrete

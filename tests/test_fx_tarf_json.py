@@ -349,11 +349,11 @@ def test_an_observed_fixing_pays_its_print_and_the_strip_walks_on_from_the_spot(
     settlements plus a European on the live fixing walked from TODAY'S spot, 1.1: the call at 1.0
     banks 0.3 a print, the put at 1.2 pays its leveraged 0.1 a print, 1.3 knocking it in at 1.25.
 
-    MEASURED: 715.4647 against 715.4641 and -319.5151 against -319.5126. Over 21 seeds at these
-    paths the inner draw's standard deviation is 1.4e-5 of the call and 1.4e-4 of the put (at most
-    2.5e-4), and the gate is 1e-3.
+    MEASURED: 715.4647 against 715.4641 and -319.5136 against -319.5126. Over 21 seeds at these
+    paths the inner draw's standard deviation is 7.1e-7 of the call and 2.8e-6 of the put (at most
+    5.6e-6), and the gate is 1e-3.
 
-    The knock-in decided on the row's spot, 1.1 below the barrier, reads 82.11 for the put.
+    The knock-in decided on the row's spot, 1.1 below the barrier, reads 80.41 for the put.
 
     Killing mutation: the walk going on from the print, which reads 912.84 for the call.
     """

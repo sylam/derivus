@@ -280,8 +280,8 @@ those draws. A fixing already observed is an exact indicator.
   enters as the per-step drift $-\rho\,\sigma_{FX,k}\sqrt{V_k}$, $\sigma_{FX}$ the FX surface's at-the-money
   forward strip on the walk's grid.
 - Inner paths: **MCMC_Simulations** per outer scenario, Sobol where the simulation batch exceeds 16, with
-  no antithetic mirror. Under `Branch_And_Weight` (the default, base valuation only) the put leg is
-  integrated against the interval's law rather than sampled.
+  no antithetic mirror. A put on a fixing the walk simulates is integrated against the interval's law
+  rather than sampled, under either `Branch_And_Weight` estimator.
 
 ### Refusals and limitations
 

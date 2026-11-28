@@ -1003,26 +1003,6 @@ BARRIER_OBSERVATION = {'Spot': lambda spot, average: spot,
                        'Average': lambda spot, average: average}
 
 
-def splice_conditional_p(crisp, mixture):
-    """The conditional-p splice: report the CRISP term's value and the MIXTURE's every derivative.
-
-    Returns what a caller ADDS beside a crisp term it has already accumulated, so the total reads
-    ``crisp + (mixture - mixture.detach()) - (crisp - crisp.detach())``. Both parentheses are exact
-    IEEE zeros, so the value is the crisp estimator's bit for bit while the whole gradient - and the
-    whole Hessian, no detached coefficient being anywhere in it - is the mixture's.
-
-    The mixture IS a decision's flux, not an estimate of it: the decision's probability given the
-    state one conditioning step back is computed analytically and the two branches enter as an
-    expectation, so first order is Rao-Blackwellised and second order analytic with no bandwidth
-    anywhere. The kernel form it replaces pays 27% noise for a term sitting at 0.5%, on a ladder
-    that never plateaus.
-
-    ONE ESTIMATOR PER DECISION: where this takes a decision it REPLACES that decision's kernel-flux
-    registration, or the same flux is counted twice.
-    """
-    return (mixture - mixture.detach()) - (crisp - crisp.detach())
-
-
 class SurvivalLedger(object):
     """The alive weight down a fixing strip and what mass each fixing FIRED - one object, so the
     telescoping identity is checkable rather than implicit.
@@ -4021,8 +4001,8 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
 
     BOUNDARY AAD registers two decisions taken on simulated state: the target FILLING (LATCHED, a
     later block's accrual being only ever larger) and the OTM leg KNOCKING IN on an OBSERVED fixing,
-    the scenario's own print, which latches nothing (a live one is the conditional-p mixture's). The
-    redemption latches once as the block OPENS and again at each OBSERVED fixing inside it, those
+    the scenario's own print, which latches nothing (a live one is integrated). The redemption
+    latches once as the block OPENS and again at each OBSERVED fixing inside it, those
     being crossings the strip takes itself; a row that redeems mid-strip keeps the fixings it
     reached, which is what the latch's ``pending`` carries. A fixing's gap is its signed margin, the
     UNCLAMPED accrual ``raw`` before it plus its SIGNED intrinsic less the target, and its flag is
@@ -4031,13 +4011,12 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     skipping it corrupts the latch reconstruction.
 
     BRANCH AND WEIGHT (``Branch_And_Weight``, THE DEFAULT, base valuation only) SWAPS the estimator
-    for both registrations rather than joining them, or the flux is counted twice; ``'No'`` is bit
-    for bit. Most of the construction is already here - the KO-in-step term IS the fired branch
-    integrated against the interval's own law, and ``R`` is measurable one fixing back. It adds the
-    knock-in INTEGRATED rather than sampled (``lognormal_fired_gain``, so the indicator leaves the
-    tape), the per-fixing accrual kink at second order (``accrual_kink_term``, added to ``cf_itm``
-    so it reaches both the payment and the running target), and an exact target pin, whose crisp
-    flux resolves no better than ~10%.
+    for both registrations rather than joining them, or the flux is counted twice. Most of the
+    construction is on both paths - the KO-in-step term IS the fired branch integrated against the
+    interval's own law, ``R`` is measurable one fixing back, and a live knock-in is INTEGRATED
+    (``lognormal_fired_gain``). The switch adds the per-fixing accrual kink at second order
+    (``accrual_kink_term``, added to ``cf_itm`` so it reaches both the payment and the running
+    target), and an exact target pin, whose crisp flux resolves no better than ~10%.
 
     WHAT THE SWITCH DOES NOT SMOOTH: a decision taken on an OBSERVED sample. The redemption latch's
     gaps are the accrual of fixings already seen - data, not simulated state - and under base
@@ -4198,10 +4177,11 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                     # barrier's, so this tail lies wholly inside the surviving set for every R >= 0
                     otm_analytic = None
                     if otm_bound is not None:
-                        otm_analytic = Dj * L * N_otm * (-gain_sign) * lognormal_fired_gain(
+                        otm_gain = lognormal_fired_gain(
                             Sj_prev, fwd_drift, vol_step,
                             (torch.log(otm_bound / Sj_prev) - fwd_drift) / vol_step,
                             K, callOrPut < 0, gain_power)
+                        otm_analytic = Dj * L * N_otm * (-gain_sign) * otm_gain
                     Sj = S_fix = Sj * torch.exp(fwd_drift + vol_step * Z)
                 else:
                     # the strip's j-th fixing is the schedule's `settle_offset + j`-th, where the
@@ -4232,7 +4212,10 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 # why an unleveraged deal has no kink at all
                 kink = accrual_kink_term(intr, j) if (
                     second_order and not use_past_fixing) else None
-                integrated = smooth and otm_analytic is not None
+                # a live knock-in is INTEGRATED under either estimator, value and derivative:
+                # sampled, a row is a staircase in every parameter of the law, which a bump and an
+                # exposure's max(., 0) read
+                integrated = otm_analytic is not None
                 if integrated:
                     # integrated above; nothing of this leg is sampled, so no indicator is formed
                     barrier_hit = torch.zeros_like(S_fix)
@@ -4259,18 +4242,15 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 P = P + Dj * cf_step
                 if integrated:
                     P = P - otm_analytic
-                elif otm_analytic is not None:
-                    # THE CONDITIONAL-p MIXTURE on the crisp path: value stays the sampled
-                    # indicator's bit for bit, every derivative is the integral's. This SUPERSEDES
-                    # the registration below, or the flux double counts
-                    P = P + splice_conditional_p(-Dj * L * p * cf_otm, -otm_analytic)
                 if boundary_aad:
                     with torch.no_grad():
                         P_alive = P_alive + Dj * L_alive * p * (cf_itm - cf_otm)
+                        if integrated:
+                            P_alive = P_alive - Dj * L_alive * N_otm * (-gain_sign) * otm_gain
                     if barrier > 0.0 and otm_analytic is None:
                         # the scenario's own print, gap > 0 KNOCKED IN in log space, and what the
-                        # row gains where it flips - here only, the conditional-p mixture taking
-                        # a live fixing: ONE estimator per decision
+                        # row gains where it flips - here only, a live fixing being integrated:
+                        # ONE estimator per decision
                         knock = ((callOrPut * torch.log(barrier / S_fix)).squeeze(1), (
                             -buy_sell * Dj * L * p * F.relu(-intr) * N_otm).mean(axis=1).detach(),
                             (settle_offset + j, tau[j] == 0))
@@ -4597,23 +4577,24 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     counterfactual - an objective with a kink scores two partial counterfactuals differently from
     their sum. An OBSERVED put's breach is the scenario's own too, so it registers the same way,
     one decision per barrier date in a set of its own that latches nothing; an unobserved one is
-    the conditional-p splice's.
+    INTEGRATED under either estimator, value and derivative.
 
-    BRANCH AND WEIGHT (``Branch_And_Weight``, THE DEFAULT, base valuation only) SUPERSEDES that registration rather than joining it. A constant coupon already makes
-    ``(1 - p) * L * coup * D_j`` a conditional expectation; what the switch adds is the deal's
-    SECOND per-fixing decision, the PUT LEG INTEGRATED rather than sampled -
-    ``breach * (rebate - (1 - S/strike))`` is a gain over one tail of the interval's own law, so it
-    closes in that law's partial moments. Crisp it is a bare jump of ``rebate - (1 - B/strike)``,
-    exactly zero only where the barrier sits ON the strike with no rebate: 18-22% off its own CRN
-    delta ladder at a 70% barrier, 0.00% on the strike.
+    BRANCH AND WEIGHT (``Branch_And_Weight``, THE DEFAULT, base valuation only) SUPERSEDES that
+    registration rather than joining it. Both per-fixing decisions are conditional expectations
+    under either estimator: a constant coupon makes ``(1 - p) * L * coup * D_j`` one, and the PUT
+    LEG ``breach * (rebate - (1 - S/strike))`` is a gain over one tail of the interval's own law,
+    closing in that law's partial moments. Sampled, a row's value would be a staircase in every
+    parameter of the law, one inner path's whole put a step, which a bump and an exposure's
+    ``max(., 0)`` read.
 
     THE ORDER IN THE LOOP DECIDES THE FORM, and it is what to read before touching this. The coupon
     block computes the survival ``p``, pays ``(1 - p) * L``, advances ``L`` to ``p * L``, and only
-    then advances ``Sj``; the barrier block runs after all four. So the sample it replaces is drawn
-    from the law truncated to the surviving ``{S <= K}`` and already carries that fixing's ``p`` in
-    ``L``, which makes the analytic term a CONDITIONAL expectation - the raw partial moments over
-    the breach region divided by ``p``, spelled as the weight from before ``p`` entered ``L`` to
-    avoid the ``0/0`` where every path fires, and intersected with the surviving set ``min(B, K)``.
+    then advances ``Sj``; the barrier block runs after all four. So the sample the integral replaces
+    is drawn from the law truncated to the surviving ``{S <= K}`` and already carries that fixing's
+    ``p`` in ``L``, which makes the analytic term a CONDITIONAL expectation - the raw partial moments
+    over the breach region divided by ``p``, spelled as the weight from before ``p`` entered ``L``
+    (the counterfactual's too) to avoid the ``0/0`` where every path fires, and intersected with the
+    surviving set ``min(B, K)``.
 
     WHAT STAYS AN INDICATOR, there being no conditioning step to integrate against: a barrier date
     this iteration's coupon block did not advance ``Sj`` over, which is an OBSERVED fixing and
@@ -4825,11 +4806,11 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                 torch.clamp_min(put_k, eps)) - put_m) / put_s, True)
                         if barrier > 0 and putBarrier > 0.0:
                             # held below: the average's pre-advance factor, the prefix's law,
-                            # the weight before `p` enters `L`, the breach's half-line
-                            # INTERSECTED with the surviving one (one return), and the shift
+                            # the weights before `p` enters `L` and the counterfactual's, the
+                            # breach's half-line INTERSECTED with the surviving one, and the shift
                             b_ratio = observe(putBarrier, putBarrier - c) / (
                                 put_S * observe(put_end, put_G))
-                            interval = (put_scale, put_m, put_s, put_L, (torch.log(
+                            interval = (put_scale, put_m, put_s, put_L, L_cf, (torch.log(
                                 torch.clamp_min(torch.minimum(b_ratio, put_k), eps))
                                 - put_m) / put_s, c)
                     else:
@@ -4895,43 +4876,28 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         if own_put:
                             # THE PUT'S OWN STEP off the SAME uniform, so the leg walks its
                             # strike's world without asking the stream for a number
-                            put_S = put_S * torch.exp(put_m + put_s * put_z)
-                            put_read = (put_S * put_end, c + put_S * put_G)
-                            put_S = put_S * put_end
+                            put_S = put_S * torch.exp(put_m + put_s * put_z) * put_end
                         else:
-                            put_S, put_read = Sj, (Sj, decided)
+                            put_S = Sj
                         coupon_index += ahead
 
                 if barrier > 0:
-                    # WHAT THE BREACH READS - the deal's `Barrier_Observation`: the window's
-                    # last fixing, which is where the walk left `Sj` or the print it was, or the
-                    # average the trigger itself decided on. The PAYOFF stays the average
-                    at = observe(Sj if seen is None else seen, decided)
                     if interval is not None:
-                        # THE PUT LEG, INTEGRATED against `bound`; `L_prev`, the weight before
-                        # `p` entered `L`, IS `L / p` without the 0/0 where every path fired,
-                        # and the law, weight and both readings are its own strike's
-                        scale, put_m, put_s, L_prev, bound, c = interval
-                        at, decided = observe(*put_read), put_read[1]
-                        analytic = L_prev * D[j] * fx * lognormal_fired_gain(
-                            scale, put_m, put_s, bound, strike * (1.0 - rebate) - c,
-                            False) / strike
-                        if smooth:
-                            P = P + analytic
-                        else:
-                            # THE CONDITIONAL-p MIXTURE: value stays the sampled indicator's bit
-                            # for bit, every derivative is the integral's
-                            breach = torch.where(at <= putBarrier, 1.0, 0.0)
-                            crisp = put_L * D[j] * fx * breach * (
-                                rebate - (1.0 - decided / strike))
-                            P = P + crisp + splice_conditional_p(crisp, analytic)
-                            if P_cf is not None:
-                                with torch.no_grad():
-                                    P_cf = P_cf + L_cf * D[j] * fx * breach * (
-                                        rebate - (1.0 - decided / strike))
+                        # THE PUT LEG, INTEGRATED against `bound` on its own strike's law under
+                        # either estimator, as a sampled breach makes a row a staircase in every
+                        # parameter; each weight is before `p`, `L / p` without the 0/0
+                        scale, put_m, put_s, L_prev, cf_prev, bound, c = interval
+                        gain = lognormal_fired_gain(
+                            scale, put_m, put_s, bound, strike * (1.0 - rebate) - c, False)
+                        P = P + L_prev * D[j] * fx * gain / strike
+                        if P_cf is not None:
+                            with torch.no_grad():
+                                P_cf = P_cf + cf_prev * D[j] * fx * gain / strike
                     else:
                         # no conditioning step this iteration: the fixing is OBSERVED, and the
-                        # breach EXACT on the level the deal names
+                        # breach EXACT on what the deal's `Barrier_Observation` reads - the
+                        # window's last fixing, or the average the trigger decided on
+                        at = observe(Sj if seen is None else seen, decided)
                         breach = torch.where(at <= putBarrier, 1.0, 0.0)
                         put_leg = put_L * D[j] * fx * (rebate - (1.0 - decided / strike))
                         P = P + breach * put_leg
@@ -4945,7 +4911,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                     rebate - (1.0 - decided / strike))
                         if boundary_aad and putBarrier > 0.0:
                             # the scenario's own breach, gap > 0 BREACHED, and what the row
-                            # gains where it flips - here only, the splice taking it where
+                            # gains where it flips - here only, the integral taking it where
                             # `interval` is set; no barrier decides nothing (log(0))
                             bar = (torch.log(putBarrier / at).squeeze(1),
                                    torch.where(dead, 0.0, put_leg.mean(axis=1)).detach(),
