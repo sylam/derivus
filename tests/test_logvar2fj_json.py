@@ -892,6 +892,40 @@ def test_a_row_started_from_the_carried_state_prices_the_outer_s_own_law():
     assert abs(tower) <= 3.0 * se, (tower, se, tower / se, towers)
 
 
+def _carried_cva(sigma_l, gradient):
+    """The `Results` of a credit Monte Carlo of a bought 2y at-the-money European on INDEX_A, the
+    kit's vanilla, under the LogVar2FJ outer on `WORLD_FACTOR` with `Sigma_L` at `sigma_l`: 64 outer
+    paths of 128 inner, float64, the inner pricer replayed in the backward pass."""
+    calc = dict(_credit(64), MCMC_Simulations=128, Quasi_Seed=1234, Recompute_Inner_MC='Yes')
+    calc['Credit_Valuation_Adjustment'] = dict(calc['Credit_Valuation_Adjustment'], Gradient=gradient)
+    expiry = {'.Timestamp': FIXINGS[-1]}
+    deal = _barrier(Reference='EU', Expiry_Date=expiry, Barrier_Price=1e-6, Barrier_Dates=[expiry])
+    sections = _outer(OUTER_LV, factor=dict(WORLD_FACTOR, Sigma_L=sigma_l),
+                      deal='EquityBarrierOption')
+    cx = rf.Context()
+    cx.load_json((_dumps(_job(calc, _netted(deal), **sections)), 'carried_cva.json'))
+    return cx.run_job(prec=torch.float64)[1]['Results']
+
+
+def test_the_cva_gradient_reaches_the_outer_walk_through_the_carried_state():
+    """A pricer row started from the outer path's carried `(ell, s)` moves with every leaf the
+    outer walk reads, so the CVA's derivative runs through that state into the walk. The document
+    decides nothing on any print - the exposure is the European itself - so the AAD of the CVA in
+    `Sigma_L` is the limit of its common-random-numbers central difference. HOLDS 1e-4 relative at
+    a rung of 0.3% of the leaf: -0.6251138 against -0.6251132, 1.0e-6, in 8 s on the CPU.
+
+    Killing mutations: the kit reading the carried series off `shared`, which the replay
+    differentiates as a constant (-0.4417225, 29% off); the outer publishing its state detached
+    (-0.3507597, 44% off).
+    """
+    name = FACTOR + '.Sigma_L'
+    grad = _carried_cva(1.0, 'Yes')['grad_cva']['Gradient']
+    aad = float(sum(grad.loc[i] for i in grad.index if str(i[0]) == name))
+    up, down = (float(_carried_cva(1.0 + h, 'No')['cva']) for h in (3e-3, -3e-3))
+    crn = (up - down) / 6e-3
+    assert abs(aad - crn) <= 1e-4 * abs(crn), (aad, crn, up, down)
+
+
 # ------------------------------------------------------------------------------------------
 # 10  THE HEX SET
 #

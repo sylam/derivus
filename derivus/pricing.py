@@ -97,21 +97,39 @@ class LogVar2FJKit(object):
 
     def __init__(self, scalars, factor_dep):
         n = len(self.param_names)
+        m = n + len(self.curve_names)
         structural = factor_dep['Spot_Model'][0][utils.FACTOR_INDEX_Tenor_Index]
         self.params = dict(zip(self.param_names, scalars[:n]),
                            **{x: utils.LogVar2FJ.declared(structural.get(x))
                               for x in utils.LogVar2FJ.STRUCTURAL_NAMES})
         self.curves = {name: utils.TermStructure(structural[name], value)
-                       for name, value in zip(self.curve_names, scalars[n:])}
+                       for name, value in zip(self.curve_names, scalars[n:m])}
         self.gaussian = str(structural['Residual_Law']) == 'Gaussian'
         self.steps_per_year = float(structural['Steps_Per_Year'])
         self.invert = bool(factor_dep.get('Invert_Spot'))
-        # where an OUTER LogVar2FJ process publishes its carried state: keyed by the PARAMETER
-        # factor's own name, read on the DEAL's own day count. A cross keys `FxRate.<later>.
-        # <earlier>`, which nothing publishes, so its row re-seeds and inherits no leg's state
-        name = factor_dep['Spot_Model'][0][utils.FACTOR_INDEX_Offset][0].name[:-1]
-        self.state_keys = [utils.Factor(x, name) for x in ('EquityPrice', 'FxRate')]
+        self.state_keys = self.published_keys(factor_dep)
+        # the outer path's carried series (`published`), or () - THETA like every leaf above
+        self.series = scalars[m:]
         self.daycount = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
+
+    @staticmethod
+    def published_keys(factor_dep):
+        """Where an OUTER LogVar2FJ process publishes its carried state: keyed by the PARAMETER
+        factor's own name, read on the DEAL's own day count. A cross keys `FxRate.<later>.
+        <earlier>`, which nothing publishes, so its row re-seeds and inherits no leg's state."""
+        name = factor_dep['Spot_Model'][0][utils.FACTOR_INDEX_Offset][0].name[:-1]
+        return [utils.Factor(x, name) for x in ('EquityPrice', 'FxRate')]
+
+    @classmethod
+    def published(cls, factor_dep, shared):
+        """The outer path's revealed series ``(ell, s, spread, days)``, or (). Handed to the pricer as
+        THETA: `InnerMCRecompute` differentiates a closure as a constant, and the state a row starts
+        from moves with every leaf the outer walk reads."""
+        buffer = getattr(shared, 't_Scenario_Buffer', None) or {}
+        for key in cls.published_keys(factor_dep):
+            if buffer.get((key, 'lv_ell')) is not None:
+                return tuple(buffer[(key, x)] for x in ('lv_ell', 'lv_s', 'lv_spread', 'lv_days'))
+        return ()
 
     def carried(self, row_t, shared):
         """This row's carried ``(ell, s)`` per outer path as ``[batch, 1]`` and the ``(Var ell, Var s)``
@@ -128,11 +146,11 @@ class LogVar2FJKit(object):
             if seed[0] is not None:
                 # the fork walks its own level from rest at the seed, and the row reads that walk's law
                 return [x.reshape(-1, 1) for x in seed] + [(0.0, 0.0)]
-            series = [buffer.get((key, x)) for x in ('lv_ell', 'lv_s', 'lv_spread')]
-            if series[0] is not None:
-                at = self.daycount(buffer[(key, 'lv_days')].detach().cpu().numpy())
-                row = max(int(np.searchsorted(at - utils.BUCKET_TOL, float(row_t), 'right') - 1), 0)
-                return [x[row].reshape(-1, 1) for x in series[:2]] + [series[2][row]]
+        if self.series:
+            ell, s, spread, days = self.series
+            at = self.daycount(days.detach().cpu().numpy())
+            row = max(int(np.searchsorted(at - utils.BUCKET_TOL, float(row_t), 'right') - 1), 0)
+            return [x[row].reshape(-1, 1) for x in (ell, s)] + [spread[row]]
         return None
 
     def draws(self, key, shape, deltas, antithetic):
@@ -314,10 +332,11 @@ OSS_SPOT_MODEL_KITS = {'LogVar2FJ': LogVar2FJKit}
 def oss_model_scalars(factor_dep, shared):
     """The declared spot model's parameter tensors, in the order its own kit unpacks them.
 
-    Read by the canonical name tuples the KIT declares (`param_names`, then `curve_names`).
-    Scalars come out (-1, 1) to broadcast against the [batch, sims] state; a curve parameter comes
-    out flat, being indexed by knot and not by path. Empty tuple where the deal prices GBM, which
-    `oss_model_kit` reads as None.
+    Read by the canonical name tuples the KIT declares (`param_names`, then `curve_names`), then
+    the outer path's carried series where one is published (`published`). Scalars come out (-1, 1)
+    to broadcast against the [batch, sims] state; a curve parameter comes out flat, being indexed by
+    knot and not by path. Empty tuple where the deal prices GBM, which `oss_model_kit` reads as
+    None.
     """
     if 'Spot_Model' not in factor_dep:
         return ()
@@ -325,7 +344,7 @@ def oss_model_scalars(factor_dep, shared):
     kit = OSS_SPOT_MODEL_KITS[code[utils.FACTOR_INDEX_SubType]]
     block = {x.name[-1]: shared.t_Static_Buffer[x] for x in code[utils.FACTOR_INDEX_Offset]}
     return tuple([block[k].reshape(-1, 1) for k in kit.param_names] +
-                 [block[c].reshape(-1) for c in kit.curve_names])
+                 [block[c].reshape(-1) for c in kit.curve_names]) + kit.published(factor_dep, shared)
 
 
 def oss_model_kit(factor_dep, scalars):

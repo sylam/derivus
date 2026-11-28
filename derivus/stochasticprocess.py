@@ -6775,9 +6775,11 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
         spot = self.spot0 if Z.ndim == 2 else self.spot0.reshape(-1, 1)
         path = spot * torch.exp(torch.cumsum(
             carry + torch.stack(M) + utils.sqrt_or_zero(torch.stack(var)) * Z, dim=0))
-        # the revealed state, DETACHED (a state coordinate, not differentiated through) and B-last
-        self.last_state = [torch.stack(ell).detach(), torch.stack(fast).detach()]
-        for name, value in zip(('lv_ell', 'lv_s'), self.last_state):
+        # the revealed state, B-last: ON THE TAPE in the buffer a pricer row starts from, which moves
+        # with every leaf the walk reads; DETACHED for the state readers below
+        state = [torch.stack(ell), torch.stack(fast)]
+        self.last_state = [x.detach() for x in state]
+        for name, value in zip(('lv_ell', 'lv_s'), state):
             shared_mem.t_Scenario_Buffer[(self.factor_key, name)] = value.unsqueeze(1)
         shared_mem.t_Scenario_Buffer[(self.factor_key, 'lv_days')] = self.days
         shared_mem.t_Scenario_Buffer[(self.factor_key, 'lv_spread')] = self.spread

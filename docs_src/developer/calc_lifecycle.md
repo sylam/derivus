@@ -692,12 +692,17 @@ process derives from a grid it keeps under that grid
 (`HullWhite2FactorImpliedInterestRateModel.read_cache`) (**Held by**
 `tests/test_model_interchangeability.py::test_a_solve_forks_a_two_factor_curve_on_each_inner_grid`).
 
-The LogVar2FJ outer publishes its detached state (`lv_ell`, `lv_s`), grid days (`lv_days`), each
-factor's spread at its nodes (`lv_spread`, the variance it has built from the walk's start) and a
-fork's seed (`ell0_inner`, `s0_inner`); `pricing.LogVar2FJKit.carried` reads the seed, else the state
-and the spread at the row's node, else re-seeds at `(L*(t_row), 0)`, leaving other documents
-unaffected. A carried row's level starts its Jensen term from that spread
-(`utils.LogVar2FJ.state_variance`), so the row reads ξ as the outer does (**Held by**
+The LogVar2FJ outer publishes its state on the tape (`lv_ell`, `lv_s`), its grid days (`lv_days`),
+each factor's spread at its nodes (`lv_spread`, the variance it has built from the walk's start) and
+a fork's seed (`ell0_inner`, `s0_inner`); `last_state`, which the hedge readers take, is that state
+detached. The series reach the pricer as theta (`pricing.oss_model_scalars` appends
+`LogVar2FJKit.published`), never through `shared`, which `InnerMCRecompute` differentiates as a
+constant, so a CVA sensitivity runs through a carried row into the outer walk (**Held by**
+`tests/test_logvar2fj_json.py::test_the_cva_gradient_reaches_the_outer_walk_through_the_carried_state`).
+`LogVar2FJKit.carried` reads the seed, else the state and the spread at the row's node, else
+re-seeds at `(L*(t_row), 0)`, leaving other documents unaffected. A carried row's level starts its
+Jensen term from that spread (`utils.LogVar2FJ.state_variance`), so the row reads ξ as the outer does
+(**Held by**
 `tests/test_logvar2fj_json.py::test_a_row_started_from_the_carried_state_prices_the_outer_s_own_law`);
 a fork's seed is read at rest, as the forked walk builds its own level from rest at the seed
 (**Not gated**).
